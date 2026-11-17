@@ -3,7 +3,8 @@
 // Usage: node scripts/release-check.mjs <tag> [--root <repo>] [--notes <file>]
 // Refuses (exit 1) unless the tag is vX.Y.Z, package.json, app/src-tauri/tauri.conf.json and app/src-tauri/Cargo.toml
 // all carry one version (a drift between them is named first: the app-copy refresh compares the app's version with the
-// CLI's) and it is X.Y.Z, and CHANGELOG.md has a non-empty "## X.Y.Z" section. That section, with its wrapped lines joined,
+// CLI's) and it is X.Y.Z, and CHANGELOG.md has a non-empty "## X.Y.Z — YYYY-MM-DD" section (an em dash and a real date, as the
+// released sections read; a heading that says "unreleased" or has no date is refused). That section, with its wrapped lines joined,
 // becomes the draft release's notes: written to --notes, else printed. Bad usage exits 2. Node stdlib only.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -37,9 +38,17 @@ export function versionDrift(root) {
   return new Set(found.map(([, v]) => v)).size > 1 ? found.map(([f, v]) => `${f} (${v})`).join(', ') : null;
 }
 
+const headingStart = (version) => new RegExp(`^## ${version.replace(/\./g, '\\.')}(?=\\s|$)`);
+
+/** The "## <version> ..." heading line of the version's section as written (a trailing CR or blanks removed), or null if absent. */
+export function changelogHeading(text, version) {
+  const heading = text.split('\n').find((l) => headingStart(version).test(l));
+  return heading === undefined ? null : heading.trimEnd();
+}
+
 /** Body of the "## <version>" section (heading excluded, up to the next "## " heading), trimmed; null if absent. */
 export function changelogSection(text, version) {
-  const heading = new RegExp(`^## ${version.replace(/\./g, '\\.')}(?=\\s|$)`);
+  const heading = headingStart(version);
   const lines = text.split('\n');
   const start = lines.findIndex((l) => heading.test(l));
   if (start < 0) return null;
@@ -80,6 +89,22 @@ export function unwrapMarkdown(text) {
   return out.join('\n');
 }
 
+/**
+ * Throws a readable reason unless `heading` (the "## <version> ..." line) is the form the released sections use: `## X.Y.Z — YYYY-MM-DD`,
+ * an em dash (U+2014) and a real calendar date. A heading that says "unreleased" (any case) is named as such.
+ */
+function checkHeading(heading, version) {
+  if (/unreleased/i.test(heading)) {
+    throw new Error(`the CHANGELOG.md heading ${JSON.stringify(heading)} still says "unreleased": replace "(unreleased)" with "— <YYYY-MM-DD>" (the release date), as the released sections read`);
+  }
+  const m = new RegExp(`^## ${version.replace(/\./g, '\\.')} — (\\d{4})-(\\d{2})-(\\d{2})$`).exec(heading);
+  const date = m && new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  const real = date && date.getUTCFullYear() === Number(m[1]) && date.getUTCMonth() === Number(m[2]) - 1 && date.getUTCDate() === Number(m[3]);
+  if (!real) {
+    throw new Error(`the CHANGELOG.md heading ${JSON.stringify(heading)} must read "## ${version} — YYYY-MM-DD" (an em dash and a real ISO date), as the released sections do`);
+  }
+}
+
 /** Throws with a readable reason unless the tag can be released; returns the release notes (unwrapped). */
 export function releaseCheck(root, tag) {
   const version = tagVersion(tag);
@@ -89,9 +114,11 @@ export function releaseCheck(root, tag) {
   if (wrong.length) {
     throw new Error(`${tag} does not match ${wrong.map(([f, v]) => `${f} (${v})`).join(', ')}`);
   }
-  const notes = changelogSection(fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8'), version);
+  const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+  const notes = changelogSection(changelog, version);
   if (notes === null) throw new Error(`CHANGELOG.md has no "## ${version}" section`);
   if (notes === '') throw new Error(`the "## ${version}" section of CHANGELOG.md is empty`);
+  checkHeading(changelogHeading(changelog, version), version);
   return unwrapMarkdown(notes);
 }
 

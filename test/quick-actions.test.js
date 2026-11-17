@@ -5,9 +5,10 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { KEY_NAME } from '../src/ids.js';
+import { SURVEY_UNDO_MS } from '../src/survey.js';
 import {
   quickState, cleanPrompt, isBypassLabel, promptMentionsBypass, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, endOutcome, endNote,
-  planShell, problemKind, sendGate, keysRefusal, stopOutcome, followSession, hasAnswerButtons, attnNote, composerKey, SESSION_ID, PANE_ID,
+  planShell, problemKind, sendGate, keysRefusal, stopOutcome, followSession, hasAnswerButtons, attnNote, composerKey, SESSION_ID, PANE_ID, SURVEY_UNDO_LINE,
 } from '../public/quick-actions.js';
 
 const DOTS = '…';
@@ -33,6 +34,26 @@ describe('quickState: the spec 9.4 states table, first matching row wins', () =>
     assert.equal(st.end.off, false);
     assert.equal(st.reason, 'Compact, Clear, Model and Rewind are ready when Claude waits for you.');
     for (const n of FOUR) assert.equal(st[n].title, 'Available when Claude is waiting for you', n);
+  });
+
+  const STOP_QUEUED = "Stop ends Claude's current step. Your queued message then goes to Claude at once.";
+
+  test('(+) W13: working with a message of ours in Claude\'s queue, Stop is live and its title says what Stop does with it', () => {
+    const st = quickState({ status: 'busy', queued: true });
+    assert.equal(st.stop.off, false);
+    assert.equal(st.stop.title, STOP_QUEUED);
+    assert.equal(st.end.title, 'Claude exits and the pane closes', 'only Stop\'s title changes');
+    assert.equal(st.reason, 'Compact, Clear, Model and Rewind are ready when Claude waits for you.');
+  });
+
+  test('(−) W13: the queued title appears only while queued: not by default, not for queued false or any other value, and never outside a working Claude', () => {
+    const STOP = 'Stops this turn (Esc in the pane; twice in vim insert mode). Keeps the work, also stops running subagents';
+    assert.equal(quickState({ status: 'busy' }).stop.title, STOP);
+    for (const queued of [false, undefined, null, 'true', 1, {}]) assert.equal(quickState({ status: 'busy', queued }).stop.title, STOP, String(queued));
+    for (const c of [{ status: 'idle' }, { status: 'attn' }, { status: 'ended' }, { status: null }, { status: 'busy', prompt: PROMPT }, { pane: 'gone', status: 'busy' }, { pane: 'tmux', status: 'busy' }]) {
+      assert.notEqual(quickState({ ...c, queued: true }).stop.title, STOP_QUEUED, JSON.stringify(c));
+      assert.equal(quickState({ ...c, queued: true }).stop.off, true, JSON.stringify(c));
+    }
   });
 
   test('(+) Rewind follows the same gate as Compact, Clear and Model: it does not read nika\'s own message box any more', () => {
@@ -97,6 +118,28 @@ describe('quickState: the spec 9.4 states table, first matching row wins', () =>
     const st = quickState({ status: 'busy', prompt: PROMPT });
     assert.equal(st.stop.off, true, 'the panel carries Esc = No');
     assert.equal(st.reason, 'Answer the prompt first. Esc = No is in the prompt panel.');
+  });
+
+  test('(+) F3: a question or plan form (dialog) has no No: the reason and Stop\'s title point at the form; End stays live, the four and Stop stay off', () => {
+    for (const status of ['attn', 'busy', 'idle', null]) {
+      const st = quickState({ status, prompt: true, dialog: true });
+      assert.equal(st.reason, 'Answer the question above first.', String(status));
+      assert.equal(st.stop.title, 'Decline is in the question form', String(status));
+      assert.ok(offs(st, ['stop', ...FOUR]), String(status));
+      assert.equal(st.end.off, false, String(status));
+      assert.doesNotMatch(JSON.stringify(st), /Esc = No/, 'a dialog never mentions No');
+    }
+  });
+
+  test('(−) F3: a permission prompt keeps the old copy (no dialog, or `dialog` anything but true); a dialog flag without an open prompt changes nothing', () => {
+    for (const dialog of [undefined, false, null, 'true', 1, {}]) {
+      const st = quickState({ status: 'attn', prompt: PROMPT, dialog });
+      assert.equal(st.reason, 'Answer the prompt first. Esc = No is in the prompt panel.', String(dialog));
+      assert.equal(st.stop.title, 'Esc = No is in the prompt panel', String(dialog));
+    }
+    assert.deepEqual(quickState({ status: 'attn', prompt: null, dialog: true }), quickState({ status: 'attn', prompt: null }), 'no open prompt: the dialog flag is not read');
+    assert.deepEqual(quickState({ status: 'busy', dialog: true }), quickState({ status: 'busy' }));
+    assert.equal(quickState({ pane: 'gone', prompt: true, dialog: true }).reason, 'The pane is gone.');
   });
 
   test('(+) pane gone, tmux error, no capture yet: everything is off including End, each with its own line', () => {
@@ -403,18 +446,27 @@ describe('endNote (the muted line of the End dialog)', () => {
   });
 });
 
-describe('planShell (spec 9.6 sends: C-u, then ! + text, then Enter)', () => {
-  test('(+) a command becomes the three payloads in order, every key on the server allow-list', () => {
+describe('planShell (spec 9.6 sends: C-u, then ! + text; the Enter is the submit route\'s, W13)', () => {
+  test('(+) a command becomes the two payloads in order, every key on the server allow-list; the summary still names the Enter', () => {
     const p = planShell('git status --short');
     assert.equal(p.ok, true);
     assert.equal(p.empty, undefined);
-    assert.deepEqual(p.payloads, [{ keys: ['C-u'] }, { text: '!git status --short' }, { keys: ['Enter'] }]);
+    assert.deepEqual(p.payloads, [{ keys: ['C-u'], send: true }, { text: '!git status --short', send: true }]);
     for (const k of p.payloads.flatMap((x) => x.keys ?? [])) assert.ok(KEY_NAME.has(k), k);
-    assert.match(p.summary, /shell command/);
+    for (const body of p.payloads) assert.equal(body.send, true, 'T54: Shell\'s typing is Send\'s typing too');
+    assert.match(p.summary, /shell command .* \+ Enter$/);
+  });
+
+  test('(−) W13: no payload carries an Enter key, for any command (Send presses Enter only through the submit route)', () => {
+    for (const v of ['ls', 'git status --short', 'echo "a  b"', 'x'.repeat(1023)]) {
+      const p = planShell(v);
+      assert.equal(p.ok, true, v.slice(0, 12));
+      assert.equal(JSON.stringify(p.payloads).includes('Enter'), false, v.slice(0, 12));
+    }
   });
 
   test('(+) trailing newlines are trimmed and the command itself is untouched (inner spaces stay)', () => {
-    assert.deepEqual(planShell('ls  -la\n\n').payloads[1], { text: '!ls  -la' });
+    assert.deepEqual(planShell('ls  -la\n\n').payloads[1], { text: '!ls  -la', send: true });
   });
 
   test('(−) an empty or blank box sends nothing: no lone "!"', () => {
@@ -603,6 +655,27 @@ describe('stopOutcome: the stop route\'s answers (contract section 3, fixed copy
     for (const code of ['prompt-open', 'not-busy', 'mode-unknown']) assert.equal(s(409, code).ok, false, code);
   });
 
+  test('(+) F3: 409 prompt-open while a question or plan form shows says to answer the question above (no No there); every other code is unchanged', () => {
+    assert.deepEqual(stopOutcome({ status: 409, code: 'prompt-open', dialog: true }), { ok: false, say: '', message: 'Answer the question above first.' });
+    for (const code of ['not-busy', 'mode-unknown', 'stopping', 'screen-unclear']) assert.equal(stopOutcome({ status: 409, code, dialog: true }).message, s(409, code).message, code);
+  });
+
+  test('(−) F3: a permission prompt\'s prompt-open keeps the Esc = No line (dialog false, absent or not true)', () => {
+    for (const dialog of [false, undefined, null, 'true', 1]) assert.equal(stopOutcome({ status: 409, code: 'prompt-open', dialog }).message, 'Answer the prompt first. Esc = No is in the prompt panel.', String(dialog));
+  });
+
+  test('(+) 409 screen-unclear (no mode line and no input box on screen): its own line, which says nothing was sent and names Esc in the terminal', () => {
+    const line = "nika can't tell what Claude is showing, so Stop sent nothing. Press Esc in the terminal.";
+    assert.deepEqual(s(409, 'screen-unclear'), { ok: false, say: '', message: line });
+    assert.equal(stopOutcome({ status: 409, code: 'screen-unclear', message: '<b>x</b>' }).message, line, 'the response text is never read');
+    assert.notEqual(line, s(409, 'prompt-open').message, 'a prompt is not the same line (no prompt is open here)');
+  });
+
+  test('(−) screen-unclear with another status is not the Stop line', () => {
+    for (const status of [200, 400, 403, 404, 429, 500, 0]) assert.notEqual(s(status, 'screen-unclear').message, "nika can't tell what Claude is showing, so Stop sent nothing. Press Esc in the terminal.", String(status));
+    assert.equal(s(200, 'screen-unclear').ok, true, 'a 200 stays a success whatever the code says');
+  });
+
   test('(+) 404 is the gone line (session.js also goes to the pane-gone state), 429, 5xx and network errors keep the shared lines', () => {
     assert.equal(s(404, 'not_found').message, 'The session is gone.');
     assert.equal(s(429).message, 'Too many keys at once; try again.');
@@ -619,6 +692,58 @@ describe('stopOutcome: the stop route\'s answers (contract section 3, fixed copy
   test('(−) an error status is never ok, even with a stray success-looking code', () => {
     for (const status of [400, 404, 409, 429, 500, 0]) assert.equal(s(status, 'stopped').ok, false, String(status));
     assert.equal(stopOutcome().ok, false);
+  });
+});
+
+describe('409 survey-undo (F14 round 2): Stop, End and the command route say why nika sent no Escape', () => {
+  // Claude shows "Esc to undo" for 4 s after nika typed a rating; an Escape of nika's would take the rating back, so the server refuses it.
+  const LINE = 'Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc for 4 seconds. Try again then.';
+
+  test('(+) the exact line, plain text, one shared constant', () => {
+    assert.equal(SURVEY_UNDO_LINE, LINE);
+    assert.match(LINE, /^[\x20-\x7e]+$/, 'ASCII, no markup');
+  });
+
+  test('(+) the seconds in the line are the server\'s hold (SURVEY_UNDO_MS), so a change of one cannot leave the other behind', () => {
+    assert.ok(Number.isInteger(SURVEY_UNDO_MS / 1000), 'a whole number of seconds');
+    assert.ok(LINE.includes(`for ${SURVEY_UNDO_MS / 1000} seconds.`));
+  });
+
+  test('(+) Stop: 409 survey-undo gives the line, as a problem (not ok, nothing said)', () => {
+    assert.deepEqual(stopOutcome({ status: 409, code: 'survey-undo' }), { ok: false, say: '', message: LINE });
+    assert.equal(stopOutcome({ status: 409, code: 'survey-undo', dialog: true }).message, LINE, 'a dialog on screen does not change it');
+    assert.equal(problemKind(409), 'warn', 'shown as a warning, like the other 409 lines');
+  });
+
+  test('(+) End: 409 survey-undo gives the line, the dialog stays open as a warning, nothing ended', () => {
+    assert.deepEqual(endOutcome({ status: 409, code: 'survey-undo' }), { ended: false, text: LINE, kind: 'warn' });
+  });
+
+  test('(+) the command route (the history search of Compact, Clear, Model, Rewind): 409 survey-undo gives the line', () => {
+    assert.equal(commandFailure({ status: 409, code: 'survey-undo' }), LINE);
+  });
+
+  test('(−) the line belongs to 409 only: another status with that code gets the route\'s own line', () => {
+    for (const status of [200, 400, 403, 429, 404, 500, 0]) {
+      assert.notEqual(stopOutcome({ status, code: 'survey-undo' }).message, LINE, `stop ${status}`);
+      assert.notEqual(endOutcome({ status, code: 'survey-undo' }).text, LINE, `end ${status}`);
+      assert.notEqual(commandFailure({ status, code: 'survey-undo' }), LINE, `command ${status}`);
+    }
+    assert.equal(stopOutcome({ status: 200, code: 'survey-undo' }).ok, true, 'a 200 stays a success');
+  });
+
+  test('(−) an unknown code still gets each route\'s generic line, never the survey one and never the server\'s text', () => {
+    for (const code of ['survey-undone', 'SURVEY-UNDO', 'survey_undo', ' survey-undo', undefined]) {
+      assert.equal(stopOutcome({ status: 409, code, message: LINE }).message, "nika couldn't stop the turn.", String(code));
+      assert.equal(endOutcome({ status: 409, code, message: LINE }).text, "nika couldn't end the session.", String(code));
+      assert.equal(commandFailure({ status: 409, code, message: LINE }), "nika couldn't send that command.", String(code));
+    }
+  });
+
+  test('(+) DRY: the text is defined once in public/ (every module imports SURVEY_UNDO_LINE)', () => {
+    const hits = fs.readdirSync(new URL('../public/', import.meta.url)).filter((f) => f.endsWith('.js'))
+      .filter((f) => fs.readFileSync(new URL(`../public/${f}`, import.meta.url), 'utf8').includes('Esc to undo'));
+    assert.deepEqual(hits, ['quick-actions.js']);
   });
 });
 
@@ -789,6 +914,53 @@ describe('composerKey (0.3.3): what a key in the message box does', () => {
     assert.deepEqual(K('Tab', { shiftKey: true }, { switching: true }), { act: 'refuse', message: 'Wait for the mode switch to finish.', kind: 'warn', ms: 3000 });
   });
 
+  // W4: Claude's prompt suggestion is the message box's placeholder; Tab or the right arrow in the empty box accepts it (guarded route)
+  const SUG = 'run the tests in acme-api';
+  test('(+) a bare Tab in an empty box that shows a suggestion accepts it', () => {
+    assert.deepEqual(K('Tab', {}, { suggestion: SUG }), { act: 'accept' });
+  });
+  test('(+) a bare right arrow in an empty box that shows a suggestion accepts it (it no longer goes to the pane unguarded)', () => {
+    assert.deepEqual(K('ArrowRight', {}, { suggestion: SUG }), { act: 'accept' });
+  });
+  test('(\u2212) a held Tab or right arrow accepts once: the repeat is swallowed', () => {
+    assert.deepEqual(K('Tab', { repeat: true }, { suggestion: SUG }), { act: 'swallow' });
+    assert.deepEqual(K('ArrowRight', { repeat: true }, { suggestion: SUG }), { act: 'swallow' });
+  });
+  test('(\u2212) Tab still moves focus when the box has text or there is no suggestion', () => {
+    assert.deepEqual(K('Tab', {}, { suggestion: SUG, empty: false }), { act: 'none' });
+    for (const suggestion of [null, undefined, '']) assert.deepEqual(K('Tab', {}, { suggestion }), { act: 'none' }, String(suggestion));
+    assert.deepEqual(K('Tab'), { act: 'none' }, 'no suggestion key at all');
+  });
+  test('(\u2212) the right arrow still goes to the pane with no suggestion, and stays the caret key when the box has text', () => {
+    for (const suggestion of [null, undefined, '']) assert.deepEqual(K('ArrowRight', {}, { suggestion }), { act: 'arrow', key: 'Right' }, String(suggestion));
+    assert.deepEqual(K('ArrowRight', {}, { suggestion: SUG, empty: false }), { act: 'none' });
+    assert.deepEqual(K('ArrowRight'), { act: 'arrow', key: 'Right' });
+  });
+  test('(\u2212) the other arrows are untouched by a suggestion', () => {
+    for (const [key, name] of [['ArrowUp', 'Up'], ['ArrowDown', 'Down'], ['ArrowLeft', 'Left']]) assert.deepEqual(K(key, {}, { suggestion: SUG }), { act: 'arrow', key: name }, key);
+  });
+  test('(\u2212) a modifier makes it another key: Shift+Tab is still BTab (never accepts), Ctrl/Alt/Meta+Tab and Shift/Ctrl/Alt/Meta+Right do not accept', () => {
+    assert.deepEqual(K('Tab', { shiftKey: true }, { suggestion: SUG }), { act: 'key', key: 'BTab' });
+    assert.deepEqual(K('Tab', { ctrlKey: true, shiftKey: true }, { suggestion: SUG }), { act: 'focus-back' });
+    for (const m of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      assert.deepEqual(K('Tab', m, { suggestion: SUG }), { act: 'none' }, `Tab ${JSON.stringify(m)}`);
+      assert.deepEqual(K('ArrowRight', m, { suggestion: SUG }), { act: 'none' }, `Right ${JSON.stringify(m)}`);
+    }
+    assert.deepEqual(K('ArrowRight', { shiftKey: true }, { suggestion: SUG }), { act: 'none' });
+  });
+  test('(\u2212) an IME composition owns Tab and the right arrow', () => {
+    assert.deepEqual(K('Tab', { isComposing: true }, { suggestion: SUG }), { act: 'none' });
+    assert.deepEqual(K('ArrowRight', { keyCode: 229 }, { suggestion: SUG }), { act: 'none' });
+  });
+  test('(\u2212) the command palette keeps Tab and the arrows when it has an active option (the box then holds "/..." text, so there is no suggestion)', () => {
+    assert.equal(act(K('Tab', {}, { choosing: true, empty: false, suggestion: null })), 'palette-insert');
+    assert.equal(act(K('Tab', {}, { choosing: true, suggestion: SUG })), 'palette-insert', 'even if both were set, the palette wins');
+  });
+  test('(\u2212) accept is never a key: composerKey returns { act: \'accept\' } with no key name, so session.js cannot turn it into Tab on the keys route', () => {
+    assert.equal(Object.hasOwn(K('Tab', {}, { suggestion: SUG }), 'key'), false);
+    assert.equal(Object.hasOwn(K('ArrowRight', {}, { suggestion: SUG }), 'key'), false);
+  });
+
   test('(+) Ctrl+Shift+Tab moves focus back, also with text and a prompt held', () => {
     assert.equal(act(K('Tab', { ctrlKey: true, shiftKey: true })), 'focus-back');
     assert.equal(act(K('Tab', { ctrlKey: true, shiftKey: true }, { empty: false, promptOpen: true, status: 'attn' })), 'focus-back');
@@ -845,6 +1017,10 @@ describe('composerKey (0.3.3): what a key in the message box does', () => {
     const warn = (message) => ({ act: 'refuse', message, kind: 'warn', ms: 3000 });
     for (const status of ['idle', null, 'ended']) assert.deepEqual(K('c', { ctrlKey: true }, { status }), warn(WAITING), String(status));
     assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', promptOpen: true }), warn('Answer the prompt first. Esc = No is in the prompt panel.'));
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', promptOpen: true, dialog: false }), warn('Answer the prompt first. Esc = No is in the prompt panel.'), 'a permission prompt keeps its line');
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', promptOpen: true, dialog: true }), warn('Answer the question above first.'), 'F3: a question or plan form has no No');
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'attn', promptOpen: true, dialog: true }), warn('Answer the question above first.'));
+    assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', dialog: true }), { act: 'stop' }, 'no open prompt: the dialog flag is not read');
     assert.deepEqual(K('c', { ctrlKey: true }, { status: 'attn' }), warn('Answer the prompt first.'));
     assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', pane: 'connecting' }), warn('Connecting to the pane\u2026'));
     assert.deepEqual(K('c', { ctrlKey: true }, { status: 'busy', pane: 'gone' }), warn('The pane is gone.'));

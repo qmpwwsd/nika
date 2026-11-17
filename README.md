@@ -47,7 +47,7 @@ the [desktop app](#desktop-app-02) are never available on `http://127.0.0.1:3335
 | `nika projects add <dir>` / `remove <key>` | register a folder (stored as its real path) or unregister it; project files are never touched |
 | `nika rules preview [dir]` | print the diffs of the orchestration rules nika would write into the project, plus warnings |
 | `nika rules apply [dir]` | preview, ask `Apply? [y/N]`, then write; `--yes` skips the question (required without a terminal), `--overwrite-foreign` replaces a `rules/orchestration.md` nika did not write, `--gitignore` also adds `.claude/settings.local.json` to `.gitignore`. Backups go to nika's state folder, never into the repository; nika never runs git |
-| `nika spawn <name> <model> <brief>` | start an agent in a tmux pane. Needs `$TMUX` (run it inside tmux) or `--session <name>`. `<brief>` is a file (at most 64 KB) or `-` for stdin. Options: `--project <dir>`, `--permission-mode <mode>` (`bypassPermissions` is refused), `--rc <prefix\|off>`, `--role <agent\|orchestrator>` (`orchestrator` starts a sub-orchestrator, only from the main orchestrator's pane; see [Orchestration (0.4)](#orchestration-04)), `--under <%pane>`. Prints pane, session and report path |
+| `nika spawn <name> <model> <brief>` | start an agent in a tmux pane. Needs `$TMUX` (run it inside tmux) or `--session <name>`. `<brief>` is a file (at most 64 KB) or `-` for stdin. Options: `--project <dir>`, `--permission-mode <mode>` (`bypassPermissions` is refused), `--rc <prefix\|off>`, `--role <agent\|orchestrator>` (`orchestrator` starts a sub-orchestrator, only from the main orchestrator's pane; see [Orchestration (0.4)](#orchestration-04)), `--kind <coder\|reviewer\|tester\|designer\|scout\|writer\|agent>` (the label on the agent's row; without it nika picks one from the model's role; not for a sub-orchestrator), `--under <%pane>`. Prints pane, session, kind and report path |
 | `nika orchestrate [dir]` | create or reuse the project's tmux session and start the orchestrator pane. On a terminal it then attaches (inside tmux: switches the client to the session; otherwise `tmux attach-session`); `--detached`, or output that is not a terminal, only prints the session and pane |
 | `nika doctor` | node, tmux, claude and app status (it warns when tmux is older than 3.2), nika's config and state folders with their modes, and config warnings |
 
@@ -80,6 +80,12 @@ set). You change them in Settings and on each project's page, not by hand; a key
 `<key>` is the project's key (the first 16 hex characters of the SHA-256 of its real folder path). The older
 `limits.maxAgents` now reads as **Agents per orchestrator**.
 
+0.5 adds one key:
+
+| Key | Meaning |
+|---|---|
+| `attachments.keepDays` | `{ keepDays }`: how many days a file attached in the session window stays in nika's state folder, 1 to 30. Default 7. Settings, **Attachments** |
+
 ## What nika reads
 
 | Source | Used for |
@@ -88,15 +94,17 @@ set). You change them in Settings and on each project's page, not by hand; a key
 | `ps -A -o pid=,lstart=` | is the process still alive (and not a reused pid) |
 | `/proc/<pid>/stat` (Linux only) | one field, the process start time, for the pids in Claude's registry (at most 4 KB, your own processes only): tells a live session from a reused pid |
 | `~/.claude/projects/*/<session>.jsonl` | first 64 KB and last 256 KB only: cwd, branch, model, title, last prompt, and from the last reply only its token counts and model id (for the context column; no text) |
-| `…/<session>/subagents/agent-*.meta.json` | subagent type, description, model, finished |
-| `tmux list-panes -a` | pane titles (`[%id] name` convention) and the four tags nika sets on the panes it starts (`@nika-role`, `@nika-agent`, `@nika-depth`, `@nika-parent`: who started whom), each read strictly |
+| `…/<session>/subagents/agent-*.meta.json` | subagent type, description, model, finished, and `toolUseId` (the id of the call that started it: the app tier's server compares it with the parent's `Agent` call to link them; it is never shown or sent) |
+| `…/<session>/subagents/agent-*.jsonl` | both tiers: its modification time only, as the subagent's last activity. App tier, only when you open a subagent: its transcript, in pages |
+| `tmux list-panes -a` | pane titles (`[%id] name` convention) and the five tags nika sets on the panes it starts (`@nika-role`, `@nika-agent`, `@nika-depth`, `@nika-parent`: who started whom; and `@nika-kind`: what kind of agent a spawned agent is, one of seven fixed words), each read strictly |
 | `<scratchpad>/reports/<name>.session\|.md\|.rc` | agent role name, `STATUS:` line, report text |
 | nika's own `config.json` | the project list, each project's own settings and the auto-compact setting (the context column needs it); never a Claude settings file |
 | `<cwd>/.git`, `commondir` | repository root for grouping |
+| files you attach (app tier only) | the files you paste, drop or pick in the session window's attach chooser: read once, checked by their bytes, copied into nika's own `attachments` folder (see Session window (0.5)) |
 
 It never reads `*.key` files, credentials or `.env` files. The browser tier never writes anything; what the app tier and the CLI write is listed in [docs/architecture.md](docs/architecture.md#where-writes-happen).
 
-The app tier also reads, on demand: full transcripts (in pages), the screen of Claude's tmux panes (to mirror a pane and to read its permission mode and questions), and the first 4 KB of command and skill files in the Claude config folder, the project and installed plugins (front matter only, never the body). The exact list is in [rules/project-rules.md](rules/project-rules.md).
+The app tier also reads, on demand: full transcripts (in pages; a session's own and, when you open one, a subagent's, found in nika's own listing of that session's `subagents` folder), the screen of Claude's tmux panes (to mirror a pane and to read its permission mode and questions), and the first 4 KB of command and skill files in the Claude config folder, the project and installed plugins (front matter only, never the body). The exact list is in [rules/project-rules.md](rules/project-rules.md).
 
 A transcript with no user or assistant message (Claude Code sometimes leaves a one-line title stub) is not an agent: nika lists it only while its session is live.
 
@@ -203,10 +211,25 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
   under "Waiting on you", then every repository with its live agents (needs you, waiting, working). Ended agents are hidden:
   a repository with only ended agents says "No live agents."; tick **Show ended** to list them in an "Ended" section under
   each repository (open; fold it by hand and it stays folded until you tick the box again). Claude's finished subagents
-  stay hidden the same way. The project page has its own **Show ended** box. When Claude's session files cannot all be
+  stay hidden the same way, and a row whose subagents have all finished says "No subagents running +N ended". The project page has its own **Show ended** box. When Claude's session files cannot all be
   read, a muted note says how many were skipped. Filter by text and change the
   time window. Click a row to open its session window. Rows whose Claude pane nika can read
   also show the agent's permission mode as a tag, and their menu has **End session…**.
+- **Labels.** Each agent row has a small neutral chip with the agent's kind: `coder`, `reviewer`, `tester`, `designer`, `scout`,
+  `writer` or `agent` (hover for what it means). It is the first thing in the prompt column, and the session window's header
+  shows it beside the role tag. You pick it in the spawn sheet's **Kind** field (**Automatic** takes it from the model's role:
+  your Builder model gives `coder`, Reasoner `designer`, Scout `scout`, anything else `agent`) or with `nika spawn … --kind`;
+  the orchestrator's rules tell it to pass `--kind` (apply rules to a project to get that text). A sub-orchestrator keeps its
+  own tag and takes no kind; the main orchestrator, your own sessions and ended sessions show no chip. A label is only a
+  name for the row: nothing in what the agent may do depends on it. The browser dashboard shows the chips too.
+- **Claude's subagents.** Under a row that has them, a folded list says "N subagents · M running" (the browser dashboard shows
+  the same list). Each line has a badge with its own colour, symbol and word (Running, Finished, Stopped), the description, the
+  label and the model (the label is its kind: `scout` for an Explore subagent, else its own type name). In the app, the description opens the subagent in the session window, read-only: its transcript, with
+  no terminal and no message box, and **Back** returns to the session that runs it. You can open one from a dashboard row,
+  from the project page, from the folded list at the top of a session window's Transcript (which has its own **Show ended**
+  box) and from the **Open subagent transcript** link under the call that started it. The view keeps updating while the
+  session runs, also after a subagent shows Finished, because Claude wakes a finished subagent again when its background work
+  ends. Why it is read-only: a subagent runs inside its parent session, so there is no pane to mirror and no input to send.
 - **Sidebar.** **Projects** lists your registered projects with their live or needs-you count; with none it says "No
   projects yet." and points to the "+". Under **Detected** it lists repositories that run live agents but are not projects
   yet (8 at first, the ones that need you first, then an "N more" button). The row shows that repository on the dashboard; its small "+" opens the
@@ -219,7 +242,7 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
   rules once; a `CLAUDE.md` that already imports `@AGENTS.md` is left as it is.
 - **Start an orchestrator / spawn an agent.** From a project: **Start orchestrator** opens its tmux session and pane
   (**Resume orchestrator** when the project has a saved one that ended);
-  **Spawn agent** and **Spawn sub-orchestrator** open a side sheet (name, model, brief up to 64 KB, permission mode, pane placement). A project at its
+  **Spawn agent** and **Spawn sub-orchestrator** open a side sheet (name, model, kind, brief up to 64 KB, permission mode, pane placement). A project at its
   agent limit shows why and what to do. `bypassPermissions` is not offered. Neither needs a terminal or a running tmux:
   nika starts the project's tmux session when there is none. If Claude exits right after it starts (for example, it
   needs a login), the project page says so; run `claude` once in a terminal in that folder to see why. See
@@ -338,6 +361,8 @@ screen, so a screen nika does not recognize shows "Mode ?" or leaves a control d
   transcript starts over) instead of showing the ended one.
 - **Commands.** Type `/` at the start of an empty message box, or press Commands, to filter Claude's built-in commands
   and the commands and skills from your Claude config folder, the project and installed plugins, each with a source tag.
+  Your own come first: the project's commands, then your personal ones, then those of the plugins applied to the project,
+  then the built-ins, then every other installed plugin's. The list shows all of them, with the real count in its header.
   Enter inserts `/name `; a second Enter sends it.
 
 If a screen nika cannot read blocks a control, use the keys in the message box (Esc, Shift+Tab, the arrows in an empty
@@ -382,6 +407,70 @@ shows the tree and the context column, read-only.
   tooltip always says where it compacts. The numbers come from the last reply in the transcript (token counts only, no text).
 
 Why the tree works the way it does: [ADR 0013](docs/adr/0013-nested-orchestration.md).
+
+### Session window (0.5)
+
+Desktop app only. None of this is on the browser dashboard.
+
+- **The message box follows Claude's input.** Type in either and the other shows it (after a short pause in the terminal, a
+  quarter of a second the other way). Text you have not sent is never overwritten; when nika cannot read Claude's input it pauses
+  and says why.
+- **Prompt suggestions.** Claude's grey suggestion for your next prompt shows in the empty message box; **Tab** or **→** takes it.
+- **Long messages.** Text over 1024 characters or 12 line breaks is not mirrored. Send pastes it into an empty input, and refuses
+  when Claude's input already holds other text.
+- **Fit.** The terminal view fills its panel: nika zooms the pane and, while the session window has focus, sizes its tmux window to the
+  panel even when other panes share it (the zoom hides them; they get their size and layout back when you leave the session window).
+  Without focus a smaller panel only zooms the pane and scales the text.
+  A chip says what it did, and nika gives your tmux window back as it was. The chip is a button: its panel says why the
+  fit is on or off and, after a change of your own, **Fit again** fits the window without reopening the session window. An agent that
+  starts or ends beside the fitted pane is not a change of your own: nika fits the window again by itself. The focused window wins: while the
+  session window has focus nika sizes the tmux window to its panel even when your own terminal shows it (the terminal shows dots around it), and
+  when you click into the terminal it gets its size back within about a second ("Fit · your terminal's size": the session window then only scales
+  the text). With no focus on the session window and no terminal for 30 seconds, nika sizes the window to the panel again by itself.
+  Clicking into the session window changes the pane once, within about half a second: the panel is measured at that moment and
+  not again while a line, a chip or a panel opens, and nika keeps showing the last good frame until Claude has redrawn. When Claude's
+  input box and footer do not fit the panel (a tall task list), nika gives the pane 33 rows or more once and scales the text to the panel;
+  the chip's panel says so, and Fit again tries full-size text. The terminal view stops above Claude's input box with a thin line; nika asks
+  for the rows hidden under that line in the same resize, so Claude's conversation fills the panel down to the line.
+- **Question forms.** When Claude asks a question or for a plan approval, a form above the message box answers it one step at a
+  time (options, your own text under Other, the review, the plan's choices, Decline). It also works when Claude's task list is
+  drawn under the dialog or a permission prompt, and for long questions. A question taller than the terminal panel is read
+  too: while the chip says "Fit · fills the panel", nika gives the pane more rows until the question closes. When nika
+  cannot read the dialog, or it mentions bypass, you answer in the terminal. Why: [ADR 0015](docs/adr/0015-dialogs-from-the-screen.md).
+
+- **Feedback question.** When Claude asks "How is Claude doing this session? (optional)", a panel above the message box rates it
+  with one click (Bad, Fine, Good or Dismiss): nika types that one number and presses no Enter. It never answers the follow-up
+  question about sharing the session transcript with Anthropic; that one stays in the terminal.
+
+- **Send works while Claude works.** Press Send while Claude is busy, or waits for background agents or shells, and nika puts
+  the message into Claude's input and presses Enter, as you would. Claude queues it and takes it at its next step; the message
+  box says "Queued" until then. When a permission prompt or another dialog is open, nika presses nothing and says so.
+- **Attachments.** Paste images, PDFs or text files into the message box, drop them on it, or click the paperclip (**Add
+  attachments**) to pick them in a file chooser. Up to 6 files per message and 8 MB each. nika never attaches a `.env`,
+  `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ovpn`, `.netrc`, `.git-credentials`,
+  `.pgpass`, `.npmrc`, `credentials` or SSH private key file (`id_rsa`, `id_ed25519` and the like; their `.pub` files are fine): it
+  refuses it by name before reading it. A secret under another name is not recognised, so keep such files out of the way. A chip shows each file; remove
+  one before you send. Nothing goes to Claude until Send: then nika pastes each file's path into Claude's input after your
+  text and presses Enter, the way you would paste a file path in the terminal. Claude shows an image as `[Image #N]`; a PDF or
+  text file it reads with its Read tool, which asks first because the file is outside your project. That prompt shows in the
+  prompt panel and only you answer it (under your own allow rules there may be no prompt).
+- **Where attachments are kept.** In nika's own state folder, `attachments/<repository key>/` (under `XDG_STATE_HOME`,
+  default `~/.local/state/nika`), never in your project, with folders at 0700 and files at 0600, and never served back to
+  the page. A file goes when you remove its chip, when you close the window without sending it, and after **Keep
+  attachments for N days** (Settings, **Attachments**: 1 to 30, default 7). The store holds at most 256 MiB and 500 files;
+  when it is full, the next upload is refused. nika writes nothing into your project for an attachment.
+  The thinking behind it: [ADR 0016](docs/adr/0016-attachments-json-upload-state-dir.md).
+- **Scrolling.** The mouse wheel, the trackpad and PageUp, PageDown, Home and End (with **Type into pane** off) scroll Claude's
+  own view, one page at a time. A note says "Scrolled up in Claude's view" while it is up, and **Jump to live** brings you
+  back to the bottom. It works while Claude works and never interrupts it; with a permission prompt, a dialog, a menu or a
+  `/` command open, nika scrolls nothing and says why. Each jump slides into place over about 0.15 seconds (no slide with
+  "Reduce motion" on). Why: [ADR 0018](docs/adr/0018-scroll-with-claude-keys.md).
+- **One row per conversation.** After `/compact` Claude continues a conversation in the background under a new session id;
+  nika shows one row for it, with the tmux pane that shows it, and keeps a spawned agent's report and a saved orchestrator
+  with that row.
+
+The routes are in [docs/contracts/api-app.md](docs/contracts/api-app.md); the threats, in [docs/security.md](docs/security.md)
+(T37, T38, T39, T54, T55, T56).
 
 ## Development
 

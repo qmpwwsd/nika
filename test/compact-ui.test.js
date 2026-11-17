@@ -37,11 +37,11 @@ function runModule(file, ctx, tail) {
   return vm.runInNewContext(`${src}\n${tail}`, ctx);
 }
 
-function rig({ compaction = DEFAULT, put = { status: 200 }, hold = false } = {}) {
+function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = false } = {}) {
   const base = {
     ui: { theme: 'system', singleKeyShortcuts: true }, models: { orchestrator: 'opus', reasoner: 'opus', builder: 'claude-sonnet-5-5', scout: 'haiku' },
     remoteControl: { enabled: false, prefix: '' }, permissionMode: 'default', panePlacement: 'beside', limits: { maxAgents: 3 },
-    rules: { localTemplate: null }, perProject: {}, compaction,
+    rules: { localTemplate: null }, perProject: {}, compaction, ...(attachments ? { attachments } : {}), // an older server sends no attachments group
   };
   const radios = {
     theme: ['system', 'light', 'dark'].map((v) => Object.assign(new El('input'), { value: v })),
@@ -66,16 +66,20 @@ function rig({ compaction = DEFAULT, put = { status: 200 }, hold = false } = {})
     compactInc: step(null, 'set-compact-pct', 5, { 'data-fk': 'compact-inc' }),
     maxDec: step(null, null, -1),
     maxInc: step(null, null, 1),
+    keepDec: step(null, 'set-keep-days', -1),
+    keepInc: step(null, 'set-keep-days', 1),
   };
   const form = node('#set-form');
   const pct = node('#set-compact-pct');
   Object.assign(pct, { min: '20', max: '95' });
   Object.assign(node('#set-max'), { min: '1', max: '8' });
+  const keepTag = /<input\b[^>]*\bid="set-keep-days"[^>]*>/.exec(HTML)?.[0] ?? ''; // the number's limits are the page's own
+  Object.assign(node('#set-keep-days'), { min: /\bmin="([^"]*)"/.exec(keepTag)?.[1], max: /\bmax="([^"]*)"/.exec(keepTag)?.[1] });
   node('#set-bar').hidden = true;
   node('#set-sum').hidden = true;
   node('#set-compact-err').hidden = true;
   node('#set-compact-result').hidden = false;
-  for (const n of [pct, node('#set-max')]) n.dispatchEvent = (e) => form.fire(e.type, { target: n });
+  for (const n of [pct, node('#set-max'), node('#set-keep-days')]) n.dispatchEvent = (e) => form.fire(e.type, { target: n });
   const calls = [];
   const toasts = [];
   const announced = [];
@@ -86,6 +90,8 @@ function rig({ compaction = DEFAULT, put = { status: 200 }, hold = false } = {})
     projects: [],
   };
   const hooks = {};
+  const rxFields = []; // the [data-rx] inputs on the page: none unless a test adds the Name prefix (see breakField)
+  const RX = {};
   const $ = (sel) => {
     const m = /^input\[name="(\w+)"\]:checked$/.exec(sel);
     if (m) return radios[m[1]].find((r) => r.checked) ?? null;
@@ -95,14 +101,16 @@ function rig({ compaction = DEFAULT, put = { status: 200 }, hold = false } = {})
     const m = /^input\[name="(\w+)"\]$/.exec(sel);
     if (m) return radios[m[1]];
     if (sel === '[data-step]') return Object.values(buttons);
+    if (sel === '[aria-invalid="true"]') return [...nodes.values()].filter((n) => n.attrs['aria-invalid'] === 'true');
     if (sel === '[data-step-for="set-compact-pct"]') return [buttons.compactDec, buttons.compactInc];
+    if (sel === '[data-rx]') return rxFields;
     return [];
   };
   const ctx = {
     h, icon, $, $$, state, hooks, CUSTOM, MODEL_ID, MODEL_HINT, fillModelSelect, compactPreview, JSON, Number, Promise, Object, Array, Set, Math, String,
     Event: class { constructor(type) { this.type = type; } },
-    RX: {}, toast: (msg) => toasts.push(msg), announce: (m) => announced.push(m), errText: (r) => r?.body?.message ?? 'x',
-    fieldError: (input, msg) => input.setAttribute('aria-invalid', msg ? 'true' : 'false'), syncRadioCards: () => {}, applyTheme: () => {}, render: () => {},
+    RX, toast: (msg) => toasts.push(msg), announce: (m) => announced.push(m), errText: (r) => r?.body?.message ?? 'x',
+    fieldError: (input, msg) => { input.setAttribute('aria-invalid', msg ? 'true' : 'false'); input.errMsg = msg; }, syncRadioCards: () => {}, applyTheme: () => {}, render: () => {},
     setBusy: (b, on, label) => { b.disabled = on; b.busy = on ? label : null; },
     loadSettings: async () => ({ status: 200 }), loadModels: async () => ({ status: 200 }),
     appFetch: async (url, opts = {}) => {
@@ -118,7 +126,8 @@ function rig({ compaction = DEFAULT, put = { status: 200 }, hold = false } = {})
   };
   runModule('settings.js', ctx, '({ hooks })');
   const r = {
-    node, buttons, calls, toasts, announced, state, form, pct, release,
+    node, buttons, calls, toasts, announced, state, form, pct, release, rxFields, RX,
+    keep: node('#set-keep-days'),
     sw: node('#set-compact'),
     win: node('#set-compact-win'),
     st: node('#set-compact-st'),
@@ -127,6 +136,7 @@ function rig({ compaction = DEFAULT, put = { status: 200 }, hold = false } = {})
     bar: () => node('#set-bar'),
     enter: async () => { await hooks.enterSettings(); },
     type: (v) => { pct.value = v; form.fire('input'); },
+    typeKeep: (v) => { r.keep.value = v; form.fire('input'); },
     blur: () => pct.fire('blur'),
     toggle: (on) => { r.sw.checked = on; form.fire('change'); },
     pick: (v) => { r.win.value = v; form.fire('change'); },
@@ -477,7 +487,7 @@ describe('Auto-compact: Save', () => {
       const [put] = s.puts();
       assert.deepEqual(put.json.compaction, { enabled: true, pct: 90, window }, value);
       assert.equal(typeof put.json.compaction.pct, 'number');
-      assert.deepEqual(Object.keys(put.json).sort(), ['compaction', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
+      assert.deepEqual(Object.keys(put.json).sort(), ['attachments', 'compaction', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
     }
   });
 
@@ -612,4 +622,291 @@ describe('settings.js source checks for Auto-compact', () => {
     assert.match(read('ctx.js'), /export function fmtTokens/);
     assert.match(read('ctx.js'), /export function compactPreview/);
   });
+});
+
+// ---- 0.5, W2-T4: "Keep attachments for N days" (attachments.keepDays, 1 to 30, default 7) ------------------------------------------
+
+const KEEP_ERR = 'Choose a whole number from 1 to 30.';
+const KEEP_HELP = 'nika keeps a copy of each file you attach in its own folder on this computer, never in your project, and deletes it after this many days. A change applies at the next cleanup.';
+
+describe('index.html: the Attachments section', () => {
+  const sec = /<section class="set-sec" id="s-attach"[\s\S]*?<\/section>/.exec(HTML)?.[0];
+  const tagOf = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(sec)?.[0];
+
+  test('(+) the section sits after Panes and limits and before Rules template; the index links in the same order', () => {
+    assert.ok(sec, 's-attach exists');
+    const at = (s) => HTML.indexOf(s);
+    assert.ok(at('id="s-panes"') < at('id="s-attach"') && at('id="s-attach"') < at('id="s-tpl"'));
+    assert.match(HTML, /data-jump="s-panes">Panes and limits<\/a><a href="#settings" data-jump="s-attach">Attachments<\/a><a href="#settings" data-jump="s-tpl">Rules template<\/a>/);
+    assert.match(sec, /<section class="set-sec" id="s-attach" aria-labelledby="s-attach-h">\s*<h2 id="s-attach-h">Attachments<\/h2>/);
+  });
+
+  test('(+) one row: the label, a stepper of 1 day, the number 1 to 30 with its descriptions, then the word days', () => {
+    assert.match(sec, /<label for="set-keep-days">Keep attachments for<\/label>/);
+    assert.match(sec, /<button type="button" class="btn" data-step="-1" data-step-for="set-keep-days" aria-label="1 day less" title="1 day less">−<\/button>/);
+    assert.match(sec, /<button type="button" class="btn" data-step="1" data-step-for="set-keep-days" aria-label="1 day more" title="1 day more">\+<\/button>/);
+    const t = tagOf('set-keep-days');
+    assert.match(t, /type="number"/);
+    assert.match(t, /min="1"/);
+    assert.match(t, /max="30"/);
+    assert.match(t, /aria-describedby="set-keep-days-help set-keep-days-err"/);
+    assert.match(sec, /<span class="stepper">/);
+    assert.match(sec, /<\/span>\s*<span>days<\/span>/);
+  });
+
+  test('(+) the help line carries the owner\'s copy; the error line is hidden and empty; no inline style or handler', () => {
+    assert.match(sec, new RegExp(`<p class="help" id="set-keep-days-help">${KEEP_HELP.replace(/[.]/g, '\\.')}</p>`));
+    assert.match(sec, /<p class="err" id="set-keep-days-err" hidden><\/p>/);
+    assert.doesNotMatch(sec, /\sstyle\s*=|\son[a-z]+\s*=|innerHTML/i);
+    const ids = [...HTML.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
+    assert.equal(new Set(ids).size, ids.length);
+    for (const id of ['s-attach', 's-attach-h', 'set-keep-days', 'set-keep-days-help', 'set-keep-days-err']) assert.ok(ids.includes(id), id);
+  });
+});
+
+describe('Attachments: filling the form from the saved setting', () => {
+  test('(+) no saved group (an older server): 7, and no unsaved changes', async () => {
+    const s = rig();
+    await s.enter();
+    assert.equal(s.keep.value, '7');
+    assert.equal(s.bar().hidden, true);
+  });
+
+  test('(+) a saved 12 comes back as 12 and is no change; 1 and 30 too', async () => {
+    for (const keepDays of [12, 1, 30]) {
+      const s = rig({ attachments: { keepDays } });
+      await s.enter();
+      assert.equal(s.keep.value, String(keepDays));
+      assert.equal(s.bar().hidden, true, String(keepDays));
+    }
+  });
+
+  test('(+) Discard puts the saved number back and clears its error', async () => {
+    const s = rig({ attachments: { keepDays: 12 } });
+    await s.enter();
+    s.typeKeep('0');
+    s.submit();
+    await settle();
+    assert.equal(s.keep.attrs['aria-invalid'], 'true');
+    s.node('#set-discard').click();
+    assert.deepEqual([s.keep.value, s.keep.attrs['aria-invalid'], s.keep.errMsg], ['12', 'false', '']);
+    assert.equal(s.bar().hidden, true);
+  });
+});
+
+describe('Attachments: Save', () => {
+  test('(+) 1 and 30 and a value between go out as attachments.keepDays, a number, next to the other groups', async () => {
+    for (const [typed, sent] of [['1', 1], ['30', 30], ['14', 14], [' 9 ', 9]]) {
+      const s = rig();
+      await s.enter();
+      s.typeKeep(typed);
+      assert.equal(s.bar().hidden, false, typed);
+      s.submit();
+      await settle();
+      const [put] = s.puts();
+      assert.deepEqual(put.json.attachments, { keepDays: sent }, typed);
+      assert.equal(typeof put.json.attachments.keepDays, 'number');
+      assert.equal(s.keep.attrs['aria-invalid'], 'false', typed);
+    }
+  });
+
+  test('(−) 0, 31, 7.5, empty and text are refused: nothing is sent, the error and the summary show, the number gets the focus', async () => {
+    for (const bad of ['0', '31', '7.5', '', 'x', '-3']) {
+      const s = rig();
+      await s.enter();
+      s.typeKeep(bad);
+      s.submit();
+      await settle();
+      assert.deepEqual(s.puts(), [], JSON.stringify(bad));
+      assert.deepEqual([s.keep.attrs['aria-invalid'], s.keep.errMsg], ['true', KEEP_ERR], JSON.stringify(bad));
+      assert.equal(s.node('#set-sum').hidden, false);
+      assert.equal(s.node('#set-sum-text').textContent, '1 field needs a fix before saving. Each one is marked below.');
+      assert.equal(focus.el, s.keep, JSON.stringify(bad));
+      assert.equal(s.bar().hidden, false);
+    }
+  });
+
+  test('(−) a bad number next to a bad Auto-compact number: both are marked, the first in the page (Auto-compact) gets the focus', async () => {
+    const s = rig();
+    await s.enter();
+    focus.el = null;
+    s.type('10');
+    s.typeKeep('0');
+    s.submit();
+    await settle();
+    assert.deepEqual(s.puts(), []);
+    assert.equal(s.node('#set-sum-text').textContent, '2 fields need a fix before saving. Each one is marked below.');
+    assert.deepEqual([s.pct.attrs['aria-invalid'], s.keep.attrs['aria-invalid']], ['true', 'true'], 'both are marked');
+    assert.equal(focus.el, s.pct, 'the Auto-compact row comes before the Attachments row in the page, so it takes the focus');
+  });
+
+  test('(−) only the lower field (Attachments) is bad: it gets the focus, and the Auto-compact number is not marked', async () => {
+    const s = rig();
+    await s.enter();
+    focus.el = null;
+    s.typeKeep('0');
+    s.submit();
+    await settle();
+    assert.equal(s.node('#set-sum-text').textContent, '1 field needs a fix before saving. Each one is marked below.');
+    assert.equal(s.pct.attrs['aria-invalid'], 'false');
+    assert.equal(focus.el, s.keep);
+  });
+
+  test('(−) a refused save keeps the bar and the edit and shows the server\'s message', async () => {
+    const s = rig({ put: { status: 400, body: { message: 'attachments.keepDays invalid, default used' } } });
+    await s.enter();
+    s.typeKeep('20');
+    s.submit();
+    await settle();
+    assert.equal(s.bar().hidden, false);
+    assert.equal(s.keep.value, '20');
+    assert.equal(s.node('#set-sum-text').textContent, 'attachments.keepDays invalid, default used');
+    assert.equal(s.puts().length, 1);
+  });
+
+  test('(+) after a 200 the saved number is the new snapshot: the bar hides and typing it again is no change', async () => {
+    const s = rig();
+    await s.enter();
+    s.typeKeep('20');
+    s.submit();
+    await settle();
+    assert.deepEqual(s.puts().map((p) => p.json.attachments), [{ keepDays: 20 }]);
+    assert.equal(s.bar().hidden, true);
+    assert.equal(s.keep.value, '20');
+    s.typeKeep('20');
+    assert.equal(s.bar().hidden, true);
+  });
+});
+
+describe('Attachments: the stepper', () => {
+  test('(+) plus and minus move by 1; a step fires the input event so the Save bar follows, and stepping back hides it', async () => {
+    const s = rig();
+    await s.enter();
+    s.buttons.keepInc.click();
+    assert.equal(s.keep.value, '8');
+    assert.equal(s.bar().hidden, false);
+    s.buttons.keepDec.click();
+    assert.equal(s.keep.value, '7');
+    assert.equal(s.bar().hidden, true);
+    assert.equal(s.pct.value, '80', 'the other steppers are untouched');
+    assert.equal(s.node('#set-max').value, '3');
+  });
+
+  test('(+) a step clamps to 1 and 30: 1 stays 1 going down, 30 stays 30 going up', async () => {
+    const s = rig({ attachments: { keepDays: 1 } });
+    await s.enter();
+    s.buttons.keepDec.click();
+    assert.equal(s.keep.value, '1');
+    s.typeKeep('30');
+    s.buttons.keepInc.click();
+    assert.equal(s.keep.value, '30');
+    s.typeKeep('29');
+    s.buttons.keepInc.click();
+    assert.equal(s.keep.value, '30');
+    s.typeKeep('2');
+    s.buttons.keepDec.click();
+    assert.equal(s.keep.value, '1');
+  });
+
+  test('(−) a blank or out-of-range number steps back into range: blank to 2, 99 to 30, 0 to 1', async () => {
+    const s = rig();
+    await s.enter();
+    s.typeKeep('');
+    s.buttons.keepInc.click();
+    assert.equal(s.keep.value, '2');
+    s.typeKeep('99');
+    s.buttons.keepDec.click();
+    assert.equal(s.keep.value, '30');
+    s.typeKeep('0');
+    s.buttons.keepDec.click();
+    assert.equal(s.keep.value, '1');
+  });
+});
+
+describe('settings.js source checks for Attachments', () => {
+  const src = code(read('settings.js'));
+
+  test('(+) the number is read, validated and saved as attachments.keepDays, 1 to 30, through the same fieldError as the other numbers', () => {
+    assert.match(src, /attachments: \{ keepDays: Number\(\$\('#set-keep-days'\)\.value\) \}/);
+    assert.match(src, /s\.attachments\?\.keepDays \?\? 7/);
+    assert.match(src, /Choose a whole number from 1 to 30\./);
+  });
+});
+
+// ---- R2 #4 (final review): Save checks the fields in the order of the page and focuses the first bad one ----------------------------
+
+// How a test makes each checked field invalid, in the order the fields appear in index.html (the 'page order' test below pins that order).
+// The Name prefix is a [data-rx] input that the rig does not have by default, so it is added here with its own rule (written out, not read back).
+const BREAK = {
+  model: (s) => {
+    const sel = s.node('#set-model-orchestrator');
+    sel.value = CUSTOM;
+    const custom = s.node('#set-model-orchestrator-custom');
+    custom.hidden = false;
+    custom.value = 'not an id!';
+    s.form.fire('input');
+    return custom;
+  },
+  compact: (s) => { s.type('10'); return s.pct; },
+  prefix: (s) => {
+    const p = s.node('#set-rc-prefix');
+    Object.assign(p, { disabled: false, value: 'Bad Name' });
+    p.attrs['data-rx'] = 'prefix';
+    s.RX.prefix = [/^(?:[a-z0-9][a-z0-9-]{0,19})?$/, 'Lowercase letters, digits and dashes.'];
+    s.rxFields.push(p);
+    s.form.fire('input');
+    return p;
+  },
+  max: (s) => {
+    const m = s.node('#set-max');
+    m.value = '9';
+    s.form.fire('input');
+    return m;
+  },
+  keep: (s) => { s.typeKeep('0'); return s.keep; },
+};
+const PAGE_ORDER = ['model', 'compact', 'prefix', 'max', 'keep'];
+
+describe('Settings: Save focuses the first invalid field in the page', () => {
+  test('(+) the checks run in the order of index.html: Models, Auto-compact, Name prefix, Agents per orchestrator, Keep attachments for', () => {
+    const at = (id) => HTML.indexOf(`id="${id}"`);
+    const ids = ['set-model-orchestrator-custom', 'set-model-scout-custom', 'set-compact-pct', 'set-rc-prefix', 'set-max', 'set-keep-days'];
+    for (const id of ids) assert.ok(at(id) > 0, `${id} is on the page`);
+    assert.deepEqual([...ids].sort((a, b) => at(a) - at(b)), ids, 'the ids appear in this order in index.html');
+  });
+
+  for (const which of PAGE_ORDER) {
+    test(`(+) only the ${which} field is bad: it is marked, nothing is sent and it gets the focus`, async () => {
+      const s = rig();
+      await s.enter();
+      focus.el = null;
+      const field = BREAK[which](s);
+      s.submit();
+      await settle();
+      assert.deepEqual(s.puts(), []);
+      assert.equal(field.attrs['aria-invalid'], 'true');
+      assert.equal(s.node('#set-sum-text').textContent, '1 field needs a fix before saving. Each one is marked below.');
+      assert.equal(focus.el, field);
+    });
+  }
+
+  for (let i = 0; i < PAGE_ORDER.length; i++) {
+    for (let j = i + 1; j < PAGE_ORDER.length; j++) {
+      const [first, second] = [PAGE_ORDER[i], PAGE_ORDER[j]];
+      test(`(−) ${first} and ${second} are both bad: both are marked, the ${first} field (higher in the page) gets the focus`, async () => {
+        const s = rig();
+        await s.enter();
+        focus.el = null;
+        // break the lower field first, so the order of the edits cannot be what decides
+        const lower = BREAK[second](s);
+        const upper = BREAK[first](s);
+        s.submit();
+        await settle();
+        assert.deepEqual(s.puts(), []);
+        assert.equal(s.node('#set-sum-text').textContent, '2 fields need a fix before saving. Each one is marked below.');
+        assert.deepEqual([upper.attrs['aria-invalid'], lower.attrs['aria-invalid']], ['true', 'true']);
+        assert.equal(focus.el, upper);
+      });
+    }
+  }
 });

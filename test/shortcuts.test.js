@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SHORTCUTS, shortcutsFor, isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, windowAction, wireWindowKeys, openShortcuts } from '../public/shortcuts.js';
 import { initDialogs, initMenus, openDialog } from '../public/ui.js';
+import { fakeStyle } from './fake-dom.js';
 
 const SRC = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'shortcuts.js'), 'utf8');
 
@@ -32,6 +33,7 @@ class FNode {
   constructor(tag, text = '') {
     this.tag = tag; this.text = text; this.kids = []; this.attrs = {}; this.className = ''; this.listeners = {};
     this.isConnected = true; this.open = false; this.shown = 0; this.id = ''; this.hidden = false; this.previousElementSibling = null;
+    this.style = fakeStyle();
   }
 
   setAttribute(k, v) { this.attrs[k] = String(v); }
@@ -90,7 +92,8 @@ const button = (root, label) => root.find((n) => n.tag === 'button' && n.textCon
 
 let saved;
 before(() => {
-  saved = { document: globalThis.document, Node: globalThis.Node, location: globalThis.location };
+  saved = { document: globalThis.document, Node: globalThis.Node, location: globalThis.location, window: globalThis.window };
+  globalThis.window = { addEventListener() {} }; // ui.js initMenus listens for a resize
   globalThis.Node = FNode;
   globalThis.document = {
     createElement: (tag) => new FNode(tag),
@@ -116,6 +119,8 @@ before(() => {
 after(() => {
   globalThis.document = saved.document;
   globalThis.Node = saved.Node;
+  if (saved.window === undefined) delete globalThis.window;
+  else globalThis.window = saved.window;
   if (saved.location === undefined) delete globalThis.location;
   else globalThis.location = saved.location;
 });
@@ -243,6 +248,10 @@ describe('shortcutsFor: the session window', () => {
       ['Copy', 'Ctrl+Shift+C', 'Copy the text selected in the terminal (Ctrl+C goes to Claude)'],
       ['Paste', 'Ctrl+Shift+V or Ctrl+V', 'Send the clipboard to Claude as one paste'],
     ]],
+    ['Terminal (Type into pane off)', [
+      ["Scroll Claude's view", 'PgUp / PgDn', "Scroll Claude's view one page (the mouse wheel and the trackpad scroll it over the terminal)"],
+      ['Top, or back to live', 'Home / End', "Claude's view: top / back to live (Ctrl+Home and Ctrl+End do the same)"],
+    ]],
     ['Mode switcher', [
       ['Move between modes', `${LEFT} ${RIGHT} Home End`, 'Moves focus; does not switch'],
       ['Switch', 'Enter or Space', 'Switch to the focused mode'],
@@ -295,6 +304,48 @@ describe('shortcutsFor: the session window', () => {
   });
 });
 
+describe('shortcutsFor: the read-only subagent view (0.5, W8, design 4.4)', () => {
+  const EXPECT = [
+    ['Window', [
+      ['Back', `Alt+${LEFT}`, 'Back to the session that runs it'],
+      ['Keyboard shortcuts', '? or Ctrl+/', 'Show this list'],
+      ['Quit nika', 'Ctrl+Q', 'Quit the app (your agents keep running in tmux)'],
+      ['Close window', 'Ctrl+W', 'Close this window'],
+      ['Zoom in', 'Ctrl+= or Ctrl++', 'Make the window content larger'],
+      ['Zoom out', 'Ctrl+-', 'Make the window content smaller'],
+      ['Actual size', 'Ctrl+0', 'Reset the zoom'],
+    ]],
+  ];
+
+  test('(+) one Window group: Back, Keyboard shortcuts, Quit, Close, Zoom in, Zoom out, Actual size (Linux labels)', () => {
+    assert.deepEqual(table(shortcutsFor({ window: 'subagent', tier: 'app', mac: false })), EXPECT);
+  });
+
+  test('(+) macOS shows its own glyphs for Back and the window keys', () => {
+    const by = Object.fromEntries(shortcutsFor({ window: 'subagent', tier: 'app', mac: true }).flatMap((g) => g.rows).map((r) => [r.name, cell(r)]));
+    assert.equal(by.Back, `${CMD}+[`);
+    assert.equal(by['Keyboard shortcuts'], `? or ${CMD}+/`);
+    assert.deepEqual([by['Quit nika'], by['Close window'], by['Zoom in'], by['Zoom out'], by['Actual size']], [`${CMD}+Q`, `${CMD}+W`, `${CMD}+=`, `${CMD}+-`, `${CMD}+0`]);
+  });
+
+  test('(−) nothing of the live session is listed: no Message box, Terminal, Mode switcher, Command list or Typing rows, no transcript toggle', () => {
+    const all = shortcutsFor({ window: 'subagent', tier: 'app', mac: false });
+    assert.deepEqual(all.map((g) => g.group), ['Window']);
+    const names = all.flatMap((g) => g.rows).map((r) => r.name);
+    for (const gone of ['Send', 'New line', 'Interrupt', 'Next permission mode', 'Type into the pane', 'Copy', 'Paste', 'Show or hide transcript', 'Switch', 'Insert']) assert.ok(!names.includes(gone), gone);
+  });
+
+  test('(−) the browser tier gets no subagent rows, and the other windows get no subagent rows', () => {
+    assert.deepEqual(shortcutsFor({ window: 'subagent', tier: 'browser', mac: false }), []);
+    for (const win of ['dashboard', 'session']) {
+      for (const tier of ['app', 'browser']) {
+        const back = shortcutsFor({ window: win, tier, mac: false }).flatMap((g) => g.rows).filter((r) => r.description === 'Back to the session that runs it');
+        assert.deepEqual(back, [], `${win} ${tier}`);
+      }
+    }
+  });
+});
+
 describe('shortcutsFor: filtering and shape', () => {
   test('(−) an unknown window or tier is an empty list, never a throw', () => {
     assert.deepEqual(shortcutsFor({ window: 'nope', tier: 'app', mac: false }), []);
@@ -310,9 +361,9 @@ describe('shortcutsFor: filtering and shape', () => {
   });
 
   test('(+) every row is complete data: both platforms, at least one key, a description', () => {
-    assert.equal(SHORTCUTS.length, 40, '15 dashboard rows (13 app, 2 browser) and 25 session rows');
+    assert.equal(SHORTCUTS.length, 49, '15 dashboard rows (13 app, 2 browser), 27 session rows and 7 subagent rows');
     for (const r of SHORTCUTS) {
-      assert.ok(['dashboard', 'session'].includes(r.window), r.name);
+      assert.ok(['dashboard', 'session', 'subagent'].includes(r.window), r.name);
       assert.ok(['app', 'browser', 'both'].includes(r.tier), r.name);
       for (const p of ['mac', 'other']) {
         assert.ok(r.keys[p].length > 0 && r.keys[p].every((c) => c.length > 0 && c.every((k) => typeof k === 'string' && k)), `${r.name} ${p}`);
@@ -768,6 +819,23 @@ describe('openShortcuts', () => {
     assert.equal(page.location.hash, '');
   });
 
+  test('(+) 0.5, W8: the read-only subagent view is named in the muted line, lists its one group and has the app footer', () => {
+    const { ids } = open({ window: 'subagent' });
+    assert.equal(ids['kbd-sub'].textContent, 'Subagent window');
+    assert.deepEqual(tagged(ids['kbd-body'], 'section').map((s) => tagged(s, 'h3')[0].textContent), ['Window']);
+    const names = tagged(ids['kbd-body'], 'tr').map((tr) => tagged(tr, 'td')[0]?.textContent).filter(Boolean);
+    assert.deepEqual(names, ['Back', 'Keyboard shortcuts', 'Quit nika', 'Close window', 'Zoom in', 'Zoom out', 'Actual size']);
+    assert.deepEqual(tagged(ids['kbd-foot'], 'button').map((b) => b.textContent), ['Change in Settings', 'Close']);
+  });
+
+  test('(+) 0.5, W8: Change in Settings in the subagent view opens Settings in the same window, like the session window (it is the same page)', () => {
+    const { ids, dlg } = open({ window: 'subagent' });
+    button(ids['kbd-foot'], 'Change in Settings').fire('click');
+    assert.equal(dlg.open, false);
+    assert.deepEqual(page.location.assigned, ['/#settings']);
+    assert.equal(page.location.hash, '', 'not a hash change on session.html');
+  });
+
   test('(−) opening while it is already open does nothing (no second showModal, no rebuild)', () => {
     const { ids, dlg } = open();
     const body = ids['kbd-body'].kids;
@@ -789,7 +857,7 @@ describe('openShortcuts', () => {
     ids['kbd-dlg'].close();
     openShortcuts({ window: 'session', tier: 'app', mac: true, singleKey: false, opener: null });
     assert.equal(ids['kbd-sub'].textContent, 'Session window');
-    assert.equal(tagged(ids['kbd-body'], 'section').length, 5);
+    assert.equal(tagged(ids['kbd-body'], 'section').length, 6);
     assert.equal(ids['kbd-foot'].textContent.includes('Single-key shortcuts: Off'), true);
   });
 });
@@ -830,6 +898,27 @@ describe('openShortcuts next to menus and dialogs (ui.js)', () => {
     assert.equal(menu.hasAttribute('data-up'), false, 'the flip marker goes too, as closeMenu does');
     assert.equal(esc(), false, 'the menu handler leaves this Esc to the dialog');
     assert.equal(ids['kbd-dlg'].open, false, 'one press is enough');
+  });
+
+  test('(+) the left/right placement goes too (data-x and the inline offset and width), so the next open measures again', () => {
+    freshPage();
+    const { menu, item } = addMenu();
+    menu.setAttribute('data-x', 'fit');
+    for (const [k, v] of [['right', 'auto'], ['left', '-142px'], ['min-width', '0px'], ['width', '184px']]) menu.style.setProperty(k, v);
+    show(item);
+    assert.equal(menu.hasAttribute('data-x'), false);
+    assert.deepEqual(menu.style.props, {});
+  });
+
+  test('(−) a menu that is already closed keeps its placement attributes and inline values (only open menus are touched)', () => {
+    freshPage();
+    const { menu } = addMenu();
+    menu.hidden = true;
+    menu.setAttribute('data-x', 'start');
+    menu.style.setProperty('left', '4px');
+    show(new FNode('button'));
+    assert.equal(menu.getAttribute('data-x'), 'start');
+    assert.equal(menu.style.props.left, '4px');
   });
 
   test('(+) when focus was inside the closed menu, Close returns it to the menu button, not to the hidden item', () => {

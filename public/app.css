@@ -282,10 +282,8 @@ a.name:hover { text-decoration: underline; }
 .subs > summary { cursor: pointer; padding: 2px 0 2px 4px; color: var(--text-muted); width: fit-content; min-height: 24px; }
 .subs > summary:hover { color: var(--text); }
 .subs > summary .sub-hid { font-size: var(--fs-small); }
-.subs ul { list-style: none; margin: 4px 0 6px; padding: 0 0 0 4px; display: grid; gap: 4px; }
-.subs li { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; padding: 4px 0; border-top: 1px dashed var(--line); }
-.sub-desc { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
-.sub-type { color: var(--text-muted); }
+.subs-none { margin: 0; padding: 2px 0 2px 4px; color: var(--text-muted); min-height: 24px; }   /* W11: "No subagents running +K ended"; the list rules are in tokens.css */
+.subs-none .sub-hid { font-size: var(--fs-small); }
 details.ended > summary { cursor: pointer; padding: 8px 2px; color: var(--text-muted); width: fit-content; min-height: 24px; }
 details.ended > summary:hover { color: var(--text); }
 .empty { margin: var(--sp-8) auto; max-width: 460px; text-align: center; padding: var(--sp-6); }
@@ -338,6 +336,8 @@ details.ended > summary:hover { color: var(--text); }
 .menu-wrap { position: relative; display: inline-block; }
 .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 220px; margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: var(--elev-2); }
 .menu[data-up="1"] { top: auto; bottom: calc(100% + 4px); }
+.menu[data-x="start"] { left: 0; right: auto; }   /* no room to the left of the button (dom.js placeMenuX): grow to the right from its left edge */
+.menu[data-x="fit"] button, .menu[data-x="fit"] a { white-space: normal; overflow-wrap: anywhere; }   /* a menu narrower than its items (inline left, right, width): they wrap */
 .menu button, .menu a { display: flex; width: 100%; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px; border: 0; border-radius: var(--r-sm); background: none; text-align: left; text-decoration: none; color: var(--text); }
 .menu-vals button { white-space: nowrap; }   /* a value menu (New agents card): "Use Settings" and its chip stay on one line; row menus still wrap long names */
 .menu button:hover, .menu a:hover { background: var(--surface-2); }
@@ -361,6 +361,10 @@ details.ended > summary:hover { color: var(--text); }
 .card h2 { margin: 0 0 -2px; font-size: var(--fs-h2); }
 .card h3 { margin: 0; font-size: var(--fs-h3); }
 .card h3 .help { margin-left: 4px; font-weight: 400; }
+/* in the Settings drawer (its title is the h2) the cards' headings are one element lower, with the look they have in the column: h3 titles like .card h2, h4 like .card h3 */
+#su-body .card h3 { margin: 0 0 -2px; font-size: var(--fs-h2); }
+#su-body .card h4 { margin: 0; font-size: var(--fs-h3); }
+#su-body .card h4 .help { margin-left: 4px; font-weight: 400; }
 .card p { margin: 0; }
 .card .muted { font-size: var(--fs-small); }
 .card > .rules { justify-self: start; }

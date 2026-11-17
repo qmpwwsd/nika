@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { tagVersion, changelogSection, versionFiles, versionDrift, releaseCheck, unwrapMarkdown } from '../scripts/release-check.mjs';
+import { tagVersion, changelogSection, changelogHeading, versionFiles, versionDrift, releaseCheck, unwrapMarkdown } from '../scripts/release-check.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'release-check.mjs');
@@ -157,6 +157,49 @@ describe('release check', () => {
     assert.throws(() => releaseCheck(fixture({ changelog: '# Changelog\n\n## 1.2.3\n\n## 1.2.2\n\n- Older.\n' }), 'v1.2.3'), /empty/);
     assert.equal(changelogSection('## 1.2.30\n\n- Not this.\n\n## 1.2.3 — x\n\n- This.\n', '1.2.3'), '- This.');
     assert.equal(changelogSection('## 1.2.3-rc.1\n\n- Not this.\n', '1.2.3'), null);
+  });
+
+  // R3 F2: the heading of the tag's section must be the form the released sections use, `## X.Y.Z — YYYY-MM-DD` (an em dash and an ISO date).
+  // An undated or "(unreleased)" heading would otherwise go out in a draft release unchanged.
+  const withHeading = (heading) => fixture({ changelog: `# Changelog\n\n${heading}\n\n- One change.\n\n## 1.2.2 — 2026-01-01\n\n- Older.\n` });
+
+  test('(+) R3 F2: a dated heading `## X.Y.Z — YYYY-MM-DD` passes, with trailing blanks or a CRLF line end; the word "unreleased" in the body is not the heading', () => {
+    assert.equal(releaseCheck(withHeading('## 1.2.3 — 2026-01-02'), 'v1.2.3'), '- One change.');
+    assert.equal(releaseCheck(withHeading('## 1.2.3 — 2026-12-31  '), 'v1.2.3'), '- One change.');
+    assert.equal(releaseCheck(withHeading('## 1.2.3 — 2024-02-29\r'), 'v1.2.3'), '- One change.', 'a leap day is a date');
+    const dir = fixture({ changelog: '# Changelog\n\n## 1.2.3 — 2026-01-02\n\n- Fixes the unreleased build check.\n' });
+    assert.equal(releaseCheck(dir, 'v1.2.3'), '- Fixes the unreleased build check.');
+    assert.equal(changelogHeading('# Changelog\n\n## 1.2.3 — 2026-01-02\n\n- x\n', '1.2.3'), '## 1.2.3 — 2026-01-02');
+    assert.equal(changelogHeading('# Changelog\n\n## 1.2.30 — 2026-01-02\n', '1.2.3'), null);
+  });
+
+  test('(−) R3 F2: a heading with "unreleased" in it (any case, any form) is refused and the message says what to write instead', () => {
+    for (const heading of ['## 1.2.3 (unreleased)', '## 1.2.3 (Unreleased)', '## 1.2.3 — Unreleased', '## 1.2.3 — 2026-01-02 (UNRELEASED)', '## 1.2.3 unreleased']) {
+      assert.throws(() => releaseCheck(withHeading(heading), 'v1.2.3'), /unreleased.*replace "\(unreleased\)" with "— <YYYY-MM-DD>"/i, heading);
+    }
+  });
+
+  test('(−) R3 F2: an undated heading, a hyphen or an en dash for the em dash, a loose or impossible date, or any text but the date is refused', () => {
+    for (const heading of ['## 1.2.3', '## 1.2.3 - 2026-01-02', '## 1.2.3 – 2026-01-02', '## 1.2.3 — 2026-1-2', '## 1.2.3 — 26-01-02', '## 1.2.3 — 2026-13-01', '## 1.2.3 — 2026-00-10',
+      '## 1.2.3 — 2026-02-30', '## 1.2.3 — 2025-02-29', '## 1.2.3 — 2026-01-32', '## 1.2.3 — soon', '## 1.2.3 — 2026-01-02 final', '## 1.2.3 — 2026-01-02T10:00', '## 1.2.3 —2026-01-02', '## 1.2.3  — 2026-01-02', '## 1.2.3 (2026-01-02)']) {
+      assert.throws(() => releaseCheck(withHeading(heading), 'v1.2.3'), /must read "## 1\.2\.3 — YYYY-MM-DD" \(an em dash and a real ISO date\)/, heading);
+    }
+  });
+
+  test('(−) R3 F2: an empty section is still reported as empty (that check comes before the heading form), and a missing one as missing', () => {
+    assert.throws(() => releaseCheck(fixture({ changelog: '# Changelog\n\n## 1.2.3\n\n## 1.2.2 — 2026-01-01\n\n- Older.\n' }), 'v1.2.3'), /empty/);
+    assert.throws(() => releaseCheck(fixture({ changelog: '# Changelog\n\n## 1.2.2 — 2026-01-01\n\n- Older.\n' }), 'v1.2.3'), /no "## 1\.2\.3" section/);
+  });
+
+  test('(−) R3 F2: the CLI exits 1 on an "(unreleased)" or undated heading, names it on stderr, and writes no notes file', () => {
+    for (const heading of ['## 1.2.3 (unreleased)', '## 1.2.3']) {
+      const dir = withHeading(heading);
+      const out = path.join(dir, 'notes.md');
+      const r = spawnSync(process.execPath, [SCRIPT, 'v1.2.3', '--root', dir, '--notes', out], { encoding: 'utf8' });
+      assert.equal(r.status, 1, heading);
+      assert.match(r.stderr, /release-check: the CHANGELOG\.md heading "## 1\.2\.3/, heading);
+      assert.equal(fs.existsSync(out), false, heading);
+    }
   });
 
   test('(+) workflows: official actions pinned by SHA; only draft-release can write, runs no checkout, makes drafts', () => {

@@ -165,6 +165,23 @@ Two scripts prove the Linux side. Both refuse to run on macOS and exit non-zero 
 - tmux, through nika's own `mirror.js` and `keys.js`: SGR colours survive the mirror, OSC 52, OSC 8 and DCS do not,
   `send-keys -l -- '-x text'` arrives literally, a multi-line paste through `load-buffer -` and `paste-buffer -p -d`
   arrives bracketed, and no tmux buffer is left behind;
+- the session window's fit (0.5, group e), driving `src/fit.js` through `makeExec` on the same private socket, on whatever tmux
+  is installed (the CI job installs it with apt on ubuntu-latest, tmux 3.6a at the time of writing; the Docker image has
+  Debian's; the script writes `tmux -V` into its log). Most of it runs with no client attached: L1, a 3-pane
+  window and a panel bigger than the window, is fitted (the mirrored pane gets the panel's size, the window is zoomed) and
+  given back, and the layout, size, `window-size` option, focus and tag are then exactly as before; L3, a single pane
+  80x24 and a panel of 60x15, is fitted to 60x15 and given back to 80x24; L4, `select-layout -- <window_layout>` is accepted and
+  changes nothing, and `show-options -w window-size` prints nothing while the option is unset; and nothing is left held after
+  the releases. Five more groups of rows come from windows of their own, four of them with a control-mode client attached
+  (`tmux -C attach`, its stdin held open by a pipe, as iTerm2's tmux integration holds it; tmux counts it as a terminal in
+  `#{window_active_clients}`): F4a, a client that shows the 3-pane window makes nika zoom it and never resize it, and the
+  release logs no difference; F4b, a client that attaches to a window nika resized gets the size back within 2.5 s; F9a and
+  F9b, a page with focus wins over such a client (one pane, then three panes that stay zoomed), and without focus the size is
+  given back in place; and F15a (no client), a 100x29 window with a plain shell, an agent-tagged pane and the mirrored pane,
+  and a panel of 60x20: with focus the window is sized to the panel and stays zoomed, without focus its size, layout,
+  `window-size` option, pane sizes, active pane and zoom are exactly those from before the squeeze (three cycles), and the
+  release puts back what was there before and logs no difference. The comparisons strip the focus markers (`"a"`, `"l"`) tmux 3.8
+  writes into a layout string;
 - cleanup: the tmux server, background jobs and the temp dir are gone.
 
 Run it in Docker (the image is the pinned `node:22-bookworm-slim` plus tmux, procps and iproute2; it holds a copy of the
@@ -227,9 +244,10 @@ publishes a release, never creates or moves a tag and never touches the tap. `te
 ### Release procedure
 
 1. On a branch: set the version in `package.json`, `app/src-tauri/tauri.conf.json`, `app/src-tauri/Cargo.toml` and
-   `Cargo.lock` (`cargo update -p nika-app --offline` after the `Cargo.toml` edit), and rename `## Unreleased` in
-   `CHANGELOG.md` to `## X.Y.Z — <date>`. `node scripts/release-check.mjs vX.Y.Z` must print the notes. Merge through a
-   PR.
+   `Cargo.lock` (`cargo update -p nika-app --offline` after the `Cargo.toml` edit), and in
+   `CHANGELOG.md` replace `(unreleased)` in the `## X.Y.Z (unreleased)` heading with `— <date>` (an em dash and an ISO date:
+   `## X.Y.Z — YYYY-MM-DD`). `node scripts/release-check.mjs vX.Y.Z` refuses a heading that still says `unreleased` (any
+   case) or has no such date, and must print the notes. Merge through a PR.
 2. Tag the merge commit on `master` (`git tag -a vX.Y.Z -m "nika X.Y.Z"`) and push the tag. The workflow builds and
    creates the draft (about 10 minutes).
 3. Review the draft on GitHub (notes, the three files) and publish it.

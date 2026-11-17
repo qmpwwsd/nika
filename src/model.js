@@ -9,6 +9,7 @@ import { allReportDirs, indexReports } from './collect/reports.js';
 import { resolveProject } from './collect/projects.js';
 import { mapLimit } from './util.js';
 import { clean } from './text.js';
+import { subagentLabel } from './labels.js';
 import { UUID } from './ids.js';
 import { MODEL_CATALOG, modelWindow } from './models.js';
 import { compactLaunch } from './compact.js';
@@ -135,6 +136,27 @@ function linkTree(entries) {
 }
 
 /**
+ * After /compact Claude Code runs the continued conversation as a background job in a child claude: its registry file says `kind: "bg"`,
+ * has a `jobId` and no `tmux`. The claude in the pane stays as the host: not `bg`, its old session id, `parkedJobId` = the child's `jobId`.
+ * Returns child session id → host registry entry, only for a one-to-one match (both live, ids differ, one child per `jobId`, one host per
+ * `parkedJobId`, same project, both with a cwd). Anything else stays two rows. The ids are compared for equality and nothing else (docs/security.md T53).
+ */
+function linkHosts(live, projectCache) {
+  const bgs = [...live.values()].filter((e) => e.kind === 'bg' && e.jobId);
+  const hosts = [...live.values()].filter((e) => e.kind !== 'bg' && e.parkedJobId);
+  const links = new Map();
+  for (const child of bgs) {
+    const [host, ...more] = hosts.filter((e) => e.parkedJobId === child.jobId);
+    const twin = bgs.some((e) => e !== child && e.jobId === child.jobId);
+    if (!host || more.length || twin || child.tmuxPane || host.sessionId === child.sessionId) continue;
+    if (!child.cwd || !host.cwd) continue; // two entries without a cwd would both read as the one "unknown" project
+    if (resolveProject(child.cwd, projectCache).key !== resolveProject(host.cwd, projectCache).key) continue;
+    links.set(child.sessionId, host);
+  }
+  return links;
+}
+
+/**
  * Contract C6 `context` from the last assistant entry's `usage` (collect/transcripts.js: `{ tokens, model }` or null), nika's
  * compaction setting and whether nika started the session: `{ tokens, window, compactAt, pct, compaction }`, or null without usage.
  * - `window`: with auto-compact on, the window the launch uses (the setting's, cut to the model's; the model's for 'model'), else the
@@ -197,12 +219,15 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     const prev = live.get(e.sessionId);
     if (!prev || (prev.updatedAt ?? 0) < (e.updatedAt ?? 0)) live.set(e.sessionId, e);
   }
+  const projectCache = new Map();
+  const hostOf = linkHosts(live, projectCache);
   const cutoff = sinceMs === Infinity ? -Infinity : now - sinceMs;
   const ids = new Set(live.keys());
   for (const [id, f] of index.files) if (f.mtimeMs >= cutoff) ids.add(id);
   for (const id of include) if (index.files.has(id)) ids.add(id);
+  // a host that a background child continues has no row of its own, whatever its age or `include`: the child's row shows its pane
+  for (const host of hostOf.values()) ids.delete(host.sessionId);
 
-  const projectCache = new Map();
   const reportPaths = new Map();
   const results = await mapLimit([...ids], IO_LIMIT, async (id) => {
     const reg = live.get(id) ?? null;
@@ -217,9 +242,15 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
     }
     // Not live and no user or assistant line: a title-only stub, not an agent (it made the "(unknown)" group, 0.1.1).
     if (!reg && t && !t.hasConversation) return null;
-    const report = reports.get(id) ?? null;
+    const host = hostOf.get(id) ?? null;
+    // a spawned agent's report is filed under the session id claude was launched with, which after /compact is the host's, not the child's
+    const own = reports.get(id) ?? null;
+    const report = own ?? (host ? reports.get(host.sessionId) : null) ?? null;
+    // the session id the report is filed under: the page opens /api/report/<it> (a merged row's own id has no report file)
+    const reportId = own ? id : (report ? host.sessionId : null);
     if (report?.reportPath) reportPaths.set(id, report.reportPath);
-    const paneInfo = reg?.tmuxPane ? tmux.panes.get(reg.tmuxPane) ?? null : null;
+    const paneId = (host ?? reg)?.tmuxPane;
+    const paneInfo = paneId ? tmux.panes.get(paneId) ?? null : null;
     const cwd = reg?.cwd ?? t?.cwd ?? null;
     const project = resolveProject(cwd, projectCache);
     const isLive = Boolean(reg);
@@ -234,6 +265,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
       .map((s) => ({
         id: s.id,
         type: clean(s.type, 80),
+        label: subagentLabel(s.type), // Claude's own subagent type -> a kind or its cleaned name (0.5, W9); `type` stays for the title
         description: clean(s.description, PROMPT_MAX),
         model: clean(s.model, 80),
         modelLabel: modelLabel(s.model),
@@ -249,10 +281,13 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
       project,
       agent: {
         id,
+        hostId: host?.sessionId ?? null, // the session in the pane that this background session continues (after /compact); the row's pane is that session's
         pid: reg?.pid ?? null,
         live: isLive,
         state,
         role: paneInfo?.role ?? null,
+        // what kind of agent the row is (0.5, W9): a spawned agent's kind tag (or `agent` when it has none), a sub-orchestrator's role; nothing for anything else
+        label: paneInfo?.role === 'sub-orchestrator' ? 'sub-orchestrator' : paneInfo?.role === 'agent' ? (paneInfo.kind ?? 'agent') : null,
         parent: null, // linkTree() fills these three for a live agent
         depth: null,
         children: [],
@@ -272,7 +307,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         lastPrompt: clean(t?.lastPrompt, PROMPT_MAX),
         pane: paneInfo ? { id: paneInfo.id, session: clean(paneInfo.session, 80), title: clean(paneInfo.title, 200), command: clean(paneInfo.command, 80) } : null,
         bridgeUrl: bridgeUrl(reg?.bridgeSessionId ?? t?.bridgeSessionId),
-        report: report ? { name: clean(report.name, 128), status: clean(report.status, 300), rc: report.rc, hasFile: Boolean(report.reportPath) } : null,
+        report: report ? { name: clean(report.name, 128), status: clean(report.status, 300), rc: report.rc, hasFile: Boolean(report.reportPath), sessionId: reportId } : null,
         subagents,
         resumeCmd: `${cwd ? `cd ${shellQuote(cwd)} && ` : ''}claude --resume ${UUID.test(id) ? id : shellQuote(id)}`,
       },
@@ -311,7 +346,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
 
 /**
  * One session by id, whatever its age: `{ agent, group }` (the group is its project's, with the live sessions beside it), or null
- * when nika has neither a live registry entry nor a transcript for it. The id is only a lookup key, never a path. Throws EINDEX
+ * when nika has neither a live registry entry nor a transcript for it. The id of a host session (`hostId`) finds the row that continues it. The id is only a lookup key, never a path. Throws EINDEX
  * when it is not found and the transcript index could not be read: "not found" would then be a guess.
  * @param {object} o { config, exec, now?, cache? } as collect()
  */
@@ -319,7 +354,7 @@ export async function findSession(id, { config, exec, now = Date.now(), cache = 
   // a zero window: the snapshot holds the live sessions and the one asked for, so the lookup reads one transcript
   const { snapshot } = await collect({ config, exec, now, sinceMs: 0, cache, include: [id] });
   for (const group of snapshot.groups) {
-    const agent = group.agents.find((a) => a.id === id);
+    const agent = group.agents.find((a) => a.id === id || a.hostId === id);
     if (agent) return { agent, group };
   }
   if (snapshot.sources.transcripts !== 'ok') throw Object.assign(new Error('transcript index unavailable'), { code: 'EINDEX' });

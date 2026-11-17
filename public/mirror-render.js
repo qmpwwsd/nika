@@ -74,10 +74,20 @@ function rowModel(row) {
   return out;
 }
 
-/** capture body -> rows (array of span models), at most LIMITS.rows rows. Cursor is added separately by withCursor. */
-export function toRenderModel(capture) {
+/**
+ * capture body -> rows (array of span models), at most LIMITS.rows rows. Cursor is added separately by withCursor.
+ * `cutAt` (0.5, draft sync): the first row to leave out, the input box's top rule, so Claude's input box is not drawn while the
+ * message box mirrors it. A value that is not a row of this capture (not an integer, negative, past the end) cuts nothing.
+ */
+export function toRenderModel(capture, { cutAt } = {}) {
   const rows = Array.isArray(capture?.rows) ? capture.rows.slice(0, LIMITS.rows) : [];
-  return rows.map(rowModel);
+  const n = Number.isInteger(cutAt) && cutAt >= 0 && cutAt < rows.length ? cutAt : rows.length;
+  return rows.slice(0, n).map(rowModel);
+}
+
+/** The cursor to draw under a cut: one on or below the cut row sat in the hidden box, so it is dropped (withCursor would pad blank rows for it). */
+export function cutCursor(cursor, cutAt) {
+  return Number.isInteger(cutAt) && Number.isInteger(cursor?.y) && cursor.y >= cutAt ? null : cursor;
 }
 
 /** Terminal cells a code point occupies (wcwidth approximation: combining 0, CJK and emoji 2, else 1). */
@@ -185,22 +195,24 @@ export function applyMirror(container, model, cursor) {
 const utf8Bytes = (s) => new TextEncoder().encode(s).length;
 
 /**
- * Composer text -> request body for POST /pane/:id/keys, or a refusal. Empty -> just Enter. One plain line of at most
- * 1024 chars -> { text, keys: ['Enter'] }. Anything else (several lines, longer, or with a control such as a tab) ->
- * { paste, keys: ['Enter'] }, at most 16 KB of UTF-8.
+ * Composer text -> request bodies for POST /pane/:id/keys, or a refusal. Empty -> no body (just the Enter). One plain line of at most
+ * 1024 chars -> [{ text }]. Anything else (several lines, longer, or with a control such as a tab) -> [{ paste }], at most 16 KB of
+ * UTF-8. The Enter is not in them: Send presses it through the submit route (W13), never the keys route. Every body carries `send: true`
+ * (T54): the keys route then takes a fresh capture first and refuses while a prompt, a dialog, the survey or an unclear screen is up. The
+ * passthrough (planPaste, keyForEvent, typed characters) never sets it.
  */
 export function planSend(value) {
   const v = String(value ?? '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
-  if (v.trim() === '') return { ok: true, payload: { keys: ['Enter'] }, summary: 'Enter' };
+  if (v.trim() === '') return { ok: true, payloads: [], summary: 'Enter' };
   if (!v.includes('\n') && v.length <= LIMITS.text && !CONTROL.test(v)) {
-    return { ok: true, payload: { text: v, keys: ['Enter'] }, summary: `${v.length} characters + Enter` };
+    return { ok: true, payloads: [{ text: v, send: true }], summary: `${v.length} characters + Enter` };
   }
   const bytes = utf8Bytes(v);
   if (bytes > LIMITS.paste) {
     return { ok: false, message: `This is ${Math.ceil(bytes / 1024)} KB. A paste can be at most 16 KB. Shorten it or send it in parts. Your text is kept.` };
   }
   const lines = v.split('\n').length;
-  return { ok: true, payload: { paste: v, keys: ['Enter'] }, summary: lines > 1 ? `a paste of ${lines} lines + Enter` : `a paste of ${v.length} characters + Enter` };
+  return { ok: true, payloads: [{ paste: v, send: true }], summary: lines > 1 ? `a paste of ${lines} lines + Enter` : `a paste of ${v.length} characters + Enter` };
 }
 
 /** Pasted text in passthrough mode (no Enter). null when there is nothing to send, { ok: false, message } when too big. */

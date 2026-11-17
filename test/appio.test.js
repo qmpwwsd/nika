@@ -7,11 +7,12 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { serveApp, createPicker, statusLine } from '../src/appio.js';
 import { loadConfig } from '../src/store.js';
+import { createAttachments, MAX_BYTES } from '../src/attachments.js';
 import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -30,11 +31,11 @@ const hello = (secret = SECRET, extra = {}) => `${JSON.stringify({ type: 'hello'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** serveApp on PassThrough streams with its own temp config/state dirs. */
-function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy } = {}) {
+function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs, attachments, state, config = fx.config } = {}) {
   counter += 1;
   const base = path.join(ROOT, `h${counter}`);
   fs.mkdirSync(path.join(base, 'cfg'), { recursive: true });
-  const env = { NIKA_CONFIG_DIR: path.join(base, 'cfg'), XDG_STATE_HOME: path.join(base, 'state'), NIKA_TMUX: 'tmux', NIKA_CLAUDE: '/nonexistent/claude' };
+  const env = { NIKA_CONFIG_DIR: path.join(base, 'cfg'), XDG_STATE_HOME: state ?? path.join(base, 'state'), NIKA_TMUX: 'tmux', NIKA_CLAUDE: '/nonexistent/claude' };
   const stdin = new PassThrough();
   stdin.isTTY = tty;
   const stdout = new PassThrough();
@@ -52,7 +53,7 @@ function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SE
   stderr.on('data', (c) => { errText += c; });
   // the app copy never looks at the real ~/Applications or the real Homebrew folders here
   const copy = { home: path.join(base, 'home'), brewApps: [], ...appCopy };
-  const done = serveApp({ config: fx.config, env, stdin, stdout, stderr, exec: fakeExec(), now: () => NOW, intervalMs, helloMs, appCopy: copy });
+  const done = serveApp({ config, env, stdin, stdout, stderr, exec, now: () => NOW, intervalMs, helloMs, appCopy: copy, ...(releaseMs ? { releaseMs } : {}), ...(attachments ? { attachments } : {}) });
   const h = {
     env, stdin, secret, base, done,
     lines,
@@ -495,6 +496,439 @@ describe('folder picker', () => {
   });
 });
 
+// The attachment chooser (W2-T6): the shell's native file dialog answers with paths, the server reads them itself and hands the bytes to the
+// attachment store. The page only ever sees ids, names, sizes and types, never a path.
+describe('file chooser', () => {
+  // The store refuses a state path Claude cannot take as one token, so these tests keep theirs short and plain (as attachments.test.js does).
+  const tmpBase = (() => {
+    const t = fs.realpathSync(os.tmpdir());
+    return /^\/[A-Za-z0-9._/+-]{1,80}$/.test(t) ? t : '/tmp';
+  })();
+  const dirRoot = fs.mkdtempSync(path.join(tmpBase, 'nika-pf-'));
+  after(() => fs.rmSync(dirRoot, { recursive: true, force: true }));
+
+  const KEY = 'a1b2c3d4e5f60718';
+  const KEY2 = 'b8a7f6e5d4c3b2a1';
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]);
+  const MIB = 1024 * 1024;
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+  let nth = 0;
+
+  /** A picker on a real attachment store in its own temp state dir; `sent` = what it wrote to the shell, `logs` = every line the store logged. */
+  function rig() {
+    nth += 1;
+    const base = path.join(dirRoot, `r${nth}`);
+    const dir = path.join(base, 'files');
+    fs.mkdirSync(dir, { recursive: true });
+    const env = { NIKA_CONFIG_DIR: path.join(base, 'cfg'), XDG_STATE_HOME: path.join(base, 'state') };
+    const sent = [];
+    const logs = [];
+    const attachments = createAttachments({ env, loadKeepDays: async () => 7, log: (l) => logs.push(l) });
+    const picker = createPicker({ send: (m) => sent.push(m), env, attachments });
+    const put = (name, data = 'hello\n') => {
+      const p = path.join(dir, name);
+      fs.writeFileSync(p, data);
+      return p;
+    };
+    const storeDir = path.join(base, 'state', 'nika', 'attachments');
+    const stored = () => (fs.existsSync(storeDir) ? fs.readdirSync(storeDir).flatMap((k) => fs.readdirSync(path.join(storeDir, k))) : []);
+    /** Starts a files request, answers it with `paths`, waits for the end; resolves { reqId, answer }. */
+    async function pick(paths, { room = 6, pane = '%6', key = KEY } = {}) {
+      const reqId = picker.startFiles({ pane, key, room });
+      assert.match(reqId, /^[0-9a-f-]{36}$/);
+      await picker.onFiles({ type: 'files', reqId, paths });
+      return { reqId, answer: picker.filesStatus(pane, reqId) };
+    }
+    return { picker, sent, logs, dir, put, stored, pick, env, base, attachments };
+  }
+
+  test('(+) start sends exactly one pick-files line; the request is pending, and only for its own pane', () => {
+    const r = rig();
+    const reqId = r.picker.startFiles({ pane: '%6', key: KEY, room: 3 });
+    assert.deepEqual(r.sent, [{ type: 'pick-files', reqId }]);
+    assert.deepEqual(r.picker.filesStatus('%6', reqId), { state: 'pending' });
+    assert.equal(r.picker.filesStatus('%7', reqId), null, 'another pane cannot see it');
+    assert.equal(r.picker.filesStatus('%6', REQ_A), null, 'an unknown id');
+    assert.equal(r.picker.status(reqId), null, 'the folder reading does not know a files request');
+  });
+
+  test('(+) round trip: two picked files are read, stored under the pane key and answered as ready entries in order, with no path', async () => {
+    const r = rig();
+    const text = r.put('notes.md', '# synthetic\n');
+    const png = r.put('shot.png', PNG);
+    const { answer } = await r.pick([text, png]);
+    assert.equal(answer.state, 'done');
+    assert.equal(answer.files.length, 2);
+    const [a, b] = answer.files;
+    assert.deepEqual(Object.keys(a).sort(), ['id', 'name', 'ok', 'size', 'type']);
+    assert.deepEqual([a.ok, a.name, a.size, a.type], [true, 'notes.md', 12, 'text']);
+    assert.deepEqual([b.ok, b.name, b.size, b.type], [true, 'shot.png', PNG.length, 'png']);
+    assert.match(a.id, /^[0-9a-f]{16}$/);
+    assert.equal(r.stored().length, 2);
+    const wire = JSON.stringify(answer);
+    assert.ok(!wire.includes(r.dir) && !wire.includes(dirRoot) && !wire.includes('/'), 'no path in the answer');
+    assert.deepEqual(r.logs, []);
+    assert.equal(r.sent.length, 1, 'the shell got one line');
+  });
+
+  test('(+) the picked file is a send-ready attachment of that pane: lookup finds it for the pane and not for another', async () => {
+    const r = rig();
+    const { answer } = await r.pick([r.put('a.md')], { pane: '%6' });
+    assert.ok(await r.attachments.lookup('%6', answer.files[0].id));
+    assert.equal(await r.attachments.lookup('%7', answer.files[0].id), null);
+    const other = await r.pick([r.put('b.md')], { pane: '%9', key: KEY2 });
+    assert.ok(fs.readdirSync(path.join(r.base, 'state', 'nika', 'attachments')).includes(KEY2));
+    assert.equal(other.answer.files[0].ok, true);
+  });
+
+  test('(+) cancel: null closes the request as cancelled, a new one can start, and the old id is then unknown', async () => {
+    const r = rig();
+    const a = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+    await r.picker.onFiles({ type: 'files', reqId: a, paths: null });
+    assert.deepEqual(r.picker.filesStatus('%6', a), { state: 'cancelled' });
+    const b = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+    assert.ok(b && b !== a);
+    assert.equal(r.picker.filesStatus('%6', a), null);
+    assert.deepEqual(r.stored(), []);
+  });
+
+  test('(−) an empty list, or paths that is not a list, closes the request as cancelled and reads nothing', async () => {
+    const r = rig();
+    for (const paths of [[], 'x', { 0: '/a' }, 7, undefined, true]) {
+      const reqId = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+      await r.picker.onFiles({ type: 'files', reqId, paths });
+      assert.deepEqual(r.picker.filesStatus('%6', reqId), { state: 'cancelled' }, JSON.stringify(paths));
+    }
+    assert.deepEqual(r.stored(), []);
+  });
+
+  test('(−) one slot for both kinds: a folder request while files are open is busy, and files while a folder is open are busy', async () => {
+    const r = rig();
+    const files = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+    assert.equal(r.picker.start(), null);
+    assert.equal(r.picker.startFiles({ pane: '%6', key: KEY, room: 6 }), null);
+    assert.deepEqual(r.sent, [{ type: 'pick-files', reqId: files }], 'no second line went out');
+    await r.picker.onFiles({ type: 'files', reqId: files, paths: null });
+    const folder = r.picker.start();
+    assert.ok(folder);
+    assert.equal(r.picker.startFiles({ pane: '%6', key: KEY, room: 6 }), null);
+    assert.deepEqual(r.sent.at(-1), { type: 'pick-folder', reqId: folder });
+    assert.equal(r.sent.length, 2);
+    assert.equal(r.picker.filesStatus('%6', folder), null, 'a folder request is not a files request');
+    await r.picker.onFolder({ type: 'folder', reqId: folder, path: null });
+    assert.ok(r.picker.startFiles({ pane: '%6', key: KEY, room: 6 }), 'free again once it ended');
+  });
+
+  test('(−) a request that is being read still holds the slot', async () => {
+    const r = rig();
+    const reqId = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+    const reading = r.picker.onFiles({ type: 'files', reqId, paths: [r.put('slow.md')] });
+    assert.deepEqual(r.picker.filesStatus('%6', reqId), { state: 'pending' }, 'working reads as pending');
+    assert.equal(r.picker.start(), null);
+    assert.equal(r.picker.startFiles({ pane: '%6', key: KEY, room: 6 }), null);
+    await reading;
+    assert.equal(r.picker.filesStatus('%6', reqId).state, 'done');
+  });
+
+  test('(−) a files message for another request, for a folder request, with no id or a bad id, or a second answer, changes nothing', async () => {
+    const r = rig();
+    const good = r.put('good.md');
+    const reqId = r.picker.startFiles({ pane: '%6', key: KEY, room: 6 });
+    for (const msg of [{ type: 'files', reqId: REQ_A, paths: [good] }, { type: 'files', paths: [good] }, { type: 'files', reqId: 5, paths: [good] }, { type: 'files', reqId: null, paths: null }, { type: 'folder', reqId, path: r.dir }]) {
+      await (msg.type === 'folder' ? r.picker.onFolder(msg) : r.picker.onFiles(msg));
+    }
+    assert.deepEqual(r.picker.filesStatus('%6', reqId), { state: 'pending' });
+    assert.deepEqual(r.stored(), []);
+    await r.picker.onFiles({ type: 'files', reqId, paths: [good] });
+    await r.picker.onFiles({ type: 'files', reqId, paths: [r.put('again.md')] }); // a repeat answer
+    await r.picker.onFiles({ type: 'files', reqId, paths: null });
+    assert.equal(r.picker.filesStatus('%6', reqId).state, 'done');
+    assert.equal(r.stored().length, 1);
+    // and a files message with no open request at all
+    await r.picker.onFiles({ type: 'files', reqId, paths: [good] });
+    assert.equal(r.stored().length, 1);
+    // a folder request is not answered by a files message
+    const folder = r.picker.start();
+    await r.picker.onFiles({ type: 'files', reqId: folder, paths: [good] });
+    assert.equal(r.picker.status(folder).state, 'pending');
+    assert.equal(r.stored().length, 1);
+  });
+
+  test('(+) more paths than room: only the first `room` are read; the rest are never opened', async () => {
+    const r = rig();
+    const paths = ['a', 'b', 'c', 'd'].map((n) => r.put(`${n}.md`, `text ${n}\n`));
+    const { answer } = await r.pick(paths, { room: 2 });
+    assert.deepEqual(answer.files.map((f) => f.name), ['a.md', 'b.md']);
+    assert.equal(r.stored().length, 2);
+    const one = await r.pick(paths, { room: 1 });
+    assert.deepEqual(one.answer.files.map((f) => f.name), ['a.md']);
+    const six = await r.pick([...paths, ...paths, ...paths], { room: 6 });
+    assert.equal(six.answer.files.length, 6);
+  });
+
+  // ---- an entry that cannot be read fails alone ----
+
+  test('(−) each unusable entry fails on its own and the good file next to it is still saved', async () => {
+    const r = rig();
+    const good = r.put('good.md', 'fine\n');
+    const target = r.put('target.txt', 'real\n');
+    const link = path.join(r.dir, 'link.txt');
+    fs.symlinkSync(target, link);
+    const folder = path.join(r.dir, 'folder.txt');
+    fs.mkdirSync(folder);
+    const fifo = path.join(r.dir, 'fifo.txt');
+    execFileSync('mkfifo', [fifo]);
+    const hardA = r.put('hard-a.txt', 'shared\n');
+    const hardB = path.join(r.dir, 'hard-b.txt');
+    fs.linkSync(hardA, hardB);
+    const huge = path.join(r.dir, 'huge.txt');
+    fs.writeFileSync(huge, 'a');
+    fs.truncateSync(huge, 9 * MIB);
+    const cases = [
+      ['relative/dir/file.txt', 'invalid'], ['', 'invalid'], [`${r.dir}/with\0nul.txt`, 'invalid'], [`/${'a'.repeat(5000)}`, 'invalid'],
+      [42, 'invalid'], [null, 'invalid'], [{ a: 1 }, 'invalid'], [['/x'], 'invalid'],
+      [link, 'unreadable'], [folder, 'unreadable'], [fifo, 'unreadable'], [hardA, 'unreadable'], [hardB, 'unreadable'], [path.join(r.dir, 'missing.txt'), 'unreadable'],
+      [huge, 'too_large'],
+    ];
+    for (const [bad, code] of cases) {
+      const label = JSON.stringify(bad).slice(0, 40);
+      const { answer } = await r.pick([bad, good], { room: 2 });
+      assert.equal(answer.state, 'done', label);
+      const [f, g] = answer.files;
+      assert.deepEqual([f.ok, f.error], [false, code], label);
+      assert.deepEqual(Object.keys(f).sort(), ['error', 'name', 'ok'], label);
+      assert.equal(g.ok, true, `the next file still went: ${label}`);
+      assert.equal(g.name, 'good.md');
+      assert.ok(!JSON.stringify(f).includes(dirRoot), 'no path in a failed entry');
+    }
+    assert.equal(r.stored().length, cases.length, 'only the good file of each pick was stored');
+    assert.equal(fs.readFileSync(target, 'utf8'), 'real\n', 'the link target was not touched');
+  });
+
+  test('(−) a failed entry is named by the last part of the path only, a non-string by a placeholder; control characters never reach the answer', async () => {
+    const r = rig();
+    const { answer } = await r.pick([`${r.dir}/missing\u202e\u0007name.txt`, 'rel/sub/x.md', 7], { room: 3 });
+    assert.deepEqual(answer.files.map((f) => f.name), ['missing name.txt', 'x.md', 'file']);
+    assert.ok(!JSON.stringify(answer).includes(dirRoot));
+  });
+
+  test('(−) an empty file and a file of the wrong type are refused by the store, with the store\'s own codes', async () => {
+    const r = rig();
+    const empty = r.put('empty.txt', '');
+    const bin = r.put('tool.bin', Buffer.from([0x4d, 0x5a, 0, 1, 2, 3]));
+    const { answer } = await r.pick([empty, bin], { room: 2 });
+    assert.deepEqual(answer.files.map((f) => [f.ok, f.error]), [[false, 'empty'], [false, 'wrong-type']]);
+    assert.deepEqual(r.stored(), []);
+  });
+
+  // M4 (security review 0.5): rule 4 says nika never reads .env or *.key files. The chooser refuses by name, before the file is opened.
+  test('(−) a picked .env, .env.*, *.key or *.pem file (any case) is refused as secret-file before it is opened: nothing stored, no path in the entry', async () => {
+    const r = rig();
+    const good = r.put('good.md', 'fine\n');
+    const names = ['.env', '.ENV', '.env.dev', '.Env.Production', 'server.key', 'SERVER.KEY', 'cert.pem', 'Cert.PEM'];
+    for (const name of names) {
+      const secret = r.put(name, 'TOKEN=synthetic\n');
+      const { answer } = await r.pick([secret, good], { room: 2 });
+      const [f, g] = answer.files;
+      assert.deepEqual([f.ok, f.error, f.name], [false, 'secret-file', name], name);
+      assert.deepEqual(Object.keys(f).sort(), ['error', 'name', 'ok'], name);
+      assert.equal(g.ok, true, `the next file still went: ${name}`);
+      assert.ok(!JSON.stringify(answer).includes(dirRoot), 'no path in the answer');
+    }
+    assert.equal(r.stored().length, names.length, 'only the good file of each pick was stored');
+    assert.deepEqual(r.logs, []);
+  });
+
+  // F3 (owner answer 2026-11-15): .envrc, the keystores and the SSH private keys are refused the same way. The picked path is absolute, so a directory is always in front.
+  test('(−) F3: a picked .envrc, *.p12, *.pfx, *.jks, *.keystore, SSH private key or .netrc (any case) is refused as secret-file before it is opened: nothing stored, no path in the entry', async () => {
+    const r = rig();
+    const good = r.put('good.md', 'fine\n');
+    const kinds = ['.envrc', '.envrc.dev', '.envrc.bak', '.envrc.', 'cert.p12', 'cert.pfx', 'store.jks', 'app.keystore', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'id_ecdsa_sk', 'id_ed25519_sk', '.netrc']; // '.netrc': G2's list (src/attachments.js), pinned here for the chooser
+    for (const kind of kinds) { // one pick per kind (the store admits 30 saves a minute): three spellings, then one good file
+      const names = [kind, kind.toUpperCase(), [...kind].map((c, i) => (i % 2 ? c.toUpperCase() : c)).join('')];
+      const { answer } = await r.pick([...names.map((n) => r.put(n, 'synthetic\n')), good], { room: 4 });
+      const refused = answer.files.slice(0, 3);
+      assert.deepEqual(refused.map((f) => [f.ok, f.error, f.name]), names.map((n) => [false, 'secret-file', n]), kind);
+      for (const f of refused) assert.deepEqual(Object.keys(f).sort(), ['error', 'name', 'ok'], kind);
+      assert.equal(answer.files[3].ok, true, `the next file still went: ${kind}`);
+      assert.ok(!JSON.stringify(answer).includes(dirRoot), 'no path in the answer');
+    }
+    assert.equal(r.stored().length, kinds.length, 'only the good file of each pick was stored');
+    assert.deepEqual(r.logs, []);
+  });
+
+  test('(−) F3: the name decides before any open for the new kinds too: a FIFO or a dangling link named id_rsa, *.p12 or .envrc answers secret-file, not unreadable', async () => {
+    const r = rig();
+    const fifo = path.join(r.dir, 'store.p12');
+    execFileSync('mkfifo', [fifo]);
+    const dangling = path.join(r.dir, 'id_ed25519');
+    fs.symlinkSync(path.join(r.dir, 'nowhere'), dangling);
+    const envrc = path.join(r.dir, '.envrc');
+    fs.symlinkSync(path.join(r.dir, 'nowhere'), envrc);
+    const envrcLocal = path.join(r.dir, '.envrc.dev'); // fix round 1: .envrc.* is refused by name too
+    fs.symlinkSync(path.join(r.dir, 'nowhere'), envrcLocal);
+    const plainFifo = path.join(r.dir, 'id_ed25519.pub');
+    execFileSync('mkfifo', [plainFifo]);
+    const { answer } = await r.pick([fifo, dangling, envrc, envrcLocal, plainFifo], { room: 5 });
+    assert.deepEqual(answer.files.map((f) => f.error), ['secret-file', 'secret-file', 'secret-file', 'secret-file', 'unreadable'], 'a public key still goes through the open and fails there');
+  });
+
+  test('(+) fix round 1: envrc.dev, my.envrc.dev, .envrcx and .envrc-old are picked as before (only .envrc and .envrc.* are refused)', async () => {
+    const r = rig();
+    const paths = ['envrc.dev', 'my.envrc.dev', '.envrcx', '.envrc-old'].map((n) => r.put(n, `${n}\n`));
+    const { answer } = await r.pick(paths, { room: 4 });
+    assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true]);
+  });
+
+  test('(+) F3: a public key and the look-alikes of the new kinds are picked as before: id_rsa.pub, id_ed25519.pub, id_rsa_backup.txt, my.keystore.md, notes.envrc.txt, p12.txt, netrc, .netrc.bak', async () => {
+    const r = rig();
+    const paths = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt', 'netrc', '.netrc.bak'].map((n) => r.put(n, `${n}\n`));
+    const { answer } = await r.pick(paths, { room: 8 });
+    assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true, true, true, true, true]);
+  });
+
+  test('(−) the name decides before any open: a FIFO or a dangling link named .env or *.key answers secret-file, not unreadable', async () => {
+    const r = rig();
+    const fifo = path.join(r.dir, 'token.key');
+    execFileSync('mkfifo', [fifo]);
+    const dangling = path.join(r.dir, '.env');
+    fs.symlinkSync(path.join(r.dir, 'nowhere'), dangling);
+    const plainFifo = path.join(r.dir, 'token.txt');
+    execFileSync('mkfifo', [plainFifo]);
+    const { answer } = await r.pick([fifo, dangling, plainFifo], { room: 3 });
+    assert.deepEqual(answer.files.map((f) => f.error), ['secret-file', 'secret-file', 'unreadable'], 'a non-secret name still goes through the open and fails there');
+  });
+
+  test('(+) names that only look similar are picked as before: env.txt, notes.key.txt, monkey.md, .environment', async () => {
+    const r = rig();
+    const paths = ['env.txt', 'notes.key.txt', 'monkey.md', '.environment', 'keys.md'].map((n) => r.put(n, `${n}\n`));
+    const { answer } = await r.pick(paths, { room: 5 });
+    assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true, true]);
+  });
+
+  test('(+) a file of exactly 8 MiB is accepted; one byte more is too_large and is not read', async () => {
+    const r = rig();
+    const ok = path.join(r.dir, 'edge.txt');
+    fs.writeFileSync(ok, Buffer.alloc(MAX_BYTES, 0x61));
+    const over = path.join(r.dir, 'over.txt');
+    fs.writeFileSync(over, Buffer.alloc(MAX_BYTES + 1, 0x61));
+    const { answer } = await r.pick([ok, over], { room: 2 });
+    assert.deepEqual(answer.files.map((f) => [f.ok, f.size ?? f.error]), [[true, MAX_BYTES], [false, 'too_large']]);
+  });
+
+  test('(−) a file that grows after it was opened is read only up to the size it had (never more than the cap)', async () => {
+    const r = rig();
+    const p = r.put('grow.txt', 'abc');
+    const orig = fs.promises.open;
+    let wrapped = 0;
+    fs.promises.open = async (...a) => { // appends between the fstat and the read
+      const h = await orig(...a);
+      if (String(a[0]) === p) {
+        const stat = h.stat.bind(h);
+        h.stat = async (...x) => {
+          const st = await stat(...x);
+          fs.appendFileSync(p, 'MORE');
+          return st;
+        };
+        wrapped += 1;
+      }
+      return h;
+    };
+    try {
+      const { answer } = await r.pick([p], { room: 1 });
+      assert.deepEqual([answer.files[0].ok, answer.files[0].size], [true, 3]);
+      assert.equal(wrapped, 1, 'the seam really ran');
+    } finally {
+      fs.promises.open = orig;
+    }
+  });
+
+  test('(−) a file of another owner is refused (needs root to make one)', { skip: uid !== 0 && 'chown needs root' }, async () => {
+    const r = rig();
+    const p = r.put('theirs.txt', 'x\n');
+    fs.chownSync(p, 12345, 12345);
+    const { answer } = await r.pick([p], { room: 1 });
+    assert.deepEqual([answer.files[0].ok, answer.files[0].error], [false, 'unreadable']);
+  });
+
+  test('(−) nothing logged and nothing sent to the shell carries a path or a name; a store that throws is one entry that failed', async () => {
+    const r = rig();
+    const named = r.put('very-private-name.md', 'x\n');
+    const { answer } = await r.pick([named, path.join(r.dir, 'missing-private.md'), 'rel/private-rel.md'], { room: 3 });
+    assert.equal(answer.files.length, 3);
+    const seen = JSON.stringify([r.logs, r.sent]);
+    for (const needle of [dirRoot, 'private']) assert.equal(seen.includes(needle), false, needle);
+    const boom = createPicker({ send: () => {}, env: r.env, attachments: { saveBytes: async () => { throw Object.assign(new Error(`EACCES ${named}`), { code: 'EACCES' }); } } });
+    const reqId = boom.startFiles({ pane: '%6', key: KEY, room: 1 });
+    await boom.onFiles({ type: 'files', reqId, paths: [named] });
+    const f = boom.filesStatus('%6', reqId).files[0];
+    assert.deepEqual([f.ok, f.error], [false, 'write-failed']);
+    assert.equal(JSON.stringify(f).includes(dirRoot), false);
+  });
+
+  test('(+) a pick answers the same GET again and again (the page may ask twice) and a new request replaces the old one', async () => {
+    const r = rig();
+    const { reqId, answer } = await r.pick([r.put('a.md')]);
+    assert.deepEqual(r.picker.filesStatus('%6', reqId), answer);
+    const next = r.picker.startFiles({ pane: '%6', key: KEY, room: 1 });
+    assert.equal(r.picker.filesStatus('%6', reqId), null);
+    assert.deepEqual(r.picker.filesStatus('%6', next), { state: 'pending' });
+  });
+
+  // ---- through the real server ----
+
+  test('(+) end to end: POST pick, the pick-files line, a files message, GET until done; the route answers carry ids and names, no path', async () => {
+    const h = harness({ state: path.join(dirRoot, 'e2e-state') });
+    await h.up();
+    const dir = path.join(dirRoot, `e2e-${counter}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'e2e-note.md');
+    fs.writeFileSync(file, '# note\n');
+    const start = await h.call('POST', '/api/app/pane/%256/attachments/pick', { json: { room: 2 } });
+    assert.equal(start.status, 202, JSON.stringify(start.body));
+    const { reqId } = start.body;
+    assert.deepEqual(await h.waitFor((l) => l.type === 'pick-files'), { type: 'pick-files', reqId });
+    assert.deepEqual((await h.call('GET', `/api/app/pane/%256/attachments/pick/${reqId}`)).body, { state: 'pending' });
+    assert.equal((await h.call('POST', '/api/app/projects/pick', { json: {} })).status, 429, 'a folder chooser is busy while files are open');
+    assert.equal((await h.call('POST', '/api/app/pane/%256/attachments/pick', { json: { room: 1 } })).status, 429);
+    h.send(JSON.stringify({ type: 'files', reqId, paths: [file] }));
+    let r;
+    for (let i = 0; i < 100; i += 1) {
+      r = await h.call('GET', `/api/app/pane/%256/attachments/pick/${reqId}`);
+      if (r.body.state !== 'pending') break;
+      await sleep(10);
+    }
+    assert.equal(r.status, 200);
+    assert.equal(r.body.state, 'done');
+    assert.deepEqual(r.body.files.map((f) => [f.ok, f.name, f.type, f.size]), [[true, 'e2e-note.md', 'text', 7]]);
+    assert.equal(JSON.stringify(r.body).includes(dir), false, 'no path in the answer');
+    assert.equal(h.err().includes('e2e-note'), false, 'no name on stderr');
+    assert.equal(h.err().includes(dir), false, 'no path on stderr');
+    h.noSecret();
+    await h.close();
+  });
+
+  test('(−) a files line with no open request, or a bad one, is ignored by the running server; stdin stays usable', async () => {
+    const h = harness();
+    await h.up();
+    h.send(JSON.stringify({ type: 'files', reqId: REQ_A, paths: ['/x'] }));
+    h.send(JSON.stringify({ type: 'files', paths: null }));
+    h.send('{"type":"files","reqId":');
+    await sleep(40);
+    const start = await h.call('POST', '/api/app/pane/%256/attachments/pick', { json: { room: 1 } });
+    assert.equal(start.status, 202);
+    assert.equal(h.err().includes('/x'), false);
+    await h.close();
+  });
+
+  test('(+) the running server routes a files message to the picker, and builds the picker with the same attachment store the routes use', () => {
+    const src = fs.readFileSync(new URL('../src/appio.js', import.meta.url), 'utf8');
+    assert.match(src, /if \(msg\.type === 'files'\) picker\.onFiles\(msg\);/);
+    assert.match(src, /createPicker\(\{ send: say, env, attachments \}\)/);
+    assert.ok(src.indexOf('attachments = createAttachments(') < src.indexOf('createPicker({ send: say'), 'the store exists before the picker takes it');
+  });
+});
+
 describe('shutdown and secrecy', () => {
   test('(+) stdin closing shuts the server down and resolves with 0; the port stops answering', async () => {
     const h = harness();
@@ -557,5 +991,525 @@ describe('shutdown and secrecy', () => {
     clearTimeout(killer);
     assert.deepEqual(r, { code: 0, signal: null }, err);
     assert.equal(out.includes(SECRET) || err.includes(SECRET), false);
+  });
+});
+
+// --- the fit (0.5, W7): recovery before ready, release at quit ---------------------------------------------------------------
+
+const NONCE = '0123456789abcdef';
+const FIT_FORMAT = ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}', '#{@nika-role}', '#{window_active_clients}'].join('\t');
+
+/**
+ * A tmux with one single-pane window, @1 (pane %6 running claude, as the synthetic machine has it), that answers the fit's argv shapes
+ * and hands everything else to `base`. `st.gate(name)` may return a promise that holds a call; every fit call is recorded in `st.calls`.
+ */
+function fitTmux(base, { tag = '', w = 100, h = 30 } = {}) {
+  const st = { tag, w, h, calls: [], gate: () => undefined };
+  const exec = async (cmd, args) => {
+    const a = args.slice(1);
+    const name = cmd !== 'tmux' || args[0] !== '-u' ? null
+      : a[0] === 'list-panes' && a[3] === FIT_FORMAT ? 'list'
+        : a[0] === 'show-options' ? 'option'
+          : a[0] === 'display-message' && a[5] === '#{window_layout}' ? 'layout'
+            : a[0] === 'set-option' && a.includes('@nika-fit') ? (a[1] === '-wu' ? 'untag' : 'tag')
+              : a[0] === 'set-option' && a[1] === '-wu' ? 'optUnset'
+                : a[0] === 'resize-window' ? 'size'
+                  : a[0] === 'select-layout' ? 'select'
+                    : null;
+    if (!name) return base(cmd, args);
+    st.calls.push(name);
+    const held = st.gate(name);
+    if (held) await held;
+    switch (name) {
+      case 'list': return { stdout: `%6\t@1\t1\t0\t1\t${st.w}\t${st.h}\t${st.w}\t${st.h}\tclaude\t${st.tag}\t\t0\n`, stderr: '' };
+      case 'layout': return { stdout: `{"w":${st.w},"h":${st.h}}\n`, stderr: '' };
+      case 'tag': st.tag = a[5]; return { stdout: '', stderr: '' };
+      case 'untag': st.tag = ''; return { stdout: '', stderr: '' };
+      case 'size': st.w = Number(a[4]); st.h = Number(a[6]); return { stdout: '', stderr: '' };
+      case 'select': { const L = JSON.parse(a[4]); st.w = L.w; st.h = L.h; return { stdout: '', stderr: '' }; }
+      default: return { stdout: '', stderr: '' };
+    }
+  };
+  exec.st = st;
+  return exec;
+}
+const fitDirOf = (h) => path.join(h.base, 'state', 'nika', 'fit');
+/** The lease file of a fit that was cut short at 120 x 40 (the window was 100 x 30 before). */
+const leaseFile = (over = {}) => ({
+  v: 1, nonce: NONCE, window: '@1', pane: '%6', panes: 1, zoomed0: 0, active0: '%6', width0: 100, height0: 30, size0: null,
+  layout0: '{"w":100,"h":30}', layout1: '{"w":120,"h":40}', cols: 120, rows: 40, resized: true, userZoom: false, at: 1, ...over,
+});
+function plant(h, content = leaseFile(), name = `fit-${NONCE}.json`) {
+  fs.mkdirSync(fitDirOf(h), { recursive: true, mode: 0o700 });
+  fs.chmodSync(fitDirOf(h), 0o700);
+  fs.writeFileSync(path.join(fitDirOf(h), name), typeof content === 'string' ? content : JSON.stringify(content), { mode: 0o600 });
+}
+const filesOf = (h) => (fs.existsSync(fitDirOf(h)) ? fs.readdirSync(fitDirOf(h)).sort() : []);
+const FIT_PUT = { json: { cols: 120, rows: 40, open: true } };
+
+describe('the fit: recover() at start, releaseAll() at finish (design W7 section 6)', () => {
+  test('(+) start() restores the window a crash left (lease file, tag still ours) and only then says ready; the file is gone', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: NONCE, w: 120, h: 40 });
+    let gate;
+    const gated = new Promise((res) => { gate = res; });
+    tmux.st.gate = (name) => (name === 'size' ? gated : undefined);
+    const h = harness({ exec: tmux });
+    plant(h);
+    h.send(hello());
+    await sleep(150);
+    assert.deepEqual(tmux.st.calls.slice(0, 3), ['list', 'layout', 'size'], 'the restore began');
+    assert.equal(h.lines().some((l) => l.type === 'ready'), false, 'no ready while the restore runs');
+    gate();
+    const ready = await h.waitFor((l) => l.type === 'ready');
+    h.port = ready.port;
+    assert.deepEqual([tmux.st.w, tmux.st.h, tmux.st.tag], [100, 30, ''], 'the window is as before when ready is sent');
+    assert.deepEqual(filesOf(h), []);
+    assert.equal((await h.call('GET', '/api/app/me')).status, 200);
+    await h.close();
+  });
+
+  test('(+) a lease file for a window tmux no longer has (a restarted server) is dropped without a tmux change; ready follows', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: '', w: 100, h: 30 }); // the tag is not ours: this is another window
+    const h = harness({ exec: tmux });
+    plant(h);
+    await h.up();
+    assert.deepEqual(tmux.st.calls, ['list']);
+    assert.deepEqual([tmux.st.w, tmux.st.h], [100, 30]);
+    assert.deepEqual(filesOf(h), []);
+    await h.close();
+  });
+
+  test('(−) a hung tmux cannot hold ready back past the bound; the file stays for the next start', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: NONCE, w: 120, h: 40 });
+    tmux.st.gate = (name) => (name === 'list' ? new Promise(() => {}) : undefined);
+    const h = harness({ exec: tmux, releaseMs: 120 });
+    plant(h);
+    const t0 = Date.now();
+    await h.up();
+    assert.ok(Date.now() - t0 < 2000, `ready came after ${Date.now() - t0} ms`);
+    assert.deepEqual(filesOf(h), [`fit-${NONCE}.json`]);
+    tmux.st.gate = () => undefined;
+    await h.close();
+  });
+
+  test('(+) no fit folder, no tmux call at start', async () => {
+    const tmux = fitTmux(fakeExec());
+    const h = harness({ exec: tmux });
+    await h.up();
+    assert.deepEqual(tmux.st.calls, []);
+    await h.close();
+  });
+
+  test('(−) a lease file that is not a plain valid file does not stop the start: it is unlinked (invalid) or left alone (a link)', async () => {
+    const tmux = fitTmux(fakeExec());
+    const h = harness({ exec: tmux });
+    plant(h, '{not json');
+    const outside = path.join(h.base, 'outside.json');
+    fs.writeFileSync(outside, JSON.stringify(leaseFile()));
+    fs.symlinkSync(outside, path.join(fitDirOf(h), 'fit-aaaaaaaaaaaaaaaa.json'));
+    await h.up();
+    assert.deepEqual(filesOf(h), ['fit-aaaaaaaaaaaaaaaa.json']);
+    assert.ok(fs.existsSync(outside));
+    assert.deepEqual(tmux.st.calls, []);
+    await h.close();
+  });
+
+  test('(+) finish() gives every held window back before the exit code resolves, and the file goes', async () => {
+    const tmux = fitTmux(fakeExec());
+    const h = harness({ exec: tmux });
+    await h.up();
+    const r = await h.call('PUT', '/api/app/pane/%256/fit', FIT_PUT);
+    assert.deepEqual([r.status, r.body.fit.state, r.body.fit.pane], [200, 'fitted', { cols: 120, rows: 40 }], JSON.stringify(r.body));
+    assert.deepEqual([tmux.st.w, tmux.st.h, tmux.st.tag === ''], [120, 40, false]);
+    assert.equal(filesOf(h).length, 1);
+    let gate;
+    const gated = new Promise((res) => { gate = res; });
+    tmux.st.gate = (name) => (name === 'size' ? gated : undefined);
+    let code = null;
+    h.done.then((c) => { code = c; });
+    h.stdin.end();
+    await sleep(150);
+    assert.equal(code, null, 'the exit code waits for the restore');
+    gate();
+    assert.equal(await h.done, 0);
+    assert.deepEqual([tmux.st.w, tmux.st.h, tmux.st.tag], [100, 30, ''], 'the window is back at its size, untagged');
+    assert.deepEqual(filesOf(h), []);
+  });
+
+  test('(+) a quit with no lease runs no tmux call', async () => {
+    const quiet = fitTmux(fakeExec());
+    const q = harness({ exec: quiet });
+    await q.up();
+    await q.close();
+    assert.deepEqual(quiet.st.calls, []);
+  });
+
+  test('(−) a hung tmux cannot hold the exit back past the bound: finish still resolves 0; the file stays for the next start', async () => {
+    const tmux = fitTmux(fakeExec());
+    const h = harness({ exec: tmux, releaseMs: 150 });
+    await h.up();
+    assert.equal((await h.call('PUT', '/api/app/pane/%256/fit', FIT_PUT)).status, 200);
+    tmux.st.gate = (name) => (name === 'list' ? new Promise(() => {}) : undefined);
+    const t0 = Date.now();
+    h.stdin.end();
+    assert.equal(await h.done, 0);
+    assert.ok(Date.now() - t0 < 2000, `exit came after ${Date.now() - t0} ms`);
+    assert.equal(filesOf(h).length, 1, 'the lease file is left for recover() at the next start');
+  });
+
+  test('(−) once finish() has begun the server takes no new request, so a late heartbeat cannot fit a window again', async () => {
+    const tmux = fitTmux(fakeExec());
+    const h = harness({ exec: tmux });
+    await h.up();
+    assert.equal((await h.call('PUT', '/api/app/pane/%256/fit', FIT_PUT)).status, 200);
+    tmux.st.gate = (name) => (name === 'size' ? new Promise((res) => setTimeout(res, 300)) : undefined);
+    h.stdin.end();
+    await sleep(100);
+    await assert.rejects(h.call('PUT', '/api/app/pane/%256/fit', { json: { cols: 130, rows: 45, open: true } }), { code: 'ECONNREFUSED' });
+    assert.equal(await h.done, 0);
+    assert.deepEqual([tmux.st.w, tmux.st.h, tmux.st.tag], [100, 30, '']);
+  });
+
+  test('(+) a start that is cut short while it recovers ends cleanly, with no ready line', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: NONCE, w: 120, h: 40 });
+    let gate;
+    tmux.st.gate = (name) => (name === 'size' ? new Promise((res) => { gate = res; }) : undefined);
+    const h = harness({ exec: tmux });
+    plant(h);
+    h.send(hello());
+    await sleep(100);
+    h.stdin.end();
+    await sleep(50);
+    gate?.();
+    assert.equal(await h.done, 0);
+    assert.equal(h.lines().some((l) => l.type === 'ready'), false);
+  });
+});
+
+// --- quit (R3 F1, final review): the shell sends SIGTERM 2 s after it closes stdin (app/src-tauri/src/child.rs), and the fit's release may
+// take 3 s (RELEASE_ALL_MS). finish() has to keep a SIGTERM listener until the release is done, or the default action ends the process
+// halfway through the restore and the window stays zoomed or at a manual size until the next start.
+
+describe('quit: a SIGTERM during the fit release does not end the process (R3 F1)', () => {
+  test('(+) finish() holds a SIGTERM listener while the release runs and drops it when the release is done; (−) without a release nothing is held', async () => {
+    const tmux = fitTmux(fakeExec());
+    const before = process.listenerCount('SIGTERM');
+    const h = harness({ exec: tmux });
+    assert.equal(process.listenerCount('SIGTERM'), before + 1, 'the running server listens (stop)');
+    await h.up();
+    assert.equal((await h.call('PUT', '/api/app/pane/%256/fit', FIT_PUT)).status, 200);
+    let gate;
+    tmux.st.gate = (name) => (name === 'size' ? new Promise((res) => { gate = res; }) : undefined);
+    const fitted = tmux.st.calls.length;
+    h.stdin.end();
+    await sleep(120);
+    assert.ok(tmux.st.calls.length > fitted && tmux.st.calls.at(-1) === 'size', `the restore is held at its resize: ${tmux.st.calls.slice(fitted)}`);
+    assert.equal(process.listenerCount('SIGTERM'), before + 1, 'one listener is held during the release, so Node does not take its default action');
+    gate();
+    assert.equal(await h.done, 0);
+    assert.equal(process.listenerCount('SIGTERM'), before, 'dropped once the release is done: nothing leaks');
+    // a quit with nothing to release, and a start that never got to run, hold nothing either
+    const quiet = harness({ exec: fitTmux(fakeExec()) });
+    await quiet.up();
+    await quiet.close();
+    assert.equal(process.listenerCount('SIGTERM'), before);
+    const refused = harness({ tty: true });
+    assert.equal(await refused.done, 2);
+    assert.equal(process.listenerCount('SIGTERM'), before);
+  });
+
+  test('(−) a hung release is still bounded by releaseMs, and the listener is gone after the bound', async () => {
+    const tmux = fitTmux(fakeExec());
+    const before = process.listenerCount('SIGTERM');
+    const h = harness({ exec: tmux, releaseMs: 150 });
+    await h.up();
+    assert.equal((await h.call('PUT', '/api/app/pane/%256/fit', FIT_PUT)).status, 200);
+    tmux.st.gate = (name) => (name === 'list' ? new Promise(() => {}) : undefined);
+    h.stdin.end();
+    assert.equal(await h.done, 0);
+    assert.equal(process.listenerCount('SIGTERM'), before);
+  });
+
+  /**
+   * A real process: serveApp on its own stdio with the same synthetic tmux as the harness (fitTmux, shipped to the child as source), whose
+   * `resize-window` takes `slowMs` once arm() has been called (after the window is fitted, so only the restore is slow). It writes where
+   * the window ended up when it exits on its own.
+   */
+  async function realProcess({ slowMs }) {
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const base = path.join(ROOT, `sigterm-${counter += 1}`);
+    fs.mkdirSync(base, { recursive: true });
+    const outFile = path.join(base, 'final.json');
+    const armFile = path.join(base, 'armed'); // the restore step is slow once this file exists (after the window was fitted)
+    const script = `
+      import fs from 'node:fs';
+      import { serveApp } from ${JSON.stringify(path.join(root, 'src', 'appio.js'))};
+      import { fakeExec } from ${JSON.stringify(path.join(root, 'test', 'helpers.js'))};
+      const FIT_FORMAT = ${JSON.stringify(FIT_FORMAT)};
+      ${fitTmux.toString()}
+      const tmux = fitTmux(fakeExec(), {});
+      tmux.st.gate = (name) => (name === 'size' && fs.existsSync(${JSON.stringify(armFile)}) ? (process.stderr.write('slow-release\\n'), new Promise((ok) => setTimeout(ok, ${slowMs}))) : undefined);
+      process.on('exit', () => fs.writeFileSync(${JSON.stringify(outFile)}, JSON.stringify({ w: tmux.st.w, h: tmux.st.h, tag: tmux.st.tag })));
+      process.exitCode = await serveApp({ config: ${JSON.stringify(fx.config)}, env: process.env, stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, exec: tmux, now: () => ${NOW} });
+    `;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { PATH: process.env.PATH, NIKA_CONFIG_DIR: path.join(base, 'cfg'), XDG_STATE_HOME: path.join(base, 'state'), CLAUDE_CONFIG_DIR: fx.claudeDir, NIKA_TMP_ROOT: fx.tmpRoot, NIKA_TMUX: 'tmux', NIKA_CLAUDE: '/nonexistent/claude' },
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (c) => { out += c; });
+    child.stderr.on('data', (c) => { err += c; });
+    const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })));
+    const killer = setTimeout(() => child.kill('SIGKILL'), 8000);
+    const until = async (pred) => { for (let i = 0; i < 400 && !pred(); i += 1) await sleep(25); return pred(); };
+    child.stdin.write(hello());
+    assert.equal(await until(() => out.includes('"ready"')), true, `no ready line; stderr: ${err}`);
+    const port = JSON.parse(out.split('\n')[0]).port;
+    return {
+      child, err: () => err, port,
+      fit: () => new Promise((resolve, reject) => {
+        const payload = JSON.stringify(FIT_PUT.json);
+        const r = http.request({ host: '127.0.0.1', port, method: 'PUT', path: '/api/app/pane/%256/fit', agent: false, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+        r.on('error', reject);
+        r.end(payload);
+      }),
+      arm: () => fs.writeFileSync(armFile, ''),
+      slow: () => until(() => err.includes('slow-release')),
+      exit: async () => { const r = await exited; clearTimeout(killer); return r; },
+      final: () => JSON.parse(fs.readFileSync(outFile, 'utf8')),
+    };
+  }
+
+  test('(+) a SIGTERM that lands during the release (the shell sends it 2 s after closing stdin): the restore finishes first, then the exit is 0; the window is back, untagged', async () => {
+    const p = await realProcess({ slowMs: 700 });
+    assert.equal(await p.fit(), 200, p.err());
+    p.arm();
+    p.child.stdin.end();
+    assert.equal(await p.slow(), true, `the release never began; stderr: ${p.err()}`);
+    p.child.kill('SIGTERM');
+    assert.deepEqual(await p.exit(), { code: 0, signal: null }, p.err()); // without the held listener: { code: null, signal: 'SIGTERM' } (shell status 143)
+    assert.deepEqual(p.final(), { w: 100, h: 30, tag: '' }, 'the restore ran to its end');
+  });
+
+  test('(−) a SIGTERM with no release running keeps today\'s behavior: the server stops at once, exit 0', async () => {
+    const p = await realProcess({ slowMs: 700 });
+    const t0 = Date.now();
+    p.child.kill('SIGTERM'); // running, nothing fitted: stop() → finish(0)
+    p.child.stdin.end(); // the child script keeps no exit of its own: the process leaves when its stdin pipe is closed (the shell closes it first, in the app)
+    assert.deepEqual(await p.exit(), { code: 0, signal: null }, p.err());
+    assert.ok(Date.now() - t0 < 3000, `exit came after ${Date.now() - t0} ms`);
+    assert.deepEqual(p.final(), { w: 100, h: 30, tag: '' });
+  });
+
+  test('(+) a SIGTERM while running with a window held: stop() begins the release and a second SIGTERM during it does not cut it short', async () => {
+    const p = await realProcess({ slowMs: 700 });
+    assert.equal(await p.fit(), 200, p.err());
+    p.arm();
+    p.child.kill('SIGTERM'); // the quit starts from the signal: stop() → finish(0)
+    p.child.stdin.end();
+    assert.equal(await p.slow(), true, `the release never began; stderr: ${p.err()}`);
+    p.child.kill('SIGTERM');
+    assert.deepEqual(await p.exit(), { code: 0, signal: null }, p.err());
+    assert.deepEqual(p.final(), { w: 100, h: 30, tag: '' });
+  });
+});
+
+// --- R3 F10 (final review): the real module behind the route, not a source check ----------------------------------------------
+
+describe('GET /api/app/session/:id/subagents/:agentId/history through serveApp (R3 F10)', () => {
+  const SESSION = '12121212-1212-4212-8212-121212121212';
+  const AGENT = 'a0000000000000001';
+  const ts = (i) => new Date(Date.UTC(2026, 10, 7, 12, 0, i)).toISOString();
+  const user = (text, i) => ({ type: 'user', timestamp: ts(i), message: { role: 'user', content: text } });
+  const say = (text, i) => ({ type: 'assistant', timestamp: ts(i), message: { role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text }] } });
+  const lines = (...ls) => `${ls.map((l) => JSON.stringify(l)).join('\n')}\n`;
+
+  /** A synthetic Claude dir: one session with its own transcript and one subagent transcript, with different texts. */
+  function claudeWithSubagent() {
+    const claudeDir = path.join(ROOT, `sub-claude-${counter += 1}`);
+    const dir = path.join(claudeDir, 'projects', '-demo-project');
+    fs.mkdirSync(path.join(dir, SESSION, 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(dir, `${SESSION}.jsonl`), lines(user('parent question', 1), say('parent answer', 2)));
+    fs.writeFileSync(path.join(dir, SESSION, 'subagents', `agent-${AGENT}.jsonl`), lines(user('child question', 3), say('child answer', 4)));
+    fs.writeFileSync(path.join(dir, SESSION, 'subagents', `agent-${AGENT}.meta.json`), JSON.stringify({ agentType: 'Explore', description: 'List files', finished: true }));
+    return { ...fx.config, claudeDir };
+  }
+  const get = (h, id, agent, q = '') => h.call('GET', `/api/app/session/${id}/subagents/${agent}/history${q}`);
+
+  test('(+) the route reads the subagent\'s own transcript (not the session\'s) and pages it', async () => {
+    const h = harness({ config: claudeWithSubagent() });
+    await h.up();
+    try {
+      const r = await get(h, SESSION, AGENT);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(r.body.entries.map((e) => e.text), ['child question', 'child answer']);
+      assert.equal(r.body.nextBefore, null);
+      const page = await get(h, SESSION, AGENT, '?limit=1');
+      assert.deepEqual(page.body.entries.map((e) => e.text), ['child answer']);
+      assert.equal(typeof page.body.nextBefore, 'number');
+      const own = await h.call('GET', `/api/app/session/${SESSION}/history`);
+      assert.deepEqual(own.body.entries.map((e) => e.text), ['parent question', 'parent answer'], 'control: the session\'s own history is the other transcript');
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('(−) an agent id the session has no transcript for, a malformed one and an unknown session are the route\'s 404s, with nothing read', async () => {
+    const h = harness({ config: claudeWithSubagent() });
+    await h.up();
+    try {
+      const unknown = await get(h, SESSION, 'a0000000000000002');
+      assert.deepEqual([unknown.status, unknown.body.error, unknown.body.message], [404, 'not_found', 'no such subagent']);
+      const malformed = await get(h, SESSION, 'a.b');
+      assert.deepEqual([malformed.status, malformed.body.error, malformed.body.message], [404, 'not_found', 'no such subagent']);
+      const nosession = await get(h, '99999999-9999-4999-8999-999999999999', AGENT);
+      assert.deepEqual([nosession.status, nosession.body.error], [404, 'not_found']);
+      const notUuid = await get(h, 'nope', AGENT);
+      assert.deepEqual([notUuid.status, notUuid.body.message], [404, 'no such session']);
+      const noSecret = await h.call('GET', `/api/app/session/${SESSION}/subagents/${AGENT}/history`, { headers: { 'x-nika-app': OTHER } });
+      assert.equal(noSecret.status, 403);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe('the attachment store: started after ready, stopped at finish (0.5, W2)', () => {
+  const KEY = 'a1b2c3d4e5f60718';
+  const DAY = 24 * 60 * 60 * 1000;
+  /** Plants two synthetic attachment files in the harness's own state dir: one older than the default 7 days, one younger. */
+  function plantFiles(h) {
+    const root = path.join(h.env.XDG_STATE_HOME, 'nika', 'attachments');
+    const dir = path.join(root, KEY);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const d of [path.join(h.env.XDG_STATE_HOME, 'nika'), root, dir]) fs.chmodSync(d, 0o700);
+    const old = path.join(dir, '1111111111111111.png');
+    const young = path.join(dir, '2222222222222222.png');
+    for (const [file, age] of [[old, 8 * DAY], [young, 1 * DAY]]) {
+      fs.writeFileSync(file, 'synthetic', { mode: 0o600 });
+      fs.utimesSync(file, (NOW - age) / 1000, (NOW - age) / 1000);
+    }
+    return { old, young, dir };
+  }
+  const gone = async (file, ms = 3000) => {
+    for (let t = 0; t < ms; t += 20) {
+      if (!fs.existsSync(file)) return true;
+      await sleep(20);
+    }
+    return false;
+  };
+  /** A timer seam that records its calls and never fires. */
+  const timerSeam = () => {
+    const seam = { set: [], cleared: [] };
+    seam.setTimer = (fn, ms) => { const handle = { unref() {} }; seam.set.push([ms, handle]); return handle; };
+    seam.clearTimer = (handle) => { seam.cleared.push(handle); };
+    return seam;
+  };
+
+  test('(+) after the ready line the store prunes: a file older than keepDays is removed, a younger one stays', async () => {
+    const h = harness({ attachments: timerSeam() });
+    const { old, young } = plantFiles(h);
+    await sleep(60);
+    assert.deepEqual([fs.existsSync(old), fs.existsSync(young)], [true, true], 'nothing is pruned before the handshake');
+    await h.up();
+    assert.equal(await gone(old), true, 'the old file was pruned');
+    assert.equal(fs.existsSync(young), true);
+    await h.close();
+    h.noSecret();
+  });
+
+  test('(+) one daily timer (24 h) is set after ready, and finish() stops that very timer', async () => {
+    const seam = timerSeam();
+    const h = harness({ attachments: seam });
+    assert.deepEqual(seam.set, [], 'no timer before the hello');
+    await h.up();
+    assert.equal(seam.set.length, 1);
+    assert.equal(seam.set[0][0], DAY);
+    assert.deepEqual(seam.cleared, [], 'running: nothing stopped');
+    assert.equal(await h.close(), 0);
+    assert.equal(seam.cleared.length, 1);
+    assert.equal(seam.cleared[0], seam.set[0][1]);
+  });
+
+  test('(−) a refused start (a bad hello, or no hello in time) never starts the store: no timer, no pruning', async () => {
+    const seam = timerSeam();
+    const bad = harness({ attachments: seam });
+    const { old } = plantFiles(bad);
+    bad.send(hello('x'.repeat(10)));
+    assert.equal(await bad.done, 2);
+    const late = harness({ attachments: seam, helloMs: 80 });
+    assert.equal(await late.done, 2);
+    await sleep(60);
+    assert.deepEqual(seam.set, []);
+    assert.equal(fs.existsSync(old), true);
+  });
+
+  test('(−) stdin closing while the server is still starting leaves no timer running', async () => {
+    const seam = timerSeam();
+    const tmux = fakeExec();
+    const h = harness({ attachments: seam, exec: tmux });
+    h.send(hello());
+    h.stdin.end();
+    assert.equal(await h.done, 0);
+    assert.equal(seam.set.length, seam.cleared.length, 'every timer that was set was cleared');
+    for (const [, handle] of seam.set) assert.ok(seam.cleared.includes(handle));
+  });
+
+  test('(+) the store\'s log goes to stderr as `nika: attachments: <code>` lines only: a state dir whose attachments folder is a symlink is refused and the line has no path', async () => {
+    const h = harness({ attachments: timerSeam() });
+    const target = path.join(h.base, 'elsewhere');
+    fs.mkdirSync(target, { recursive: true });
+    const stateRoot = path.join(h.env.XDG_STATE_HOME, 'nika');
+    fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+    fs.chmodSync(stateRoot, 0o700);
+    fs.symlinkSync(target, path.join(stateRoot, 'attachments'));
+    await h.up();
+    for (let t = 0; t < 3000 && !/nika: attachments: /.test(h.err()); t += 20) await sleep(20);
+    const lines = h.err().split('\n').filter((l) => l.includes('attachments'));
+    assert.ok(lines.length >= 1, `a log line: ${JSON.stringify(h.err())}`);
+    for (const l of lines) assert.match(l, /^nika: attachments: [A-Z0-9_]{1,20}$/);
+    assert.equal(h.err().includes(h.base), false, 'no path of this machine on stderr');
+    await h.close();
+  });
+
+  test('(+) the app server serves the attachment routes with this store: a delete of an unknown id is { removed: false } and logs nothing; the routes are on the app tier only (no secret: 403)', async () => {
+    const h = harness({ attachments: timerSeam() });
+    await h.up();
+    const r = await h.call('DELETE', '/api/app/pane/%256/attachments/0123456789abcdef');
+    assert.deepEqual([r.status, r.body], [200, { removed: false }]);
+    assert.equal((await h.call('DELETE', '/api/app/pane/%256/attachments/0123456789abcdef', { headers: { 'x-nika-app': OTHER } })).status, 403);
+    assert.equal(h.err().includes('attachments'), false, 'no store error: the store is really wired in');
+    await h.close();
+  });
+  test('(+) the routes and the store share one log sink (M7): appio builds it once, from its own stderr, and hands it to the store and to the router', () => {
+    // No behavioral route test is possible here: the real store answers its refusals itself (a symlinked folder is 409 folder-unsafe)
+    // and a route logs only when the store throws, which it does not; api-app.test.js covers the routes with a store that throws.
+    const src = fs.readFileSync(new URL('../src/appio.js', import.meta.url), 'utf8');
+    assert.equal(src.match(/const attachLog = /g).length, 1, 'one sink');
+    assert.match(src, /const attachLog = attachOpts\.log \?\? \(\(line\) => stderr\.write\(`\$\{line\}\\n`\)\);/);
+    assert.match(src, /createAttachments\(\{ env, now, \.\.\.attachOpts, log: attachLog \}\)/);
+    assert.match(src, /^\s+log: attachLog,$/m, 'deps.log of the router');
+    assert.doesNotMatch(src, /process\.stderr/);
+  });
+
+  test('(+) the store\'s own lines still reach the given sink (the `attachments` seam), and stderr gets none of them', async () => {
+    const lines = [];
+    const h = harness({ attachments: { ...timerSeam(), log: (line) => lines.push(line) } });
+    const target = path.join(h.base, 'elsewhere');
+    fs.mkdirSync(target, { recursive: true });
+    const stateRoot = path.join(h.env.XDG_STATE_HOME, 'nika');
+    fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+    fs.chmodSync(stateRoot, 0o700);
+    fs.symlinkSync(target, path.join(stateRoot, 'attachments'));
+    try {
+      await h.up();
+      for (let t = 0; t < 3000 && lines.length === 0; t += 20) await sleep(20);
+      assert.ok(lines.length >= 1);
+      for (const l of lines) assert.match(l, /^nika: attachments: [A-Z0-9_]{1,20}$/);
+      assert.equal(h.err().includes('attachments'), false);
+    } finally {
+      await h.close();
+    }
   });
 });

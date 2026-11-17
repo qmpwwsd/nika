@@ -5,6 +5,9 @@ import crypto from 'node:crypto';
 import { loadConfig, setOrchestrator, effectiveModels, effectiveAgents } from './store.js';
 import { compactLaunch, WINDOW_ENV, PCT_ENV } from './compact.js';
 import { clean } from './text.js';
+import { paneDead } from './collect/tmux.js';
+import { NO_TMUX_SERVER } from './tmuxerr.js';
+import { isKind } from './labels.js';
 import { PROJECT_KEY, UUID, PANE_ID, TMUX_SESSION, RC_PREFIX, RC_NAME, CLAUDE_COMMAND } from './ids.js';
 
 /** `{ status, body }` with the common error body of contract §2. */
@@ -24,15 +27,17 @@ export const tmux = (ctx, ...args) => ctx.exec(ctx.tmuxBin, ['-u', ...args]);
  * Marks a pane nika created: `@nika-role` = orchestrator | sub-orchestrator | agent, so the main orchestrator is never confused
  * with the agents split into its window; `@nika-agent` = `<project key>/<name>` (an orchestrator's name is the constant
  * `orchestrator`), so maxAgents, the caps and the duplicate-name check count tmux's own record instead of agent-writable files (F5);
- * `depth` (1, 2 or 3, a constant) sets `@nika-depth` and `parent` (a pane id) `@nika-parent`, the tree of a nested spawn. Every value
- * is a constant, a validated name or a pane id: none has a `#` (set-option values are not format-expanded either way). Best effort:
+ * `depth` (1, 2 or 3, a constant) sets `@nika-depth` and `parent` (a pane id) `@nika-parent`, the tree of a nested spawn. `kind` (0.5, W9) sets
+ * `@nika-kind`, last, only on an agent pane and only when it is one of the seven words of KINDS (checked again here, so no other text reaches tmux).
+ * Every value is a constant, a validated name or a pane id: none has a `#` (set-option values are not format-expanded either way). Best effort:
  * the pane already runs, an untagged one is just not counted and never reused.
  */
-export async function tagPane(ctx, pane, role, agentTag, depth, parent) {
+export async function tagPane(ctx, pane, role, agentTag, depth, parent, kind) {
   await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-role', role).catch(() => {});
   if (agentTag) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-agent', agentTag).catch(() => {});
   if ([1, 2, 3].includes(depth)) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-depth', String(depth)).catch(() => {});
   if (typeof parent === 'string' && PANE_ID.test(parent)) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-parent', parent).catch(() => {});
+  if (role === 'agent' && isKind(kind)) await tmux(ctx, 'set-option', '-p', '-t', pane, '@nika-kind', kind).catch(() => {});
 }
 
 /** Maps a failed tmux call to an error response. */
@@ -172,20 +177,24 @@ const PANE_LIST = '#{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@nika-ro
  * sub-orchestrator or an agent never does). It is either tagged `<key>/orchestrator` for this project (the 0.4 tag, set on start, resume
  * and adopt) in any session, or it is a 0.3 pane with no `@nika-agent` tag in the project's own `session`, window `orchestrator`. That one,
  * or a tagged pane in the `orchestrator` window of `session`, wins over an adopted one. A tag of another project or another name never matches.
+ * Fails closed like spawn (0.5): only tmux's "no server running" answer means there is none; any other listing failure (tmux missing
+ * included) is thrown for the caller's tmuxFail (502 tmux_failed, 503 when tmux is not installed), so a listing nika could not read never
+ * lets Start open a second orchestrator.
  */
 async function findOrchestratorPane(ctx, session, key) {
   let stdout;
   try {
     ({ stdout } = await tmux(ctx, 'list-panes', '-a', '-F', PANE_LIST));
   } catch (err) {
-    if (err?.code === 'ENOENT') throw err;
-    return null; // no tmux server running: no orchestrator
+    if (NO_TMUX_SERVER.test(String(err?.stderr || err?.message || ''))) return null; // no tmux server running: no orchestrator
+    throw err;
   }
   let adopted = null;
   for (const line of String(stdout).split('\n')) {
     const [id, command = '', dead = '', role = '', tag = '', where = '', ...window] = line.split('\t');
-    // a dead pane (remain-on-exit) still names its command claude (tmux falls back to the pane's argv): it is not an orchestrator
-    if (!PANE_ID.test(id ?? '') || dead.trim() === '1' || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
+    // a dead pane (remain-on-exit) still names its command claude (tmux falls back to the pane's argv): it is not an orchestrator; and a
+    // pane_dead that is not exactly 0 or 1 (paneDead, the listing's own rule) is unusable too
+    if (!PANE_ID.test(id ?? '') || paneDead(dead) !== false || role.trim() !== 'orchestrator' || !CLAUDE_COMMAND.test(command.trim())) continue;
     const inOrchestratorWindow = where === session && window.join('\t').trim() === 'orchestrator';
     if (tag !== `${key}/orchestrator` && !(tag === '' && inOrchestratorWindow)) continue;
     if (inOrchestratorWindow) return { id, session: where };
@@ -200,7 +209,9 @@ async function findOrchestratorPane(ctx, session, key) {
  * and `cleared: 'gone'` in the answer. A fresh start saves its own session id as the pick.
  * @param {string} projectKey registered PROJECT_KEY
  * @param {object} ctx { env, exec, tmuxBin, claudeBin, started: Map<paneId, { key, name, sessionId, role, mode }>,
- *                       findSession(id) → { agent, group } | null (src/model.js; needed only while a pick is saved) }
+ *                       findSession(id) → { agent, group } | null (src/model.js; needed only while a pick is saved),
+ *                       registryReadable?() → Promise<boolean> (the app tier: the session registry was read; asked only while a pick is saved,
+ *                       and anything but true is 503 index_unavailable before the pick is looked up) }
  * @returns {Promise<{ status: number, body: object }>} 200 { pane, session, sessionId, created, cleared? }
  */
 export async function startOrchestrator(projectKey, ctx) {
@@ -218,6 +229,13 @@ export async function startOrchestrator(projectKey, ctx) {
   let saved = null;
   if (pick) {
     if (typeof ctx.findSession !== 'function') return fail(500, 'internal', 'session lookup unavailable');
+    // The pick reads live only through the session registry. When that cannot be read (0.5), a live pick would read "ended" and be resumed
+    // in a second claude, so nothing is read or started: the same 503 as an unreadable transcript index. ctx.registryReadable() is the app
+    // tier's (src/api-app.js); a ctx without it (the CLI) is not asked. A hook that fails or answers anything but true is "not readable".
+    if (typeof ctx.registryReadable === 'function') {
+      const readable = await Promise.resolve().then(() => ctx.registryReadable()).catch(() => false);
+      if (readable !== true) return fail(503, 'index_unavailable', "nika couldn't check the saved orchestrator, so nothing was started");
+    }
     try {
       saved = await ctx.findSession(pick);
     } catch {

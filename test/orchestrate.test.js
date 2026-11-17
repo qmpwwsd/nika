@@ -3,7 +3,8 @@ import { test, describe, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { startOrchestrator, earlyExit, launchArgv, compactArgs, inProject, pickState, claudePane, sessionNameFor, reduceRc, tmuxLiteral } from '../src/orchestrate.js';
+import { startOrchestrator, earlyExit, launchArgv, compactArgs, inProject, pickState, claudePane, sessionNameFor, reduceRc, tmuxLiteral, tagPane } from '../src/orchestrate.js';
+import { KINDS } from '../src/ids.js';
 import { configDir } from '../src/paths.js';
 import { addProject, getOrchestrator, setOrchestrator, loadConfig, updateProjectConfig } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX, CLAUDE } from './tmux-fake.js';
@@ -488,6 +489,76 @@ describe('startOrchestrator: an orchestrator adopted in another tmux session (th
   });
 });
 
+describe('startOrchestrator: a listing nika cannot read, and a pane_dead it cannot parse (0.5, W11)', () => {
+  const sessionWith = (command, extra = {}) => fakeTmux({ panes: [{ id: '%3', session: 'My-App', window: 1, windowName: 'orchestrator', command, role: 'orchestrator', ...extra }] });
+
+  // 0.5 (W11): Start fails closed like spawn. Only "no server running" means "no orchestrator"; a listing that failed for any other reason
+  // proves nothing about who runs, so Start must not open a second orchestrator on top of one it could not see.
+  const brokenListing = (stderr, panes = []) => {
+    const inner = fakeTmux({ panes });
+    const exec = async (cmd, args) => {
+      if (args[1] === 'list-panes' && args.includes('-a')) {
+        exec.calls.push([cmd, ...args]);
+        throw Object.assign(new Error(stderr), { code: 1, stderr: `${stderr}\n` });
+      }
+      return inner(cmd, args);
+    };
+    exec.calls = inner.calls;
+    exec.of = (sub) => inner.calls.filter((c) => c[2] === sub).map((c) => c.slice(2));
+    exec.panes = inner.panes;
+    return exec;
+  };
+  const MADE = ['new-session', 'new-window', 'split-window', 'send-keys', 'set-option'];
+  const RUNNING = [{ id: '%3', session: 'My-App', window: 1, windowName: 'orchestrator', command: 'claude', role: 'orchestrator' }];
+
+  test('(−) a listing that fails for any reason but "no server" is 502 tmux_failed: no window, no session, no keys, nothing saved', async () => {
+    for (const stderr of ['list-panes failed', 'protocol version mismatch (client 8, server 7)', 'error connecting to /tmp/tmux-501/default (Permission denied)', 'server exited unexpectedly', 'lost server', 'unknown option -- F']) {
+      for (const panes of [RUNNING, []]) { // an orchestrator the listing could not show, and a project with no pane at all
+        const w = await world();
+        const exec = brokenListing(stderr, panes);
+        const ctx = w.ctx(exec);
+        const r = await startOrchestrator(w.project.key, ctx);
+        assert.equal(r.status, 502, `${stderr} / ${panes.length}`);
+        assert.equal(r.body.error, 'tmux_failed', stderr);
+        assert.match(r.body.message, /^tmux failed: /);
+        for (const sub of MADE) assert.deepEqual(exec.of(sub), [], `${stderr}: ${sub}`);
+        assert.equal(ctx.started.size, 0);
+        assert.equal(await getOrchestrator(w.project.key, w.env), null, 'no pick saved');
+      }
+    }
+  });
+
+  test('(+) "no server running" and the two "error connecting" forms of it still mean no orchestrator: a new session starts, as today', async () => {
+    for (const stderr of ['no server running on /tmp/tmux-501/default', 'error connecting to /tmp/tmux-501/default (No such file or directory)', 'error connecting to /tmp/tmux-501/default (Connection refused)']) {
+      const w = await world();
+      const exec = brokenListing(stderr);
+      const r = await startOrchestrator(w.project.key, w.ctx(exec));
+      assert.equal(r.status, 200, `${stderr}: ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.created, true, stderr);
+      assert.equal(exec.of('new-session').length, 1, stderr);
+    }
+  });
+
+  test('(−) a pane_dead that is not exactly 0 or 1 makes the row unusable, like a dead pane: it is not the orchestrator (Start opens a new window)', async () => {
+    for (const dead of ['', '2', 'x', ' 0', '01']) {
+      const w = await world();
+      const exec = sessionWith('claude', { dead, agent: `${w.project.key}/orchestrator` });
+      const r = await startOrchestrator(w.project.key, w.ctx(exec));
+      assert.equal(r.status, 200, JSON.stringify(dead));
+      assert.equal(r.body.created, true, JSON.stringify(dead));
+      assert.equal(exec.of('new-window').length, 1, JSON.stringify(dead));
+    }
+  });
+
+  test('(+) pane_dead 0 is a running orchestrator: Start answers its pane and creates nothing', async () => {
+    const w = await world();
+    const exec = sessionWith('claude', { dead: '0' });
+    const r = await startOrchestrator(w.project.key, w.ctx(exec));
+    assert.deepEqual(r, { status: 200, body: { pane: '%3', session: 'My-App', sessionId: null, created: false } });
+    assert.equal(exec.of('new-window').length + exec.of('new-session').length, 0);
+  });
+});
+
 describe('launchArgv: the one place that builds the orchestrator\'s claude arguments', () => {
   const project = { key: '0123456789abcdef', name: 'My App' };
   const cfg = (over = {}) => ({ models: { orchestrator: 'claude-fable-5-1' }, permissionMode: 'default', panePlacement: 'beside', limits: { maxAgents: 3 }, remoteControl: { enabled: false, prefix: '' }, ...over });
@@ -714,6 +785,44 @@ describe('startOrchestrator: the saved orchestrator (the project\'s pick)', () =
     assert.deepEqual([r.status, r.body.error], [503, 'index_unavailable']);
     assert.deepEqual(exec.calls, []);
     assert.equal(await pickNow(w), PICK);
+  });
+
+  // R1 F2 (final review): an unreadable session registry cannot tell a live pick from an ended one, so Start answers before it reads the pick
+  test('(−) the session registry cannot be read (ctx.registryReadable → false): 503 index_unavailable before the pick is looked up; no tmux command, no claude, the pick stays', async () => {
+    for (const hook of [async () => false, async () => { throw new Error('collect failed'); }, async () => undefined, async () => 'ok']) {
+      const w = await world();
+      await setOrchestrator(w.project.key, PICK, w.env);
+      const exec = fakeTmux();
+      let looked = 0;
+      const ctx = w.ctx(exec, { registryReadable: hook, findSession: async (id) => { looked += 1; return sessionLookup({}, w.project.key)(id); } });
+      const r = await startOrchestrator(w.project.key, ctx);
+      assert.deepEqual([r.status, r.body.error], [503, 'index_unavailable'], String(hook));
+      assert.equal(typeof r.body.message, 'string');
+      assert.equal(looked, 0, 'the pick is not read');
+      assert.deepEqual(exec.calls, [], 'no pane, no claude');
+      assert.equal(ctx.started.size, 0);
+      assert.equal(await pickNow(w), PICK);
+    }
+  });
+
+  test('(+) the registry reads fine (registryReadable → true): the ended pick is resumed as before; a missing hook (the CLI) changes nothing', async () => {
+    for (const extra of [{ registryReadable: async () => true }, {}]) {
+      const w = await world();
+      await setOrchestrator(w.project.key, PICK, w.env);
+      const exec = fakeTmux();
+      const r = await startOrchestrator(w.project.key, w.ctx(exec, { findSession: sessionLookup({}, w.project.key), ...extra }));
+      assert.deepEqual([r.status, r.body.sessionId, r.body.created], [200, PICK, true], JSON.stringify(Object.keys(extra)));
+      assert.deepEqual(claudeFlags(exec.of('new-session')[0]).slice(0, 2), ['--resume', PICK]);
+    }
+  });
+
+  test('(+) without a saved pick the registry does not matter: a fresh start runs even when it cannot be read, and the hook is not asked', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    let asked = 0;
+    const r = await startOrchestrator(w.project.key, w.ctx(exec, { registryReadable: async () => { asked += 1; return false; } }));
+    assert.deepEqual([r.status, r.body.created], [200, true]);
+    assert.equal(asked, 0);
   });
 
   test('(−) a pick with no way to look it up fails closed: no tmux command, the pick stays', async () => {
@@ -1245,5 +1354,83 @@ describe('startOrchestrator: the compaction pair does not stay in the project se
     const live = fakeTmux();
     await startOrchestrator(v.project.key, v.ctx(live, { findSession: sessionLookup({ live: true, pane: PICK_PANE }, v.project.key) }));
     assert.deepEqual(live.calls, []);
+  });
+});
+
+describe('tagPane: the kind tag (0.5, W9)', () => {
+  const KEY = '0123456789abcdef';
+  const SET = (pane, name, value) => [TMUX, '-u', 'set-option', '-p', '-t', pane, name, value];
+  /** A recording tmux: every call is kept; `failOn` names the option whose set-option call rejects. */
+  const recorder = (failOn) => {
+    const calls = [];
+    const exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (failOn && args.includes(failOn)) throw Object.assign(new Error('set-option failed'), { code: 1, stderr: 'set-option failed\n' });
+      return { stdout: '', stderr: '' };
+    };
+    return { calls, ctx: { tmuxBin: TMUX, exec } };
+  };
+  const kindCalls = (calls) => calls.filter((c) => c.includes('@nika-kind'));
+
+  test('(+) an agent pane gets @nika-kind <word> as the last call, after @nika-parent, with the argv of the design byte for byte', async () => {
+    const { calls, ctx } = recorder();
+    await tagPane(ctx, '%7', 'agent', `${KEY}/builder-1`, 3, '%2', 'tester');
+    assert.deepEqual(calls, [
+      SET('%7', '@nika-role', 'agent'),
+      SET('%7', '@nika-agent', `${KEY}/builder-1`),
+      SET('%7', '@nika-depth', '3'),
+      SET('%7', '@nika-parent', '%2'),
+      SET('%7', '@nika-kind', 'tester'),
+    ]);
+  });
+
+  test('(+) an agent pane with no parent: role, agent, depth, kind; @nika-role stays the first call', async () => {
+    const { calls, ctx } = recorder();
+    await tagPane(ctx, '%7', 'agent', `${KEY}/builder-1`, 1, undefined, 'coder');
+    assert.deepEqual(calls.map((c) => c[6]), ['@nika-role', '@nika-agent', '@nika-depth', '@nika-kind']);
+    assert.deepEqual(calls.at(-1), SET('%7', '@nika-kind', 'coder'));
+  });
+
+  test('(+) each of the seven words is set as itself', async () => {
+    for (const kind of KINDS) {
+      const { calls, ctx } = recorder();
+      await tagPane(ctx, '%9', 'agent', `${KEY}/a`, 1, undefined, kind);
+      assert.deepEqual(kindCalls(calls), [SET('%9', '@nika-kind', kind)], kind);
+    }
+  });
+
+  test('(−) no @nika-kind call for an orchestrator or a sub-orchestrator, whatever kind is passed', async () => {
+    for (const role of ['orchestrator', 'sub-orchestrator']) {
+      const { calls, ctx } = recorder();
+      await tagPane(ctx, '%7', role, `${KEY}/x`, 2, '%1', 'coder');
+      assert.deepEqual(kindCalls(calls), [], role);
+      assert.equal(calls[0][6], '@nika-role');
+    }
+  });
+
+  test('(−) no @nika-kind call when the kind is not a word of the list: another word, case, padding, empty, null, undefined, not a string', async () => {
+    for (const kind of ['boss', 'Coder', 'coder ', ' coder', '', 'sub-orchestrator', null, undefined, 5, ['coder'], { toString: () => 'coder' }, 'coder\n', '$(id)', '%5']) {
+      const { calls, ctx } = recorder();
+      await tagPane(ctx, '%7', 'agent', `${KEY}/a`, 1, undefined, kind);
+      assert.deepEqual(kindCalls(calls), [], JSON.stringify(kind));
+      assert.equal(calls.length, 3, `the other tags are set as before: ${JSON.stringify(kind)}`);
+    }
+  });
+
+  test('(−) a failing kind call does not throw and the earlier tags stand; a failing earlier call does not stop the kind', async () => {
+    const failKind = recorder('@nika-kind');
+    await assert.doesNotReject(tagPane(failKind.ctx, '%7', 'agent', `${KEY}/a`, 1, undefined, 'coder'));
+    assert.equal(failKind.calls.length, 4);
+    const failRole = recorder('@nika-role');
+    await assert.doesNotReject(tagPane(failRole.ctx, '%7', 'agent', `${KEY}/a`, 1, undefined, 'coder'));
+    assert.deepEqual(kindCalls(failRole.calls), [SET('%7', '@nika-kind', 'coder')]);
+  });
+
+  test('(−) the orchestrator start never sets a kind: fresh start, tags are role, agent and depth only', async () => {
+    const w = await world();
+    const exec = fakeTmux();
+    assert.equal((await startOrchestrator(w.project.key, w.ctx(exec))).status, 200);
+    const names = exec.of('set-option').map((c) => c[4]);
+    assert.deepEqual(names, ['@nika-role', '@nika-agent', '@nika-depth']);
   });
 });

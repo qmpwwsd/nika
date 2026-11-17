@@ -34,7 +34,7 @@ describe('collect', () => {
     assert.equal(a.gitBranch, 'feat/x');
     assert.deepEqual(a.pane, { id: '%5', session: 'work', title: '[%5] build-7-1', command: 'zsh' });
     assert.equal(a.bridgeUrl, 'https://claude.ai/code/session_01AbCdEf');
-    assert.deepEqual(a.report, { name: 'build-7-1', status: 'STATUS: RUNNING 7.1 build', rc: null, hasFile: true });
+    assert.deepEqual(a.report, { name: 'build-7-1', status: 'STATUS: RUNNING 7.1 build', rc: null, hasFile: true, sessionId: SID.busy });
     assert.equal(a.resumeCmd, `cd ${shellQuote(fx.wt)} && claude --resume ${SID.busy}`);
   });
 
@@ -52,6 +52,47 @@ describe('collect', () => {
     assert.equal(a.subagents.length, 2);
     assert.deepEqual(a.subagents.map((x) => [x.id, x.state]), [['bbb222', 'running'], ['aaa111', 'finished']]);
     assert.equal(a.subagents[0].modelLabel, 'Sonnet (latest)');
+  });
+
+  test('(+) a snapshot subagent has exactly the eight fields of the contract (the seven of W8 and the label of W9): no toolUseId, no path, no transcript text', async () => {
+    const a = byId(await snap(), SID.busy);
+    assert.ok(a.subagents.length >= 2);
+    for (const s of a.subagents) assert.deepEqual(Object.keys(s).sort(), ['description', 'id', 'label', 'lastActivity', 'model', 'modelLabel', 'state', 'type']);
+  });
+
+  test('(+) a meta that names a toolUseId and only a pickedEffortModel (Claude Code 2.1.325) gets its model label; the tool-use id stays out of the whole snapshot', async () => {
+    const fx2 = makeFixture();
+    try {
+      const dirs = fs.readdirSync(path.join(fx2.claudeDir, 'projects')).map((n) => path.join(fx2.claudeDir, 'projects', n, SID.busy, 'subagents')).filter((d) => fs.existsSync(d));
+      assert.equal(dirs.length, 1);
+      fs.writeFileSync(path.join(dirs[0], 'agent-a0000000000000001.meta.json'), JSON.stringify({ agentType: 'Explore', description: 'List files', toolUseId: 'toolu_01111111', pickedEffortModel: 'claude-haiku-5-5', finished: true }));
+      fs.writeFileSync(path.join(dirs[0], 'agent-a0000000000000001.jsonl'), '{}\n');
+      const s = await collect({ config: fx2.config, exec: fakeExec(), now: NOW, sinceMs: 7 * DAY });
+      const sub = byId(s, SID.busy).subagents.find((x) => x.id === 'a0000000000000001');
+      assert.equal(sub.model, 'claude-haiku-5-5');
+      assert.equal(sub.modelLabel, modelLabel('claude-haiku-5-5'));
+      assert.notEqual(sub.modelLabel, null);
+      assert.equal(sub.state, 'finished');
+      assert.deepEqual(Object.keys(sub).sort(), ['description', 'id', 'label', 'lastActivity', 'model', 'modelLabel', 'state', 'type']);
+      assert.equal(JSON.stringify(s).includes('toolu_01111111'), false);
+      assert.equal(JSON.stringify(s).includes('toolUseId'), false);
+    } finally {
+      cleanup(fx2);
+    }
+  });
+
+  test('(−) a symlinked subagents folder lists nothing in the snapshot (both tiers read it through the collector)', async () => {
+    const fx2 = makeFixture();
+    try {
+      const d = fs.readdirSync(path.join(fx2.claudeDir, 'projects')).map((n) => path.join(fx2.claudeDir, 'projects', n, SID.busy, 'subagents')).find((x) => fs.existsSync(x));
+      const real = path.join(fx2.root, 'elsewhere');
+      fs.renameSync(d, real);
+      fs.symlinkSync(real, d);
+      const s = await collect({ config: fx2.config, exec: fakeExec(), now: NOW, sinceMs: 7 * DAY });
+      assert.deepEqual(byId(s, SID.busy).subagents, []);
+    } finally {
+      cleanup(fx2);
+    }
   });
 
   test('(−) dead pid becomes ended from its transcript; reused pid without transcript is dropped', async () => {
@@ -286,7 +327,7 @@ describe('collect', () => {
 });
 
 describe('collect: key, role, attention (0.2 UI fields)', () => {
-  const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'context', 'cwd', 'depth', 'gitBranch', 'id', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
+  const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'context', 'cwd', 'depth', 'gitBranch', 'hostId', 'id', 'label', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
     'parent', 'pid', 'report', 'resumeCmd', 'role', 'startedAt', 'state', 'subagents', 'title', 'version', 'worktree'];
   const GROUP_KEYS = ['agents', 'counts', 'key', 'label', 'lastActivity', 'root'];
   const PANES = (role5, role6) => [`%5\twork\t1\t[%5] build-7-1\tzsh\t${role5}`, `%6\twork\t2\tMacBook.local\tclaude\t${role6}`];
@@ -423,6 +464,83 @@ describe('collect: key, role, attention (0.2 UI fields)', () => {
     } finally {
       cleanup(fx2);
     }
+  });
+});
+
+describe('collect: label (0.5, W9)', () => {
+  const K = '0123456789abcdef';
+  // the busy session sits in pane %5, the idle one in %6 (fixture); a listing line is id, session, window, title, command, role, agent, depth, parent, pane_dead, kind
+  const line = (pane, role, kind, tag = `${K}/x`) => `${pane}\twork\t1\t[${pane}] n\tnode\t${role}\t${role ? tag : ''}\t1\t\t0\t${kind}`;
+  const labels = async (l5, l6) => {
+    const s = await snap(7 * DAY, fakeExec({ tmuxLines: [l5, l6] }));
+    return [byId(s, SID.busy).label, byId(s, SID.idle).label];
+  };
+
+  test('(+) an agent pane shows its kind tag; an agent pane without one (spawned before 0.5, or the tag call failed) shows agent', async () => {
+    assert.deepEqual(await labels(line('%5', 'agent', 'coder'), line('%6', 'agent', '')), ['coder', 'agent']);
+    assert.deepEqual(await labels(line('%5', 'agent', 'reviewer'), line('%6', 'agent', 'writer')), ['reviewer', 'writer']);
+  });
+
+  test('(+) a sub-orchestrator pane shows sub-orchestrator, with a kind tag or without one', async () => {
+    assert.deepEqual(await labels(line('%5', 'sub-orchestrator', ''), line('%6', 'sub-orchestrator', 'coder')), ['sub-orchestrator', 'sub-orchestrator']);
+  });
+
+  test('(+) the main orchestrator, a pane nika did not tag, a session with no pane, and an ended session have no label', async () => {
+    const s = await snap(7 * DAY, fakeExec({ tmuxLines: [line('%5', 'orchestrator', 'coder'), '%6\twork\t2\tMacBook.local\tclaude'] }));
+    assert.equal(byId(s, SID.busy).label, null, 'orchestrator');
+    assert.equal(byId(s, SID.idle).label, null, 'untagged pane');
+    assert.equal(byId(s, SID.ended).label, null, 'ended');
+    const none = await snap(7 * DAY, fakeExec({ tmuxError: 'ENOENT' }));
+    assert.equal(byId(none, SID.busy).label, null, 'no tmux: no pane');
+    assert.equal(byId(await snap(), SID.busy).label, null, 'default fixture: panes without tags');
+  });
+
+  test('(−) a kind tag on a pane with no @nika-role is no label', async () => {
+    assert.deepEqual(await labels(line('%5', '', 'coder'), line('%6', 'admin', 'coder')), [null, null]);
+  });
+
+  test('(−) a kind tag that is not a word of the list never becomes a label: the agent shows agent', async () => {
+    for (const kind of ['boss', 'Coder', 'coder ', 'sub-orchestrator', 'orchestrator', 'coder\tx']) {
+      assert.deepEqual(await labels(line('%5', 'agent', kind), line('%6', 'agent', '')), ['agent', 'agent'], JSON.stringify(kind));
+    }
+  });
+
+  test('(+) a snapshot subagent\'s label: Explore is scout, general-purpose is agent (the fixture), a custom type is its own name, no type is agent', async () => {
+    const a = byId(await snap(), SID.busy);
+    assert.deepEqual(a.subagents.map((x) => [x.id, x.type, x.label]), [['bbb222', 'general-purpose', 'agent'], ['aaa111', 'Explore', 'scout']]);
+    const fx2 = makeFixture();
+    try {
+      const dirs = fs.readdirSync(path.join(fx2.claudeDir, 'projects')).map((n) => path.join(fx2.claudeDir, 'projects', n, SID.busy, 'subagents')).filter((d) => fs.existsSync(d));
+      assert.equal(dirs.length, 1);
+      const meta = (id, body) => fs.writeFileSync(path.join(dirs[0], `agent-${id}.meta.json`), JSON.stringify({ description: 'Check it', finished: true, ...body }));
+      meta('c000000000000001', { agentType: 'security-reviewer' });
+      meta('c000000000000002', { agentType: 'plugin:crew-code-reviewer' });
+      meta('c000000000000003', { agentType: 'a-very-long-agent-type-name-of-thirty' });
+      meta('c000000000000004', {});
+      meta('c000000000000005', { agentType: '\u001b[31mred\u001b[0m' });
+      const s = await collect({ config: fx2.config, exec: fakeExec(), now: NOW, sinceMs: 7 * DAY });
+      const by = Object.fromEntries(byId(s, SID.busy).subagents.map((x) => [x.id, x]));
+      assert.equal(by.c000000000000001.label, 'security-reviewer');
+      assert.equal(by.c000000000000001.type, 'security-reviewer', 'type stays beside the label');
+      assert.equal(by.c000000000000002.label, 'crew-code-reviewer');
+      assert.equal(by.c000000000000002.type, 'plugin:crew-code-reviewer', 'the full type stays for the title');
+      assert.equal(Array.from(by.c000000000000003.label).length, 24);
+      assert.equal(by.c000000000000004.label, 'agent');
+      assert.equal(by.c000000000000004.type, null);
+      assert.equal(by.c000000000000005.label, 'red');
+      for (const x of Object.values(by)) assert.deepEqual(Object.keys(x).sort(), ['description', 'id', 'label', 'lastActivity', 'model', 'modelLabel', 'state', 'type']);
+    } finally {
+      cleanup(fx2);
+    }
+  });
+
+  test('(−) the snapshot never carries the raw kind tag: only label (no `kind` key on an agent or its pane)', async () => {
+    const s = await snap(7 * DAY, fakeExec({ tmuxLines: [line('%5', 'agent', 'coder'), line('%6', 'agent', 'tester')] }));
+    for (const a of [byId(s, SID.busy), byId(s, SID.idle)]) {
+      assert.equal(Object.hasOwn(a, 'kind'), false);
+      assert.equal(Object.hasOwn(a.pane, 'kind'), false);
+    }
+    assert.equal(JSON.stringify(s.snapshot).includes('nika-kind'), false);
   });
 });
 
@@ -790,5 +908,204 @@ describe('findSessions (several ended sessions by id, one index walk, no ps and 
   test('(−) when nika cannot read its transcript index, "left out" would be a guess: it throws EINDEX', async () => {
     const config = { ...fx.config, claudeDir: path.join(fx.root, 'no-such-claude-dir') };
     await assert.rejects(ofIds([SID.old, NOBODY], { config }), { code: 'EINDEX' });
+  });
+});
+
+// 0.5, W12: after /compact the continued conversation runs as a background job in a child claude (kind "bg", a jobId, no tmux); the claude in the
+// pane stays as the host (its old session id, parkedJobId = the child's jobId). One row, with the child's id and state and the host's pane.
+describe('collect: a background session and the pane that shows it (0.5, W12)', () => {
+  const HOST = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
+  const CHILD = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2';
+  const THIRD = 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3';
+  const HELPER = 'd4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4';
+  const JOB = 'c0ffee01';
+  const MIN = 60_000;
+  const fxw = makeFixture();
+  after(() => cleanup(fxw));
+  const slug = (d) => d.replace(/[^A-Za-z0-9]/g, '-');
+
+  /**
+   * The fixture's sessions plus a host (pid 201, interactive, acme-api, in pane %9 tagged orchestrator) and its background child (pid 202,
+   * busy, no pane). `host` and `child` override their registry fields (null: no file); `extra` is more registry files by pid. A pid in `dead` is
+   * not in the ps table. Returns the rows, the config and the exec.
+   */
+  async function scene({ host = {}, child = {}, extra = {}, dead = [], helper = false, include = [], tmuxLines } = {}) {
+    const sessions = path.join(fxw.claudeDir, 'sessions');
+    for (const pid of [201, 202, 203, 204]) fs.rmSync(path.join(sessions, `${pid}.json`), { force: true });
+    const base = { version: '2.1.319', procStart: PROC_START, startedAt: NOW - 60 * MIN, updatedAt: NOW - MIN, nameSource: 'user', name: 'acme-api', cwd: fxw.repo };
+    const files = {
+      201: host && { pid: 201, sessionId: HOST, kind: 'interactive', parkedJobId: JOB, status: 'idle', tmux: 'work:@4.%9', ...host },
+      202: child && { pid: 202, sessionId: CHILD, kind: 'bg', jobId: JOB, status: 'busy', ...child },
+      ...extra,
+    };
+    for (const [pid, f] of Object.entries(files)) if (f) fs.writeFileSync(path.join(sessions, `${pid}.json`), JSON.stringify({ ...base, ...f }));
+    // the host's transcript is recent: it would be a row of its own if nothing linked it
+    const dir = path.join(fxw.claudeDir, 'projects', slug(fxw.repo));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${HOST}.jsonl`), jsonl([{ type: 'user', cwd: fxw.repo, sessionId: HOST, timestamp: new Date(NOW - 5 * MIN).toISOString(), message: { role: 'user', content: 'synthetic prompt' } }]));
+    const alive = [101, 102, 104, ...Object.keys(files).filter((p) => files[p]).map(Number)].filter((p) => !dead.includes(p));
+    const lines = tmuxLines ?? [
+      '%9\twork\t4\tacme-api\tclaude\torchestrator',
+      '%10\twork\t5\tother\tclaude\t',
+      ...(helper ? ['%11\twork\t6\t[%11] helper\tclaude\tagent\t\t2\t%9'] : []),
+    ];
+    const exec = fakeExec({ psLines: alive.map((p) => `  ${p} ${PROC_START}`), tmuxLines: lines });
+    const s = await collect({ config: fxw.config, exec, now: NOW, sinceMs: 7 * DAY, include });
+    const rows = s.snapshot.groups.flatMap((g) => g.agents);
+    return { s, rows, exec, row: (id) => rows.find((a) => a.id === id) };
+  }
+
+  test('(+) a background child and its host: one row, the child\'s id, state and pid, the host\'s pane and role, hostId = the host', async () => {
+    const { rows, row } = await scene();
+    assert.deepEqual(rows.filter((a) => [HOST, CHILD].includes(a.id)).map((a) => a.id), [CHILD], 'no row for the host session');
+    const a = row(CHILD);
+    assert.equal(a.hostId, HOST);
+    assert.deepEqual([a.live, a.state, a.pid, a.attention], [true, 'busy', 202, null], 'the child\'s own state, not the host\'s idle');
+    assert.deepEqual(a.pane, { id: '%9', session: 'work', title: 'acme-api', command: 'claude' });
+    assert.equal(a.role, 'orchestrator');
+    assert.equal(a.name, 'acme-api');
+    assert.equal(a.context, null, 'the child has no transcript here');
+    assert.ok(rows.filter((x) => x.id !== CHILD).every((x) => x.hostId === null), 'every other row is unlinked: hostId null');
+  });
+
+  test('(+) the host has no row even when `include` names it or its transcript is recent; counts see one session', async () => {
+    const base = await scene({ child: null });
+    const { s, rows } = await scene({ include: [HOST] });
+    assert.equal(rows.some((a) => a.id === HOST), false);
+    assert.equal(s.snapshot.counts.total, base.s.snapshot.counts.total, 'the host row of the unlinked machine became the child row: the same count');
+    assert.equal(base.row(HOST).live, true, 'without the child the host is an ordinary row');
+    assert.equal(base.row(HOST).hostId, null);
+  });
+
+  test('(+) the tree follows the pane: an agent whose @nika-parent is the host\'s pane has the child as parent, and the child lists it', async () => {
+    const { row } = await scene({ helper: true, extra: { 203: { pid: 203, sessionId: HELPER, kind: 'interactive', status: 'busy', name: 'helper', tmux: 'work:@6.%11' } } });
+    assert.deepEqual([row(HELPER).role, row(HELPER).parent, row(HELPER).depth], ['agent', CHILD, 2]);
+    assert.deepEqual(row(CHILD).children, [HELPER]);
+    assert.deepEqual([row(CHILD).parent, row(CHILD).depth], [null, 1]);
+  });
+
+  test('(+) a host with no pane gives the child no pane, and a host that left tmux\'s list gives it none either', async () => {
+    const noTmux = await scene({ host: { tmux: undefined } });
+    assert.equal(noTmux.row(CHILD).hostId, HOST);
+    assert.deepEqual([noTmux.row(CHILD).pane, noTmux.row(CHILD).role], [null, null]);
+    const gone = await scene({ tmuxLines: ['%10\twork\t5\tother\tclaude\t'] });
+    assert.equal(gone.row(CHILD).hostId, HOST);
+    assert.equal(gone.row(CHILD).pane, null);
+  });
+
+  test('(+) findSession finds the row by the child\'s id and by the host\'s id', async () => {
+    const { exec } = await scene();
+    const byChild = await findSession(CHILD, { config: fxw.config, exec, now: NOW });
+    const byHost = await findSession(HOST, { config: fxw.config, exec, now: NOW });
+    assert.equal(byChild.agent.id, CHILD);
+    assert.equal(byHost.agent.id, CHILD);
+    assert.equal(byHost.agent.hostId, HOST);
+    assert.equal(byHost.group.key, keyFor(fxw.repo));
+    assert.equal((await findSession(SID.idle, { config: fxw.config, exec, now: NOW })).agent.hostId, null);
+  });
+
+  test('(−) findSession by the host\'s id with no live child is the host\'s own row; findSessions never links (no registry)', async () => {
+    const { exec } = await scene({ child: null });
+    assert.equal((await findSession(HOST, { config: fxw.config, exec, now: NOW })).agent.id, HOST);
+    await scene();
+    const hit = (await findSessions([HOST], { config: fxw.config, now: NOW })).get(HOST);
+    assert.deepEqual([hit.agent.id, hit.agent.live, hit.agent.hostId], [HOST, false, null]);
+  });
+
+  // each case: what to change, and where the two sessions' panes are afterwards (the child's own pane, the host's)
+  const THIRD_FILE = { pid: 203, sessionId: THIRD, name: 'demo-api' };
+  const NO_LINK = [
+    ['the job ids differ', { host: { parkedJobId: 'c0ffee02' } }, null, '%9'],
+    ['the host parks no job', { host: { parkedJobId: undefined } }, null, '%9'],
+    ['two live background sessions have the same jobId', { extra: { 203: { ...THIRD_FILE, kind: 'bg', jobId: JOB, status: 'idle' } } }, null, '%9'],
+    ['two hosts park the same job', { extra: { 203: { ...THIRD_FILE, kind: 'interactive', parkedJobId: JOB, status: 'idle', tmux: 'work:@5.%10' } } }, null, '%9'],
+    ['the child has its own tmux field', { child: { tmux: 'work:@5.%10' } }, '%10', '%9'],
+    ['the child\'s kind is not bg', { child: { kind: 'interactive' } }, null, '%9'],
+    ['the child has no kind', { child: { kind: undefined } }, null, '%9'],
+    ['the host\'s kind is bg', { host: { kind: 'bg', jobId: 'c0ffee03' } }, null, '%9'],
+    ['the host is not alive', { dead: [201] }, null, null],
+    ['the child is not alive', { dead: [202] }, null, '%9'],
+    ['a jobId with a slash', { host: { parkedJobId: 'job/1' }, child: { jobId: 'job/1' } }, null, '%9'],
+    ['a jobId with a space', { host: { parkedJobId: 'job 1' }, child: { jobId: 'job 1' } }, null, '%9'],
+    ['a jobId of 65 characters', { host: { parkedJobId: 'j'.repeat(65) }, child: { jobId: 'j'.repeat(65) } }, null, '%9'],
+    ['the two sessions are in different projects', { child: { cwd: fxw.plain } }, null, '%9'],
+    ['neither registry entry has a cwd (two unknowns are not one project)', { host: { cwd: null }, child: { cwd: null } }, null, '%9'],
+    ['only the child has no cwd', { child: { cwd: null } }, null, '%9'],
+    ['only the host has no cwd', { host: { cwd: null } }, null, '%9'],
+  ];
+  for (const [why, over, childPane, hostPane] of NO_LINK) {
+    test(`(−) no link when ${why}: two rows as before, hostId null, the child has no pane of the host's`, async () => {
+      const { rows, row } = await scene(over);
+      const host = row(HOST);
+      const child = rows.find((a) => a.id === CHILD);
+      assert.ok(host, 'the host keeps its row (live, or ended from its transcript)');
+      assert.equal(host.live, !over.dead?.includes(201));
+      assert.equal(host.pane?.id ?? null, hostPane);
+      if (over.dead?.includes(202)) {
+        assert.equal(child, undefined, 'a dead child with no transcript has no row');
+      } else {
+        assert.ok(child, 'the child keeps its row');
+        assert.equal(child.pane?.id ?? null, childPane);
+        assert.equal(child.hostId, null);
+      }
+      assert.equal(host.hostId, null);
+    });
+  }
+
+  /** Runs `fn` with spawn reports on disk: files = { <name>: { session, md } }; they are removed again (the other tests count names). */
+  async function withReports(files, fn) {
+    const names = Object.keys(files);
+    const clear = () => names.forEach((n) => ['session', 'md', 'rc'].forEach((x) => fs.rmSync(path.join(fxw.reportsDir, `${n}.${x}`), { force: true })));
+    try {
+      for (const [n, f] of Object.entries(files)) {
+        fs.writeFileSync(path.join(fxw.reportsDir, `${n}.session`), `${f.session}\n`);
+        fs.writeFileSync(path.join(fxw.reportsDir, `${n}.md`), `${f.md}\n`);
+        if (f.rc !== undefined) fs.writeFileSync(path.join(fxw.reportsDir, `${n}.rc`), `${f.rc}\n`);
+      }
+      return await fn();
+    } finally {
+      clear();
+    }
+  }
+  const reportOf = (s, id) => ({ report: s.snapshot.groups.flatMap((g) => g.agents).find((a) => a.id === id)?.report, path: s.reportPaths.get(id) });
+
+  test('(+) a spawned agent\'s report (filed under the host\'s session id) shows on the merged row, and its path is kept under the row\'s id', async () => {
+    await withReports({ 'compact-agent': { session: HOST, md: 'STATUS: DONE compact work', rc: 0 } }, async () => {
+      const { s, row } = await scene();
+      assert.equal(row(CHILD).hostId, HOST);
+      // sessionId: the id the page opens /api/report/<id> with; the file is filed under the host's id, not the row's
+      assert.deepEqual(row(CHILD).report, { name: 'compact-agent', status: 'STATUS: DONE compact work', rc: 0, hasFile: true, sessionId: HOST });
+      assert.equal(row(CHILD).name, 'compact-agent');
+      assert.equal(s.reportPaths.get(CHILD).endsWith('compact-agent.md'), true);
+      assert.equal(s.reportPaths.has(HOST), false, 'the host has no row, so no entry under its id');
+    });
+  });
+
+  test('(+) a report filed under the child\'s own id wins over the host\'s', async () => {
+    await withReports({ 'host-one': { session: HOST, md: 'STATUS: HOST' }, 'child-one': { session: CHILD, md: 'STATUS: CHILD' } }, async () => {
+      const { s } = await scene();
+      const { report, path: file } = reportOf(s, CHILD);
+      assert.deepEqual([report.name, report.status, report.sessionId], ['child-one', 'STATUS: CHILD', CHILD]);
+      assert.equal(file.endsWith('child-one.md'), true);
+    });
+  });
+
+  test('(−) without a link the host\'s report stays on the host\'s own row, and a child that is not linked does not take it', async () => {
+    await withReports({ 'compact-agent': { session: HOST, md: 'STATUS: DONE compact work' } }, async () => {
+      const alone = await scene({ child: null });
+      assert.equal(reportOf(alone.s, HOST).report.name, 'compact-agent');
+      assert.equal(reportOf(alone.s, HOST).report.sessionId, HOST, 'an unlinked row opens its own id');
+      assert.equal(alone.s.reportPaths.get(HOST).endsWith('compact-agent.md'), true);
+      const apart = await scene({ host: { parkedJobId: 'c0ffee02' } }); // the job ids differ: two rows
+      assert.equal(reportOf(apart.s, HOST).report.name, 'compact-agent');
+      assert.equal(reportOf(apart.s, CHILD).report, null);
+      assert.equal(apart.s.reportPaths.has(CHILD), false);
+    });
+  });
+
+  test('(−) the child\'s own tmux field wins: its row keeps its pane and role, and the host row stays', async () => {
+    const { row } = await scene({ child: { tmux: 'work:@5.%10' }, tmuxLines: ['%9\twork\t4\tacme-api\tclaude\torchestrator', '%10\twork\t5\tchild\tclaude\tagent\t\t2\t%9'] });
+    assert.deepEqual([row(CHILD).pane.id, row(CHILD).role, row(CHILD).hostId], ['%10', 'agent', null]);
+    assert.deepEqual([row(HOST).pane.id, row(HOST).role], ['%9', 'orchestrator']);
   });
 });

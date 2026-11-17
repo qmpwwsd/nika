@@ -108,6 +108,7 @@ function formValue() {
     permissionMode: radio('perm'),
     panePlacement: radio('place'),
     limits: { maxAgents: Number($('#set-max').value) },
+    attachments: { keepDays: Number($('#set-keep-days').value) },
     rules: { localTemplate: $('#set-tpl').value || null },
     ui: { theme: radio('theme'), singleKeyShortcuts: $('#set-singlekey').checked },
     compaction: { enabled: $('#set-compact').checked, pct: Number($('#set-compact-pct').value), window: compactWindow() },
@@ -134,6 +135,7 @@ function populate() {
   setRadio('perm', s.permissionMode);
   setRadio('place', s.panePlacement);
   $('#set-max').value = s.limits?.maxAgents ?? 3;
+  $('#set-keep-days').value = s.attachments?.keepDays ?? 7;
   renderTemplates(s.rules?.localTemplate ?? null);
   const c = s.compaction ?? DEFAULT_COMPACT;
   $('#set-compact').checked = c.enabled !== false;
@@ -146,30 +148,39 @@ function populate() {
   $('#set-bar').hidden = true;
 }
 
-/** Fields that fail their format check, each with its message shown. */
+/**
+ * Fields that fail their format check, each with its message shown. They are checked in the order of the page (Models, Auto-compact,
+ * Remote Control's name prefix, Panes and limits, Attachments), so `bad[0]`, the field Save focuses, is the first bad one a reader
+ * meets going down the form. test/compact-ui.test.js pins this order against index.html.
+ */
 function validate() {
   const bad = [];
-  for (const input of $$('[data-rx]', form())) {
-    if (input.disabled) continue;
-    const [re, msg] = RX[input.dataset.rx];
-    const ok = re.test(input.value.trim()) && (input.dataset.rx === 'prefix' || input.value.trim() !== '');
-    fieldError(input, ok ? '' : msg);
-    if (!ok) bad.push(input);
-  }
   for (const r of ROLES) {
     const input = roleCustom(r);
     const invalid = !input.hidden && !MODEL_ID.test(input.value.trim());
     fieldError(input, invalid ? MODEL_HINT : '');
     if (invalid) bad.push(input);
   }
+  const okPct = !$('#set-compact').checked || compactPctOk();
+  compactError(okPct ? '' : PCT_MSG);
+  if (!okPct) bad.push($('#set-compact-pct'));
+  for (const input of $$('[data-rx]', form())) { // the Name prefix
+    if (input.disabled) continue;
+    const [re, msg] = RX[input.dataset.rx];
+    const ok = re.test(input.value.trim()) && (input.dataset.rx === 'prefix' || input.value.trim() !== '');
+    fieldError(input, ok ? '' : msg);
+    if (!ok) bad.push(input);
+  }
   const max = $('#set-max');
   const n = Number(max.value);
   const okMax = max.value.trim() !== '' && Number.isInteger(n) && n >= 1 && n <= 8;
   fieldError(max, okMax ? '' : 'Choose a whole number from 1 to 8.');
   if (!okMax) bad.push(max);
-  const okPct = !$('#set-compact').checked || compactPctOk();
-  compactError(okPct ? '' : PCT_MSG);
-  if (!okPct) bad.push($('#set-compact-pct'));
+  const keep = $('#set-keep-days');
+  const k = Number(keep.value); // blank is 0, so the range check refuses it
+  const okKeep = Number.isInteger(k) && k >= 1 && k <= 30;
+  fieldError(keep, okKeep ? '' : 'Choose a whole number from 1 to 30.');
+  if (!okKeep) bad.push(keep);
   return bad;
 }
 

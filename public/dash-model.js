@@ -101,7 +101,9 @@ export function orchState(project, g) {
  * Set and Resume while one runs (409 orchestrator_running), so the row menu is off with the same reason.
  */
 export function otherRunning(g, pickId, id) {
-  const hit = (g?.agents ?? []).filter((a) => a.live === true && a.id !== id && (a.role === 'orchestrator' || (Boolean(pickId) && a.id === pickId)))
+  // a row that continues a session (`hostId`, after /compact) is that session: the server counts it the same way (PUT orchestrator)
+  const same = (a, x) => Boolean(x) && (a.id === x || a.hostId === x);
+  const hit = (g?.agents ?? []).filter((a) => a.live === true && !same(a, id) && (a.role === 'orchestrator' || same(a, pickId)))
     .sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0))[0];
   return hit ? { id: hit.id, name: nameOf(hit.name) } : null;
 }
@@ -116,12 +118,105 @@ export function roleTag(a, pickId) {
   return a.live !== true && Boolean(pickId) && a.id === pickId ? 'saved' : null;
 }
 
-/** Words of each badge: `long` and `short` (the narrow rows show the short one), the class and the title. dom.js roleTagEl() draws it. */
+/**
+ * Words of each badge: `long` and `short` (the narrow rows show the short one), the class and the title. dom.js roleTagEl() draws it.
+ * `subagent` (0.5, W8) is only for the read-only subagent view's header; roleTag() never answers it.
+ */
 export const ROLE_TAGS = {
   main: { cls: 'tag', long: 'orchestrator', short: 'orch', title: 'orchestrator' },
   sub: { cls: 'tag sub', long: 'sub-orchestrator', short: 'sub-orch', title: 'sub-orchestrator' },
   saved: { cls: 'tag muted', long: 'orchestrator', short: 'orch', title: "Saved orchestrator. Resume it from the header or this row's menu." },
+  subagent: { cls: 'tag sa', long: 'subagent', short: 'subagent', title: "Claude's own subagent. It runs inside its parent session." },
 };
+
+/* ---------- Claude's own subagents (0.5, W8) ---------- */
+/** The shape of a subagent id: the page's copy of src/ids.js SUBAGENT_ID (pages never import src/; a test compares the two). */
+export const SUBAGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const PROJECT_KEY = /^[a-z0-9]{16}$/;
+
+/** The word and title of each subagent state (the server's `running` / `finished` / `stopped`). dom.js subStateEl() draws it. */
+export const SUB_STATES = {
+  running: { label: 'Running', title: 'Running inside its session' },
+  finished: { label: 'Finished', title: 'Finished its task' },
+  stopped: { label: 'Stopped', title: 'Did not finish: its session is no longer running' },
+};
+
+/**
+ * What a subagent list draws, or null when there is nothing to list (not an array, or no object in it). Running ones always show; the
+ * rest only with `showEnded`. `shown` keeps the server's order; `running` counts the running ones; `hidden` is how many ended ones the
+ * list leaves out; `summary` is the line ("1 subagent · 1 running", "3 subagents", or "No subagents running" when nothing is shown);
+ * `hint` is "+N ended" while something is hidden, else null. Entries that are not objects are ignored.
+ */
+export function subagentView(subs, showEnded) {
+  const list = Array.isArray(subs) ? subs.filter((s) => s && typeof s === 'object' && !Array.isArray(s)) : [];
+  if (!list.length) return null;
+  const shown = showEnded ? list : list.filter((s) => s.state === 'running');
+  const running = shown.filter((s) => s.state === 'running').length;
+  const hidden = list.length - shown.length;
+  const summary = shown.length ? `${shown.length} subagent${shown.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''}` : 'No subagents running';
+  return { shown, running, hidden, summary, hint: hidden ? `+${hidden} ended` : null };
+}
+
+/**
+ * The link to a subagent's read-only view in the session window: `session.html?session=<uuid>&agent=<id>[&project=<key>]`, or null
+ * unless `session` is a session id and `agent` a subagent id. A project key is added only when it has the key shape.
+ */
+export function subagentHref({ session, agent, project } = {}) {
+  if (typeof session !== 'string' || !UUID.test(session) || typeof agent !== 'string' || !SUBAGENT_ID.test(agent)) return null;
+  return `session.html?session=${session}&agent=${agent}${typeof project === 'string' && PROJECT_KEY.test(project) ? `&project=${project}` : ''}`;
+}
+
+/* ---------- labels: what kind of agent a row is (0.5, W9) ---------- */
+/** The words a spawned agent's label can be, in the order the spawn sheet lists them: the page's copy of src/ids.js KINDS (a test compares the two). */
+export const KINDS = ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent'];
+
+/** What each kind means, in the words of the chip's title and the sheet's options. */
+export const KIND_TEXT = {
+  coder: 'writes and changes code',
+  reviewer: 'reviews code or designs',
+  tester: 'writes and runs tests',
+  designer: 'designs and plans',
+  scout: 'finds files and facts, read-only',
+  writer: 'writes docs and reports',
+  agent: 'no particular kind',
+};
+
+/** The role models that name a kind (the orchestrator's names none): the page's copy of src/labels.js ROLE_KIND (a test compares the two). */
+export const ROLE_KIND = { builder: 'coder', reasoner: 'designer', scout: 'scout' };
+
+/**
+ * The kind a spawn without `kind` would get: the page's copy of src/labels.js kindFromModel, used only to preview "Automatic" in the
+ * spawn sheet (the sheet sends no kind then; the server derives the word). The roles among builder, reasoner and scout whose model in
+ * `models` equals `model` exactly: one kind gives it, none or two different kinds give 'agent'. No alias resolution.
+ */
+export function kindFromModel(model, models) {
+  const kinds = new Set(Object.entries(ROLE_KIND).filter(([role]) => typeof model === 'string' && models?.[role] === model).map(([, k]) => k));
+  return kinds.size === 1 ? [...kinds][0] : 'agent';
+}
+
+/**
+ * The chip of an agent row or session header: `{ text, title }`, or null. Only a pane the server tagged agent has one, with a word of the
+ * list; a sub-orchestrator's role tag is already its label, and the orchestrator, a user's own session and an ended one have none.
+ * A label is a noun fixed for the agent's life, not a state: dom.js labelEl() draws every one the same way.
+ */
+export function agentLabelView(a) {
+  if (!a || typeof a !== 'object' || a.role !== 'agent' || !KINDS.includes(a.label)) return null;
+  return { text: a.label, title: `Kind: ${a.label}, ${KIND_TEXT[a.label]}` };
+}
+
+const LABEL_MAX = 24; // code points, the server's cut included (src/labels.js)
+
+/**
+ * The chip of a subagent line or the subagent view's header: always `{ text, title }`. The text is the server's `label` (1 to 24 code
+ * points, not blank), else 'agent'. The title names Claude's raw type and, for a word of the list, the kind and its meaning.
+ */
+export function subLabelView(s) {
+  const label = s?.label;
+  const text = typeof label === 'string' && label.trim() && Array.from(label).length <= LABEL_MAX ? label : 'agent';
+  const type = typeof s?.type === 'string' && s.type ? s.type : null;
+  const named = type ? `Claude's ${type} subagent` : "Claude's subagent";
+  return { text, title: KINDS.includes(text) ? `${named}. Kind: ${text}, ${KIND_TEXT[text]}` : named };
+}
 
 /* ---------- the nesting tree and the spawn counts (0.4, O2) ---------- */
 /** Most urgent first. The dashboard sorts by it, and a subtree takes the most urgent status inside it. */

@@ -36,6 +36,7 @@ async function world(settings, extraEnv = {}) {
   const w = await makeWorld(settings);
   worlds.push(w);
   fs.mkdirSync(path.join(w.root, 'bin'));
+  fs.mkdirSync(path.join(w.root, 'claude', 'sessions'), { recursive: true }); // a readable session registry (an unreadable one stops Start, R1 F2)
   w.claude = path.join(w.root, 'bin', 'claude');
   fs.writeFileSync(w.claude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   w.cliEnv = { ...w.env, PATH: '', CLAUDE_CONFIG_DIR: path.join(w.root, 'claude'), NIKA_TMUX: TMUX, NIKA_CLAUDE: w.claude, NO_COLOR: '1', ...extraEnv };
@@ -970,6 +971,102 @@ describe('spawn', () => {
     const gone = await cli(['spawn', 'builder-1', 'sonnet', '-'], base(w2, { exec: dying, stdin: input(brief), sleep: async () => { dying.tmux.panes.splice(0); } }));
     assert.equal(gone.code, 1);
     assert.match(gone.err, /claude_exited: Claude exited right after it started\. Run `claude` once in a terminal/);
+  });
+});
+
+describe('spawn --kind (0.5, W9)', () => {
+  const brief = 'Write the summary.\n';
+  const KINDS7 = 'coder, reviewer, tester, designer, scout, writer, agent';
+  const at = (w, exec, pane) => ({ env: { ...w.cliEnv, TMUX: 'x,1,0', ...(pane === undefined ? {} : { TMUX_PANE: pane }) }, cwd: w.nested, stdin: input(brief), exec });
+  const kindCalls = (exec) => exec.tmux.of('set-option').filter((c) => c[4] === '@nika-kind').map((c) => c[5]);
+
+  test('(+) --kind tester: the agent is tagged @nika-kind tester and the output says kind: tester after the session line', async () => {
+    const w = await world();
+    const exec = tmuxExec();
+    const r = await cli(['spawn', 'builder-1', 'claude-sonnet-5-5', '-', '--kind', 'tester'], at(w, exec));
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(kindCalls(exec), ['tester']);
+    const lines = r.out.trim().split('\n');
+    assert.match(lines[0], /^pane: %\d+$/);
+    assert.equal(lines[1], 'session: My-App');
+    assert.equal(lines[2], 'kind: tester');
+    assert.equal(lines[3], `report: ${path.join(reportsDir(w.project.key, w.env), 'builder-1.md')}`);
+    assert.equal(lines.length, 4);
+    assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(reportsDir(w.project.key, w.env), 'builder-1.agent.json'), 'utf8'))).sort(), ['compact', 'depth', 'model', 'parent', 'permissionMode', 'rc', 'role'], 'the kind is not stored for claude');
+  });
+
+  test('(+) without --kind the output names the kind nika derived from the model: coder for the Builder model, agent for an alias', async () => {
+    const a = await world();
+    const execA = tmuxExec();
+    const derived = await cli(['spawn', 'builder-1', 'claude-sonnet-5-5', '-'], at(a, execA));
+    assert.equal(derived.code, 0, derived.err);
+    assert.match(derived.out, /^kind: coder$/m);
+    assert.deepEqual(kindCalls(execA), ['coder']);
+    const b = await world();
+    const execB = tmuxExec();
+    const alias = await cli(['spawn', 'builder-1', 'sonnet', '-'], at(b, execB));
+    assert.match(alias.out, /^kind: agent$/m);
+    assert.deepEqual(kindCalls(execB), ['agent']);
+  });
+
+  test('(+) a sub-orchestrator prints no kind line and sets no kind tag', async () => {
+    const w = await world();
+    const exec = tmuxExec();
+    const r = await cli(['spawn', 'planner', 'claude-opus-5-5', '-', '--role', 'orchestrator'], at(w, exec, '%1')); // the parent is the main orchestrator's pane
+    assert.equal(r.code, 0, r.err);
+    assert.doesNotMatch(r.out, /^kind:/m);
+    assert.deepEqual(kindCalls(exec), []);
+  });
+
+  test('(+) help lists --kind with the seven words, and the spawn usage line has [--kind <kind>]', async () => {
+    const help = await cli(['help'], { env: {} });
+    assert.equal(help.code, 0);
+    assert.ok(help.out.includes("      --kind <kind>      coder | reviewer | tester | designer | scout | writer | agent: the label on its row (default: from the model's role)\n"));
+    assert.ok(help.out.indexOf('--role <agent|orchestrator>') < help.out.indexOf('--kind <kind>'), 'after --role');
+    const w = await world();
+    const usage = await cli(['spawn'], at(w, tmuxExec()));
+    assert.equal(usage.code, 2);
+    assert.match(usage.err, /^nika: usage: nika spawn <name> <model> <brief> \[--project dir\] \[--permission-mode m\] \[--rc prefix\|off\] \[--role agent\|orchestrator\] \[--kind <kind>\] \[--under %pane\] \[--session name\]\n/);
+  });
+
+  test('(−) --kind boss (or Coder, an empty value, a padded word) is exit 2 with the message first; tmux is never called and nothing is written', async () => {
+    for (const kind of ['boss', 'Coder', 'CODER', '', 'coder ', 'sub-orchestrator']) {
+      const w = await world();
+      const exec = tmuxExec();
+      const r = await cli(['spawn', 'builder-1', 'claude-sonnet-5-5', '-', '--kind', kind], at(w, exec));
+      assert.equal(r.code, 2, JSON.stringify(kind));
+      assert.ok(r.err.startsWith(`nika: --kind must be one of ${KINDS7}\n`), r.err.slice(0, 120));
+      assert.deepEqual(exec.calls, [], JSON.stringify(kind));
+      assert.equal(fs.existsSync(reportsDir(w.project.key, w.env)), false);
+    }
+  });
+
+  test('(−) --kind without a value is exit 2 too', async () => {
+    const w = await world();
+    const exec = tmuxExec();
+    const r = await cli(['spawn', 'builder-1', 'claude-sonnet-5-5', '-', '--kind'], at(w, exec));
+    assert.equal(r.code, 2);
+    assert.deepEqual(exec.calls, []);
+  });
+
+  test('(−) --kind with --role orchestrator is exit 2 with its own message; nothing is called or written', async () => {
+    for (const kind of ['coder', 'agent']) {
+      const w = await world();
+      const exec = tmuxExec();
+      const r = await cli(['spawn', 'planner', 'claude-opus-5-5', '-', '--role', 'orchestrator', '--kind', kind], at(w, exec));
+      assert.equal(r.code, 2);
+      assert.ok(r.err.startsWith('nika: --kind is for agents: a sub-orchestrator always shows sub-orchestrator\n'), r.err.slice(0, 120));
+      assert.deepEqual(exec.calls, []);
+      assert.equal(fs.existsSync(reportsDir(w.project.key, w.env)), false);
+    }
+  });
+
+  test('(−) --kind with --role agent is fine (the default role spelled out)', async () => {
+    const w = await world();
+    const exec = tmuxExec();
+    const r = await cli(['spawn', 'builder-1', 'claude-sonnet-5-5', '-', '--role', 'agent', '--kind', 'writer'], at(w, exec));
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(kindCalls(exec), ['writer']);
   });
 });
 

@@ -1,6 +1,6 @@
 // Shared state and widgets for the main page (dashboard, project view, settings). Every data string reaches the
 // page through h() / textContent. Nothing here talks to the server; api.js does.
-import { h, icon } from './dom.js';
+import { h, icon, placeMenuX, clearMenuPlacement } from './dom.js';
 import { STATUS_ORDER } from './dash-model.js';
 import { isMac } from './shortcuts.js';
 
@@ -278,7 +278,7 @@ export const menuIsOpen = () => Boolean($('.menu:not([hidden])'));
 
 export function closeMenu(m, focus = true) {
   m.hidden = true;
-  m.removeAttribute('data-up');
+  clearMenuPlacement(m); // the next open measures again
   m.previousElementSibling?.setAttribute('aria-expanded', 'false');
   if (focus) m.previousElementSibling?.focus();
 }
@@ -291,10 +291,14 @@ export function initMenus() {
     for (const m of $$('.menu:not([hidden])')) if (!btn || m.previousElementSibling !== btn) closeMenu(m, m === chosen);
     if (!btn) return;
     const m = btn.nextElementSibling;
-    const open = m.hidden;
-    m.hidden = !open;
-    btn.setAttribute('aria-expanded', String(open));
-    if (!open) return;
+    if (!m.hidden) { // its own button closes it like any other close (placement cleared); focus stays on the button
+      closeMenu(m, false);
+      return;
+    }
+    m.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    // left/right first: a menu squeezed into a narrow window wraps and gets taller, and the flip below goes by its final height
+    placeMenuX(m, btn);
     // flip above the button when the list would run past the bottom of the window and fits above it (inside a dialog: above the top of its
     // scrolling body, which would cut it off); else it stays below and the body scrolls to show all of it
     const r = btn.getBoundingClientRect();
@@ -310,5 +314,10 @@ export function initMenus() {
       e.preventDefault();
       closeMenu(m);
     }
+  });
+  // a menu is placed against the window it opened in, so a resize closes it instead of leaving it half outside; focus stays where it is
+  // unless it sat in the menu (a hidden control cannot hold focus), then it goes to the menu's button
+  window.addEventListener('resize', () => {
+    for (const m of $$('.menu:not([hidden])')) closeMenu(m, m.contains(document.activeElement));
   });
 }

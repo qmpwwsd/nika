@@ -2,8 +2,9 @@ import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { readHistory, createLimiter } from '../src/collect/history.js';
+import { readHistory, readSubagentHistory, createLimiter } from '../src/collect/history.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-history-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -418,5 +419,405 @@ describe('readHistory: concurrency', () => {
     const rs = await Promise.all(Array.from({ length: 16 }, () => get(fx, { limit: 20 })));
     assert.ok(rs.every((r) => r.status === 200));
     assert.equal(new Set(rs.map((r) => JSON.stringify(r.body))).size, 1);
+  });
+});
+
+// ---- 0.5, W8: Claude's subagents (design W8 3.1, 3.2, 5.1) ----------------------------------------------------------------
+
+const B = ID('2'); // a second session
+const TOOL = 'toolu_01111111'; // synthetic tool-use id
+const AG = 'a0000000000000001'; // synthetic subagent id
+const getSub = (fx, agent, q = {}, deps = {}, session = A) => readSubagentHistory(session, agent, q, { claudeDir: fx.claudeDir, ...deps });
+/** The folder `<project dir>/<session>/subagents` of a fixture (created). */
+const subDirOf = (fx, session = A) => {
+  const d = path.join(fx.dir, session, 'subagents');
+  fs.mkdirSync(d, { recursive: true });
+  return d;
+};
+/** A subagent: its transcript (lines, or null for none) and its meta (an object, or null for none). */
+function addSub(fx, agent, lines, meta = { agentType: 'Explore', description: 'List files', toolUseId: TOOL, finished: false }, session = A) {
+  const d = subDirOf(fx, session);
+  if (lines !== null) fs.writeFileSync(path.join(d, `agent-${agent}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  if (meta !== null) fs.writeFileSync(path.join(d, `agent-${agent}.meta.json`), JSON.stringify(meta));
+  return d;
+}
+const call = (name, id = TOOL, input = { description: 'List files', subagent_type: 'Explore', prompt: 'go' }) => ({ type: 'tool_use', id, name, input });
+/** Parent transcript with one assistant message holding the given blocks. */
+const parentWith = (...blocks) => setup([user('start', 1), assistant(blocks, 2), say('after', 3)]);
+
+describe('readSubagentHistory: paging (+)', () => {
+  test('(+) a subagent transcript is paged exactly like readHistory pages the same lines: entries, ids, nextBefore, limit, before', async () => {
+    const lines = Array.from({ length: 140 }, (_, i) => (i % 3 === 0 ? user(`q${i}`, i % 60) : say(`m${i}`, i % 60)));
+    const fx = setup([say('parent', 1)]);
+    addSub(fx, AG, lines);
+    const twin = setup(lines, ID('3')); // the same lines as a plain session
+    const mine = await getSub(fx, AG, { limit: 30 });
+    const theirs = await readHistory(ID('3'), { limit: 30 }, { claudeDir: twin.claudeDir });
+    assert.equal(mine.status, 200);
+    assert.equal(mine.body.entries.length, 30);
+    assert.equal(typeof mine.body.nextBefore, 'number');
+    assert.deepEqual(mine.body, theirs.body, 'same shape, same offsets');
+    // walk back to the start: every entry once
+    const all = [];
+    let before;
+    for (let guard = 0; guard < 50; guard += 1) {
+      const r = await getSub(fx, AG, { before, limit: '50' });
+      assert.equal(r.status, 200);
+      all.unshift(...r.body.entries);
+      if (r.body.nextBefore === null) break;
+      assert.ok(before === undefined || r.body.nextBefore < before);
+      before = r.body.nextBefore;
+    }
+    assert.deepEqual(all.map((e) => e.text), lines.map((l) => (typeof l.message.content === 'string' ? l.message.content : l.message.content[0].text)));
+    assert.equal(new Set(all.map((e) => e.id)).size, 140);
+  });
+
+  test('(+) limit and before are accepted as numbers or digit strings; limit 1 and 200 work; before = 0 is an empty page', async () => {
+    const fx = setup([say('p', 1)]);
+    addSub(fx, AG, Array.from({ length: 10 }, (_, i) => say(`m${i}`, i)));
+    assert.equal((await getSub(fx, AG, { limit: 1 })).body.entries.length, 1);
+    assert.equal((await getSub(fx, AG, { limit: '200' })).body.entries.length, 10);
+    const o = lineOffsets(path.join(fx.dir, A, 'subagents', `agent-${AG}.jsonl`));
+    assert.deepEqual(texts(await getSub(fx, AG, { before: String(o[5]), limit: 100 })), ['m0', 'm1', 'm2', 'm3', 'm4']);
+    assert.deepEqual(await getSub(fx, AG, { before: 0 }), { status: 200, body: { entries: [], nextBefore: null } });
+  });
+
+  test('(+) the answer is the same shape as the history answer and carries no subagent field', async () => {
+    const fx = setup([say('p', 1)]);
+    addSub(fx, AG, [user('hi', 1), assistant([call('Agent')], 2)]);
+    const r = await getSub(fx, AG);
+    assert.deepEqual(Object.keys(r.body).sort(), ['entries', 'nextBefore']);
+    for (const e of r.body.entries) assert.equal('subagent' in e, false);
+  });
+
+  test('(+) text goes through cleanBlock: escapes, controls and bidi marks in a subagent transcript are cleaned', async () => {
+    const fx = setup([say('p', 1)]);
+    addSub(fx, AG, [say(`line1\r\n\tline2${ESC}[31m red${ESC}]52;c;AAAA\u0007 \u202eevil\u0000 end\u009b`, 1)]);
+    const [e] = (await getSub(fx, AG)).body.entries;
+    assert.equal(e.text, 'line1\n\tline2 red  evil  end');
+    assert.doesNotMatch(e.text, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202e]/);
+  });
+
+  test('(+) an entry over 32 KB is cut and flagged, as in the history route', async () => {
+    const fx = setup([say('p', 1)]);
+    addSub(fx, AG, [say('x'.repeat(40 * 1024), 1)]);
+    const [e] = (await getSub(fx, AG)).body.entries;
+    assert.equal(e.truncated, true);
+    assert.ok(Buffer.byteLength(e.text) <= 32 * 1024);
+  });
+});
+
+describe('readSubagentHistory: refusals (−)', () => {
+  test('(−) a session id that is not a UUID, or not in the index, is 404 "no such session"', async () => {
+    const fx = setup([say('p', 1)]);
+    addSub(fx, AG, [say('x', 1)]);
+    const bad = ['', 'abc', ID('a').toUpperCase(), `${A}x`, `../${A}`, `${A}/../${A}`, `${A}.jsonl`, '-'.repeat(36), undefined, null, 5, {}, [A]];
+    for (const id of bad) {
+      const r = await readSubagentHistory(id, AG, {}, { claudeDir: fx.claudeDir }); // not getSub: its default session would replace undefined
+      assert.deepEqual(r, { status: 404, body: { error: 'not_found', message: 'no such session' } }, String(id));
+    }
+    assert.deepEqual(await getSub(fx, AG, {}, {}, ID('9')), { status: 404, body: { error: 'not_found', message: 'no such session' } }, 'a UUID nika does not know');
+  });
+
+  test('(−) an agent id that is not a SUBAGENT_ID is 404 "no such subagent", before limit and before the file is looked up', async () => {
+    const fx = setup([say('p', 1)]);
+    addSub(fx, AG, [say('x', 1)]);
+    const bad = ['', '../x', '..', 'a/b', 'a\\b', 'a.b', 'a b', 'a\n', 'x'.repeat(65), '%2e%2e', null, undefined, 5, {}, [AG], true];
+    for (const agent of bad) {
+      for (const q of [{}, { limit: 0 }, { before: 'x' }]) {
+        const r = await getSub(fx, agent, q);
+        assert.deepEqual(r, { status: 404, body: { error: 'not_found', message: 'no such subagent' } }, `${String(agent)} ${JSON.stringify(q)}`);
+      }
+      // a session nika does not know: the agent id is still checked first
+      assert.equal((await getSub(fx, agent, {}, {}, ID('9'))).body.message, 'no such subagent', String(agent));
+    }
+    // and a bad session id still comes first
+    assert.equal((await getSub(fx, '../x', {}, {}, 'not-an-id')).body.message, 'no such session');
+  });
+
+  test('(−) limit and before are 400 for a good agent, as in the history route: same texts', async () => {
+    const fx = setup([say('p', 1)]);
+    addSub(fx, AG, [say('x', 1)]);
+    for (const limit of [0, 201, -1, 1.5, NaN, '', 'abc', '1e2', false, {}]) {
+      const r = await getSub(fx, AG, { limit });
+      assert.equal(r.status, 400, String(limit));
+      assert.deepEqual(r, await get(fx, { limit }), `same answer as history for limit ${String(limit)}`);
+    }
+    for (const before of [-1, 1.5, NaN, '', 'abc', '-1']) {
+      const r = await getSub(fx, AG, { before });
+      assert.equal(r.status, 400, String(before));
+      assert.deepEqual(r, await get(fx, { before }));
+    }
+    const past = await getSub(fx, AG, { before: 999_999 });
+    assert.deepEqual(past, { status: 400, body: { error: 'invalid', message: 'before is beyond the end of the transcript' } });
+  });
+
+  test('(−) an agent that is not in this session\'s folder is 404, also when another session has it', async () => {
+    const fx = setup([say('p', 1)]);
+    fs.writeFileSync(path.join(fx.dir, `${B}.jsonl`), JSON.stringify(say('b', 1)) + '\n');
+    addSub(fx, AG, [say('mine', 1)], undefined, A);
+    addSub(fx, 'only-in-b', [say('theirs', 1)], undefined, B);
+    const no = { status: 404, body: { error: 'not_found', message: 'no such subagent' } };
+    assert.deepEqual(await getSub(fx, 'nope'), no, 'unknown');
+    assert.deepEqual(await getSub(fx, 'only-in-b'), no, 'session A does not list it');
+    assert.deepEqual(texts(await getSub(fx, 'only-in-b', {}, {}, B)), ['theirs']);
+    assert.deepEqual(await getSub(fx, AG, {}, {}, B), no, 'and the other way round');
+    assert.deepEqual(texts(await getSub(fx, AG)), ['mine']);
+  });
+
+  test('(−) a name that is only a meta, or only a stray file next to a transcript, is not a transcript', async () => {
+    const fx = setup([say('p', 1)]);
+    addSub(fx, 'metaonly', null);
+    fs.writeFileSync(path.join(subDirOf(fx), 'agent-stray.jsonl.bak'), JSON.stringify(say('x', 1)) + '\n');
+    for (const agent of ['metaonly', 'stray']) assert.equal((await getSub(fx, agent)).body.message, 'no such subagent', agent);
+  });
+
+  test('(−) a symlinked agent-<id>.jsonl is refused by fsafe: 404 "transcript not readable", nothing of the target is returned', async () => {
+    const fx = setup([say('p', 1)]);
+    const target = path.join(root, `outside-${n}.jsonl`);
+    fs.writeFileSync(target, JSON.stringify(say('stolen', 1)) + '\n');
+    fs.symlinkSync(target, path.join(subDirOf(fx), `agent-${AG}.jsonl`));
+    const r = await getSub(fx, AG);
+    assert.deepEqual(r, { status: 404, body: { error: 'not_found', message: 'transcript not readable' } });
+    assert.equal(JSON.stringify(r).includes('stolen'), false);
+  });
+
+  test('(−) a hard-linked agent-<id>.jsonl is refused the same way', async () => {
+    const fx = setup([say('p', 1)]);
+    const d = addSub(fx, AG, [say('x', 1)]);
+    fs.linkSync(path.join(d, `agent-${AG}.jsonl`), path.join(root, `second-sub-${n}.jsonl`));
+    assert.deepEqual(await getSub(fx, AG), { status: 404, body: { error: 'not_found', message: 'transcript not readable' } });
+  });
+
+  test('(−) a directory named agent-<id>.jsonl is not a regular file: 404 "transcript not readable"', async () => {
+    const fx = setup([say('p', 1)]);
+    fs.mkdirSync(path.join(subDirOf(fx), `agent-${AG}.jsonl`));
+    assert.equal((await getSub(fx, AG)).body.message, 'transcript not readable');
+  });
+
+  test('(−) a symlinked subagents folder, or a symlinked session folder, is 404 "no such subagent"', async () => {
+    const outside = path.join(root, `outside-dir-${n}`);
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, `agent-${AG}.jsonl`), JSON.stringify(say('stolen', 1)) + '\n');
+    const a = setup([say('p', 1)]);
+    fs.mkdirSync(path.join(a.dir, A), { recursive: true });
+    fs.symlinkSync(outside, path.join(a.dir, A, 'subagents'));
+    const b = setup([say('p', 1)]);
+    const realSession = path.join(root, `real-session-${n}`);
+    fs.mkdirSync(path.join(realSession, 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(realSession, 'subagents', `agent-${AG}.jsonl`), JSON.stringify(say('stolen', 1)) + '\n');
+    fs.symlinkSync(realSession, path.join(b.dir, A));
+    for (const fx of [a, b]) {
+      const r = await getSub(fx, AG);
+      assert.deepEqual(r, { status: 404, body: { error: 'not_found', message: 'no such subagent' } });
+    }
+  });
+
+  test('(−) a transcript that vanished after it was listed is 404, not a crash', async () => {
+    const fx = setup([say('p', 1)]);
+    const d = addSub(fx, AG, [say('x', 1)]);
+    assert.equal((await getSub(fx, AG)).status, 200);
+    fs.rmSync(path.join(d, `agent-${AG}.jsonl`));
+    assert.equal((await getSub(fx, AG)).status, 404);
+  });
+
+  test('(+) the transcript index is the history route\'s: one memo on the cache object serves both routes', async () => {
+    const fx = setup([say('p', 1)]);
+    addSub(fx, AG, [say('x', 1)]);
+    const cache = {};
+    await get(fx, {}, { cache });
+    const memo = cache.historyIndex;
+    assert.equal((await getSub(fx, AG, {}, { cache })).status, 200);
+    assert.equal(cache.historyIndex, memo, 'the subagent route reused the memo');
+  });
+});
+
+/** Counts the handles nika holds open on `*.jsonl` transcripts at once and the meta files it opens; restores fs on the way out. */
+async function tracked(fn, { delayMs = 0 } = {}) {
+  const realOpen = fsp.open;
+  const stat = { inFlight: 0, peak: 0, metaOpens: 0, transcriptOpens: 0 };
+  fsp.open = async (file, ...rest) => {
+    const h = await realOpen.call(fsp, file, ...rest);
+    const name = String(file);
+    if (name.endsWith('.meta.json')) stat.metaOpens += 1;
+    if (!name.endsWith('.jsonl')) return h;
+    stat.transcriptOpens += 1;
+    stat.inFlight += 1;
+    stat.peak = Math.max(stat.peak, stat.inFlight);
+    const realRead = h.read.bind(h);
+    const realClose = h.close.bind(h);
+    h.read = async (...a) => {
+      if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+      return realRead(...a);
+    };
+    h.close = async () => {
+      stat.inFlight -= 1;
+      return realClose();
+    };
+    return h;
+  };
+  try {
+    await fn(stat);
+  } finally {
+    fsp.open = realOpen;
+  }
+  return stat;
+}
+
+describe('readSubagentHistory: bounds', () => {
+  test('(+) both routes share one limiter: 16 mixed requests never hold more than 4 transcripts open', async () => {
+    const lines = Array.from({ length: 200 }, (_, i) => say(`m${i}`, i % 60));
+    const fx = setup(lines);
+    addSub(fx, AG, lines);
+    const stat = await tracked(async () => {
+      const rs = await Promise.all(Array.from({ length: 16 }, (_, i) => (i % 2 ? get(fx, { limit: 20 }) : getSub(fx, AG, { limit: 20 }))));
+      assert.ok(rs.every((r) => r.status === 200));
+    }, { delayMs: 15 });
+    assert.equal(stat.transcriptOpens, 16);
+    assert.equal(stat.peak, 4, 'four at a time, shared by both routes');
+  });
+
+  test('(+) the link map is built only for a page that holds an Agent or Task call: no meta is opened otherwise', async () => {
+    const fx = parentWith({ type: 'text', text: 'no call here' }, call('Read', TOOL, { file_path: '/x' }));
+    addSub(fx, AG, [say('x', 1)]);
+    const none = await tracked(async () => { assert.equal((await get(fx)).status, 200); });
+    assert.equal(none.metaOpens, 0, 'no Agent/Task call → the folder is not read');
+    const fx2 = parentWith(call('Agent'));
+    addSub(fx2, AG, [say('x', 1)]);
+    const some = await tracked(async () => { assert.equal((await get(fx2)).status, 200); });
+    assert.ok(some.metaOpens >= 1, 'an Agent call → the metas are read');
+    const sub = await tracked(async () => { assert.equal((await getSub(fx2, AG)).status, 200); });
+    assert.equal(sub.metaOpens, 0, 'the subagent route builds no link map');
+    const bad = parentWith(call('Agent', 'has space'), call('Task', 5), { type: 'tool_use', name: 'Agent', input: {} });
+    addSub(bad, AG, [say('x', 1)]);
+    assert.equal((await tracked(async () => { await get(bad); })).metaOpens, 0, 'a call without a usable id needs no map');
+  });
+});
+
+describe('readHistory: the subagent link on Agent and Task calls (design W8 3.2)', () => {
+  const link = async (fx) => (await get(fx)).body.entries.filter((e) => e.kind === 'tool_use').map((e) => e.subagent);
+
+  test('(+) an Agent call whose id exactly one meta names gets subagent = that agent id; Task the same', async () => {
+    const fx = parentWith(call('Agent'), call('Task', 'toolu_02222222'));
+    addSub(fx, AG, [say('x', 1)]);
+    addSub(fx, 'bbb222', [say('y', 1)], { agentType: 'general-purpose', description: 'Other', toolUseId: 'toolu_02222222' });
+    const r = await get(fx);
+    const calls = r.body.entries.filter((e) => e.kind === 'tool_use');
+    assert.deepEqual(calls.map((e) => [e.tool, e.subagent]), [['Agent', AG], ['Task', 'bbb222']]);
+    assert.deepEqual(calls[0], { id: calls[0].id, at: ts(2), role: 'assistant', kind: 'tool_use', tool: 'Agent', text: '{"description":"List files","subagent_type":"Explore","prompt":"go"}', truncated: false, subagent: AG });
+  });
+
+  test('(+) the link also appears on an older page, and on a page cut by limit', async () => {
+    const fx = setup([user('start', 1), assistant([call('Agent')], 2), ...Array.from({ length: 30 }, (_, i) => say(`m${i}`, 3 + i))]);
+    addSub(fx, AG, [say('x', 1)]);
+    const newest = await get(fx, { limit: 10 });
+    assert.equal(newest.body.entries.some((e) => e.kind === 'tool_use'), false);
+    const older = await get(fx, { limit: 200, before: newest.body.nextBefore });
+    assert.deepEqual(older.body.entries.filter((e) => e.kind === 'tool_use').map((e) => e.subagent), [AG]);
+  });
+
+  test('(−) no subagent field: another tool name, even with a matching meta', async () => {
+    const fx = parentWith(call('Read'), call('Bash', TOOL, { command: 'ls' }), call('agent'), call('TaskCreate'), call('Agent '));
+    addSub(fx, AG, [say('x', 1)]);
+    assert.deepEqual(await link(fx), [undefined, undefined, undefined, undefined, undefined]);
+  });
+
+  test('(−) no subagent field: no meta at all, or no folder', async () => {
+    const fx = parentWith(call('Agent'));
+    assert.deepEqual(await link(fx), [undefined]);
+    addSub(fx, 'other', [say('x', 1)], { agentType: 'Explore', description: 'no toolUseId' });
+    assert.deepEqual(await link(fx), [undefined], 'a meta without a toolUseId names nothing');
+    addSub(fx, 'other2', [say('x', 1)], { agentType: 'Explore', toolUseId: 'toolu_09999999' });
+    assert.deepEqual(await link(fx), [undefined], 'a meta that names another call');
+  });
+
+  test('(−) no subagent field: a tool-use id that is missing, not a string or not a TOOL_USE_ID, even when a meta repeats it', async () => {
+    const bad = ['has space', 'a.b', '../x', 'x'.repeat(129), '', 5, null, { a: 1 }];
+    const fx = parentWith(...bad.map((id) => call('Agent', id)), { type: 'tool_use', name: 'Task', input: {} });
+    bad.forEach((id, i) => { if (typeof id === 'string') addSub(fx, `m${i}`, [say('x', 1)], { agentType: 'Explore', toolUseId: id }); });
+    assert.deepEqual(await link(fx), new Array(bad.length + 1).fill(undefined));
+  });
+
+  test('(−) no subagent field: two metas with the same toolUseId link neither', async () => {
+    const fx = parentWith(call('Agent'));
+    addSub(fx, 'one', [say('x', 1)]);
+    addSub(fx, 'two', [say('y', 1)]);
+    assert.deepEqual(await link(fx), [undefined]);
+    // removing one of the two brings the link back: the count is what decides
+    fs.rmSync(path.join(subDirOf(fx), 'agent-two.meta.json'));
+    assert.deepEqual(await link(fx), ['one']);
+  });
+
+  test('(−) no subagent field: a meta without agent-<id>.jsonl, or whose folder is not a real directory', async () => {
+    const fx = parentWith(call('Agent'));
+    addSub(fx, AG, null);
+    assert.deepEqual(await link(fx), [undefined], 'meta without a transcript');
+    const sym = parentWith(call('Agent'));
+    const outside = path.join(root, `outside-links-${n}`);
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, `agent-${AG}.jsonl`), JSON.stringify(say('x', 1)) + '\n');
+    fs.writeFileSync(path.join(outside, `agent-${AG}.meta.json`), JSON.stringify({ agentType: 'Explore', toolUseId: TOOL }));
+    fs.mkdirSync(path.join(sym.dir, A), { recursive: true });
+    fs.symlinkSync(outside, path.join(sym.dir, A, 'subagents'));
+    assert.deepEqual(await link(sym), [undefined], 'symlinked subagents folder');
+  });
+
+  test('(−) no subagent field: a broken or symlinked meta names nothing', async () => {
+    const fx = parentWith(call('Agent'));
+    const d = addSub(fx, AG, [say('x', 1)], null);
+    fs.writeFileSync(path.join(d, `agent-${AG}.meta.json`), '{broken');
+    assert.deepEqual(await link(fx), [undefined]);
+    fs.rmSync(path.join(d, `agent-${AG}.meta.json`));
+    const real = path.join(root, `meta-target-${n}.json`);
+    fs.writeFileSync(real, JSON.stringify({ agentType: 'Explore', toolUseId: TOOL }));
+    fs.symlinkSync(real, path.join(d, `agent-${AG}.meta.json`));
+    assert.deepEqual(await link(fx), [undefined]);
+  });
+
+  test('(−) no subagent field on any entry that is not a tool_use, whatever the ids say', async () => {
+    const fx = setup([
+      user('start', 1),
+      assistant([{ type: 'text', text: `see ${TOOL}` }, { type: 'thinking', thinking: `about ${TOOL}`, signature: 's' }], 2),
+      { type: 'user', timestamp: ts(3), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: TOOL, content: 'done' }] } },
+      assistant([call('Agent')], 4),
+    ]);
+    addSub(fx, AG, [say('x', 1)]);
+    const entries = (await get(fx)).body.entries;
+    assert.equal(entries.length, 5);
+    assert.deepEqual(entries.filter((e) => 'subagent' in e).map((e) => e.kind), ['tool_use']);
+  });
+
+  test('(−) no entry of the subagent route carries subagent, even an Agent call the metas would link', async () => {
+    const fx = parentWith(call('Agent'));
+    addSub(fx, AG, [user('go', 1), assistant([call('Agent'), call('Task')], 2)]);
+    const parent = (await get(fx)).body.entries.filter((e) => e.kind === 'tool_use');
+    assert.equal(parent[0].subagent, AG, 'the parent links it');
+    const own = (await getSub(fx, AG)).body.entries;
+    assert.equal(own.filter((e) => e.kind === 'tool_use').length, 2);
+    for (const e of own) assert.equal('subagent' in e, false);
+  });
+
+  test('(−) the tool-use id string appears in no response body, in either route', async () => {
+    const fx = parentWith(call('Agent'));
+    addSub(fx, AG, [user('go', 1), assistant([call('Agent')], 2), { type: 'user', timestamp: ts(3), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: TOOL, content: 'ok' }] } }]);
+    for (const r of [await get(fx), await getSub(fx, AG), await get(fx, { limit: 1 })]) {
+      assert.equal(r.status, 200);
+      assert.equal(JSON.stringify(r).includes(TOOL), false);
+      assert.equal(JSON.stringify(r).includes('toolUseId'), false);
+    }
+    assert.ok((await get(fx)).body.entries.some((e) => e.subagent === AG), 'the link itself is there');
+  });
+
+  test('(+) linking never fails the page: an unreadable folder leaves the entries without a link', async () => {
+    const fx = parentWith(call('Agent'));
+    const d = addSub(fx, AG, [say('x', 1)]);
+    fs.chmodSync(d, 0o000);
+    try {
+      const r = await get(fx);
+      assert.equal(r.status, 200);
+      assert.equal(r.body.entries.filter((e) => e.kind === 'tool_use')[0].subagent, undefined);
+    } finally {
+      fs.chmodSync(d, 0o755);
+    }
   });
 });

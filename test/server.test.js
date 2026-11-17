@@ -163,7 +163,8 @@ describe('focus pane', () => {
 });
 
 describe('browser tier: /api/app is not mounted', () => {
-  const PATHS = ['/api/app', '/api/app/', '/api/app/me', '/api/app/projects', '/api/app/settings', '/api/app/spawn', '/api/app/pane/%256/keys', '/api/app/rules/apply', '/api/app/window'];
+  const PATHS = ['/api/app', '/api/app/', '/api/app/me', '/api/app/projects', '/api/app/settings', '/api/app/spawn', '/api/app/pane/%256/keys', '/api/app/rules/apply', '/api/app/window',
+    `/api/app/session/${SID.busy}/history`, `/api/app/session/${SID.busy}/subagents/aaa111/history`];
 
   test('(−) every /api/app path is 404 for GET, POST, PUT and DELETE, with or without an X-Nika-App header', async () => {
     for (const p of PATHS) {
@@ -366,5 +367,39 @@ describe('browser tier: a Claude `shell` status reads as Working (0.4 fix)', () 
     const a = (await snap()).groups.flatMap((g) => g.agents).find((x) => x.id === WAIT);
     assert.equal(a.state, 'waiting');
     assert.equal(a.attention, 'waiting');
+  });
+});
+
+describe('labels on the browser tier (0.5, W9)', () => {
+  // the same snapshot as the app tier: the label is a noun fixed for the agent's life, not sensitive, so :3335 carries it too
+  const fx4 = makeFixture();
+  const KEY = '0123456789abcdef';
+  const tag = (pane, role, kind) => `${pane}\twork\t1\t[${pane}] n\tnode\t${role}\t${KEY}/x\t1\t\t0\t${kind}`;
+  let srv;
+  let p4;
+  before(async () => {
+    srv = createServer({ config: fx4.config, exec: fakeExec({ tmuxLines: [tag('%5', 'agent', 'coder'), tag('%6', 'sub-orchestrator', '')] }), token: TOKEN, now: () => NOW, version: '0.1.0' });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    p4 = srv.address().port;
+  });
+  after(async () => {
+    await new Promise((r) => srv.close(r));
+    cleanup(fx4);
+  });
+  const agents = async () => (await (await fetch(`http://127.0.0.1:${p4}/api/agents?since=7d`)).json()).groups.flatMap((g) => g.agents);
+
+  test('(+) /api/agents carries label on an agent, on a sub-orchestrator and on each subagent', async () => {
+    const list = await agents();
+    const busy = list.find((x) => x.id === SID.busy);
+    assert.equal(busy.label, 'coder');
+    assert.equal(list.find((x) => x.id === SID.idle).label, 'sub-orchestrator');
+    assert.deepEqual(busy.subagents.map((s) => [s.type, s.label]), [['general-purpose', 'agent'], ['Explore', 'scout']]);
+  });
+
+  test('(−) an ended session has label null, and the raw kind tag is not part of the snapshot', async () => {
+    const list = await agents();
+    assert.equal(list.find((x) => x.id === SID.ended).label, null);
+    assert.equal(JSON.stringify(list).includes('nika-kind'), false);
+    for (const a of list) assert.equal(Object.hasOwn(a, 'kind'), false);
   });
 });

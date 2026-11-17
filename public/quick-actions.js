@@ -11,14 +11,17 @@ const WHY = {
   tmux: "nika couldn't reach tmux.",
   connecting: `Connecting to the pane${DOTS}`,
   promptShown: 'Answer the prompt first. Esc = No is in the prompt panel.',
+  dialogShown: 'Answer the question above first.', // a question or plan form (Claude's dialog) has no No: its Decline is in the form
   prompt: 'Answer the prompt first.',
   working: 'Compact, Clear, Model and Rewind are ready when Claude waits for you.',
 };
 
 const TITLE = {
   stop: 'Stops this turn (Esc in the pane; twice in vim insert mode). Keeps the work, also stops running subagents',
+  stopQueued: "Stop ends Claude's current step. Your queued message then goes to Claude at once.", // only while Claude holds a message of ours in its queue (W13)
   stopIdle: 'Nothing to stop: Claude is waiting',
   stopPrompt: 'Esc = No is in the prompt panel',
+  stopDialog: 'Decline is in the question form',
   stopAttn: 'Answer the prompt first; Esc in the message box cancels it',
   compact: 'Types /compact and Enter: summarises the conversation to free context',
   clear: 'Types /clear and Enter after you confirm',
@@ -34,9 +37,11 @@ const TITLE = {
  * Which quick actions are live and why the others are not (spec 9.4, the first matching row wins). Inputs: `pane` ('ok' | 'gone' |
  * 'tmux' | 'connecting'), `status` (the agent's 'attn' | 'idle' | 'busy' | 'ended', null while unknown: the route then decides and
  * answers 409 not-idle), `prompt` (the capture's prompt or null), `switching` (a mode switch or a quick action from this window is
- * in flight). Output: for each button { off (aria-disabled), title }, and `reason` ('' = no reason line).
+ * in flight), `queued` (the capture's draft says Claude holds a message of ours in its queue: Stop's title then says what Stop does with
+ * it, W13; only a working Claude has anything to stop), `dialog` (the open `prompt` is a question or plan form, not a permission prompt: it
+ * has no No, so the copy points at the form). Output: for each button { off (aria-disabled), title }, and `reason` ('' = no reason line).
  */
-export function quickState({ pane = 'ok', status = null, prompt = null, switching = false } = {}) {
+export function quickState({ pane = 'ok', status = null, prompt = null, switching = false, queued = false, dialog = false } = {}) {
   const b = (off, title) => ({ off, title });
   const gated = (live, title) => b(!live, live ? title : TITLE.idleOnly); // live only while Claude waits
   if (pane !== 'ok') {
@@ -50,9 +55,9 @@ export function quickState({ pane = 'ok', status = null, prompt = null, switchin
   const allOff = (stop, reason) => ({
     stop: b(true, stop), compact: gated(false), clear: gated(false), model: gated(false), rewind: gated(false), end, reason,
   });
-  if (prompt) return allOff(TITLE.stopPrompt, WHY.promptShown);
+  if (prompt) return dialog === true ? allOff(TITLE.stopDialog, WHY.dialogShown) : allOff(TITLE.stopPrompt, WHY.promptShown);
   if (status === 'attn') return allOff(TITLE.stopAttn, WHY.prompt);
-  if (status === 'busy') return { ...allOff(TITLE.stopIdle, WHY.working), stop: b(false, TITLE.stop) };
+  if (status === 'busy') return { ...allOff(TITLE.stopIdle, WHY.working), stop: b(false, queued === true ? TITLE.stopQueued : TITLE.stop) };
   if (status === 'ended') return { ...allOff(TITLE.stopIdle, WHY.working), end: b(true, TITLE.endEnded) }; // nothing to end: the route could only say not-idle
   const live = !switching; // idle, or not known yet: the route checks
   return {
@@ -104,6 +109,7 @@ export function cleanPrompt(raw) {
 /**
  * Does Send (text, paste, the lone Enter of an empty box) or Shell go out? Not while a permission prompt is open or the agent needs
  * you: Enter would confirm the highlighted option and a digit would pick one. The terminal (passthrough) is the raw way and is not gated here.
+ * Working does not gate Send: Claude queues the message (W13). The server's submit route refuses a prompt that opened after the page looked.
  */
 export function sendGate({ promptOpen = false, status = null, buttons = false, bypass = false } = {}) {
   if (!promptOpen && status !== 'attn') return { ok: true };
@@ -133,6 +139,13 @@ export function promptNote(name, prompt) {
   const n = prompt.options.length;
   return `${name} asks: ${prompt.question} ${n} ${n === 1 ? 'choice' : 'choices'} above the message box.`;
 }
+
+/**
+ * The 409 `survey-undo` line (0.5, F14): for 4 s after nika typed a rating (1 to 3), the server sends no Escape of its own, because Claude
+ * shows "Esc to undo" and an Escape would take the rating back. The one copy: Stop, End, the command route, the draft route and the dialog
+ * form's Decline all show it (the page imports it from here). Nothing is retried automatically.
+ */
+export const SURVEY_UNDO_LINE = 'Claude shows "Esc to undo" for the rating nika just sent, so nika sends no Esc for 4 seconds. Try again then.';
 
 const BUSY = 'Another action is running on this session.';
 const RATE = 'Too many keys at once; try again.';
@@ -176,6 +189,7 @@ export function commandFailure({ status, code } = {}) {
     if (code === 'not-idle') return WHY.working;
     if (code === 'mode-unknown') return "Claude's screen isn't at the prompt; use the terminal.";
     if (code === 'busy-switching') return BUSY;
+    if (code === 'survey-undo') return SURVEY_UNDO_LINE; // the history search of a command in vim normal mode needs an Escape
   }
   if (status === 429) return RATE;
   if (status === 404) return GONE;
@@ -186,21 +200,26 @@ export function commandFailure({ status, code } = {}) {
 /** What the echo line says after the command route answered 200: Rewind opens a menu in the pane, the others were typed and sent. */
 export const commandSaid = (text, pane) => (text === '/rewind' ? `Opened Rewind in ${pane}: pick a point in the pane` : `Sent ${text} + Enter to ${pane}`);
 
+/** The line for "a prompt is open" (Stop's 409 `prompt-open`, Ctrl+C): a permission prompt has Esc = No in its panel, a question or plan form has no No. */
+const promptOpenLine = (dialog) => (dialog === true ? WHY.dialogShown : WHY.promptShown);
+
 const STOP_409 = {
   'prompt-open': WHY.promptShown,
+  'screen-unclear': "nika can't tell what Claude is showing, so Stop sent nothing. Press Esc in the terminal.", // no mode line and no input box: a dialog may be open
   'not-busy': 'Nothing to stop: Claude is waiting.',
   'mode-unknown': "Claude's input stayed in vim insert mode; press Esc in the terminal.",
   stopping: 'Already stopping the turn.', // another window is in the middle of the same stop
+  'survey-undo': SURVEY_UNDO_LINE, // an Escape right after a rating would undo it
 };
 
 /**
  * The stop route's result (contract section 3): { ok: true, say } for the echo line, or { ok: false, message } for the problem line.
  * Fixed copy: only the server's `error` code picks a line. 404 is the page's pane-gone state as well (session.js).
  */
-export function stopOutcome({ status, code, name = 'Claude' } = {}) {
+export function stopOutcome({ status, code, name = 'Claude', dialog = false } = {}) {
   if (status === 200) return { ok: true, say: `Stopped ${name}'s turn`, message: '' };
   const no = (message) => ({ ok: false, say: '', message });
-  if (status === 409 && Object.hasOwn(STOP_409, code)) return no(STOP_409[code]);
+  if (status === 409 && Object.hasOwn(STOP_409, code)) return no(code === 'prompt-open' ? promptOpenLine(dialog) : STOP_409[code]);
   if (status === 429) return no(RATE);
   if (status === 404) return no(GONE);
   if (unreachable(status)) return no(TMUX);
@@ -213,11 +232,14 @@ const ARROW = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight:
 /**
  * What a key in the message box does (docs/design/spec.md 4.2; 0.3.3). Pure: session.js performs the action.
  * e: the keydown's { key, shiftKey, ctrlKey, altKey, metaKey, repeat, isComposing, keyCode }.
- * s: { empty, selection, choosing, paletteOpen, pop, pane, status, promptOpen, buttons, bypass, switching }.
+ * s: { empty, selection, choosing, paletteOpen, pop, pane, status, promptOpen, dialog, buttons, bypass, switching, suggestion }
+ * (`dialog`: the open prompt is a question or plan form, not a permission prompt).
+ * `suggestion` is the prompt suggestion the box shows as its placeholder (draft-sync.js suggestionFor), or null.
  * Returns { act } plus, by act: key ('key': 'Escape' | 'BTab'; 'arrow': 'Up' | 'Down' | 'Left' | 'Right'),
  * dir ('palette-move': -1 | 1), message + kind + ms ('refuse'). `act` is one of none (the browser's default), swallow,
- * passthrough, close-pop, close-palette, palette-move, palette-insert, send, key, arrow, stop, refuse, focus-back.
- * It never returns Tab or C-c as a key: Tab moves focus, and Ctrl+C is the Stop route.
+ * passthrough, close-pop, close-palette, palette-move, palette-insert, send, key, arrow, accept, stop, refuse, focus-back.
+ * It never returns Tab or C-c as a key: Tab moves focus (or, on a suggestion, is `accept`: the guarded suggestion route, not a key),
+ * and Ctrl+C is the Stop route.
  */
 export function composerKey(e, s) {
   const none = { act: 'none' };
@@ -225,6 +247,8 @@ export function composerKey(e, s) {
   if (e.isComposing || e.keyCode === 229) return none; // the IME owns the key
   const { key } = e;
   const bare = !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey;
+  const accepts = s.empty === true && typeof s.suggestion === 'string' && s.suggestion !== ''; // an empty box that shows Claude's suggestion
+  const acceptKey = (ev) => (ev.repeat ? swallow : { act: 'accept' }); // a held key accepts once
   if (key === ']' && e.ctrlKey && !e.metaKey && !e.altKey) return { act: 'passthrough' };
   if (key === 'Escape') {
     if (e.repeat) return swallow;
@@ -247,20 +271,22 @@ export function composerKey(e, s) {
       if (s.switching) return { act: 'refuse', message: SWITCH_WAIT, kind: 'warn', ms: 3000 };
       return { act: 'key', key: 'BTab' };
     }
-    return s.choosing && bare ? { act: 'palette-insert' } : none;
+    if (s.choosing && bare) return { act: 'palette-insert' };
+    return bare && accepts ? acceptKey(e) : none;
   }
   if (Object.hasOwn(ARROW, key)) {
     if (!bare) return none;
     if (s.choosing && (key === 'ArrowUp' || key === 'ArrowDown')) return { act: 'palette-move', dir: key === 'ArrowDown' ? 1 : -1 };
+    if (key === 'ArrowRight' && accepts) return acceptKey(e); // the right arrow accepts it too, instead of going to the pane unguarded
     return s.empty ? { act: 'arrow', key: ARROW[key] } : none;
   }
   // Ctrl+Shift+C is the copy key (Type into pane, Linux terminals): left to the browser, never Stop (0.4.0)
   if ((key === 'c' || key === 'C') && e.ctrlKey && !e.shiftKey && !e.metaKey && !e.altKey) {
     if (s.selection) return none; // a copy
     if (e.repeat) return swallow;
-    const q = quickState({ pane: s.pane, status: s.status, prompt: s.promptOpen });
+    const q = quickState({ pane: s.pane, status: s.status, prompt: s.promptOpen, dialog: s.dialog === true });
     if (q.stop.off === false) return { act: 'stop' };
-    const message = s.pane !== 'ok' ? q.reason : s.promptOpen ? STOP_409['prompt-open'] : s.status === 'attn' ? WHY.prompt : STOP_409['not-busy'];
+    const message = s.pane !== 'ok' ? q.reason : s.promptOpen ? promptOpenLine(s.dialog) : s.status === 'attn' ? WHY.prompt : STOP_409['not-busy'];
     return { act: 'refuse', message, kind: 'warn', ms: 3000 };
   }
   return none;
@@ -284,6 +310,7 @@ export function endOutcome({ status, code, ended, reason } = {}) {
     if (code === 'input-unreadable') return no("nika can't find Claude's input box, so it didn't type /exit. Close any menu in the terminal (Esc), then try again.", 'warn');
     if (code === 'not-at-prompt') return no("Claude's input didn't take /exit; nothing was submitted.");
     if (code === 'busy-switching') return no(BUSY);
+    if (code === 'survey-undo') return no(SURVEY_UNDO_LINE, 'warn'); // a wait of 4 s, then End works again: the look of the other "try again" refusals
   }
   if (status === 429) return no(RATE);
   if (status === 404) return no(GONE);
@@ -303,8 +330,9 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 /**
  * What Enter does while Shell is on (spec 9.6), in the shape of planSend: `{ ok: true, empty: true }` (nothing is sent, no lone
- * "!"), `{ ok: false, message }` (the text is kept) or `{ ok: true, payloads, summary }` with the three keys-route bodies in
- * order: Ctrl-U, "!" + the command, Enter. The command is one line: the route refuses control characters in `text`.
+ * "!"), `{ ok: false, message }` (the text is kept) or `{ ok: true, payloads, summary }` with the two keys-route bodies in
+ * order: Ctrl-U, "!" + the command. The Enter is not among them: Send presses it through the submit route (W13). The command is one
+ * line: the route refuses control characters in `text`. Both bodies carry `send: true` (T54), like planSend's.
  */
 export function planShell(value) {
   const v = String(value ?? '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
@@ -312,7 +340,7 @@ export function planShell(value) {
   if (v.includes('\n')) return { ok: false, message: 'Shell mode sends one line. Remove the line breaks or turn Shell off. Your text is kept.' };
   if (CONTROL.test(v)) return { ok: false, message: 'Shell mode cannot send control characters. Your text is kept.' };
   if (v.length + 1 > TEXT_MAX) return { ok: false, message: `A shell command can be at most ${TEXT_MAX - 1} characters. Shorten it. Your text is kept.` };
-  return { ok: true, payloads: [{ keys: ['C-u'] }, { text: `!${v}` }, { keys: ['Enter'] }], summary: `a shell command (${v.length} characters) + Enter` };
+  return { ok: true, payloads: [{ keys: ['C-u'], send: true }, { text: `!${v}`, send: true }], summary: `a shell command (${v.length} characters) + Enter` };
 }
 
 /** The shapes session.js validates its URL with (the one copy; session.js imports them). */

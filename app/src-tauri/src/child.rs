@@ -398,6 +398,8 @@ pub enum Sup {
     Ready(u16),
     Status(Status),
     Pick(String),
+    /// The attachment button's file dialog (the server's `pick-files`); it shares the folder dialog's single slot in the shell.
+    PickFiles(String),
     /// The page asked, through the server, for a window action (only forwarded after `ready`).
     Window(WindowAction),
     /// No valid `ready` in time, a bad `ready`, an `error` message, or the child exited before `ready`.
@@ -428,6 +430,7 @@ pub fn supervise(rx: &Receiver<Event>, ready_timeout: Duration, mut emit: impl F
         match rx.recv() {
             Ok(Event::Msg(Msg::Status(s))) => emit(Sup::Status(s)),
             Ok(Event::Msg(Msg::PickFolder { req_id })) => emit(Sup::Pick(req_id)),
+            Ok(Event::Msg(Msg::PickFiles { req_id })) => emit(Sup::PickFiles(req_id)),
             Ok(Event::Msg(Msg::Window(a))) => emit(Sup::Window(a)),
             Ok(Event::Msg(Msg::Error { .. })) => {
                 emit(Sup::Failed);
@@ -1033,13 +1036,14 @@ mod tests {
                 Event::Msg(Msg::Ready { port: 4321 }),
                 Event::Msg(Msg::Status(status(1))),
                 Event::Msg(Msg::PickFolder { req_id: "r".into() }),
+                Event::Msg(Msg::PickFiles { req_id: "f".into() }),
                 Event::Msg(Msg::Ready { port: 1 }), // a second ready: ignored
                 Event::Closed,
             ],
             Duration::from_secs(5),
             true,
         );
-        assert_eq!(out, vec![Sup::Ready(4321), Sup::Status(status(1)), Sup::Pick("r".into()), Sup::Exited]);
+        assert_eq!(out, vec![Sup::Ready(4321), Sup::Status(status(1)), Sup::Pick("r".into()), Sup::PickFiles("f".into()), Sup::Exited]);
     }
 
     #[test]

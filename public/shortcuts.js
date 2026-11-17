@@ -2,7 +2,7 @@
 // session window. Everything except openShortcuts and wireWindowKeys is pure, so Node tests it (test/shortcuts.test.js). The content is static copy
 // kept here; nothing in the window comes from the server. ASCII only: key glyphs are escapes, because the session window's
 // files are scanned for invisible characters.
-import { h } from './dom.js';
+import { h, clearMenuPlacement } from './dom.js';
 
 const CMD = '\u2318';
 const SHIFT = '\u21e7';
@@ -67,11 +67,18 @@ export const SHORTCUTS = [
   row('session', 'app', 'Typing into the pane', 'Stop typing into the pane', { mac: [[CTRL, ']']], other: [['Ctrl', ']']] }, 'Keys go to the message box again'),
   row('session', 'app', 'Typing into the pane', 'Copy', { mac: [[CMD, 'C']], other: [['Ctrl', 'Shift', 'C']] }, 'Copy the text selected in the terminal (Ctrl+C goes to Claude)'),
   row('session', 'app', 'Typing into the pane', 'Paste', { mac: [[CMD, 'V']], other: [['Ctrl', 'Shift', 'V'], ['Ctrl', 'V']] }, 'Send the clipboard to Claude as one paste'),
+  row('session', 'app', 'Terminal (Type into pane off)', 'Scroll Claude\'s view', alts('PgUp', 'PgDn'), 'Scroll Claude\'s view one page (the mouse wheel and the trackpad scroll it over the terminal)', ' / '),
+  row('session', 'app', 'Terminal (Type into pane off)', 'Top, or back to live', alts('Home', 'End'), 'Claude\'s view: top / back to live (Ctrl+Home and Ctrl+End do the same)', ' / '),
   row('session', 'app', 'Mode switcher', 'Move between modes', alts(LEFT, RIGHT, 'Home', 'End'), 'Moves focus; does not switch', ' '),
   row('session', 'app', 'Mode switcher', 'Switch', alts('Enter', 'Space'), 'Switch to the focused mode'),
   row('session', 'app', 'Command list', 'Move', alts(UP, DOWN), 'Move through the commands', ' '),
   row('session', 'app', 'Command list', 'Insert', alts('Enter', 'Tab'), 'Put the command in the message box'),
   row('session', 'app', 'Command list', 'Close', one('Esc'), 'Close the list and keep the text'),
+
+  // the read-only subagent view (0.5, W8): the session window's page with no pane and no input, so only the window keys apply
+  row('subagent', 'app', 'Window', 'Back', BACK, 'Back to the session that runs it'),
+  row('subagent', 'app', 'Window', 'Keyboard shortcuts', HELP, 'Show this list'),
+  ...windowRows('subagent', { quit: QUIT, close: 'Close this window' }),
 ];
 
 /**
@@ -206,7 +213,7 @@ function closeMenus(opener) {
   let back = opener;
   for (const m of document.querySelectorAll('.menu:not([hidden])')) {
     m.hidden = true;
-    m.removeAttribute('data-up');
+    clearMenuPlacement(m);
     const btn = m.previousElementSibling;
     btn?.setAttribute('aria-expanded', 'false');
     if (opener && m.contains(opener)) back = btn;
@@ -227,13 +234,14 @@ export function openShortcuts({ window: win, tier, mac, singleKey, opener }) {
   const back = closeMenus(opener);
   let leaving = false; // "Change in Settings" navigates; the new screen takes the focus
   const close = h('button', { type: 'button', class: 'btn', text: 'Close', onclick: () => dlg.close() });
+  const onSessionPage = win === 'session' || win === 'subagent'; // both are session.html: Settings is another page
   const toSettings = () => {
     leaving = true;
     dlg.close();
-    if (win === 'session') location.assign('/#settings');
+    if (onSessionPage) location.assign('/#settings');
     else location.hash = '#settings';
   };
-  $('kbd-sub').textContent = win === 'session' ? 'Session window' : 'Dashboard';
+  $('kbd-sub').textContent = win === 'session' ? 'Session window' : win === 'subagent' ? 'Subagent window' : 'Dashboard';
   $('kbd-body').replaceChildren(...shortcutsFor({ window: win, tier, mac }).map(section));
   $('kbd-foot').replaceChildren(...(tier === 'app'
     ? [h('span', { class: 'muted', text: `Single-key shortcuts: ${singleKey ? 'On' : 'Off'}` }), h('button', { type: 'button', class: 'btn link', text: 'Change in Settings', onclick: toSettings }), h('span', { class: 'sp' }), close]

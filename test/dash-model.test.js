@@ -10,8 +10,10 @@ import { fileURLToPath } from 'node:url';
 import { load, loadFlag } from '../public/ui.js';
 import {
   DETECTED_MAX, skippedText, endedPlan, noMatchText, resetEndedState, sidebarModel, orchState, roleTag, savedPick, otherRunning, ROLE_TAGS,
-  statusOf, STATUS_ORDER, parentOf, treeRows, hasTree, spawnLimits,
+  statusOf, STATUS_ORDER, parentOf, treeRows, hasTree, spawnLimits, SUBAGENT_ID, SUB_STATES, subagentView, subagentHref,
+  KINDS, KIND_TEXT, ROLE_KIND, kindFromModel, agentLabelView, subLabelView,
 } from '../public/dash-model.js';
+import * as ids from '../src/ids.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -911,6 +913,13 @@ describe('orchState (what the project\'s first button says)', () => {
     assert.deepEqual(orchState(proj({ sessionId: ID, state: 'gone', name: null, pane: null }), g()), { kind: 'gone', id: ID, name: null, pane: null });
   });
 
+  // 0.5, W12: a pick that is the host session of a background row reads live with the pane (the server's orchestrators()); the row's own tag is main
+  test('(+) a saved orchestrator that is the host of a background row: live, with the host\'s id and the pane; the row is tagged main', () => {
+    const row = live(ID2, { hostId: ID });
+    assert.deepEqual(orchState(proj({ sessionId: ID, state: 'live', name: row.name, pane: '%3' }), g(row)), { kind: 'live', id: ID, name: row.name, pane: '%3' });
+    assert.equal(roleTag(row, ID), 'main');
+  });
+
   test('(+) without a saved orchestrator (null, or an older server that sends no field) the snapshot decides: live with a main orchestrator, else none', () => {
     const a = live(ID);
     assert.deepEqual(orchState(proj(null), g(a)), { kind: 'live', id: ID, name: a.name, pane: '%3' });
@@ -1004,13 +1013,14 @@ describe('savedPick (the project\'s saved orchestrator, whatever it is doing)', 
 });
 
 describe('ROLE_TAGS (the words of each badge)', () => {
-  test('(+) main, sub and saved each have their own class, a long word, a short word and a title', () => {
-    assert.deepEqual(Object.keys(ROLE_TAGS), ['main', 'sub', 'saved']);
+  test('(+) main, sub, saved and (0.5, W8) subagent each have their own class, a long word, a short word and a title', () => {
+    assert.deepEqual(Object.keys(ROLE_TAGS), ['main', 'sub', 'saved', 'subagent']);
+    assert.deepEqual(ROLE_TAGS.subagent, { cls: 'tag sa', long: 'subagent', short: 'subagent', title: "Claude's own subagent. It runs inside its parent session." });
     assert.equal(ROLE_TAGS.main.long, 'orchestrator');
     assert.equal(ROLE_TAGS.sub.long, 'sub-orchestrator');
     assert.equal(ROLE_TAGS.sub.short, 'sub-orch');
     assert.match(ROLE_TAGS.saved.title, /^Saved orchestrator\. Resume it from the header or this row's menu\.$/);
-    assert.equal(new Set(Object.values(ROLE_TAGS).map((t) => t.cls)).size, 3, 'never the same look twice');
+    assert.equal(new Set(Object.values(ROLE_TAGS).map((t) => t.cls)).size, 4, 'never the same look twice');
   });
 });
 
@@ -1034,6 +1044,20 @@ describe('otherRunning (who else runs as the orchestrator, so Set and Resume are
     assert.equal(otherRunning({ agents: [live(ID, { role: 'orchestrator' })] }, ID, ID), null, 'itself');
     assert.equal(otherRunning({ agents: [live(ID2, { role: 'orchestrator', live: false })] }, ID2, ID), null, 'ended');
     assert.equal(otherRunning({ agents: [live(ID2, { role: 'agent' }), live(ID3)] }, null, ID), null, 'agent and plain');
+  });
+
+  // 0.5, W12: after /compact one row (the background session) stands for the saved session in the pane (`hostId`)
+  test('(+) a live row that continues the saved session counts as the saved session, tagged or not; for its own menu it is not another one', () => {
+    const row = live(ID2, { hostId: ID3 });
+    assert.deepEqual(otherRunning({ agents: [row] }, ID3, ID), { id: ID2, name: 's-22' });
+    assert.equal(otherRunning({ agents: [row] }, ID3, ID2), null, 'the row\'s own menu');
+    assert.equal(otherRunning({ agents: [row] }, null, ID3), null, 'asked about the host id itself: that is this row');
+  });
+
+  test('(−) a row with no hostId (older server, or an unlinked session) matches nothing by it, with no pick or no id', () => {
+    assert.equal(otherRunning({ agents: [live(ID2, { hostId: null })] }, null, ID), null);
+    assert.equal(otherRunning({ agents: [live(ID2)] }, undefined, undefined), null);
+    assert.equal(otherRunning({ agents: [live(ID2, { hostId: ID3 })] }, ID, ID), null, 'another session\'s host is not the pick');
   });
 
   test('(−) a sub-orchestrator is not another orchestrator: the server never counts it for the 409 orchestrator_running', () => {
@@ -1262,5 +1286,233 @@ describe('spawnLimits (the counts the spawn sheet and its openers show)', () => 
     assert.deepEqual(spawnLimits(undefined, null, 3), { parent: { running: 0, max: 3 }, project: { running: 0, cap: 9 } });
     assert.deepEqual(spawnLimits({}, '%1', 3), { parent: { running: 0, max: 3 }, project: { running: 0, cap: 9 } });
     for (const max of [undefined, null, 0, -1, 2.5, NaN, '3']) assert.equal(spawnLimits(g, null, max).parent.max, 3, String(max));
+  });
+});
+
+// 0.5, W8: Claude's subagents. The pure decisions behind the rows and the session window's list (design W8 4.1, 4.7).
+describe('SUBAGENT_ID and SUB_STATES (the page copy of the id shape and the words of each state)', () => {
+  test('(+) the page copy of SUBAGENT_ID has the server shape (src/ids.js once it exports it, else the collector\'s file-name pattern)', () => {
+    assert.equal(SUBAGENT_ID.source, '^[A-Za-z0-9_-]{1,64}$');
+    const theirs = ids.SUBAGENT_ID?.source ?? null;
+    if (theirs) assert.equal(SUBAGENT_ID.source, theirs, 'one shape on both sides');
+    else assert.ok(fs.readFileSync(path.join(PUBLIC, '..', 'src', 'collect', 'subagents.js'), 'utf8').includes(SUBAGENT_ID.source.slice(1, -1)), 'until T1 exports it, the collector holds the same character class and length');
+  });
+
+  test('(+) each state has its word and title, exactly (design 4.7)', () => {
+    assert.deepEqual(SUB_STATES, {
+      running: { label: 'Running', title: 'Running inside its session' },
+      finished: { label: 'Finished', title: 'Finished its task' },
+      stopped: { label: 'Stopped', title: 'Did not finish: its session is no longer running' },
+    });
+  });
+});
+
+describe('subagentView (what a subagent list draws)', () => {
+  const sub = (id, state, over = {}) => ({ id, type: 'Explore', description: `task ${id}`, model: 'haiku', modelLabel: 'Haiku 4.5', state, lastActivity: 5, ...over });
+  const three = () => [sub('s1', 'running'), sub('s2', 'finished'), sub('s3', 'stopped')];
+
+  test('(+) none, an empty list and anything that is not a list give null (nothing to draw)', () => {
+    for (const v of [undefined, null, [], 'x', 5, {}, { length: 2 }]) assert.equal(subagentView(v, true), null, String(v));
+  });
+
+  test('(+) one running of three: "1 subagent · 1 running", only that one shown, "+2 ended" while the rest is hidden', () => {
+    const v = subagentView(three(), false);
+    assert.equal(v.summary, '1 subagent · 1 running');
+    assert.equal(v.hint, '+2 ended');
+    assert.deepEqual(v.shown.map((s) => s.id), ['s1']);
+    assert.equal(v.running, 1);
+    assert.equal(v.hidden, 2);
+  });
+
+  test('(+) Show ended on: all of them, "3 subagents · 1 running", no hint', () => {
+    const v = subagentView(three(), true);
+    assert.equal(v.summary, '3 subagents · 1 running');
+    assert.equal(v.hint, null);
+    assert.equal(v.hidden, 0);
+    assert.deepEqual(v.shown.map((s) => s.id), ['s1', 's2', 's3']);
+  });
+
+  test('(+) Show ended on with none running: "3 subagents" and no running part', () => {
+    const v = subagentView([sub('a', 'finished'), sub('b', 'finished'), sub('c', 'stopped')], true);
+    assert.equal(v.summary, '3 subagents');
+    assert.equal(v.running, 0);
+    assert.equal(v.hint, null);
+  });
+
+  test('(+) a single running subagent is singular, and with no hint when nothing is hidden', () => {
+    const v = subagentView([sub('s1', 'running')], false);
+    assert.equal(v.summary, '1 subagent · 1 running');
+    assert.equal(v.hint, null);
+  });
+
+  test('(+) W11: every one ended and hidden: "No subagents running" and the hint "+2 ended", nothing shown', () => {
+    const v = subagentView([sub('s2', 'finished'), sub('s3', 'stopped')], false);
+    assert.equal(v.summary, 'No subagents running');
+    assert.equal(v.hint, '+2 ended');
+    assert.deepEqual(v.shown, []);
+    assert.equal(v.running, 0);
+  });
+
+  test('(+) the server\'s order is kept, with and without Show ended', () => {
+    const list = [sub('z', 'running'), sub('y', 'finished'), sub('x', 'running'), sub('w', 'stopped')];
+    assert.deepEqual(subagentView(list, true).shown.map((s) => s.id), ['z', 'y', 'x', 'w']);
+    assert.deepEqual(subagentView(list, false).shown.map((s) => s.id), ['z', 'x']);
+  });
+
+  test('(−) garbage entries (null, text, numbers, lists) are ignored; a list of only garbage is null', () => {
+    const v = subagentView([null, 'x', 7, [], undefined, sub('s1', 'running')], false);
+    assert.deepEqual(v.shown.map((s) => s.id), ['s1']);
+    assert.equal(v.summary, '1 subagent · 1 running');
+    assert.equal(v.hint, null, 'the garbage does not count as an ended subagent');
+    assert.equal(subagentView([null, 'x', 7, []], true), null);
+  });
+
+  test('(−) a state other than exactly "running" is hidden by default, whatever the word', () => {
+    const odd = [sub('s5', 'Running'), sub('s6', undefined), sub('s7', 'running'), sub('s8', 'busy'), sub('s9', null)];
+    const v = subagentView(odd, false);
+    assert.deepEqual(v.shown.map((s) => s.id), ['s7']);
+    assert.equal(v.running, 1);
+    assert.equal(v.hint, '+4 ended');
+  });
+
+  test('(−) Show ended given as a non-true value (undefined, 0, "") hides like false', () => {
+    for (const flag of [undefined, 0, '', null]) assert.deepEqual(subagentView(three(), flag).shown.map((s) => s.id), ['s1'], String(flag));
+  });
+});
+
+describe('subagentHref (the link to a subagent\'s read-only view)', () => {
+  const S = '33333333-3333-4333-8333-333333333333';
+  const KEY = '0123456789abcdef';
+
+  test('(+) a session, a subagent id and a project key give session.html?session=…&agent=…&project=…', () => {
+    assert.equal(subagentHref({ session: S, agent: 'a0000000000000001', project: KEY }), `session.html?session=${S}&agent=a0000000000000001&project=${KEY}`);
+  });
+
+  test('(+) without a project (or none registered) the link has no project part', () => {
+    assert.equal(subagentHref({ session: S, agent: 'aaa111' }), `session.html?session=${S}&agent=aaa111`);
+    assert.equal(subagentHref({ session: S, agent: 'aaa111', project: undefined }), `session.html?session=${S}&agent=aaa111`);
+  });
+
+  test('(+) every character of the id shape is allowed, up to 64', () => {
+    const agent = `A_b-9${'x'.repeat(59)}`;
+    assert.equal(subagentHref({ session: S, agent }), `session.html?session=${S}&agent=${agent}`);
+  });
+
+  test('(−) a bad session id gives null', () => {
+    for (const session of [undefined, null, '', 'nope', 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA', `${S}x`, '../x', 5, {}]) assert.equal(subagentHref({ session, agent: 'aaa111' }), null, String(session));
+  });
+
+  test('(−) a bad subagent id gives null: empty, a dot, a slash, a space, 65 characters, not text', () => {
+    for (const agent of [undefined, null, '', '..', 'a.b', 'a/b', '../x', 'a b', 'a&b=c', 'x'.repeat(65), 5, {}]) assert.equal(subagentHref({ session: S, agent }), null, String(agent));
+  });
+
+  test('(−) a project key without the key shape is left out, the rest of the link stays', () => {
+    for (const project of ['', 'short', 'UPPERCASE0123456', `${KEY}0`, '0123456789abcde!', 'a&b=c', 5, {}, null]) {
+      assert.equal(subagentHref({ session: S, agent: 'aaa111', project }), `session.html?session=${S}&agent=aaa111`, String(project));
+    }
+  });
+
+  test('(−) no argument at all gives null', () => {
+    assert.equal(subagentHref(), null);
+    assert.equal(subagentHref({}), null);
+  });
+});
+
+// ---- labels (0.5, W9; design W9 4.2): the kind list, the two chips' views and the page's copy of kindFromModel ----------------------------
+describe('labels: the page copies and the chip views (W9 4.2)', () => {
+  // the seven words, in the order the spawn sheet lists them (design W9 2.1), written out here on purpose
+  const WORDS = ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent'];
+  const MEANING = {
+    coder: 'writes and changes code', reviewer: 'reviews code or designs', tester: 'writes and runs tests', designer: 'designs and plans',
+    scout: 'finds files and facts, read-only', writer: 'writes docs and reports', agent: 'no particular kind',
+  };
+  const MODELS = { builder: 'claude-sonnet-5-5', reasoner: 'claude-opus-5-5', scout: 'claude-haiku-5-5', orchestrator: 'claude-fable-5-2' };
+  // one table of cases both copies of kindFromModel must answer the same way: [model, models, want]
+  const CASES = [
+    ['claude-sonnet-5-5', MODELS, 'coder'], ['claude-opus-5-5', MODELS, 'designer'], ['claude-haiku-5-5', MODELS, 'scout'],
+    ['claude-opus-5-5', { ...MODELS, orchestrator: 'claude-opus-5-5' }, 'designer'],
+    ['claude-fable-5-2', MODELS, 'agent'], ['claude-private-9', MODELS, 'agent'], ['sonnet', MODELS, 'agent'],
+    ['claude-sonnet-5-5', { ...MODELS, scout: 'claude-sonnet-5-5' }, 'agent'], ['claude-sonnet-5-5', { builder: 'claude-sonnet-5-5', reasoner: 'claude-sonnet-5-5' }, 'agent'],
+    ['claude-sonnet-5-5', null, 'agent'], ['claude-sonnet-5-5', {}, 'agent'], [null, MODELS, 'agent'], [undefined, MODELS, 'agent'], [5, MODELS, 'agent'],
+    [null, { builder: null, reasoner: 'claude-opus-5-5', scout: 'claude-haiku-5-5' }, 'agent'], [5, { builder: 5 }, 'agent'], // an unset role (null) never matches a missing model
+  ];
+  const T1_LANDED = fs.existsSync(path.join(PUBLIC, '..', 'src', 'labels.js')) && Array.isArray(ids.KINDS);
+
+  test('(+) KINDS is exactly the seven words in sheet order; KIND_TEXT holds the meaning of each, nothing else', () => {
+    assert.deepEqual([...KINDS], WORDS);
+    assert.deepEqual(Object.keys(KIND_TEXT), WORDS);
+    assert.deepEqual({ ...KIND_TEXT }, MEANING);
+  });
+
+  test('(+) ROLE_KIND maps the three roles that name a kind: builder coder, reasoner designer, scout scout (the orchestrator names none)', () => {
+    assert.deepEqual({ ...ROLE_KIND }, { builder: 'coder', reasoner: 'designer', scout: 'scout' });
+  });
+
+  test('(+) kindFromModel: the builder\'s id gives coder, the reasoner\'s designer, the scout\'s scout; a reasoner and an orchestrator on one id still give designer', () => {
+    assert.equal(kindFromModel('claude-sonnet-5-5', MODELS), 'coder');
+    assert.equal(kindFromModel('claude-opus-5-5', MODELS), 'designer');
+    assert.equal(kindFromModel('claude-haiku-5-5', MODELS), 'scout');
+    assert.equal(kindFromModel('claude-opus-5-5', { ...MODELS, orchestrator: 'claude-opus-5-5' }), 'designer');
+  });
+
+  test('(−) kindFromModel gives agent: no role has the id, builder and scout share it, no models, a model that is not text, an alias against a full id, the orchestrator\'s id only', () => {
+    assert.equal(kindFromModel('claude-private-9', MODELS), 'agent');
+    assert.equal(kindFromModel('claude-sonnet-5-5', { ...MODELS, scout: 'claude-sonnet-5-5' }), 'agent', 'two roles name two kinds');
+    for (const models of [null, undefined, {}, 'x', 5]) assert.equal(kindFromModel('claude-sonnet-5-5', models), 'agent', String(models));
+    for (const model of [null, undefined, 5, {}, ['claude-sonnet-5-5'], '']) assert.equal(kindFromModel(model, MODELS), 'agent', String(model));
+    assert.equal(kindFromModel(null, { builder: null, reasoner: 'claude-opus-5-5', scout: 'claude-haiku-5-5' }), 'agent', 'a role with no model set (null) does not match a spawn with no model');
+    assert.equal(kindFromModel('sonnet', MODELS), 'agent', 'no alias resolution: sonnet is not claude-sonnet-5-5');
+    assert.equal(kindFromModel('claude-fable-5-2', MODELS), 'agent', 'the orchestrator\'s model names no kind');
+  });
+
+  test('(+) the page copy answers the whole table of cases (the same table runs against src/labels.js in the parity test below)', () => {
+    for (const [model, models, want] of CASES) assert.equal(kindFromModel(model, models), want, JSON.stringify([model, models]));
+  });
+
+  test('(+) parity with the server: KINDS equals src/ids.js KINDS, ROLE_KIND equals src/labels.js ROLE_KIND, and both kindFromModel agree on every case', { skip: T1_LANDED ? false : 'src/labels.js and ids.KINDS land with W9 T1; this test runs the moment they exist' }, async () => {
+    const labels = await import('../src/labels.js');
+    assert.deepEqual([...KINDS], [...ids.KINDS]);
+    assert.deepEqual({ ...ROLE_KIND }, { ...labels.ROLE_KIND });
+    for (const [model, models] of CASES) assert.equal(kindFromModel(model, models), labels.kindFromModel(model, models), JSON.stringify([model, models]));
+  });
+
+  test('(+) agentLabelView: a pane tagged agent with a kind gives the word and "Kind: <word>, <meaning>", for every word', () => {
+    assert.deepEqual(agentLabelView({ role: 'agent', label: 'coder' }), { text: 'coder', title: 'Kind: coder, writes and changes code' });
+    for (const w of WORDS) assert.deepEqual(agentLabelView({ role: 'agent', label: w }), { text: w, title: `Kind: ${w}, ${MEANING[w]}` }, w);
+  });
+
+  test('(−) agentLabelView gives null: a sub-orchestrator (its role tag is its label), the orchestrator, no role, a label that is not a word of the list, no label, no agent', () => {
+    assert.equal(agentLabelView({ role: 'sub-orchestrator', label: 'sub-orchestrator' }), null);
+    assert.equal(agentLabelView({ role: 'sub-orchestrator', label: 'coder' }), null, 'a kind on a sub-orchestrator is ignored');
+    assert.equal(agentLabelView({ role: 'orchestrator', label: null }), null);
+    assert.equal(agentLabelView({ role: 'orchestrator', label: 'coder' }), null);
+    assert.equal(agentLabelView({ role: null, label: 'coder' }), null);
+    assert.equal(agentLabelView({ label: 'coder' }), null);
+    for (const label of ['boss', 'Coder', 'coder ', '', 'sub-orchestrator', 'constructor', '__proto__', null, undefined, 5, {}, ['coder']]) assert.equal(agentLabelView({ role: 'agent', label }), null, String(label));
+    assert.equal(agentLabelView({ role: 'agent' }), null);
+    for (const a of [null, undefined, 'agent', 5]) assert.equal(agentLabelView(a), null, String(a));
+  });
+
+  test('(+) subLabelView: a built-in type shows its word, its raw type in the title and the kind\'s meaning; a custom label gets a title without the Kind part', () => {
+    assert.deepEqual(subLabelView({ label: 'scout', type: 'Explore' }), { text: 'scout', title: "Claude's Explore subagent. Kind: scout, finds files and facts, read-only" });
+    assert.deepEqual(subLabelView({ label: 'security-reviewer', type: 'security-reviewer' }), { text: 'security-reviewer', title: "Claude's security-reviewer subagent" });
+    assert.deepEqual(subLabelView({ label: 'crew-code-reviewer', type: 'codecrew:crew-code-reviewer' }), { text: 'crew-code-reviewer', title: "Claude's codecrew:crew-code-reviewer subagent" }, 'the full plugin type is in the title');
+    assert.deepEqual(subLabelView({ label: 'agent', type: 'general-purpose' }), { text: 'agent', title: "Claude's general-purpose subagent. Kind: agent, no particular kind" });
+  });
+
+  test('(+) subLabelView: no type gives the title "Claude\'s subagent"; 24 code points are allowed, counted as code points', () => {
+    assert.deepEqual(subLabelView({ label: 'designer' }), { text: 'designer', title: "Claude's subagent. Kind: designer, designs and plans" });
+    assert.deepEqual(subLabelView({ label: 'x', type: '' }), { text: 'x', title: "Claude's subagent" });
+    assert.deepEqual(subLabelView({ label: 'x', type: 5 }), { text: 'x', title: "Claude's subagent" });
+    const edge = `${'a'.repeat(23)}\u2026`; // what the server cuts a long name to: 23 characters and an ellipsis
+    assert.equal(subLabelView({ label: edge, type: 't' }).text, edge);
+    const emoji = '\u{1F600}'.repeat(24); // 24 code points, 48 UTF-16 units
+    assert.equal(subLabelView({ label: emoji }).text, emoji);
+  });
+
+  test('(−) subLabelView text is agent: a label that is not text, empty, blank, or longer than 24 code points; no subagent at all', () => {
+    for (const label of [undefined, null, 5, {}, ['scout'], '', '   ', 'a'.repeat(25), '\u{1F600}'.repeat(25)]) assert.equal(subLabelView({ label, type: 'Explore' }).text, 'agent', String(label));
+    assert.deepEqual(subLabelView({ label: 'a'.repeat(25), type: 'Explore' }), { text: 'agent', title: "Claude's Explore subagent. Kind: agent, no particular kind" });
+    for (const s of [null, undefined, {}, 'x', 5]) assert.deepEqual(subLabelView(s), { text: 'agent', title: "Claude's subagent. Kind: agent, no particular kind" }, String(s));
   });
 });

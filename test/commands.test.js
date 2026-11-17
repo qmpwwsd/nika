@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { listCommands, parseFrontmatter } from '../src/collect/commands.js';
+import { listCommands, orderCommands, parseFrontmatter } from '../src/collect/commands.js';
 import { BUILTIN_COMMANDS } from '../src/commands-builtin.js';
 
 // Synthetic fixtures only (rules/project-rules.md section 7).
@@ -43,8 +43,15 @@ const cacheDir = (claudeDir, ...p) => path.join(claudeDir, 'plugins', 'cache', .
 
 let clock = 0;
 /** Each call gets its own `now`, 1 minute apart, so the 10 s cache never serves another test's result. */
-const list = (m, { project = false, now = (clock += 60_000) } = {}) =>
-  listCommands({ claudeDir: m.claudeDir, projectDir: project ? m.projectDir : undefined, now });
+const list = (m, { project = false, applied, now = (clock += 60_000) } = {}) =>
+  listCommands({ claudeDir: m.claudeDir, projectDir: project ? m.projectDir : undefined, applied, now });
+
+/** True when both answers hold the very same entry objects (in any order): the cached scan was reused, not repeated. */
+const sameScan = (a, b) => {
+  const in_b = new Set(b);
+  return a.length === b.length && a.every((e) => in_b.has(e));
+};
+const BUILTIN_NAMES = BUILTIN_COMMANDS.map((c) => c.name);
 
 const nonBuiltin = (entries) => entries.filter((e) => e.source !== 'builtin');
 const names = (entries) => entries.map((e) => e.name);
@@ -116,10 +123,10 @@ describe('listCommands', () => {
 
     const got = nonBuiltin(await list(m, { project: true }));
     assert.deepEqual(got, [
-      { name: 'tidy', description: 'Tidy up', argHint: '', source: 'user' },
-      { name: 'ship', description: 'Ship it', argHint: '[branch]', source: 'user' },
       { name: 'review-pr', description: 'Review a PR', argHint: '', source: 'project' },
       { name: 'lint', description: 'Lint the project', argHint: '', source: 'project' },
+      { name: 'tidy', description: 'Tidy up', argHint: '', source: 'user' },
+      { name: 'ship', description: 'Ship it', argHint: '[branch]', source: 'user' },
       { name: 'demo:audit', description: 'Audit things', argHint: '', source: 'plugin', plugin: 'demo' },
       { name: 'demo:fmt', description: 'Format files', argHint: '', source: 'plugin', plugin: 'demo' },
     ]);
@@ -133,7 +140,7 @@ describe('listCommands', () => {
     command(install, 'fmt');
     registerPlugins(m.claudeDir, { 'demo@market-one': install });
     assert.deepEqual(names(nonBuiltin(await list(m))), ['mine', 'demo:fmt']);
-    assert.deepEqual(names(nonBuiltin(await list(m, { project: true }))), ['mine', 'theirs', 'demo:fmt']);
+    assert.deepEqual(names(nonBuiltin(await list(m, { project: true }))), ['theirs', 'mine', 'demo:fmt']);
   });
 
   test('(+) the skill folder name is the name when frontmatter has none; frontmatter name wins otherwise', async () => {
@@ -150,7 +157,7 @@ describe('listCommands', () => {
     skill(m.claudeDir, 'deploy', { description: 'user skill' });
     command(path.join(m.projectDir, '.claude'), 'deploy', { description: 'project command' });
     const got = nonBuiltin(await list(m, { project: true }));
-    assert.deepEqual(got.map((e) => [e.source, e.description]), [['user', 'user skill'], ['project', 'project command']]);
+    assert.deepEqual(got.map((e) => [e.source, e.description]), [['project', 'project command'], ['user', 'user skill']]);
   });
 
   test('(+) user-invocable: false hides a skill and a command', async () => {
@@ -162,22 +169,20 @@ describe('listCommands', () => {
     assert.deepEqual(names(nonBuiltin(await list(m))).sort(), ['shown-command', 'shown-skill']);
   });
 
-  test('(+) builtins come first and carry dialog flags', async () => {
+  test('(+) built-ins keep their order and carry dialog flags', async () => {
     const m = machine();
     command(m.claudeDir, 'compact', { description: 'user compact' });
     const got = await list(m);
-    const head = got.slice(0, BUILTIN_COMMANDS.length);
-    assert.ok(head.every((e) => e.source === 'builtin'));
-    assert.deepEqual(names(head), BUILTIN_COMMANDS.map((c) => c.name));
-    assert.equal(got.slice(BUILTIN_COMMANDS.length).some((e) => e.source === 'builtin'), false);
+    const head = got.filter((e) => e.source === 'builtin');
+    assert.deepEqual(names(head), BUILTIN_NAMES);
     const by = Object.fromEntries(head.map((e) => [e.name, e]));
     assert.deepEqual(by.config, { name: 'config', description: by.config.description, argHint: '[key=value]', source: 'builtin', dialog: true });
     assert.equal('dialog' in by.compact, false);
     assert.equal(by.compact.argHint, '[instructions]');
     assert.equal(by.diff.argHint, '');
     assert.ok(head.every((e) => typeof e.description === 'string' && e.description.length > 0));
-    // a user command may share a built-in's name: both are kept, each with its source
-    assert.deepEqual(got.filter((e) => e.name === 'compact').map((e) => e.source), ['builtin', 'user']);
+    // a user command may share a built-in's name: both are kept, each with its source (yours first)
+    assert.deepEqual(got.filter((e) => e.name === 'compact').map((e) => e.source), ['user', 'builtin']);
   });
 
   test('(+) BUILTIN_COMMANDS follows claude-tui.md section 4: aliases, args and dialog column', () => {
@@ -340,7 +345,7 @@ describe('listCommands', () => {
     assert.deepEqual(nonBuiltin(await list(m)).map((e) => [e.name, e.description]), [['deploy', 'the command']]);
   });
 
-  test('(−) the 1001st entry is dropped; built-ins count and come first', async () => {
+  test('(−) the 1001st entry is dropped; built-ins count toward the 1000', async () => {
     const m = machine();
     const pad = (i) => String(i).padStart(3, '0');
     for (let i = 0; i < 200; i += 1) {
@@ -356,7 +361,7 @@ describe('listCommands', () => {
     registerPlugins(m.claudeDir, keys);
     const got = await list(m, { project: true });
     assert.equal(got.length, 1000);
-    assert.equal(got[0].source, 'builtin');
+    assert.equal(got.filter((e) => e.source === 'builtin').length, BUILTIN_COMMANDS.length);
     assert.ok(got.some((e) => e.name === 'u199') && got.some((e) => e.name === 'p199'));
     assert.equal(got.some((e) => e.name === 'd:c199'), false);
   });
@@ -580,7 +585,7 @@ describe('listCommands', () => {
     }
     registerPlugins(m.claudeDir, keys);
     const got = nonBuiltin(await list(m, { project: true }));
-    assert.deepEqual(names(got), ['user-mark', 'project-mark', 'a:seen', 'b:seen', 'c:seen', 'd:seen', 'e:seen', 'f:seen']);
+    assert.deepEqual(names(got), ['project-mark', 'user-mark', 'a:seen', 'b:seen', 'c:seen', 'd:seen', 'e:seen', 'f:seen']);
   });
 
   test('(+) calls that arrive during a scan share it', async () => {
@@ -605,7 +610,7 @@ describe('listCommands', () => {
     assert.throws(() => { got.at(-1).description = 'changed'; }, TypeError);
     const again = await listCommands({ claudeDir: m.claudeDir, now: 9_000_001 });
     assert.equal(again, got);
-    assert.equal(again[0].name, BUILTIN_COMMANDS[0].name);
+    assert.equal(again[0].name, 'one'); // yours first
   });
 
   test('(+) same-named plugins from two marketplaces: the first full name wins, other names are kept', async () => {
@@ -617,5 +622,142 @@ describe('listCommands', () => {
     command(two, 'extra', { description: 'only in two' });
     registerPlugins(m.claudeDir, { 'dup@market-two': two, 'dup@market-one': one });
     assert.deepEqual(nonBuiltin(await list(m)).map((e) => [e.name, e.description]), [['dup:fmt', 'from market one'], ['dup:extra', 'only in two']]);
+  });
+});
+
+describe('order of the answer: yours first, all of them (0.5)', () => {
+  const DEMO = 'demo@market-one'; // applied to the project in these tests
+  const OTHER = 'other@market-one'; // installed, not applied
+
+  /** A machine with a project command, personal commands and two plugins. */
+  function fullMachine() {
+    const m = machine();
+    command(path.join(m.projectDir, '.claude'), 'theirs');
+    skill(m.claudeDir, 'tidy');
+    command(m.claudeDir, 'mine');
+    const demo = cacheDir(m.claudeDir, 'market-one', 'demo', '1.0.0');
+    command(demo, 'fmt');
+    command(demo, 'audit');
+    const other = cacheDir(m.claudeDir, 'market-one', 'other', '1.0.0');
+    command(other, 'zap');
+    registerPlugins(m.claudeDir, { [DEMO]: demo, [OTHER]: other });
+    return m;
+  }
+
+  test('(+) project, personal, applied plugins, built-ins, then every other plugin', async () => {
+    const m = fullMachine();
+    const got = await list(m, { project: true, applied: [DEMO] });
+    assert.deepEqual(names(got), ['theirs', 'tidy', 'mine', 'demo:audit', 'demo:fmt', ...BUILTIN_NAMES, 'other:zap']);
+    const runs = got.map((e) => e.source).filter((src, i, all) => src !== all[i - 1]);
+    assert.deepEqual(runs, ['project', 'user', 'plugin', 'builtin', 'plugin']);
+    assert.equal(got.length, 1 + 2 + 2 + BUILTIN_NAMES.length + 1, 'nothing is dropped or added');
+  });
+
+  test('(+) without a project: personal, built-ins, then plugins (applied or not, nothing is applied)', async () => {
+    const m = fullMachine();
+    assert.deepEqual(names(await list(m)), ['tidy', 'mine', ...BUILTIN_NAMES, 'demo:audit', 'demo:fmt', 'other:zap']);
+  });
+
+  test('(+) a project with no plugin list: project, personal, built-ins, then all plugins', async () => {
+    const m = fullMachine();
+    const want = ['theirs', 'tidy', 'mine', ...BUILTIN_NAMES, 'demo:audit', 'demo:fmt', 'other:zap'];
+    assert.deepEqual(names(await list(m, { project: true })), want);
+    assert.deepEqual(names(await list(m, { project: true, applied: [] })), want);
+  });
+
+  test('(+) inside the applied group the installed order stays, whatever order the list is in', async () => {
+    const m = fullMachine();
+    const got = await list(m, { project: true, applied: [OTHER, DEMO] });
+    assert.deepEqual(names(got).slice(3, 6), ['demo:audit', 'demo:fmt', 'other:zap']);
+    assert.deepEqual(names(got).slice(6, 8), BUILTIN_NAMES.slice(0, 2));
+  });
+
+  test('(−) an applied key of a plugin that is not installed adds nothing, and the same name from another marketplace is not promoted', async () => {
+    const m = fullMachine();
+    const plain = names(await list(m, { project: true }));
+    // `demo@market-two` is not installed here, `ghost@market-one` is not installed anywhere: matching on the name part
+    // ("demo") or inventing entries for a missing key would change the order
+    const got = await list(m, { project: true, applied: ['demo@market-two', 'ghost@market-one'] });
+    assert.deepEqual(names(got), plain);
+    assert.equal(got.filter((e) => e.plugin === 'ghost').length, 0);
+  });
+
+  test('(−) the cache never serves one applied list\'s order for another, and a new list shows at once', async () => {
+    const m = fullMachine();
+    const now = (clock += 60_000); // all calls inside one 10 s window: one scan
+    const first = await list(m, { project: true, applied: [DEMO], now });
+    const second = await list(m, { project: true, applied: [OTHER], now: now + 1 }); // the owner applied another plugin
+    const third = await list(m, { project: true, now: now + 2 }); // and another project shares nothing with either
+    assert.ok(sameScan(first, second) && sameScan(first, third), 'one scan serves all three');
+    assert.deepEqual(names(first).slice(3, 5), ['demo:audit', 'demo:fmt']);
+    assert.deepEqual(names(second).slice(3, 4), ['other:zap']);
+    assert.equal(names(second).includes('demo:fmt'), true);
+    assert.equal(names(third).indexOf('demo:fmt') > names(third).indexOf(BUILTIN_NAMES.at(-1)), true, 'no list: plugins stay after the built-ins');
+    assert.notDeepEqual(names(first), names(second));
+    assert.notDeepEqual(names(first), names(third));
+  });
+
+  test('(−) two projects on the same machine keep their own order', async () => {
+    const m = fullMachine();
+    const m2 = { ...m, projectDir: path.join(m.base, 'project-two') };
+    command(path.join(m2.projectDir, '.claude'), 'their-two');
+    const now = (clock += 60_000);
+    const one = await list(m, { project: true, applied: [DEMO], now });
+    const two = await list(m2, { project: true, applied: [OTHER], now });
+    assert.deepEqual(names(one).slice(0, 5), ['theirs', 'tidy', 'mine', 'demo:audit', 'demo:fmt']);
+    assert.deepEqual(names(two).slice(0, 4), ['their-two', 'tidy', 'mine', 'other:zap']);
+    assert.deepEqual(names(await list(m, { project: true, applied: [DEMO], now: now + 1 })).slice(0, 5), ['theirs', 'tidy', 'mine', 'demo:audit', 'demo:fmt']);
+  });
+
+  test('(−) the same list gets the same frozen array while the scan is cached; another list gets its own, over the same entries', async () => {
+    const m = fullMachine();
+    const now = (clock += 60_000);
+    const a = await list(m, { project: true, applied: [DEMO], now });
+    const b = await list(m, { project: true, applied: [DEMO], now: now + 1 });
+    const c = await list(m, { project: true, applied: [OTHER], now: now + 2 });
+    assert.equal(a, b);
+    assert.notEqual(a, c);
+    assert.ok(sameScan(a, c));
+    assert.ok(Object.isFrozen(a) && Object.isFrozen(c));
+    assert.throws(() => a.push({ name: 'x' }), TypeError);
+    assert.throws(() => { c[0].name = 'changed'; }, TypeError);
+  });
+
+  test('(−) many different lists within one scan keep every answer right (the kept orderings are bounded)', async () => {
+    const m = fullMachine();
+    const now = (clock += 60_000);
+    const want = names(await list(m, { project: true, applied: [DEMO], now }));
+    for (let i = 0; i < 30; i += 1) assert.notDeepEqual(names(await list(m, { project: true, applied: [`ghost${i}@market-one`, OTHER], now: now + i })), want);
+    assert.deepEqual(names(await list(m, { project: true, applied: [DEMO], now: now + 31 })), want);
+  });
+
+  test('(−) entries still carry no key or path: the plugin key stays inside', async () => {
+    const m = fullMachine();
+    const allowed = new Set(['name', 'description', 'argHint', 'source', 'plugin', 'dialog']);
+    for (const e of await list(m, { project: true, applied: [DEMO] })) {
+      for (const k of Object.keys(e)) assert.ok(allowed.has(k), k);
+      assert.ok(!JSON.stringify(e).includes('market-one'));
+    }
+  });
+
+  test('(−) an applied value that is not a list of strings is ignored', async () => {
+    const m = fullMachine();
+    const plain = names(await list(m, { project: true }));
+    for (const bad of [null, 'demo@market-one', 42, { 0: DEMO }, [null, 7, {}]]) {
+      assert.deepEqual(names(await list(m, { project: true, applied: bad })), plain, JSON.stringify(bad));
+    }
+  });
+
+  test('orderCommands: a pure function of a scan and a list; the input is not changed', () => {
+    const e = (name, source, plugin) => Object.freeze({ name, description: '', argHint: '', source, ...(plugin && { plugin }) });
+    const entries = [e('b1', 'builtin'), e('u1', 'user'), e('p1', 'project'), e('x:a', 'plugin', 'x'), e('y:a', 'plugin', 'y'), e('b2', 'builtin')];
+    const keys = new Map([[entries[3], 'x@m'], [entries[4], 'y@m']]);
+    const scan = { entries, keys };
+    const before = names(entries);
+    assert.deepEqual(names(orderCommands(scan, ['y@m'])), ['p1', 'u1', 'y:a', 'b1', 'b2', 'x:a']);
+    assert.deepEqual(names(orderCommands(scan, ['x@m', 'y@m'])), ['p1', 'u1', 'x:a', 'y:a', 'b1', 'b2']);
+    assert.deepEqual(names(orderCommands(scan)), ['p1', 'u1', 'b1', 'b2', 'x:a', 'y:a']);
+    assert.deepEqual(names(entries), before);
+    assert.ok(Object.isFrozen(orderCommands(scan, [])));
   });
 });

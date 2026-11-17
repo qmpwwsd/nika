@@ -11,11 +11,13 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { defaultConfig, findClaude, parseSince, DEFAULT_SINCE } from './config.js';
 import { makeExec } from './exec.js';
 import { collect, findSession } from './model.js';
+import { readRegistry } from './collect/registry.js';
 import { createServer } from './server.js';
 import { clean, cleanBlock } from './text.js';
 import { configDir, stateDir, backupsRoot } from './paths.js';
 import { openRegular, readAt } from './fsafe.js';
-import { PROJECT_KEY, PANE_ID, TMUX_SESSION } from './ids.js';
+import { PROJECT_KEY, PANE_ID, TMUX_SESSION, KINDS } from './ids.js';
+import { isKind } from './labels.js';
 import { addProject, listProjects, loadConfig, removeProject } from './store.js';
 import { rulesState, preview as rulesPreview, apply as rulesApply } from './rules.js';
 import { spawnAgent, runAgent } from './spawn.js';
@@ -67,6 +69,7 @@ commands:
       --permission-mode <m>  default | manual | acceptEdits | plan | auto | dontAsk
       --rc <prefix|off>  Remote Control name prefix, or off
       --role <agent|orchestrator>  orchestrator starts a sub-orchestrator (only the main orchestrator may); default agent
+      --kind <kind>      coder | reviewer | tester | designer | scout | writer | agent: the label on its row (default: from the model's role)
       --under <%pane>    split below this pane
       --session <name>   tmux session (default: the project's)
                          the parent is the pane you run it from ($TMUX_PANE), read from tmux's own record; it is never an option
@@ -560,18 +563,22 @@ async function readBrief(src, cx) {
 }
 
 async function spawnCmd(rest, cx) {
-  const { values: v, positionals } = parse(rest, { project: S, 'permission-mode': S, rc: S, role: S, under: S, session: S }, 3);
+  const { values: v, positionals } = parse(rest, { project: S, 'permission-mode': S, rc: S, role: S, kind: S, under: S, session: S }, 3);
   const [name, model, brief] = positionals;
-  if (brief === undefined) throw new UsageError('usage: nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix|off] [--role agent|orchestrator] [--under %pane] [--session name]');
+  if (brief === undefined) throw new UsageError('usage: nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix|off] [--role agent|orchestrator] [--kind <kind>] [--under %pane] [--session name]');
   if (v.role !== undefined && v.role !== 'agent' && v.role !== 'orchestrator') throw new UsageError('--role must be agent or orchestrator');
+  if (v.kind !== undefined && !isKind(v.kind)) throw new UsageError(`--kind must be one of ${KINDS.join(', ')}`);
+  if (v.kind !== undefined && v.role === 'orchestrator') throw new UsageError('--kind is for agents: a sub-orchestrator always shows sub-orchestrator');
   if (!cx.env.TMUX && !v.session) throw new UsageError('spawn needs a tmux session: run it inside tmux, or pass --session <name>');
   if (v['permission-mode'] === 'bypassPermissions') throw new CliError('bypassPermissions is never allowed', 3);
   const project = await findProject(v.project, cx);
   // the parent is the pane this runs in; spawnAgent reads that pane's role and depth from tmux's own tags (never from here)
   const parent = typeof cx.env.TMUX_PANE === 'string' && PANE_ID.test(cx.env.TMUX_PANE) ? cx.env.TMUX_PANE : undefined;
-  const req = { project: project.key, name, model, brief: await readBrief(brief, cx), permissionMode: v['permission-mode'], under: v.under, session: v.session, rc: v.rc, role: v.role, parent };
+  const req = { project: project.key, name, model, brief: await readBrief(brief, cx), permissionMode: v['permission-mode'], under: v.under, session: v.session, rc: v.rc, role: v.role, kind: v.kind, parent };
   const o = ok(await spawnAgent(req, toolCtx(cx)));
-  cx.out.write(`pane: ${o.pane}\nsession: ${clean(o.session, 60)}\nreport: ${clean(path.join(o.reports.dir, o.reports.report), 500)}\n`);
+  // a sub-orchestrator has no kind (null); an agent's is the word nika tagged, asked for or derived from the model
+  const kindLine = typeof o.kind === 'string' ? `kind: ${clean(o.kind, 20)}\n` : '';
+  cx.out.write(`pane: ${o.pane}\nsession: ${clean(o.session, 60)}\n${kindLine}report: ${clean(path.join(o.reports.dir, o.reports.report), 500)}\n`);
   return 0;
 }
 
@@ -586,10 +593,19 @@ export function sessionTarget(o, tail) {
   throw new CliError("cannot attach: the orchestrator's tmux session name is not one nika can target", 1);
 }
 
+/**
+ * Whether the session registry can be read: the same question as `sources.registry` of a snapshot (src/model.js), asked of the registry alone.
+ * Start asks it while a pick is saved (R1 F2): with the sessions folder unreadable no session reads live, so a live pick would read ended
+ * and be resumed in a second claude. startOrchestrator answers 503 index_unavailable, which `ok()` turns into exit 1; nothing is started.
+ */
+async function registryReadable(cx) {
+  return (await readRegistry(cx.config.claudeDir)).error == null;
+}
+
 async function orchestrateCmd(rest, cx) {
   const { values, positionals } = parse(rest, { detached: B }, 1);
   const project = await findProject(positionals[0], cx);
-  const ctx = toolCtx(cx);
+  const ctx = { ...toolCtx(cx), registryReadable: () => registryReadable(cx) };
   const o = ok(await startOrchestrator(project.key, ctx));
   cx.out.write(`session: ${clean(o.session, 60)}\npane: ${o.pane}\n${o.created ? 'started a new orchestrator' : 'the orchestrator is already running'}\n`);
   if (values.detached || !cx.out.isTTY) return 0;

@@ -81,6 +81,61 @@ export async function writeAtomic(dir, name, content, { mode = 0o600, project, p
 }
 
 /**
+ * Removes one file of nika's own, `dir/name` (W7, the fit lease files). `dir` passes the same check as a write target (a real,
+ * user-owned folder that group/other cannot write); `name` is a plain basename. The target is looked at with lstat and never
+ * followed: absent → false; a regular, single-link, user-owned file → unlinked, true; anything else (a symlink, a folder, a
+ * FIFO, a second link, a foreign owner) is refused and left where it is.
+ */
+export async function removeOwnFile(dir, name) {
+  if (typeof name !== 'string' || !NAME.test(name) || name === '.' || name === '..') throw refuse('EPATH', 'invalid file name');
+  await checkDir(dir);
+  const target = path.join(dir, name);
+  let st;
+  try {
+    st = await fs.lstat(target);
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+  if (st.isSymbolicLink()) throw refuse('ESYMLINK', `${target} is a symlink`);
+  if (!st.isFile()) throw refuse('ENOTREG', `${target} is not a regular file`);
+  if (UID !== null && st.uid !== UID) throw refuse('EOWNER', `${target} is not owned by this user`);
+  if (st.nlink !== 1) throw refuse('ENLINK', `${target} has more than one link`);
+  await fs.unlink(target);
+  return true;
+}
+
+/**
+ * Removes one empty folder of nika's own (R3 F4, the attachment prune's `<key>` folders). `dir` is an absolute, normalized path
+ * (no `..`, `.`, empty segment or trailing slash: lstat would follow a link written as `link/`). The folder is looked at with lstat
+ * and never followed: absent → false; a real folder owned by this user → `rmdir`, which removes an empty folder and never a
+ * folder that holds anything (that stays: false); a symlink (`ESYMLINK`), a file or any other non-folder (`ENOTDIR`) or another
+ * owner's folder (`EOWNER`) is refused and left where it is. The parent is the caller's to have checked (the prune ensureDir's it).
+ */
+export async function removeOwnDir(dir) {
+  if (typeof dir !== 'string' || dir.includes('\0') || !path.isAbsolute(dir) || path.normalize(dir) !== dir || dir.endsWith(path.sep)) {
+    throw refuse('EPATH', 'invalid folder path');
+  }
+  let st;
+  try {
+    st = await fs.lstat(dir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+  if (st.isSymbolicLink()) throw refuse('ESYMLINK', `${dir} is a symlink`);
+  if (!st.isDirectory()) throw refuse('ENOTDIR', `${dir} is not a directory`);
+  if (UID !== null && st.uid !== UID) throw refuse('EOWNER', `${dir} is not owned by this user`);
+  try {
+    await fs.rmdir(dir); // rmdir(2) removes an empty folder only, and does not follow a final symlink (ENOTDIR)
+    return true;
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTEMPTY' || err.code === 'EEXIST') return false; // gone meanwhile, or it still holds something
+    throw err;
+  }
+}
+
+/**
  * Post-write check (F6): the directories from `root` down to `target` are still real directories (lstat, no symlink) and
  * `realpath(target)` is inside `root`. A directory swapped for a symlink after the checks and before the rename leaves the
  * file outside the project: it is unlinked and the write refused (`ESYMLINK`). A window remains between this check and

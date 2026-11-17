@@ -10,22 +10,31 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createServer } from '../src/server.js';
 import { createAppApi } from '../src/api-app.js';
-import { readHistory } from '../src/collect/history.js';
+import { readHistory, readSubagentHistory } from '../src/collect/history.js';
 import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator } from '../src/store.js';
-import { findSession, findSessions } from '../src/model.js';
+import { collect, findSession, findSessions } from '../src/model.js';
+import { listCommands as realListCommands } from '../src/collect/commands.js';
 import { startOrchestrator } from '../src/orchestrate.js';
 import { spawnAgent } from '../src/spawn.js';
-import { configDir, stateDir } from '../src/paths.js';
-import { lastNonBlank, modeFromRows, PROMPT_ROWS } from '../src/mode.js';
+import { configDir, stateDir, reportsDir } from '../src/paths.js';
+import { lastNonBlank, modeFromRows, promptFromRows, surveyShown, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld, fakeTmux, TMUX, CLAUDE } from './tmux-fake.js';
-import { makeFixture, cleanup, fakeExec, SID, NOW } from './helpers.js';
+import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, boxRows, subagentRows } from './helpers.js';
+import { createMirror } from '../src/mirror.js';
+import { readDialogScreen, dialogOnScreen, sigOf as dialogSig } from '../src/dialog.js';
+import { createKeys } from '../src/keys.js';
+import { dialogWorld, TAB } from './dialog-fake.js';
+import { surveyOf } from '../src/survey.js';
 
 const SECRET = 'Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9v'.slice(0, 43);
 const REQ_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const WRONG_SAME_LENGTH = 'x'.repeat(SECRET.length);
 const APP_COPY = { state: 'missing', managed: false, dismissed: false, version: null, available: '9.9.9', running: false };
-const SNAPSHOT = { groups: [{ agents: [{ live: true, state: 'idle', pane: { id: '%6' } }, { live: false, state: 'ended', pane: { id: '%7' } }, { live: true, state: 'idle', pane: null }] }] };
+// a real snapshot always carries `sources` (src/model.js collect): one word per collector, 'ok' or why it failed. The saved orchestrator's state is
+// read only while sources.registry is 'ok' (R1 F2): without the registry a live session cannot be told from an ended one
+const SOURCES_OK = { registry: 'ok', processes: 'ok', transcripts: 'ok', tmux: 'ok', reports: 'ok' };
+const SNAPSHOT = { sources: SOURCES_OK, groups: [{ agents: [{ live: true, state: 'idle', pane: { id: '%6' } }, { live: false, state: 'ended', pane: { id: '%7' } }, { live: true, state: 'idle', pane: null }] }] };
 
 const w = await makeWorld();
 const fx = makeFixture();
@@ -49,6 +58,11 @@ function makeDeps(over = {}) {
     readHistory: rec('readHistory', async (id, q) => (q.limit === '0'
       ? { status: 400, body: { error: 'invalid', message: 'limit' } }
       : { status: 200, body: { entries: [], nextBefore: null } })),
+    readSubagentHistory: rec('readSubagentHistory', async (id, agent, q) => (q.limit === '0'
+      ? { status: 400, body: { error: 'invalid', message: 'limit' } }
+      : agent === 'missing'
+        ? { status: 404, body: { error: 'not_found', message: 'no such subagent' } }
+        : { status: 200, body: { entries: [{ id: '0:0', role: 'user', kind: 'text', text: 'sub', truncated: false }], nextBefore: null } })),
     listPlugins: rec('listPlugins', async () => ['alpha@market', 'beta@market']),
     rulesState: rec('rulesState', async () => ({ state: 'none', settingsIgnored: false, git: true })),
     preview: rec('preview', async () => ({ status: 200, body: { hash: 'h', files: [], warnings: [], backupDir: '/x' } })),
@@ -994,6 +1008,112 @@ describe('history', () => {
   });
 });
 
+describe('subagent history (0.5, W8)', () => {
+  const sub = (id, agent, q = '') => `/api/app/session/${id}/subagents/${agent}/history${q}`;
+  const writeSub = (agent, lines) => {
+    const slugOf = (d) => d.replace(/[^A-Za-z0-9]/g, '-');
+    const dir = path.join(fx.claudeDir, 'projects', slugOf(fx.wt), SID.busy, 'subagents');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `agent-${agent}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n'); // a transcript with no meta: the snapshot does not list it
+  };
+
+  test('(+) passes the ids, before, limit and the history route\'s cache to the module and relays its answer', async () => {
+    const a = await boot();
+    const r = await a.call('GET', sub(SID.busy, 'a0000000000000001', '?before=10&limit=5'));
+    assert.equal(r.status, 200);
+    assert.equal(r.body.entries[0].text, 'sub');
+    await a.call('GET', sub(SID.busy, 'aaa111'));
+    await a.call('GET', `/api/app/session/${SID.busy}/history`);
+    const [first, second] = a.deps.calls.filter((c) => c[0] === 'readSubagentHistory');
+    assert.deepEqual(first.slice(1, 4), [SID.busy, 'a0000000000000001', { before: '10', limit: '5' }]);
+    assert.deepEqual(second.slice(2, 4), ['aaa111', { before: undefined, limit: undefined }]);
+    assert.equal(first[4].claudeDir, a.ctx.claudeDir);
+    assert.equal(typeof first[4].now, 'function');
+    assert.equal(first[4].cache, second[4].cache);
+    assert.equal(first[4].cache, a.deps.calls.find((c) => c[0] === 'readHistory')[3].cache, 'one transcript-index memo for both routes');
+  });
+
+  test('(+) an id is also accepted percent-encoded (the same decoding as every id parameter)', async () => {
+    const a = await boot();
+    assert.equal((await a.call('GET', sub(SID.busy, 'a%2D1'))).status, 200);
+    assert.equal(a.deps.calls.find((c) => c[0] === 'readSubagentHistory')[2], 'a-1');
+  });
+
+  test('(−) a session id that is not a UUID is 404 "no such session" without calling the module', async () => {
+    const a = await boot();
+    for (const id of ['..%2F..%2Fetc%2Fpasswd', 'not-a-uuid', REQ_ID.toUpperCase(), `${SID.busy}x`, '%2e%2e%2f', 'a%00b']) {
+      const r = await a.call('GET', sub(id, 'aaa111'));
+      assert.equal(r.status, 404, id);
+      assert.equal(r.body.message, 'no such session', id);
+    }
+    // a dot segment never reaches a handler as an id: the URL parser removes it (WHATWG), so the path is another route or none
+    const dots = await a.call('GET', sub('%2E%2E', 'aaa111'));
+    assert.equal(dots.status, 404);
+    assert.equal(a.deps.calls.some((c) => c[0] === 'readSubagentHistory'), false);
+  });
+
+  test('(−) an agent id that is not a SUBAGENT_ID is 404 "no such subagent" without calling the module', async () => {
+    const a = await boot();
+    for (const agent of ['a%2Fb', 'a%5Cb', 'a.b', 'a%20b', 'x'.repeat(65), '%00', 'a%0Ab', '%2e%2e%2f', '.hidden']) {
+      const r = await a.call('GET', sub(SID.busy, agent));
+      assert.equal(r.status, 404, agent);
+      assert.equal(r.body.message, 'no such subagent', agent);
+    }
+    assert.equal((await a.call('GET', `/api/app/session/${SID.busy}/subagents//history`)).status, 404, 'empty agent id');
+    assert.equal((await a.call('GET', `/api/app/session/${SID.busy}/subagents/a/b/history`)).status, 404, 'a slash splits the path: no such route');
+    // `..` and `%2E%2E` are dot segments: the URL parser folds them away before any handler runs, so they cannot name a file; they reach the
+    // subagent module never (the folded path is the session's own history route, which has its own tests)
+    for (const dots of ['..', '%2E%2E', '%2e%2E']) {
+      const r = await a.call('GET', sub(SID.busy, dots));
+      assert.equal(JSON.stringify(r.body).includes('"sub"'), false, dots);
+    }
+    assert.equal(a.deps.calls.some((c) => c[0] === 'readSubagentHistory'), false);
+  });
+
+  test('(−) the module\'s own 400 and 404 are relayed; POST is 405; a trailing slash is no route', async () => {
+    const a = await boot();
+    assert.equal((await a.call('GET', sub(SID.busy, 'aaa111', '?limit=0'))).status, 400);
+    assert.equal((await a.call('GET', sub(SID.busy, 'missing'))).status, 404);
+    const m = await a.call('POST', sub(SID.busy, 'aaa111'), { json: {} });
+    assert.equal(m.status, 405);
+    assert.equal(m.headers.allow, 'GET');
+    assert.equal((await a.call('GET', `${sub(SID.busy, 'aaa111')}/`)).status, 404);
+    assert.equal((await a.call('GET', `/api/app/session/${SID.busy}/subagents/aaa111`)).status, 404);
+  });
+
+  test('(−) without the app secret the route is refused like every app route: 403, module not called', async () => {
+    const a = await boot();
+    for (const headers of [{ 'x-nika-app': null }, { 'x-nika-app': WRONG_SAME_LENGTH }, { origin: 'http://evil.example' }, { 'sec-fetch-site': 'cross-site' }]) {
+      const r = await a.call('GET', sub(SID.busy, 'aaa111'), { headers });
+      assert.equal(r.status, 403, JSON.stringify(headers));
+    }
+    assert.equal(a.deps.calls.some((c) => c[0] === 'readSubagentHistory'), false);
+  });
+
+  test('(+) src/appio.js hands readSubagentHistory to the app API next to readHistory (the one place the real module is wired in)', () => {
+    const src = fs.readFileSync(new URL('../src/appio.js', import.meta.url), 'utf8');
+    assert.match(src, /import \{ readHistory, readSubagentHistory \} from '\.\/collect\/history\.js';/);
+    assert.match(src, /^\s+readHistory, readSubagentHistory, /m);
+  });
+
+  test('(+) with the real module a subagent transcript in the session\'s folder is paged; (−) an unknown agent and an unknown session are 404', async () => {
+    writeSub('ddd444', [{ type: 'user', isSidechain: true, timestamp: '2026-11-07T12:00:00.000Z', message: { role: 'user', content: 'sub prompt' } },
+      { type: 'assistant', isSidechain: true, timestamp: '2026-11-07T12:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'sub answer' }] } }]);
+    const a = await boot({ deps: makeDeps({ readHistory, readSubagentHistory }) });
+    const r = await a.call('GET', sub(SID.busy, 'ddd444', '?limit=10'));
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.entries.map((e) => [e.role, e.text]), [['user', 'sub prompt'], ['assistant', 'sub answer']]);
+    assert.equal(r.body.nextBefore, null);
+    const unknown = await a.call('GET', sub(SID.busy, 'zzz999'));
+    assert.equal(unknown.status, 404);
+    assert.equal(unknown.body.message, 'no such subagent');
+    assert.equal((await a.call('GET', sub('99999999-9999-4999-8999-999999999999', 'ddd444'))).body.message, 'no such session');
+    assert.equal((await a.call('GET', sub(SID.idle, 'ddd444'))).body.message, 'no such subagent', 'another session has no such file');
+    assert.equal((await a.call('GET', sub(SID.busy, 'ddd444', '?limit=0'))).status, 400);
+    assert.equal((await a.call('GET', sub(SID.busy, 'ddd444', '?before=999999'))).status, 400);
+  });
+});
+
 describe('pane capture and keys', () => {
   test('(+) a live Claude pane is captured with an ETag; If-None-Match gives 304 with an empty body', async () => {
     const a = await boot();
@@ -1231,6 +1351,28 @@ describe('spawn and orchestrator', () => {
         assert.deepEqual([res.status, res.body.error], [400, 'invalid'], JSON.stringify(extra));
       }
       assert.equal(r.exec.of('split-window').length, 0);
+    });
+
+    // 0.5 (W9): the route passes the body on; spawnAgent's parse runs before anything else, so a bad kind starts nothing
+    test('(−) a kind that is not a word of the list, and a kind with role orchestrator, are 400 invalid from the route: no tmux call, nothing written', async () => {
+      const r = await rigSpawn();
+      for (const extra of [{ kind: 'boss' }, { kind: 'Coder' }, { kind: '' }, { kind: null }, { kind: 5 }, { kind: ['coder'] }, { kind: 'coder ' }]) {
+        const res = await r.post({ name: 'bad', ...extra });
+        assert.deepEqual([res.status, res.body], [400, { error: 'invalid', message: 'invalid kind: use coder, reviewer, tester, designer, scout, writer or agent' }], JSON.stringify(extra));
+      }
+      const orch = await r.post({ name: 'planner', role: 'orchestrator', parent: '%1', kind: 'coder' });
+      assert.deepEqual([orch.status, orch.body], [400, { error: 'invalid', message: 'kind is for agents: a sub-orchestrator always shows sub-orchestrator' }]);
+      assert.deepEqual(r.exec.calls, [], 'not even a listing');
+      assert.equal(fs.existsSync(reportsDir(r.world.project.key, r.world.env)), false);
+    });
+
+    test('(+) a kind through the route tags the pane and comes back in the body; without one the model decides', async () => {
+      const r = await rigSpawn();
+      const asked = await r.post({ name: 'reviewer-1', kind: 'reviewer' });
+      assert.deepEqual([asked.status, asked.body.kind], [200, 'reviewer'], asked.raw);
+      const derived = await r.post({ name: 'builder-1', model: 'claude-sonnet-5-5' });
+      assert.deepEqual([derived.status, derived.body.kind], [200, 'coder'], derived.raw);
+      assert.deepEqual(r.exec.panes.filter((p) => p.id !== '%1').map((p) => p.kind), ['reviewer', 'coder']);
     });
   });
 
@@ -1555,7 +1697,7 @@ describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and 
   });
 
   test('(+) GET /projects: a live pick, an ended pick (from the 24 h snapshot, no extra lookup) and a pick outside the snapshot (from the index)', async () => {
-    const snap = { groups: [] };
+    const snap = { sources: SOURCES_OK, groups: [] };
     const r = await rig({ depsOver: { collect: async () => snap } });
     snap.groups.push({ key: r.world.project.key, root: r.world.project.dir, agents: [
       { id: ID.live, name: 'planner', live: true, state: 'idle', pane: { id: '%6' } },
@@ -1642,7 +1784,7 @@ describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and 
   });
 
   test("(−) GET /projects: the same when the other project's session is in the 24 h snapshot", async () => {
-    const snap = { groups: [{ key: 'fedcba9876543210', root: '/work/other-project', agents: [{ id: ID.other, name: 'stranger', live: true, state: 'idle', pane: { id: '%6' } }] }] };
+    const snap = { sources: SOURCES_OK, groups: [{ key: 'fedcba9876543210', root: '/work/other-project', agents: [{ id: ID.other, name: 'stranger', live: true, state: 'idle', pane: { id: '%6' } }] }] };
     const r = await rig({ depsOver: { collect: async () => snap } });
     await setOrchestrator(r.world.project.key, ID.other, r.world.env);
     const o = (await r.a.call('GET', '/api/app/projects')).body.projects[0].orchestrator;
@@ -1665,6 +1807,80 @@ describe('orchestrator pick: PUT|DELETE /api/app/projects/:key/orchestrator and 
     assert.equal(res.status, 200);
     assert.equal(res.body.projects[0].orchestrator, null);
     assert.deepEqual([r.lookups, r.batches], [[], []]);
+  });
+
+  // --- R1 F2 (final review): an unreadable session registry. Without it no session reads live, so a pick would read ended and Start would resume it ---
+
+  const NO_REGISTRY = { ...SOURCES_OK, registry: 'EACCES: permission denied' };
+  const withSnapshot = async (sources) => {
+    const snap = { sources, groups: [] };
+    const r = await rig({ depsOver: { collect: async () => snap } });
+    snap.groups.push({ key: r.world.project.key, root: r.world.project.dir, agents: [
+      { id: ID.live, name: 'planner', live: true, state: 'idle', pane: { id: '%6' } },
+      { id: ID.ended, name: 'old-planner', live: false, state: 'ended', pane: null },
+    ] });
+    return r;
+  };
+
+  test('(−) GET /projects: with the session registry unreadable every pick is unknown (null), never ended: even one the snapshot holds, with no index lookup', async () => {
+    for (const id of [ID.live, ID.ended, ID.unknown]) {
+      const r = await withSnapshot(NO_REGISTRY);
+      await setOrchestrator(r.world.project.key, id, r.world.env);
+      const res = await r.a.call('GET', '/api/app/projects');
+      assert.equal(res.status, 200);
+      assert.equal(res.body.projects[0].orchestrator, null, id);
+      assert.deepEqual([r.lookups, r.batches], [[], []], 'nothing is asked: the answer cannot be better than the registry');
+    }
+    for (const registry of [undefined, '', 'ps unavailable']) { // not exactly 'ok' (a snapshot of another shape included): the same
+      const r = await withSnapshot({ ...SOURCES_OK, registry });
+      await setOrchestrator(r.world.project.key, ID.ended, r.world.env);
+      assert.equal((await r.a.call('GET', '/api/app/projects')).body.projects[0].orchestrator, null, String(registry));
+    }
+  });
+
+  test('(+) GET /projects: with the registry read fine the picks read as before (live, ended, gone)', async () => {
+    const r = await withSnapshot(SOURCES_OK);
+    const get = async () => (await r.a.call('GET', '/api/app/projects')).body.projects[0].orchestrator;
+    await setOrchestrator(r.world.project.key, ID.live, r.world.env);
+    assert.deepEqual(await get(), { sessionId: ID.live, state: 'live', name: 'planner', pane: '%6' });
+    await setOrchestrator(r.world.project.key, ID.ended, r.world.env);
+    assert.deepEqual(await get(), { sessionId: ID.ended, state: 'ended', name: 'old-planner', pane: null });
+    await setOrchestrator(r.world.project.key, ID.unknown, r.world.env);
+    assert.deepEqual(await get(), { sessionId: ID.unknown, state: 'gone', name: null, pane: null });
+  });
+
+  test('(−) POST orchestrator/start with the registry unreadable: 503 index_unavailable, the pick is not read, no tmux command, nothing recorded, the pick stays', async () => {
+    const real = await rig({ depsOver: { startOrchestrator, collect: async () => ({ sources: NO_REGISTRY, groups: [] }) } });
+    await setOrchestrator(real.world.project.key, ID.ended, real.world.env);
+    const res = await real.a.call('POST', '/api/app/orchestrator/start', { json: { project: real.world.project.key } });
+    assert.deepEqual([res.status, res.body.error], [503, 'index_unavailable'], JSON.stringify(res.body));
+    assert.deepEqual([real.lookups, real.exec.calls], [[], []], 'no lookup, no tmux command: no pane, no claude');
+    assert.equal(real.a.ctx.started.size, 0);
+    assert.equal(await real.pick(), ID.ended);
+  });
+
+  test('(+) POST orchestrator/start with the registry read fine resumes the ended pick as before', async () => {
+    const real = await rig({ depsOver: { startOrchestrator } });
+    await setOrchestrator(real.world.project.key, ID.ended, real.world.env);
+    const res = await real.a.call('POST', '/api/app/orchestrator/start', { json: { project: real.world.project.key } });
+    assert.deepEqual([res.status, res.body.created, res.body.sessionId], [200, true, ID.ended], JSON.stringify(res.body));
+    assert.deepEqual(real.lookups, [ID.ended]);
+    assert.equal(real.exec.of('new-session').length + real.exec.of('new-window').length, 1);
+  });
+
+  test('(+) ctx.registryReadable is true only for a snapshot whose registry is ok, read fresh every time (Start acts on it); (−) a failed collect is false', async () => {
+    let snap = { sources: SOURCES_OK, groups: [] };
+    let reads = 0;
+    const a = await boot({ deps: makeDeps({ collect: async () => { reads += 1; if (snap === null) throw new Error('collect failed'); return snap; } }) });
+    assert.equal(typeof a.ctx.registryReadable, 'function');
+    assert.equal(await a.ctx.registryReadable(), true);
+    snap = { sources: NO_REGISTRY, groups: [] };
+    assert.equal(await a.ctx.registryReadable(), false, 'the 1 s snapshot was dropped: the change is seen at once');
+    snap = { groups: [] };
+    assert.equal(await a.ctx.registryReadable(), false, 'no sources at all is not ok');
+    snap = null;
+    assert.equal(await a.ctx.registryReadable(), false);
+    assert.equal(reads, 4);
   });
 
   test('(+) POST orchestrator/start relays the module\'s answer, `cleared: gone` included, and the module gets the shared ctx (with findSession)', async () => {
@@ -1725,7 +1941,7 @@ describe('orchestrator pick end to end: the real store, model and orchestrate mo
     const tmuxExec = fakeTmux({ panes: [{ id: '%6', session: 'work', window: 2, windowName: 'main', command: 'claude' }] });
     const collectExec = fakeExec();
     const ctxOver = { exec: tmuxExec, findSession: (id) => findSession(id, { config: real.config, exec: collectExec, now: NOW }), findSessions: (ids) => findSessions(ids, { config: real.config, now: NOW }) };
-    const a = await boot({ world, ctxOver, deps: makeDeps({ startOrchestrator, collect: async () => ({ groups: [] }) }) });
+    const a = await boot({ world, ctxOver, deps: makeDeps({ startOrchestrator, collect: async () => ({ sources: SOURCES_OK, groups: [] }) }) });
     return { world, project, tmuxExec, a, url: `/api/app/projects/${project.key}/orchestrator`, pick: () => getOrchestrator(project.key, world.env) };
   }
 
@@ -1772,6 +1988,224 @@ describe('orchestrator pick end to end: the real store, model and orchestrate mo
     assert.deepEqual([start.status, start.body.cleared, start.body.created], [200, 'gone', true]);
     assert.notEqual(await m.pick(), '88888888-8888-4888-8888-888888888888');
     assert.equal(await m.pick(), start.body.sessionId, 'the fresh session is the new pick');
+  });
+});
+
+// 0.5, W12: after /compact the orchestrator's conversation continues as a background job in a child claude (kind "bg", a jobId, no tmux); the
+// claude in the pane is its host (the old session id, parkedJobId = the jobId). The saved pick may be either id; the pane belongs to one row.
+describe('a background session that continues the orchestrator\'s conversation after /compact (0.5, W12)', () => {
+  const HOST = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
+  const CHILD = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2';
+  const OTHER = 'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3';
+  const JOB = 'c0ffee01';
+  const worlds = [];
+  const real = (() => { // a registered project is stored as its realpath, and so is a session's cwd: see the machine of the end-to-end tests above
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = fs.realpathSync(os.tmpdir());
+    try {
+      return makeFixture();
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = saved;
+    }
+  })();
+  after(() => {
+    worlds.forEach((x) => x.cleanup());
+    cleanup(real);
+  });
+
+  /** acme-api with a host (pid 201, state idle, pane %9) and its background child (pid 202, busy); `tagged`: the pane carries nika's orchestrator tag. */
+  async function machine({ tagged = true, child = true, other = false, onCollect = null } = {}) {
+    const world = await makeWorld();
+    worlds.push(world);
+    const project = await addProject(real.repo, world.env);
+    const sessions = path.join(real.claudeDir, 'sessions');
+    for (const pid of [201, 202, 203]) fs.rmSync(path.join(sessions, `${pid}.json`), { force: true });
+    const reg = (pid, o) => fs.writeFileSync(path.join(sessions, `${pid}.json`), JSON.stringify({ pid, cwd: real.repo, version: '2.1.319', procStart: PROC_START, startedAt: NOW - 3_600_000, updatedAt: NOW - 60_000, nameSource: 'user', name: 'acme-api', ...o }));
+    reg(201, { sessionId: HOST, kind: 'interactive', status: 'idle', parkedJobId: JOB, tmux: 'work:@3.%9' });
+    if (child) reg(202, { sessionId: CHILD, kind: 'bg', status: 'busy', jobId: JOB });
+    if (other) reg(203, { sessionId: OTHER, kind: 'interactive', status: 'idle', name: 'demo-api', tmux: 'work:@4.%10' });
+    const pids = [201, ...(child ? [202] : []), ...(other ? [203] : [])];
+    const collectExec = fakeExec({
+      psLines: pids.map((p) => `  ${p} ${PROC_START}`),
+      tmuxLines: [`%9\twork\t3\tmain\tclaude\t${tagged ? 'orchestrator' : ''}`, '%10\twork\t4\tmain\tclaude\t'],
+    });
+    const tmuxExec = fakeTmux({ panes: [
+      { id: '%9', session: 'work', window: 3, windowName: 'main', command: 'claude', ...(tagged ? { role: 'orchestrator', agent: `${project.key}/orchestrator`, depth: '1' } : {}) },
+      { id: '%10', session: 'work', window: 4, windowName: 'main', command: 'claude' },
+    ] });
+    const config = real.config;
+    const batches = [];
+    const control = fakeControl();
+    const ctxOver = {
+      exec: tmuxExec,
+      findSession: (id) => findSession(id, { config, exec: collectExec, now: NOW }),
+      findSessions: (ids) => { batches.push([...ids]); return findSessions(ids, { config, now: NOW }); },
+    };
+    const deps = makeDeps({
+      startOrchestrator,
+      collect: async () => {
+        const snapshot = (await collect({ config, exec: collectExec, now: NOW, sinceMs: 7 * 86_400_000 })).snapshot;
+        await onCollect?.(project, world.env); // a change to the saved pick while the poll is still running
+        return snapshot;
+      },
+      createSessionControl: control.factory,
+    });
+    const a = await boot({ world, ctxOver, deps });
+    deps.state.panes.set('%9', { command: 'claude' });
+    deps.state.panes.set('%10', { command: 'claude' });
+    const listed = async () => (await a.call('GET', '/api/app/projects')).body.projects.find((p) => p.key === project.key).orchestrator;
+    // every save of config.json is a rename onto a new file: a changed stamp is a write
+    const file = path.join(configDir(world.env), 'config.json');
+    const stamp = () => { const st = fs.statSync(file); return `${st.ino}:${st.mtimeMs}:${st.size}`; };
+    return { world, project, tmuxExec, a, batches, control, listed, stamp, file, url: `/api/app/projects/${project.key}/orchestrator`, pick: () => getOrchestrator(project.key, world.env) };
+  }
+
+  test('(+) Start with the host\'s id as the saved pick (before the pick has moved) answers that pane, created: false, and starts nothing', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const before = m.tmuxExec.calls.length;
+    const stamp = m.stamp();
+    const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
+    assert.equal(start.status, 200);
+    assert.deepEqual(start.body, { pane: '%9', session: 'work', sessionId: HOST, created: false });
+    assert.equal(m.tmuxExec.calls.length, before, 'no tmux command: nothing started, no window opened');
+    assert.equal(m.tmuxExec.of('new-window').length + m.tmuxExec.of('new-session').length, 0);
+    assert.equal(m.a.ctx.started.size, 0);
+    assert.equal(await m.pick(), HOST, 'Start does not move the pick; only the project list does');
+    assert.equal(m.stamp(), stamp, 'no write');
+  });
+
+  test('(+) the project list reads the host\'s pick live with the pane, answers with the child\'s id and saves the child\'s id once; a second poll writes nothing', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const before = m.stamp();
+    assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.deepEqual(m.batches, [], 'the snapshot holds it: no transcript-index walk');
+    assert.equal(await m.pick(), CHILD, 'the saved pick is now the child\'s id');
+    const moved = m.stamp();
+    assert.notEqual(moved, before, 'one write');
+    assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(m.stamp(), moved, 'the second poll writes nothing');
+    const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
+    assert.deepEqual(start.body, { pane: '%9', session: 'work', sessionId: CHILD, created: false });
+    assert.equal(m.tmuxExec.of('new-window').length + m.tmuxExec.of('new-session').length, 0);
+    assert.equal(m.stamp(), moved, 'Start writes nothing either');
+  });
+
+  test('(−) no move when the saved pick already is the child\'s id: the answer is the same and nothing is written', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, CHILD, m.world.env);
+    const before = m.stamp();
+    assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(m.stamp(), before);
+    assert.equal(await m.pick(), CHILD);
+    const start = await m.a.call('POST', '/api/app/orchestrator/start', { json: { project: m.project.key } });
+    assert.deepEqual(start.body, { pane: '%9', session: 'work', sessionId: CHILD, created: false });
+  });
+
+  test('(−) no move without a link (the host is an ordinary row), and none for a pick that no session answers to', async () => {
+    const m = await machine({ child: false });
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const before = m.stamp();
+    assert.deepEqual(await m.listed(), { sessionId: HOST, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(m.stamp(), before);
+    assert.equal(await m.pick(), HOST);
+    await setOrchestrator(m.project.key, OTHER, m.world.env); // no such session anywhere
+    const other = m.stamp();
+    assert.deepEqual(await m.listed(), { sessionId: OTHER, state: 'gone', name: null, pane: null });
+    assert.equal(m.stamp(), other, 'a gone pick is not touched by the list');
+    assert.equal(await m.pick(), OTHER);
+  });
+
+  test('(−) no move for another project: the host\'s row belongs to acme-api, so a pick of it in a second project reads gone and stays as it is', async () => {
+    const m = await machine();
+    const second = await addProject(real.plain, m.world.env);
+    await setOrchestrator(second.key, HOST, m.world.env);
+    const before = m.stamp();
+    const projects = (await m.a.call('GET', '/api/app/projects')).body.projects;
+    assert.deepEqual(projects.find((p) => p.key === second.key).orchestrator, { sessionId: HOST, state: 'gone', name: null, pane: null });
+    assert.equal(m.stamp(), before, 'nothing written');
+    assert.equal(await getOrchestrator(second.key, m.world.env), HOST);
+  });
+
+  test('(−) no move when the saved pick changed while the poll ran: the newer save wins', async () => {
+    const m = await machine({ onCollect: (project, env) => setOrchestrator(project.key, OTHER, env) });
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' }, 'this poll answers from the pick it read');
+    assert.equal(await m.pick(), OTHER, 'the pick saved meanwhile was not overwritten');
+  });
+
+  test('(−) a failed save changes nothing and shows nothing: the answer still reads live with the child\'s id, and the next poll moves the pick', { skip: process.getuid?.() === 0 && 'root ignores a read-only folder' }, async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const before = m.stamp();
+    fs.chmodSync(path.dirname(m.file), 0o500); // readable, so the config still loads; the save cannot create its temp file
+    let failed;
+    try {
+      failed = await m.a.call('GET', '/api/app/projects');
+    } finally {
+      fs.chmodSync(path.dirname(m.file), 0o700);
+    }
+    assert.equal(failed.status, 200);
+    assert.deepEqual(failed.body.projects.find((p) => p.key === m.project.key).orchestrator, { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(m.stamp(), before, 'the write failed');
+    assert.equal(await m.pick(), HOST);
+    assert.deepEqual(await m.listed(), { sessionId: CHILD, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(await m.pick(), CHILD);
+  });
+
+  test('(+) PUT with the child\'s id while the pick is the host\'s id moves the pick (200), not "another session is running"', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const put = await m.a.call('PUT', m.url, { json: { sessionId: CHILD } });
+    assert.deepEqual([put.status, put.body.orchestrator?.sessionId, put.body.orchestrator?.state, put.body.orchestrator?.pane], [200, CHILD, 'live', '%9']);
+    assert.equal(await m.pick(), CHILD);
+  });
+
+  test('(−) PUT with the child\'s id is still refused while another session is the running orchestrator (409), and nothing changes', async () => {
+    const m = await machine({ other: true });
+    await setOrchestrator(m.project.key, OTHER, m.world.env);
+    const put = await m.a.call('PUT', m.url, { json: { sessionId: CHILD } });
+    assert.deepEqual([put.status, put.body.error], [409, 'orchestrator_running']);
+    assert.equal(await m.pick(), OTHER);
+  });
+
+  test('(+) pane eligibility: only the child claims the pane, so the pane is eligible once and its registry state is the child\'s busy, not the host\'s idle', async () => {
+    const m = await machine();
+    assert.equal(await m.control.opts.stateOf('%9', { fresh: true }), 'busy');
+    assert.equal(await m.control.opts.stateOf('%10'), null, 'a pane no live session claims has no state');
+    assert.equal((await m.a.call('GET', '/api/app/pane/%259/capture')).status, 200, 'eligible: in tmux\'s list, running claude, claimed by one live session');
+    const snapshot = (await m.a.deps.collect());
+    const claims = snapshot.groups.flatMap((g) => g.agents).filter((x) => x.live && x.pane?.id === '%9');
+    assert.deepEqual(claims.map((x) => x.id), [CHILD], 'exactly one row claims the pane (two claims would make the state null)');
+  });
+
+  test('(−) without the child the host is an ordinary row: the pick reads live with the pane and its own state', async () => {
+    const m = await machine({ child: false });
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    assert.deepEqual(await m.listed(), { sessionId: HOST, state: 'live', name: 'acme-api', pane: '%9' });
+    assert.equal(await m.control.opts.stateOf('%9', { fresh: true }), 'idle');
+  });
+
+  test('(+) PUT orchestrator with the host\'s id re-adopts the running orchestrator (200), not "another session is running"', async () => {
+    const m = await machine();
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const put = await m.a.call('PUT', m.url, { json: { sessionId: HOST } });
+    assert.deepEqual([put.status, put.body.orchestrator?.state, put.body.orchestrator?.pane], [200, 'live', '%9']);
+    assert.equal(await m.pick(), HOST);
+  });
+
+  test('(−) with the host as the saved pick and its pane untagged, another live session is still refused (409 orchestrator_running); with no pick it is not', async () => {
+    const m = await machine({ tagged: false, other: true });
+    await setOrchestrator(m.project.key, HOST, m.world.env);
+    const refused = await m.a.call('PUT', m.url, { json: { sessionId: OTHER } });
+    assert.deepEqual([refused.status, refused.body.error], [409, 'orchestrator_running']);
+    assert.equal(await m.pick(), HOST, 'nothing changed');
+    assert.deepEqual(m.tmuxExec.of('set-option'), []);
+    await setOrchestrator(m.project.key, null, m.world.env);
+    const taken = await m.a.call('PUT', m.url, { json: { sessionId: OTHER } });
+    assert.deepEqual([taken.status, taken.body.orchestrator?.pane], [200, '%10'], 'no pick: the child\'s untagged pane is no running orchestrator');
   });
 });
 
@@ -1836,7 +2270,7 @@ function screenMirror(screens, { delay = 0 } = {}) {
       if (delay) await new Promise((r) => setTimeout(r, delay));
       m.inflight -= 1;
       if (screens[pane] === null) return { status: 503, body: { error: 'tmux_unavailable', message: 'x' } };
-      return { status: 200, body: { cols: 80, rows: screens[pane] ?? [], cursor: { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' };
+      return { status: 200, body: { cols: screens[pane]?.cols ?? 80, rows: screens[pane] ?? [], cursor: Object.hasOwn(screens[pane] ?? [], 'cursor') ? screens[pane].cursor : { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' }; // an array may carry its own `cursor` (a box fixture's, null included)
     },
   };
   return m;
@@ -1847,7 +2281,7 @@ function fakeControl(answers = {}) {
   const f = { calls: [], opts: null };
   const method = (name, fallback) => async (...args) => {
     f.calls.push([name, ...args]);
-    return answers[name] ?? fallback(...args);
+    return typeof answers[name] === 'function' ? answers[name](...args) : answers[name] ?? fallback(...args);
   };
   f.factory = (opts) => {
     f.opts = opts;
@@ -1857,6 +2291,13 @@ function fakeControl(answers = {}) {
       runCommand: method('runCommand', () => ({ status: 200, body: { sent: true } })),
       answer: method('answer', (pane, b) => ({ status: 200, body: { answered: b.n } })),
       stop: method('stop', () => ({ status: 200, body: { stopped: true, presses: 1 } })),
+      writeDraft: method('writeDraft', () => ({ status: 200, body: { draft: null, typed: 0 } })),
+      submit: method('submit', () => ({ status: 200, body: { taken: true, draft: null } })),
+      acceptSuggestion: method('acceptSuggestion', () => ({ status: 200, body: { draft: null } })),
+      answerDialog: method('answerDialog', () => ({ status: 200, body: { done: 'next', sent: 1 } })),
+      answerSurvey: method('answerSurvey', (pane, b) => ({ status: 200, body: { answered: b.n } })),
+      withPaneLock: async (id, fn) => fn(), // the lock and the interrupt gap the scroll controller is built with (src/scroll.js insists on both)
+      keyGap: () => false,
     };
   };
   return f;
@@ -2200,6 +2641,15 @@ describe('session control: wiring', () => {
     await assert.rejects(() => control.opts.paneCommand('%6'));
   });
 
+  test('(+) paneCommand answers null for a dead pane (remain-on-exit keeps its command at claude), so End reads it as gone; (−) a running pane, or a row with no dead field, keeps its command (R1 F1)', async () => {
+    const control = fakeControl();
+    const a = await boot({ deps: makeDeps({ createSessionControl: control.factory }) });
+    a.deps.state.panes = new Map([['%6', { command: 'claude', dead: true }], ['%7', { command: 'claude', dead: false }], ['%8', { command: ' claude\n' }]]);
+    assert.equal(await control.opts.paneCommand('%6'), null);
+    assert.equal(await control.opts.paneCommand('%7'), 'claude');
+    assert.equal(await control.opts.paneCommand('%8'), 'claude');
+  });
+
   test('(+) vimOf is true after a capture whose mode line shows -- INSERT --; (−) a reused pane id that left the eligible set starts false', async () => {
     const { a, screens, control } = await bootScreens();
     assert.equal((await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'plan' } })).status, 200); // builds nothing new; opts are set at boot
@@ -2434,6 +2884,25 @@ describe('POST /api/app/pane/:id/end', () => {
       await pane(a, '%6', 'capture');
       assert.equal(a.deps.calls.filter((c) => c[0] === 'collect').length, 2);
     }
+  });
+
+  // R1 F1 (final review): the real controller, a busy pane whose Escape fails to send (429) and a pane that is gone or dead by then.
+  // tmux's remain-on-exit keeps a dead pane listed with its command still at claude (src/collect/tmux.js), so only pane_dead says it ended.
+  async function endBusy(afterKey) {
+    const holder = {};
+    const keys = { send: async () => { afterKey(holder.a.deps.state.panes.get('%6')); return { status: 429, body: { error: 'busy', message: 'slow' } }; } };
+    const collect = async () => ({ sources: SOURCES_OK, groups: [{ agents: [{ live: true, state: 'busy', pane: { id: '%6' } }] }] });
+    const { a, screens } = await bootScreens({ fake: false, over: { keys, collect } });
+    holder.a = a;
+    screens['%6'] = rowsOf(['working', FOOTER.plan]);
+    return end(a);
+  }
+
+  test('(+) End on a pane that turns dead (remain-on-exit, command still claude) after the key went wrong: ended true; (−) a live pane that still runs claude: ended false with reason keys', async () => {
+    const dead = await endBusy((p) => { p.dead = true; });
+    assert.deepEqual([dead.status, dead.body], [200, { ended: true }]);
+    const live = await endBusy(() => {});
+    assert.deepEqual([live.status, live.body], [200, { ended: false, reason: 'keys' }]);
   });
 
   test('(−) a pane that is not in list-panes (or not Claude) is 404 and endSession is not called', async () => {
@@ -2793,6 +3262,87 @@ describe('GET /api/app/commands', () => {
     assert.equal(f.calls.length, 0);
   });
 
+  // 0.5: the plugins applied to the project (its saved list in nika's own config) decide the order of the answer
+  const saveList = (a, plugins, key = w.project.key) => a.call('PUT', `/api/app/projects/${key}/config`, { json: { plugins } });
+
+  test('(+) with a project key the plugins applied to it (its saved list, in nika\'s own config) are passed as `applied`', async () => {
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    try {
+      assert.equal((await saveList(a, ['beta@market', 'alpha@market'])).status, 200);
+      assert.equal((await a.call('GET', `/api/app/commands?project=${w.project.key}`)).status, 200);
+      assert.deepEqual(f.calls[0].applied, ['beta@market', 'alpha@market']);
+    } finally {
+      await saveList(a, []);
+    }
+  });
+
+  test('(+) without a project key, and for a project with no saved list, `applied` is empty', async () => {
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    await a.call('GET', '/api/app/commands');
+    await a.call('GET', `/api/app/commands?project=${w.project.key}`);
+    assert.deepEqual(f.calls.map((c) => c.applied), [[], []]);
+  });
+
+  test('(−) the list saved for one project never reaches another project\'s answer', async () => {
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-api-cmds-proj-'));
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    try {
+      const other = await addProject(extra, w.env);
+      assert.equal((await saveList(a, ['alpha@market'])).status, 200); // saved for w.project only
+      await a.call('GET', `/api/app/commands?project=${other.key}`);
+      await a.call('GET', '/api/app/commands');
+      await a.call('GET', `/api/app/commands?project=${w.project.key}`);
+      assert.deepEqual(f.calls.map((c) => c.applied), [[], [], ['alpha@market']]);
+      await a.call('DELETE', `/api/app/projects/${other.key}`);
+    } finally {
+      await saveList(a, []);
+      fs.rmSync(extra, { recursive: true, force: true });
+    }
+  });
+
+  test('(−) a plugin list in the request is ignored: `applied` comes only from the saved config', async () => {
+    const f = withList();
+    const a = await boot({ deps: makeDeps(f.deps) });
+    const q = `project=${w.project.key}&applied=alpha%40market&plugins=beta%40market&plugin=beta%40market`;
+    assert.equal((await a.call('GET', `/api/app/commands?${q}`)).status, 200);
+    assert.deepEqual(f.calls[0].applied, []);
+    assert.equal((await a.call('GET', '/api/app/commands?applied=alpha%40market')).status, 200);
+    assert.deepEqual(f.calls[1].applied, []);
+  });
+
+  test('(+) end to end with the real collector: the saved list decides which plugin\'s commands come before the built-ins, at once', async () => {
+    const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-api-cmds-claude-'));
+    const md = (file) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '---\ndescription: d\n---\n'); };
+    const install = (name) => {
+      const dir = path.join(claudeDir, 'plugins', 'cache', 'market', name, '1.0.0');
+      md(path.join(dir, 'commands', 'run.md'));
+      return dir;
+    };
+    md(path.join(claudeDir, 'commands', 'mine.md'));
+    const record = (name) => [{ scope: 'user', installPath: install(name), version: '1.0.0' }];
+    fs.writeFileSync(path.join(claudeDir, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'alpha@market': record('alpha'), 'beta@market': record('beta') } }));
+    const a = await boot({ deps: makeDeps({ listCommands: realListCommands }), ctxOver: { claudeDir } });
+    const url = `/api/app/commands?project=${w.project.key}`;
+    const head = async () => {
+      const list = (await a.call('GET', url)).body.commands;
+      const firstBuiltin = list.findIndex((c) => c.source === 'builtin');
+      return { before: list.slice(0, firstBuiltin).map((c) => c.name), after: list.slice(firstBuiltin).filter((c) => c.source !== 'builtin').map((c) => c.name) };
+    };
+    try {
+      assert.deepEqual(await head(), { before: ['mine'], after: ['alpha:run', 'beta:run'] }, 'no list: plugins stay after the built-ins');
+      assert.equal((await saveList(a, ['beta@market'])).status, 200);
+      assert.deepEqual(await head(), { before: ['mine', 'beta:run'], after: ['alpha:run'] }, 'the new list shows at once, though the scan is cached');
+      assert.equal((await saveList(a, [])).status, 200);
+      assert.deepEqual(await head(), { before: ['mine'], after: ['alpha:run', 'beta:run'] });
+    } finally {
+      await saveList(a, []);
+      fs.rmSync(claudeDir, { recursive: true, force: true });
+    }
+  });
+
   test('(−) POST is 405; without the secret 403', async () => {
     const f = withList();
     const a = await boot({ deps: makeDeps(f.deps) });
@@ -2815,5 +3365,2694 @@ describe('GET /api/app/models', () => {
     const a = await boot();
     assert.equal((await a.call('POST', '/api/app/models', { json: {} })).status, 405);
     assert.equal((await a.call('GET', '/api/app/models', { headers: { 'x-nika-app': null } })).status, 403);
+  });
+});
+
+// --- 0.5 draft sync (design W5): the capture's `draft` and `PUT /api/app/pane/:id/draft` ---
+
+describe('capture: draft', () => {
+  /** The rows of a box fixture; they carry the fixture's cursor (the capture reads the draft with it, N-1: the cursor must be in the box). */
+  const box = (lines, o = {}) => {
+    const s = boxRows({ cols: 80, lines, ...o });
+    return Object.assign(s.rows, { cursor: s.cursor });
+  };
+
+  test('(+) a plain box: state, mode, text, sig, box rows, cursorAtEnd, suggestion and edit (unknown until something shows the mode)', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = box(['hello', 'second line']);
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.status, 200);
+    const d = r.body.draft;
+    assert.deepEqual([d.state, d.mode, d.text, d.edit, d.suggestion], ['text', 'prompt', 'hello\nsecond line', 'unknown', null]);
+    assert.match(d.sig, /^[0-9a-f]{16}$/);
+    assert.deepEqual(Object.keys(d).sort(), ['box', 'cursorAtEnd', 'edit', 'ghost', 'mode', 'queued', 'sig', 'state', 'suggestion', 'text']);
+    assert.equal(d.ghost, false, 'no ghost cell was dropped');
+    assert.deepEqual(d.box, { top: 0, bottom: 3 });
+    assert.equal(r.body.mode, 'auto', 'the mode and the prompt fields are as before');
+  });
+
+  test('(+) an empty box, a `!` box, and an unreadable one (the placeholder: state and reason, no sig)', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = box([''], { ghost: 'run the tests' });
+    const empty = (await pane(a, '%6', 'capture')).body.draft;
+    assert.deepEqual([empty.state, empty.text, empty.suggestion, empty.ghost], ['empty', '', 'run the tests', true]);
+    screens['%6'] = box(['ls -la'], { mode: 'bash' });
+    const bash = (await pane(a, '%6', 'capture')).body.draft;
+    assert.deepEqual([bash.state, bash.mode, bash.text], ['text', 'bash', 'ls -la']);
+    screens['%6'] = box(['[Pasted text #1 +3 lines]']);
+    const pasted = (await pane(a, '%6', 'capture')).body.draft;
+    assert.deepEqual([pasted.state, pasted.reason, pasted.sig, pasted.text], ['unreadable', 'pasted', null, '']);
+  });
+
+  test('(−) null when the screen has no plain box: a permission prompt, no rule rows, a footer nobody recognises', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(PROMPT);
+    const prompt = await pane(a, '%6', 'capture');
+    assert.ok(prompt.body.prompt, 'the prompt is still reported');
+    assert.equal(prompt.body.draft, null);
+    screens['%6'] = rowsOf(['just text', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft, null);
+    screens['%6'] = boxRows({ cols: 80, lines: ['hello'], footer: 'some footer nobody recognises' }).rows;
+    assert.equal((await pane(a, '%6', 'capture')).body.draft, null);
+    screens['%6'] = [];
+    assert.equal((await pane(a, '%6', 'capture')).body.draft, null);
+  });
+
+  test('(−) N-1: a status line drawn under Claude\'s lower rule (glyph + no-break space, or glyph + padding only) with the cursor in the real box above: draft null', async () => {
+    const { a, screens } = await bootScreens();
+    const NB = '\u00a0';
+    const dashes = () => [{ t: '\u2500'.repeat(80), s: { fg: 244 } }];
+    for (const row of [[{ t: `\u276f${NB}main`, s: {} }], [{ t: '\u276f', s: {} }, { t: ' '.repeat(79), s: {} }]]) {
+      const real = box(['hello']);
+      const rows = Object.assign(real.slice(), { cursor: real.cursor });
+      rows.splice(3, 0, row, dashes()); // the status row 3 and its rule 4 under Claude's lower rule (row 2)
+      screens['%6'] = rows;
+      const r = await pane(a, '%6', 'capture');
+      assert.equal(r.status, 200);
+      assert.equal(r.body.draft, null, 'the cursor is in the real box above these rules: nothing of the status line goes to the page');
+    }
+  });
+
+  test('(−) N-1 ruling: a capture without a cursor has no box: draft null, the real box included (the pure parser alone reads such rows)', async () => {
+    const { a, screens } = await bootScreens();
+    for (const cursor of [null, undefined, {}, { x: 2 }, { y: 1 }, { x: 'a', y: 1 }]) {
+      screens['%6'] = Object.assign(box(['hello']).slice(), { cursor });
+      const r = await pane(a, '%6', 'capture');
+      assert.equal(r.status, 200, JSON.stringify(cursor));
+      assert.equal(r.body.draft, null, JSON.stringify(cursor));
+    }
+    screens['%6'] = box(['hello']);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.text, 'hello', 'the control: with its cursor the same box reads');
+  });
+
+  test('(−) N-1: the cursor on a rule row, or past the box, is no draft either', async () => {
+    const { a, screens } = await bootScreens();
+    for (const y of [0, 2, 5]) {
+      screens['%6'] = Object.assign(box(['hello']).slice(), { cursor: { x: 2, y, visible: true } });
+      assert.equal((await pane(a, '%6', 'capture')).body.draft, null, `y ${y}`);
+    }
+  });
+
+  test('(+) D1: captures that alternate no pointer / pointer on main / no pointer / pointer on an agent row keep the mode, modeConfirmed and the draft', async () => {
+    const { a, screens } = await bootScreens();
+    const s = boxRows({ cols: 80, lines: ['ghj'] });
+    const seen = [];
+    for (const pointer of [null, 'main', null, 1]) {
+      screens['%6'] = Object.assign([...s.rows, ...subagentRows({ cols: 80, agents: 3, pointer })], { cursor: s.cursor });
+      const r = await pane(a, '%6', 'capture');
+      seen.push({ mode: r.body.mode, modeConfirmed: r.body.modeConfirmed, draft: r.body.draft });
+    }
+    assert.deepEqual([seen[0].mode, seen[0].modeConfirmed, seen[0].draft?.text], ['auto', true, 'ghj']);
+    for (const [i, one] of seen.entries()) assert.deepEqual(one, seen[0], `capture ${i + 1}`);
+  });
+
+  test('(+) edit follows the pane\'s memory: insert while INSERT shows (and it forgets plain), normal after INSERT was seen, plain after a probe landed as text, unknown after none', async () => {
+    const { a, screens, control } = await bootScreens();
+    screens['%6'] = box(['hello']);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'unknown');
+    control.opts.setEdit('%6', 'plain');
+    assert.equal(control.opts.plainOf('%6'), true);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'plain');
+    screens['%6'] = box(['hello'], { insert: true });
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'insert');
+    assert.equal(control.opts.plainOf('%6'), false, 'INSERT seen: not plain');
+    assert.equal(control.opts.vimOf('%6'), true);
+    screens['%6'] = box(['hello']);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'normal', 'INSERT was seen before, now none shows');
+    control.opts.setEdit('%6', 'plain');
+    assert.deepEqual([control.opts.vimOf('%6'), control.opts.plainOf('%6')], [false, true], 'a probe that lands as text turns vim off');
+    control.opts.setEdit('%6', 'vim');
+    assert.deepEqual([control.opts.vimOf('%6'), control.opts.plainOf('%6')], [true, false]);
+    control.opts.setEdit('%6', 'none');
+    assert.deepEqual([control.opts.vimOf('%6'), control.opts.plainOf('%6')], [false, false]);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'unknown');
+  });
+
+  test('(+) edit is part of the ETag: the same screen after the memory changed is not a 304', async () => {
+    const { a, screens, control } = await bootScreens();
+    screens['%6'] = box(['hello']);
+    const first = await pane(a, '%6', 'capture');
+    const again = await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } });
+    assert.equal(again.status, 304);
+    control.opts.setEdit('%6', 'plain');
+    const changed = await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } });
+    assert.equal(changed.status, 200);
+    assert.equal(changed.body.draft.edit, 'plain');
+  });
+
+  test('(−) the plain memory is dropped when the pane leaves the eligible set (a reused pane id starts unknown)', async () => {
+    const { a, screens, control } = await bootScreens();
+    screens['%6'] = box(['hello']);
+    await pane(a, '%6', 'capture');
+    control.opts.setEdit('%6', 'plain');
+    await leaveAndReturn(a, '%6');
+    assert.equal(control.opts.plainOf('%6'), false);
+    assert.equal((await pane(a, '%6', 'capture')).body.draft.edit, 'unknown');
+  });
+
+  test('(−) the draft is on the app tier\'s capture only: the browser tier has no capture route and its agent list carries no draft', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method, p) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, ...(method === 'GET' ? {} : { 'content-type': 'application/json', 'content-length': '2' }) } }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      });
+      q.on('error', reject);
+      q.end(method === 'GET' ? undefined : '{}');
+    });
+    assert.equal((await call('GET', '/api/app/pane/%256/capture')).status, 404);
+    assert.equal((await call('PUT', '/api/app/pane/%256/draft')).status, 404);
+    assert.equal((await call('POST', '/api/app/pane/%256/suggestion')).status, 404, 'accepting a suggestion presses a key: app tier only');
+    assert.equal((await call('POST', '/api/app/pane/%256/submit')).status, 404, 'Send\'s Enter presses a key: app tier only');
+    const agents = await call('GET', '/api/agents?since=all');
+    assert.equal(agents.status, 200);
+    assert.doesNotMatch(agents.data, /"draft"|"edit"|"cursorAtEnd"/);
+  });
+});
+
+describe('PUT /api/app/pane/:id/draft', () => {
+  const body = { text: 'hello world', base: '0123456789abcdef' };
+
+  test('(+) hands the pane and exactly { text, base } to the controller and relays its answer and status', async () => {
+    const { a, control } = await bootScreens({ ctlAnswers: { writeDraft: { status: 200, body: { draft: { sig: 'x' }, typed: 6 } } } });
+    const r = await pane(a, '%6', 'draft', { method: 'PUT', json: body });
+    assert.deepEqual([r.status, r.body], [200, { draft: { sig: 'x' }, typed: 6 }]);
+    assert.deepEqual(control.calls, [['writeDraft', '%6', body]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+  });
+
+  test('(+) a started pane is eligible; the controller\'s 409 bodies, draft included, are relayed as they are', async () => {
+    const answer = { status: 409, body: { error: 'draft-changed', draft: { state: 'text', text: 'on screen', sig: '0123456789abcdef' } } };
+    const { a, control } = await bootScreens({ ctlAnswers: { writeDraft: answer } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    const r = await pane(a, '%8', 'draft', { method: 'PUT', json: { text: 'x', base: '' } });
+    assert.deepEqual([r.status, r.body], [409, answer.body]);
+    assert.deepEqual(control.calls, [['writeDraft', '%8', { text: 'x', base: '' }]]);
+  });
+
+  test('(−) a bad body is 400 before the pane check, and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    const bad = [{}, { text: 'a' }, { text: 'a', base: 'XYZ' }, { text: 5, base: '' }, { text: 'x'.repeat(1025), base: '' }, { text: '\n'.repeat(13), base: '' }, { text: 'a\u0000', base: '' }, { text: 'a\u001b[2m', base: '' }, { text: 'a', base: '', path: '/etc/passwd' }];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'draft', { method: 'PUT', json });
+        assert.equal(r.status, 400, `${JSON.stringify(json).slice(0, 50)} on ${id}`);
+        assert.equal(r.body.error, 'invalid');
+      }
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('PUT', `/api/app/pane/${id.replace('%', '%25')}/draft`, { json: body });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and POST 405; a body over 20 KB 413 -- the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'draft', { method: 'PUT', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'draft', { method: 'PUT', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'draft', { method: 'GET' })).status, 405);
+    assert.equal((await pane(a, '%6', 'draft', { method: 'POST', json: body })).status, 405);
+    assert.equal((await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'x', base: '', pad: 'p'.repeat(21 * 1024) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) a write while End runs on the same pane is 409 busy-switching (one lock for every control), and the write sends nothing', async () => {
+    const { a, screens, mirror } = await bootScreens({ fake: false });
+    screens['%6'] = boxRows({ cols: 80, lines: [''] }).rows;
+    let enter;
+    const entered = new Promise((r) => { enter = r; });
+    let release;
+    const hold = new Promise((r) => { release = r; });
+    const capture = mirror.capture;
+    mirror.capture = async (...args) => { enter(); await hold; return capture(...args); };
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const put = await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'hi', base: '' } });
+    assert.deepEqual([put.status, put.body.error], [409, 'busy-switching']);
+    release();
+    await end;
+    assert.ok(!a.deps.calls.some((c) => c[0] === 'keys' && c[2]?.text === 'hi'), 'nothing of the write was typed');
+  });
+
+  test('(+) end to end with the real controller: an append reaches keys.send as one -l call, and the answer carries the read draft', async () => {
+    const { a, mirror } = await bootScreens({ fake: false });
+    const lines = ['hello'];
+    let shots = 0;
+    mirror.capture = async () => { // the cursor sits at the end of the text, as Claude's does
+      shots += 1;
+      return { status: 200, body: { ...boxRows({ cols: 80, lines, insert: true }), etag: `e${shots}` }, etag: `e${shots}` };
+    };
+    // keys.send (the fake dep) changes the screen the way Claude would
+    a.deps.keys.send = async (id, b) => {
+      a.deps.calls.push(['keys', id, b]);
+      lines[0] += b.text;
+      return { status: 200, body: { sent: { text: 1, paste: 0, keys: 0 } } };
+    };
+    const first = (await pane(a, '%6', 'capture')).body.draft;
+    const r = await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'hello!!', base: first.sig } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.typed, r.body.draft.text, r.body.draft.edit], [2, 'hello!!', 'insert']);
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys').map((c) => c[2]), [{ text: '!!' }]);
+  });
+
+  test('(−) nothing of the draft, its sig or the base reaches a log line, on success and on an internal error', async () => {
+    const secret = 'zq-private-draft-words';
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const ctlAnswers of [undefined, { writeDraft: () => { throw new Error('boom'); } }]) {
+        const { a } = await bootScreens({ ctlAnswers });
+        await pane(a, '%6', 'draft', { method: 'PUT', json: { text: secret, base: 'abcdef0123456789' } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /PUT .*draft failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => l.includes(secret) || l.includes('abcdef0123456789')), []);
+  });
+});
+
+describe('POST /api/app/pane/:id/suggestion', () => {
+  const body = { text: 'run the tests in acme-api' };
+
+  test('(+) hands the pane and exactly { text } to the controller and relays its answer and status', async () => {
+    const { a, control } = await bootScreens({ ctlAnswers: { acceptSuggestion: { status: 200, body: { draft: { sig: 'x', text: 'run the tests in acme-api' } } } } });
+    const r = await pane(a, '%6', 'suggestion', { method: 'POST', json: body });
+    assert.deepEqual([r.status, r.body], [200, { draft: { sig: 'x', text: 'run the tests in acme-api' } }]);
+    assert.deepEqual(control.calls, [['acceptSuggestion', '%6', body]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+  });
+
+  test('(+) a started pane is eligible; every 409 the controller gives (with its draft) is relayed as it is', async () => {
+    const answers = [
+      { status: 409, body: { error: 'draft-changed', draft: { state: 'empty', suggestion: 'another one' } } },
+      { status: 409, body: { error: 'not-idle', draft: null } },
+      { status: 409, body: { error: 'draft-mismatch', draft: { state: 'empty' } } },
+      { status: 409, body: { error: 'busy-switching' } },
+      { status: 429, body: { error: 'busy', draft: { state: 'empty' } } },
+    ];
+    for (const answer of answers) {
+      const { a, control } = await bootScreens({ ctlAnswers: { acceptSuggestion: answer } });
+      a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+      const r = await pane(a, '%8', 'suggestion', { method: 'POST', json: body });
+      assert.deepEqual([r.status, r.body], [answer.status, answer.body]);
+      assert.deepEqual(control.calls, [['acceptSuggestion', '%8', body]]);
+    }
+  });
+
+  test('(−) a bad body is 400 before the pane check, and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    const bad = [{}, { text: '' }, { text: 5 }, { text: 'x'.repeat(201) }, { text: 'a\nb' }, { text: 'a\u0000' }, { text: 'a\u001b[2m' }, { text: 'a', base: '' }, { text: 'a', path: '/etc/passwd' }, [], 'text'];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'suggestion', { method: 'POST', json });
+        assert.equal(r.status, 400, `${JSON.stringify(json).slice(0, 50)} on ${id}`);
+        assert.equal(r.body.error, 'invalid');
+      }
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/suggestion`, { json: body });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and PUT 405; a body over 4 KB 413 -- the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'POST', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'GET' })).status, 405);
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'PUT', json: body })).status, 405);
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'POST', json: { text: 'x', pad: 'p'.repeat(5 * 1024) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) a foreign Origin or Sec-Fetch-Site is 403 before any pane work', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'POST', json: body, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await pane(a, '%6', 'suggestion', { method: 'POST', json: body, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an accept while End runs on the same pane is 409 busy-switching (one lock), and the Tab is not sent', async () => {
+    const { a, screens, mirror } = await bootScreens({ fake: false });
+    screens['%6'] = boxRows({ cols: 80, lines: [''], ghost: 'run the tests in acme-api' }).rows;
+    let enter;
+    const entered = new Promise((r) => { enter = r; });
+    let release;
+    const hold = new Promise((r) => { release = r; });
+    const capture = mirror.capture;
+    mirror.capture = async (...args) => { enter(); await hold; return capture(...args); };
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const put = await pane(a, '%6', 'suggestion', { method: 'POST', json: body });
+    assert.deepEqual([put.status, put.body.error], [409, 'busy-switching']);
+    release();
+    await end;
+    assert.ok(!a.deps.calls.some((c) => c[0] === 'keys' && c[2]?.keys?.includes('Tab')), 'no Tab went out');
+  });
+
+  test('(+) end to end with the real controller: one Tab reaches keys.send, and the answer carries the draft the box now reads', async () => {
+    const { a, mirror } = await bootScreens({ fake: false });
+    const state = { text: '' };
+    let shots = 0;
+    mirror.capture = async () => {
+      shots += 1;
+      return { status: 200, body: { ...boxRows({ cols: 80, lines: [state.text], ghost: state.text === '' ? 'run the tests in acme-api' : null, insert: true }), etag: `e${shots}` }, etag: `e${shots}` };
+    };
+    a.deps.keys.send = async (id, b) => { // Claude takes the suggestion on Tab
+      a.deps.calls.push(['keys', id, b]);
+      if (b.keys?.includes('Tab')) state.text = 'run the tests in acme-api';
+      return { status: 200, body: { sent: { text: 0, paste: 0, keys: 1 } } };
+    };
+    const r = await pane(a, '%6', 'suggestion', { method: 'POST', json: body });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.draft.state, r.body.draft.text, r.body.draft.suggestion, r.body.draft.edit], ['text', 'run the tests in acme-api', null, 'insert']);
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys').map((c) => c[2]), [{ keys: ['Tab'] }]);
+    const stale = await pane(a, '%6', 'suggestion', { method: 'POST', json: { text: 'a suggestion that is gone' } });
+    assert.deepEqual([stale.status, stale.body.error], [409, 'draft-changed']);
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, 1, 'the stale accept sent nothing');
+  });
+
+  test('(−) nothing of the suggestion text reaches a log line, on success and on an internal error', async () => {
+    const secret = 'zq-private-suggestion-words';
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const ctlAnswers of [undefined, { acceptSuggestion: () => { throw new Error('boom'); } }]) {
+        const { a } = await bootScreens({ ctlAnswers });
+        await pane(a, '%6', 'suggestion', { method: 'POST', json: { text: secret } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /POST .*suggestion failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => l.includes(secret)), []);
+  });
+});
+
+describe('POST /api/app/pane/:id/submit (0.5, W13)', () => {
+  const body = { base: '0123456789abcdef' };
+
+  test('(+) hands the pane and exactly { base } (or {}) to the controller and relays its answer and status', async () => {
+    for (const json of [body, {}, { base: '' }]) {
+      const { a, control } = await bootScreens({ ctlAnswers: { submit: { status: 200, body: { taken: true, draft: { state: 'empty', queued: true } } } } });
+      const r = await pane(a, '%6', 'submit', { method: 'POST', json });
+      assert.deepEqual([r.status, r.body], [200, { taken: true, draft: { state: 'empty', queued: true } }]);
+      assert.deepEqual(control.calls, [['submit', '%6', json]]);
+      assert.equal(r.headers['cache-control'], 'no-store');
+    }
+  });
+
+  test('(+) a started pane is eligible; every 409 the controller gives (draft included) and a 429 are relayed as they are', async () => {
+    const answers = [
+      { status: 409, body: { error: 'prompt-open' } },
+      { status: 409, body: { error: 'bypass-prompt' } },
+      { status: 409, body: { error: 'screen-unclear' } },
+      { status: 409, body: { error: 'draft-changed', draft: { state: 'text', text: 'on screen', sig: '0123456789abcdef' } } },
+      { status: 409, body: { error: 'not-idle' } },
+      { status: 409, body: { error: 'busy-switching' } },
+      { status: 429, body: { error: 'busy', draft: { state: 'text' } } },
+      { status: 200, body: { taken: false, draft: { state: 'text' } } },
+    ];
+    for (const answer of answers) {
+      const { a, control } = await bootScreens({ ctlAnswers: { submit: answer } });
+      a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+      const r = await pane(a, '%8', 'submit', { method: 'POST', json: body });
+      assert.deepEqual([r.status, r.body], [answer.status, answer.body]);
+      assert.deepEqual(control.calls, [['submit', '%8', body]]);
+    }
+  });
+
+  test('(−) a bad body is 400 before the pane check, and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    const bad = [{ text: 'hello' }, { base: 'XYZ' }, { base: 5 }, { base: null }, { base: '0123456789abcde' }, { base: 'ABCDEF0123456789' }, { base: '', keys: ['Enter'] }, { base: 'a'.repeat(16), path: '/etc/passwd' }, [], 'base'];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'submit', { method: 'POST', json });
+        assert.equal(r.status, 400, `${JSON.stringify(json).slice(0, 50)} on ${id}`);
+        assert.equal(r.body.error, 'invalid');
+      }
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/submit`, { json: body });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and PUT 405; a body over 1 KB 413 -- the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'submit', { method: 'POST', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'submit', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'submit', { method: 'GET' })).status, 405);
+    assert.equal((await pane(a, '%6', 'submit', { method: 'PUT', json: body })).status, 405);
+    assert.equal((await pane(a, '%6', 'submit', { method: 'POST', json: { base: '', pad: 'p'.repeat(1100) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) a foreign Origin or Sec-Fetch-Site is 403 before any pane work', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'submit', { method: 'POST', json: body, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await pane(a, '%6', 'submit', { method: 'POST', json: body, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) a submit while End runs on the same pane is 409 busy-switching (one lock), and no Enter of the submit is sent', async () => {
+    const { a, screens, mirror } = await bootScreens({ fake: false });
+    screens['%6'] = boxRows({ cols: 80, lines: ['hello'] }).rows;
+    let enter;
+    const entered = new Promise((r) => { enter = r; });
+    let release;
+    const hold = new Promise((r) => { release = r; });
+    const capture = mirror.capture;
+    mirror.capture = async (...args) => { enter(); await hold; return capture(...args); };
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const sub = await pane(a, '%6', 'submit', { method: 'POST', json: {} });
+    assert.deepEqual([sub.status, sub.body.error], [409, 'busy-switching']);
+    release();
+    await end;
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, 0, 'End found a draft in the box and typed nothing; the submit pressed nothing');
+  });
+
+  test('(+) end to end with the real controller: one Enter reaches keys.send, in a busy state too, and the answer says the box was taken', async () => {
+    const { a, mirror } = await bootScreens({ fake: false });
+    const state = { text: 'ship it', queued: false };
+    let shots = 0;
+    mirror.capture = async () => {
+      shots += 1;
+      return { status: 200, body: { ...boxRows({ cols: 80, lines: [state.text], insert: true, ghost: state.text === '' && state.queued ? 'Press up to edit queued messages' : null }), etag: `e${shots}` }, etag: `e${shots}` };
+    };
+    a.deps.keys.send = async (id, b) => { // Claude queues the message: the box empties and shows its placeholder
+      a.deps.calls.push(['keys', id, b]);
+      if (b.keys?.includes('Enter')) { state.text = ''; state.queued = true; }
+      return { status: 200, body: { sent: { text: 0, paste: 0, keys: 1 } } };
+    };
+    const first = (await pane(a, '%6', 'capture')).body.draft;
+    const r = await pane(a, '%6', 'submit', { method: 'POST', json: { base: first.sig } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.taken, r.body.draft.state, r.body.draft.queued], [true, 'empty', true]);
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys').map((c) => c[2]), [{ keys: ['Enter'] }]);
+    const stale = await pane(a, '%6', 'submit', { method: 'POST', json: { base: first.sig } });
+    assert.deepEqual([stale.status, stale.body.error], [409, 'draft-changed']);
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, 1, 'the stale submit sent nothing');
+  });
+
+  test('(−) nothing of the base reaches a log line, on success and on an internal error', async () => {
+    const secret = 'abcdef0123456789';
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const ctlAnswers of [undefined, { submit: () => { throw new Error('boom'); } }]) {
+        const { a } = await bootScreens({ ctlAnswers });
+        await pane(a, '%6', 'submit', { method: 'POST', json: { base: secret } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /POST .*submit failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => l.includes(secret)), []);
+  });
+});
+
+// --- Claude's question and plan dialogs (0.5, W1, ADR 0015): the capture's `dialog` field and POST /api/app/pane/:id/dialog ----------
+
+/** The rows of a synthetic dialog as the screen mirror serves them (the array carries the pane width the dialog was drawn for). */
+const dialogRows = (opts = {}) => {
+  const s = dialogWorld(opts).screen();
+  return Object.assign(s.rows, { cursor: s.cursor, cols: s.cols });
+};
+const SIG16 = /^[0-9a-f]{16}$/;
+const DSIG = '0123456789abcdef';
+
+// --- Send's own typing (0.5, security review I1, T54): the keys route with `send: true` looks at a fresh screen and refuses a prompt, a dialog, the survey, an unclear screen ---
+
+describe("POST /api/app/pane/:id/keys: Send's own typing (send: true, T54)", () => {
+  const keysTo = (a, json, id = '%6') => pane(a, id, 'keys', { method: 'POST', json });
+  const sent = (a) => a.deps.calls.filter((c) => c[0] === 'keys');
+  const boxScreen = (o = {}) => { const b = boxRows({ cols: 80, lines: ['hello'], ...o }); return Object.assign(b.rows, { cursor: b.cursor, cols: b.cols }); };
+  const SURVEY_ROWS = ['⏺ All done.', '● How is Claude doing this session? (optional)', '  1: Bad    2: Fine    3: Good    0: Dismiss', FOOTER.plan];
+  const UNCLEAR_ROWS = ['Trust the files in this folder?', ' Enter to confirm · Esc to cancel'];
+  const BODIES = [{ text: 'hello' }, { text: '2' }, { text: '1. yes' }, { paste: 'one\ntwo' }, { keys: ['C-u'] }, { text: '!ls' }, { text: 'ok', keys: ['Enter'] }];
+  // the five dialogs of Claude's that nika knows (dialog-fake.js): each is a dialog shape, none is a permission prompt
+  const DIALOGS = {
+    ask: () => dialogRows({ phase: 'ask', tabs: [TAB.project, TAB.mode] }),
+    review: () => dialogRows({ phase: 'review', tabs: [TAB.project, TAB.mode] }),
+    plan: () => dialogRows({ phase: 'plan' }),
+    exit: () => dialogRows({ phase: 'exit' }),
+    nudge: () => dialogRows({ phase: 'nudge' }),
+  };
+
+  test('(+) the fixtures are what the cases below say they are', () => {
+    for (const [name, make] of Object.entries(DIALOGS)) {
+      assert.equal(dialogOnScreen(make()), true, `${name} is a dialog shape`);
+      assert.equal(promptFromRows(make()), null, `${name} is not a permission prompt`);
+    }
+    assert.notEqual(promptFromRows(rowsOf(PROMPT)), null);
+    assert.equal(surveyShown(rowsOf(SURVEY_ROWS)), true);
+    assert.equal(promptFromRows(rowsOf(SURVEY_ROWS)), null);
+    assert.equal(dialogOnScreen(rowsOf(SURVEY_ROWS)), false);
+    assert.notEqual(modeFromRows(rowsOf(SURVEY_ROWS)), 'unknown', 'only the survey check can refuse the survey screen');
+    assert.equal(modeFromRows(rowsOf(UNCLEAR_ROWS)), 'unknown');
+    assert.equal(promptFromRows(rowsOf(UNCLEAR_ROWS)), null);
+    assert.equal(dialogOnScreen(rowsOf(UNCLEAR_ROWS)), false);
+  });
+
+  test('(+) a plain screen with a known footer: one fresh capture, then the module gets the body with send: true and a recheck', async () => {
+    for (const screen of [rowsOf(['hello', FOOTER.plan]), boxScreen()]) {
+      const { a, screens, mirror } = await bootScreens();
+      screens['%6'] = screen;
+      for (const json of [{ text: 'hello', send: true }, { paste: 'one\ntwo', send: true }, { keys: ['C-u'], send: true }, { text: '!ls', send: true }]) {
+        assert.equal((await keysTo(a, json)).status, 200, JSON.stringify(json));
+      }
+      assert.deepEqual(mirror.opts, Array(4).fill({ fresh: true }), 'one capture per request, never the cached one');
+      assert.deepEqual(sent(a).map((c) => c[2]), [
+        { text: 'hello', paste: undefined, keys: undefined, send: true }, { text: undefined, paste: 'one\ntwo', keys: undefined, send: true },
+        { text: undefined, paste: undefined, keys: ['C-u'], send: true }, { text: '!ls', paste: undefined, keys: undefined, send: true },
+      ]);
+      for (const c of sent(a)) assert.equal(typeof c[3]?.recheck, 'function', 'the chunk look is handed over');
+    }
+  });
+
+  test('(+) letters without send skip the capture (as in 0.2); the same letters with send take one', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await keysTo(a, { text: 'abc' })).status, 200);
+    assert.deepEqual(mirror.seen, []);
+    assert.equal((await keysTo(a, { text: 'abc', send: true })).status, 200);
+    assert.deepEqual(mirror.seen, ['%6']);
+  });
+
+  test('(−) a permission prompt: 409 prompt-open for every kind of body, zero keys', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(PROMPT);
+    for (const body of BODIES) {
+      const r = await keysTo(a, { ...body, send: true });
+      assert.deepEqual([r.status, r.body.error], [409, 'prompt-open'], JSON.stringify(body));
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) each of Claude\'s dialogs (question, review, plan, Exit plan mode?, the nudge): 409 prompt-open, zero keys', async () => {
+    for (const [name, make] of Object.entries(DIALOGS)) {
+      const { a, screens } = await bootScreens();
+      screens['%6'] = make();
+      for (const body of BODIES) {
+        const r = await keysTo(a, { ...body, send: true });
+        assert.deepEqual([r.status, r.body.error], [409, 'prompt-open'], `${name} ${JSON.stringify(body)}`);
+      }
+      assert.deepEqual(sent(a), [], name);
+    }
+  });
+
+  test('(−) Claude\'s feedback survey (it takes the digits 0 to 3): 409 prompt-open, zero keys', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(SURVEY_ROWS);
+    for (const body of BODIES) assert.deepEqual([(await keysTo(a, { ...body, send: true })).body.error], ['prompt-open'], JSON.stringify(body));
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) M1: Claude\'s post-rating row "(Optional) Press [1] to tell us more" (a 1 there opens /feedback): 409 prompt-open, zero keys; the passthrough is the user\'s own keys and still goes', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['⏺ All done.', 'Thanks for the feedback!', '(Optional) Press [1] to tell us more · /feedback', FOOTER.plan]);
+    assert.equal(surveyShown(screens['%6']), false, 'it is not a survey row');
+    for (const body of BODIES) assert.deepEqual([(await keysTo(a, { ...body, send: true })).body.error], ['prompt-open'], JSON.stringify(body));
+    assert.deepEqual(sent(a), []);
+    assert.equal((await keysTo(a, { text: '1' })).status, 200, 'no send: today\'s passthrough');
+    assert.equal(sent(a).length, 1);
+  });
+
+  test('(+) M1 control: the Thanks row alone, or a quote of the follow-up row in a longer line, does not stop Send\'s typing', async () => {
+    for (const rows of [['⏺ All done.', 'Thanks for the feedback!', FOOTER.plan], ['⏺ The row reads (Optional) Press [1] to tell us more', FOOTER.plan]]) {
+      const { a, screens } = await bootScreens();
+      screens['%6'] = rowsOf(rows);
+      assert.equal((await keysTo(a, { text: 'hello', send: true })).status, 200, rows[1]);
+      assert.equal(sent(a).length, 1);
+    }
+  });
+
+  test('(−) an unreadable footer with no input box: 409 screen-unclear, zero keys', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(UNCLEAR_ROWS);
+    for (const body of BODIES) {
+      const r = await keysTo(a, { ...body, send: true });
+      assert.deepEqual([r.status, r.body.error], [409, 'screen-unclear'], JSON.stringify(body));
+    }
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) a bypass prompt keeps its own code and line (the bypass checks run first, unchanged)', async () => {
+    const { a, screens } = await bootScreens();
+    for (const lines of [BYPASS_PROMPT, BYPASS_QUESTION_PROMPT]) {
+      screens['%6'] = rowsOf(lines);
+      const r = await keysTo(a, { text: 'hello', send: true });
+      assert.deepEqual([r.status, r.body.error, r.body.message], [409, 'bypass-prompt', 'Answer this prompt in the terminal']);
+    }
+    screens['%6'] = rowsOf(['Allow bypass permissions for this folder?', ' Enter to confirm · Esc to cancel']);
+    const r = await keysTo(a, { text: 'hello', send: true });
+    assert.deepEqual([r.status, r.body.error], [409, 'screen-unclear']);
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) the capture fails: its status and body, zero keys', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = null;
+    const r = await keysTo(a, { text: 'hello', send: true });
+    assert.deepEqual([r.status, r.body], [503, { error: 'tmux_unavailable', message: 'x' }]);
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) send must be the boolean true: false, 1, "yes", null, an object are 400, before the pane check, with no capture and no keys', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    for (const send of [false, 1, 0, 'yes', 'true', null, {}, []]) {
+      for (const id of ['%6', '%5']) { // %5 is not eligible: 400 still comes first
+        const r = await keysTo(a, { text: 'hello', send }, id);
+        assert.deepEqual([r.status, r.body.error], [400, 'invalid'], `${JSON.stringify(send)} ${id}`);
+      }
+    }
+    assert.deepEqual(mirror.seen, []);
+    assert.deepEqual(sent(a), []);
+  });
+
+  test('(−) an ineligible pane is still 404 with send: true, before any capture', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await keysTo(a, { text: 'hello', send: true }, '%5')).status, 404);
+    assert.deepEqual(mirror.seen, []);
+  });
+
+  test('(+) the passthrough (no send) is unchanged: digits and letters still go to a prompt, a dialog, the survey and an unclear screen, with no recheck handed over', async () => {
+    const screens = [rowsOf(PROMPT), ...Object.values(DIALOGS).map((make) => make()), rowsOf(SURVEY_ROWS), rowsOf(UNCLEAR_ROWS)];
+    for (const screen of screens) {
+      const { a, screens: shown } = await bootScreens();
+      shown['%6'] = screen;
+      for (const json of [{ text: '2' }, { text: 'abc' }, { keys: ['Escape'] }, { keys: ['Down', 'Up'] }]) assert.equal((await keysTo(a, json)).status, 200, JSON.stringify(json));
+      assert.equal(sent(a).length, 4);
+      for (const c of sent(a)) assert.equal(c.length, 3, 'two arguments, as before: no options, no send');
+    }
+  });
+
+  test('(−) the passthrough keeps today\'s bypass refusal on a bypass prompt (a digit is 409 bypass-prompt), and send changes nothing there', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(BYPASS_PROMPT);
+    assert.equal((await keysTo(a, { text: '2' })).body.error, 'bypass-prompt');
+    assert.equal((await keysTo(a, { text: '2', send: true })).body.error, 'bypass-prompt');
+    assert.equal((await keysTo(a, { text: 'abc' })).status, 200, 'letters without send skip the capture');
+  });
+
+  describe('a long text: each chunk after the first looks again (real createKeys, a scripted screen)', () => {
+    const rig = async (afterFirst) => {
+      const typed = [];
+      let boot2;
+      const exec = async (cmd, args) => {
+        if (args.includes('-l')) {
+          typed.push(args.at(-1));
+          if (typed.length === 1) boot2.screens['%6'] = afterFirst;
+        }
+        return { stdout: '', stderr: '' };
+      };
+      const keys = createKeys({ exec, tmuxBin: 'tmux', sleep: async () => {} });
+      boot2 = await bootScreens({ over: { keys } });
+      boot2.screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+      return { ...boot2, typed };
+    };
+    const TEXT = 'x'.repeat(800); // 700 + 100
+
+    test('(+) the screen stays plain: both chunks go, the answer is 200, two fresh captures (before the first chunk and before the second)', async () => {
+      const { a, mirror, typed } = await rig(rowsOf(['hello', FOOTER.plan]));
+      const r = await keysTo(a, { text: TEXT, send: true });
+      assert.deepEqual([r.status, r.body], [200, { sent: { text: 800, paste: 0, keys: 0 } }]);
+      assert.deepEqual(typed.map((t) => t.length), [700, 100]);
+      assert.deepEqual(mirror.opts, [{ fresh: true }, { fresh: true }]);
+    });
+
+    test('(−) a permission prompt, each dialog, the survey or an unclear screen appears after the first chunk: 409, the second chunk is not typed, the answer counts the first', async () => {
+      const cases = { prompt: rowsOf(PROMPT), survey: rowsOf(SURVEY_ROWS), unclear: rowsOf(UNCLEAR_ROWS), ...Object.fromEntries(Object.entries(DIALOGS).map(([k, make]) => [k, make()])) };
+      for (const [name, screen] of Object.entries(cases)) {
+        const { a, typed } = await rig(screen);
+        const r = await keysTo(a, { text: TEXT, send: true });
+        assert.equal(r.status, 409, name);
+        assert.ok(['prompt-open', 'screen-unclear'].includes(r.body.error), `${name}: ${r.body.error}`);
+        assert.deepEqual(r.body.sent, { text: 700, paste: 0, keys: 0 }, name);
+        assert.deepEqual(typed.map((t) => t.length), [700], `${name}: only the first chunk went out`);
+      }
+    });
+
+    test('(−) a bypass prompt after the first chunk: 409 bypass-prompt, no second chunk', async () => {
+      const { a, typed } = await rig(rowsOf(BYPASS_PROMPT));
+      const r = await keysTo(a, { text: TEXT, send: true });
+      assert.deepEqual([r.status, r.body.error, r.body.sent], [409, 'bypass-prompt', { text: 700, paste: 0, keys: 0 }]);
+      assert.equal(typed.length, 1);
+    });
+
+    test('(−) the capture fails before the second chunk: its status, no second chunk', async () => {
+      const { a, typed } = await rig(null);
+      const r = await keysTo(a, { text: TEXT, send: true });
+      assert.equal(r.status, 503);
+      assert.equal(typed.length, 1);
+    });
+
+    test('(−) without send the same text is typed in both chunks whatever appears in between (the passthrough is the user\'s own typing)', async () => {
+      const { a, typed } = await rig(rowsOf(PROMPT));
+      const r = await keysTo(a, { text: TEXT });
+      assert.deepEqual([r.status, typed.map((t) => t.length)], [200, [700, 100]]);
+    });
+  });
+});
+
+describe('capture: the dialog field', () => {
+  test('(+) a question on screen: ready, with the tabs, the options and a 16-hex sig; prompt stays null', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = dialogRows({ tabs: [TAB.project, TAB.mode] });
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.status, 200);
+    const d = r.body.dialog;
+    assert.equal(r.body.prompt, null);
+    assert.deepEqual([d.state, d.kind, d.at, d.current, d.final, d.multi, d.other, d.bypass], ['ready', 'ask', 'question', 0, false, false, true, false]);
+    assert.match(d.sig, SIG16);
+    assert.deepEqual(d.options.map((o) => o.label), ['acme-api', 'web-shop', 'demo-api']);
+    assert.deepEqual(d.tabs.map((t) => t.header), ['Project', 'Mode']);
+    assert.equal(d.sig, dialogSig(readDialogScreen(screens['%6'], 120)), 'the sig is the one the controller computes');
+    assert.equal(r.body.cols, 120, 'the width the dialog was read with');
+  });
+
+  test('(+) a multi-select question carries the checkbox marks; a review its answers; a plan its choices', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = dialogRows({ tabs: [TAB.tools] });
+    const multi = (await pane(a, '%6', 'capture')).body.dialog;
+    assert.deepEqual([multi.multi, multi.final, multi.other], [true, false, true]);
+    assert.deepEqual(multi.options.map((o) => o.checked), [false, false, false]);
+    screens['%6'] = dialogRows({ tabs: [TAB.project, TAB.tools], phase: 'review' });
+    const review = (await pane(a, '%6', 'capture')).body.dialog;
+    assert.deepEqual([review.state, review.kind, review.at], ['ready', 'ask', 'review']);
+    assert.ok(Array.isArray(review.pairs) && Array.isArray(review.tabs));
+    screens['%6'] = dialogRows({ phase: 'plan' });
+    const plan = (await pane(a, '%6', 'capture')).body.dialog;
+    assert.deepEqual([plan.state, plan.kind, plan.at], ['ready', 'plan', 'plan']);
+    assert.ok(plan.options.length >= 2);
+  });
+
+  test('(+) the sig changes with the tab, the answer marks and the plan text, and not with the focus', async () => {
+    const { a, screens } = await bootScreens();
+    const sigs = new Set();
+    for (const opts of [{ tabs: [TAB.project, TAB.mode] }, { tabs: [TAB.project, TAB.mode], i: 1 }, { tabs: [TAB.project, TAB.mode], focus: 2 }, { tabs: [TAB.project, TAB.mode], phase: 'review' }, { phase: 'plan' }]) {
+      screens['%6'] = dialogRows(opts);
+      sigs.add((await pane(a, '%6', 'capture')).body.dialog.sig);
+    }
+    assert.equal(sigs.size, 4, 'five screens, one pair that differs only by the focus');
+  });
+
+  test('(−) no dialog: a plain screen, a permission prompt (prompt wins) and an empty screen read null', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.dialog, null);
+    screens['%6'] = rowsOf(PROMPT);
+    const p = await pane(a, '%6', 'capture');
+    assert.equal(p.body.dialog, null);
+    assert.ok(p.body.prompt, 'the permission prompt is still read');
+    screens['%6'] = rowsOf([]);
+    assert.equal((await pane(a, '%6', 'capture')).body.dialog, null);
+  });
+
+  test('(−) a dialog nika cannot read exactly is reported as unreadable with a reason, never as ready (a narrow pane, the nudge, "Exit plan mode?")', async () => {
+    const { a, screens } = await bootScreens();
+    for (const opts of [{ cols: 40 }, { phase: 'nudge' }, { phase: 'exit' }]) {
+      screens['%6'] = dialogRows(opts);
+      const d = (await pane(a, '%6', 'capture')).body.dialog;
+      assert.equal(d.state, 'unreadable', JSON.stringify(opts));
+      assert.ok(typeof d.reason === 'string' && d.reason.length > 0);
+      assert.equal(d.sig, undefined, 'there is nothing to answer, so no sig');
+    }
+  });
+
+  test('(+) F16: the capture names why a dialog is unreadable: `cut` when the top is clipped (rows can show it), `clipped` when a label ends in an ellipsis (rows never help)', async () => {
+    const { a, screens } = await bootScreens();
+    const whole = dialogRows({ tabs: [TAB.project] });
+    screens['%6'] = Object.assign(whole.filter((_, i) => i !== 2 && i !== 3), { cols: whole.cols });
+    assert.deepEqual((await pane(a, '%6', 'capture')).body.dialog, { state: 'unreadable', kind: 'ask', reason: 'cut' }, 'no top rule and no strip');
+    screens['%6'] = dialogRows({ tabs: [{ ...TAB.project, options: [['acme-ap…', 'Open the acme-api project.'], ['web-shop', 'Open the web-shop project.']] }] });
+    assert.deepEqual((await pane(a, '%6', 'capture')).body.dialog, { state: 'unreadable', kind: 'ask', reason: 'clipped' }, 'a shortened label');
+    screens['%6'] = dialogRows({ tabs: [TAB.project] });
+    assert.equal((await pane(a, '%6', 'capture')).body.dialog.state, 'ready', 'the same dialog whole reads');
+  });
+
+  test('(−) a dialog that mentions bypass is ready with bypass true (the page then shows it as terminal-only)', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = dialogRows({ tabs: [{ header: 'Mode', question: 'Which mode?', options: [['bypass permissions', 'Skip every check.'], ['safe', 'Run every step.']] }] });
+    const d = (await pane(a, '%6', 'capture')).body.dialog;
+    assert.deepEqual([d.state, d.bypass], ['ready', true]);
+  });
+
+  test('(−) the dialog is on the app tier\'s capture only: the browser tier has no capture route and its agent list carries no dialog', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method, p) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, ...(method === 'GET' ? {} : { 'content-type': 'application/json', 'content-length': '2' }) } }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      });
+      q.on('error', reject);
+      q.end(method === 'GET' ? undefined : '{}');
+    });
+    assert.equal((await call('GET', '/api/app/pane/%256/capture')).status, 404);
+    assert.equal((await call('POST', '/api/app/pane/%256/dialog')).status, 404, 'answering a dialog presses keys: app tier only');
+    const agents = await call('GET', '/api/agents?since=all');
+    assert.equal(agents.status, 200);
+    assert.doesNotMatch(agents.data, /"dialog"|"pairs"/);
+  });
+});
+
+describe('POST /api/app/pane/:id/dialog', () => {
+  const body = { picks: [2], sig: DSIG };
+
+  test('(+) hands the pane and exactly the body to the controller and relays its answer and status (every shape)', async () => {
+    const shapes = [{ picks: [2], sig: DSIG }, { picks: [], text: 'acme-api', sig: DSIG }, { sig: DSIG, submit: true }, { sig: DSIG, choice: 1 }, { sig: DSIG, cancel: true }];
+    for (const json of shapes) {
+      const { a, control } = await bootScreens({ ctlAnswers: { answerDialog: { status: 200, body: { done: 'next', sent: 1 } } } });
+      const r = await pane(a, '%6', 'dialog', { method: 'POST', json });
+      assert.deepEqual([r.status, r.body], [200, { done: 'next', sent: 1 }]);
+      assert.deepEqual(control.calls, [['answerDialog', '%6', json]]);
+      assert.equal(r.headers['cache-control'], 'no-store');
+    }
+  });
+
+  test('(+) a started pane is eligible; every 400 and 409 the controller gives (with `sent`) is relayed as it is', async () => {
+    const answers = [
+      { status: 409, body: { error: 'dialog-changed' } },
+      { status: 409, body: { error: 'no-dialog', sent: 2 } },
+      { status: 409, body: { error: 'not-taken', sent: 1 } },
+      { status: 409, body: { error: 'text-mismatch', sent: 3 } },
+      { status: 409, body: { error: 'already-answered' } },
+      { status: 409, body: { error: 'busy-switching' } },
+      { status: 400, body: { error: 'terminal-only', message: 'answer this in the terminal' } },
+      { status: 429, body: { error: 'busy', sent: 1 } },
+    ];
+    for (const answer of answers) {
+      const { a, control } = await bootScreens({ ctlAnswers: { answerDialog: answer } });
+      a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+      const r = await pane(a, '%8', 'dialog', { method: 'POST', json: body });
+      assert.deepEqual([r.status, r.body], [answer.status, answer.body]);
+      assert.deepEqual(control.calls, [['answerDialog', '%8', body]]);
+    }
+  });
+
+  test('(−) a bad body is 400 before the pane check, and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    const bad = [
+      {}, { sig: DSIG }, { picks: [1] }, { picks: [1], sig: 'xyz' }, { picks: [1], sig: DSIG.toUpperCase() }, { picks: [1], sig: `${DSIG}0` },
+      { picks: [1], sig: DSIG, extra: 1 }, { picks: [1], sig: DSIG, path: '/etc/passwd' }, { picks: [1], sig: DSIG, submit: true },
+      { sig: DSIG, submit: false }, { sig: DSIG, submit: 1 }, { sig: DSIG, submit: true, cancel: true }, { sig: DSIG, cancel: 'yes' }, { sig: DSIG, cancel: true, choice: 1 },
+      { sig: DSIG, choice: 0 }, { sig: DSIG, choice: 10 }, { sig: DSIG, choice: '1' }, { sig: DSIG, choice: 1.5 },
+      { picks: [0], sig: DSIG }, { picks: [8], sig: DSIG }, { picks: [1, 1], sig: DSIG }, { picks: [1.5], sig: DSIG }, { picks: ['1'], sig: DSIG }, { picks: '1', sig: DSIG },
+      { picks: [1, 2, 3, 4, 5, 6, 7, 1], sig: DSIG }, { picks: [null], sig: DSIG }, { picks: { 0: 1, length: 1 }, sig: DSIG },
+      { picks: [1], text: '', sig: DSIG }, { picks: [1], text: 5, sig: DSIG }, { picks: [], text: 'a\nb', sig: DSIG }, { picks: [], text: 'a'.repeat(301), sig: DSIG },
+      { picks: [], text: ' a', sig: DSIG }, { picks: [], text: 'a ', sig: DSIG }, { picks: [], text: 'a\u001b[2mb', sig: DSIG }, { picks: [], text: 'a\u0000', sig: DSIG },
+      { picks: [], text: 'a\u202eb', sig: DSIG }, { picks: [], text: 'a\u200bb', sig: DSIG }, { picks: [], text: 'a\ud800b', sig: DSIG }, { picks: [], text: null, sig: DSIG },
+      [], 'sig',
+    ];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'dialog', { method: 'POST', json });
+        assert.equal(r.status, 400, `${JSON.stringify(json).slice(0, 60)} on ${id}`);
+      }
+      if (!Array.isArray(json) && typeof json === 'object') assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json })).body.error, 'invalid');
+    }
+    const proto = await pane(a, '%6', 'dialog', { method: 'POST', body: `{"__proto__":{"picks":[1]},"sig":"${DSIG}"}`, headers: { 'content-type': 'application/json' } });
+    assert.equal(proto.status, 400, '__proto__ is refused');
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) the longest text the validator takes (300 characters) and picks up to 7 reach the controller', async () => {
+    const { a, control } = await bootScreens();
+    const json = { picks: [1, 2, 3, 4, 5, 6, 7], text: 'a'.repeat(299) + 'é', sig: DSIG };
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json })).status, 200);
+    assert.deepEqual(control.calls, [['answerDialog', '%6', json]]);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/dialog`, { json: body });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and PUT 405; a body over 20 KB 413 -- the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'GET' })).status, 405);
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'PUT', json: body })).status, 405);
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json: { ...body, pad: 'p'.repeat(21 * 1024) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) a foreign Origin or Sec-Fetch-Site is 403 before any pane work', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json: body, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await pane(a, '%6', 'dialog', { method: 'POST', json: body, headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an answer while End runs on the same pane is 409 busy-switching (one lock), and no digit is sent', async () => {
+    const { a, screens, mirror } = await bootScreens({ fake: false });
+    screens['%6'] = dialogRows();
+    let enter;
+    const entered = new Promise((r) => { enter = r; });
+    let release;
+    const hold = new Promise((r) => { release = r; });
+    const capture = mirror.capture;
+    mirror.capture = async (...args) => { enter(); await hold; return capture(...args); };
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const put = await pane(a, '%6', 'dialog', { method: 'POST', json: { picks: [1], sig: DSIG } });
+    assert.deepEqual([put.status, put.body.error], [409, 'busy-switching']);
+    release();
+    await end;
+    assert.ok(!a.deps.calls.some((c) => c[0] === 'keys' && c[2]?.text === '1'), 'no digit went out');
+  });
+
+  /** The real controller on a synthetic Claude: GET capture gives the sig, POST dialog answers one step, the screen changes the way Claude's does. */
+  async function live(opts) {
+    const world = dialogWorld(opts);
+    const { a, mirror } = await bootScreens({ fake: false });
+    let shots = 0;
+    mirror.capture = async () => {
+      shots += 1;
+      const r = await world.mirror.capture('%6');
+      return { ...r, body: { ...r.body, etag: `e${shots}` }, etag: `e${shots}` };
+    };
+    a.deps.keys.send = async (id, b) => { a.deps.calls.push(['keys', id, b]); return world.keys.send(id, b); };
+    const sig = async () => (await pane(a, '%6', 'capture')).body.dialog;
+    const post = (json) => pane(a, '%6', 'dialog', { method: 'POST', json });
+    return { a, world, sig, post };
+  }
+
+  test('(+) end to end with the real controller: one step per request, a fresh sig each time, Submit last; the dialog is then gone', async () => {
+    const { world, sig, post, a } = await live({ tabs: [TAB.project, TAB.mode] });
+    const first = await sig();
+    assert.deepEqual([first.state, first.current], ['ready', 0]);
+    let r = await post({ picks: [2], sig: first.sig });
+    assert.deepEqual([r.status, r.body], [200, { done: 'next', sent: 1 }]);
+    const second = await sig();
+    assert.deepEqual([second.state, second.current], ['ready', 1]);
+    assert.notEqual(second.sig, first.sig);
+    r = await post({ picks: [1], sig: second.sig });
+    assert.deepEqual([r.status, r.body.done], [200, 'review']);
+    const review = await sig();
+    assert.equal(review.at, 'review');
+    r = await post({ submit: true, sig: review.sig });
+    assert.deepEqual([r.status, r.body.done], [200, 'submitted']);
+    assert.equal(await sig(), null);
+    assert.deepEqual(world.keysLog(), ['text:2', 'text:1', 'Enter']);
+    assert.deepEqual(world.leaks(), []);
+    const late = await post({ submit: true, sig: review.sig });
+    assert.deepEqual([late.status, late.body.error], [409, 'no-dialog']);
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, 3, 'the late request sent nothing');
+  });
+
+  test('(+) end to end: Other text, a plan choice and a Decline each take their keys and nothing else', async () => {
+    const other = await live({});
+    const s = await other.sig();
+    const r = await other.post({ picks: [], text: 'acme-api staging', sig: s.sig });
+    assert.deepEqual([r.status, r.body.done], [200, 'submitted']);
+    assert.deepEqual(other.world.keysLog(), ['Down', 'Down', 'Down', 'text:acme-api staging', 'Enter']);
+    const plan = await live({ phase: 'plan' });
+    const ps = await plan.sig();
+    assert.equal((await plan.post({ sig: ps.sig, choice: 1 })).body.done, 'chosen');
+    assert.deepEqual(plan.world.keysLog(), ['text:1']);
+    const decline = await live({ phase: 'plan' });
+    const ds = await decline.sig();
+    assert.equal((await decline.post({ sig: ds.sig, cancel: true })).body.done, 'declined');
+    assert.deepEqual(decline.world.keysLog(), ['Escape']);
+  });
+
+  test('(−) end to end: a stale sig is 409 dialog-changed and a dialog that mentions bypass is 400 terminal-only -- nothing is sent', async () => {
+    const stale = await live({ tabs: [TAB.project, TAB.mode] });
+    const s = await stale.sig();
+    assert.equal((await stale.post({ picks: [1], sig: s.sig })).status, 200);
+    const old = await stale.post({ picks: [1], sig: s.sig });
+    assert.deepEqual([old.status, old.body.error], [409, 'dialog-changed']);
+    assert.deepEqual(stale.world.keysLog(), ['text:1'], 'only the first answer went out');
+    const bypass = await live({ tabs: [{ header: 'Mode', question: 'Which mode?', options: [['bypass permissions', 'Skip every check.'], ['safe', 'Run every step.']] }] });
+    const b = await bypass.sig();
+    const r = await bypass.post({ picks: [1], sig: b.sig });
+    assert.deepEqual([r.status, r.body.error], [400, 'terminal-only']);
+    assert.deepEqual(bypass.world.keysLog(), []);
+  });
+
+  test('(−) nothing of the answer text, the picks or the sig reaches a log line, on success and on an internal error', async () => {
+    const secret = 'zq-private-dialog-words';
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const ctlAnswers of [undefined, { answerDialog: () => { throw new Error('boom'); } }]) {
+        const { a } = await bootScreens({ ctlAnswers });
+        await pane(a, '%6', 'dialog', { method: 'POST', json: { picks: [], text: secret, sig: DSIG } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /POST .*dialog failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => l.includes(secret) || l.includes(DSIG)), []);
+  });
+});
+
+// --- Claude's feedback survey (0.5, F14): the capture's `survey` field and POST /api/app/pane/:id/survey -------------------------------------------------
+
+const SURVEY_Q = '● How is Claude doing this session? (optional)';
+const SURVEY_O = '  1: Bad    2: Fine   3: Good   0: Dismiss';
+/** The rows of a pane that shows the survey above an empty input box (the live layout of spike S-F14); the array carries the box's cursor, shifted below the survey rows. */
+const surveyScreen = ({ above = ['Done. Anything else?', ''], free = '', q = SURVEY_Q, opt = SURVEY_O, lines = [''], ghost = 'Try "write a test"', ...box } = {}) => {
+  const prefix = rowsOf([...above, q, opt, free]);
+  const b = boxRows({ cols: 80, lines, ghost, ...box });
+  return Object.assign([...prefix, ...b.rows], { cursor: { ...b.cursor, y: b.cursor.y + prefix.length }, cols: 80 });
+};
+const surveyIn = (screen, edit = {}) => surveyOf({ rows: screen, cursor: screen.cursor, cols: screen.cols }, edit);
+const SURVEY_OPTIONS = [{ n: 1, label: 'Bad' }, { n: 2, label: 'Fine' }, { n: 3, label: 'Good' }, { n: 0, label: 'Dismiss' }];
+
+describe('capture: the survey field', () => {
+  test('(+) the survey above an empty box: ready, kind rating, the four options in Claude\'s order and a 16-hex sig; prompt, dialog and draft stay what they are', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = surveyScreen();
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.survey, { state: 'ready', kind: 'rating', sig: surveyIn(screens['%6']).sig, options: SURVEY_OPTIONS });
+    assert.match(r.body.survey.sig, SIG16);
+    assert.deepEqual([r.body.prompt, r.body.dialog, r.body.draft], [null, null, null], 'the box reads nothing while the survey shows (the digits would answer it)');
+  });
+
+  test('(+) every terminal verdict reaches the page with its reason: consent, bypass, input, normal, unreadable', async () => {
+    const { a, screens, control } = await bootScreens();
+    const read = async () => (await pane(a, '%6', 'capture')).body.survey;
+    screens['%6'] = surveyScreen({ q: '● Can Anthropic look at your session transcript to help us improve Claude Code?' });
+    assert.deepEqual(await read(), { state: 'terminal', reason: 'consent' });
+    screens['%6'] = surveyScreen({ free: 'bypass is mentioned here' });
+    assert.deepEqual(await read(), { state: 'terminal', reason: 'bypass' });
+    screens['%6'] = surveyScreen({ lines: ['hello'], ghost: null });
+    assert.deepEqual(await read(), { state: 'terminal', reason: 'input' });
+    screens['%6'] = surveyScreen({ opt: '  1: Bad    2: Fine   3: Good   4: Unsure 0: Dismiss' });
+    assert.deepEqual(await read(), { state: 'terminal', reason: 'unreadable' });
+    screens['%6'] = surveyScreen();
+    control.opts.setEdit('%6', 'vim'); // INSERT was seen on this pane before, none shows now: vim NORMAL
+    assert.deepEqual(await read(), { state: 'terminal', reason: 'normal' });
+    screens['%6'] = surveyScreen({ insert: true });
+    assert.equal((await read()).state, 'ready', 'INSERT shown again: the digit types');
+  });
+
+  test('(+) survey is part of the ETag: the same rows after the pane\'s vim memory changed are not a 304 (the draft is null while the survey shows, so its `edit` cannot carry it)', async () => {
+    const { a, screens, control } = await bootScreens();
+    screens['%6'] = surveyScreen();
+    const first = await pane(a, '%6', 'capture');
+    assert.equal(first.body.survey.state, 'ready');
+    const same = await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } });
+    assert.equal(same.status, 304);
+    control.opts.setEdit('%6', 'vim');
+    const changed = await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } });
+    assert.equal(changed.status, 200);
+    assert.deepEqual(changed.body.survey, { state: 'terminal', reason: 'normal' });
+  });
+
+  test('(+) a pane without a survey carries survey null, also on an empty screen', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.survey, null);
+    screens['%6'] = rowsOf([]);
+    assert.equal((await pane(a, '%6', 'capture')).body.survey, null);
+  });
+
+  test('(−) M1: the rows Claude draws after a rating ("Thanks for the feedback!", "(Optional) Press [1] to tell us more") are no survey: survey null (no panel), and the box reads nothing while they show', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = surveyScreen({ q: 'Thanks for the feedback!', opt: '(Optional) Press [1] to tell us more · /feedback' });
+    const r = await pane(a, '%6', 'capture');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.survey, null);
+    assert.deepEqual([r.body.prompt, r.body.dialog, r.body.draft], [null, null, null], 'a lone 1 typed here would open /feedback: nothing is offered');
+    screens['%6'] = surveyScreen({ q: 'Thanks for the feedback!', opt: 'Claude said: (Optional) Press [1] to tell us more', lines: ['hello'], ghost: null });
+    const control = await pane(a, '%6', 'capture');
+    assert.equal(control.body.survey, null);
+    assert.equal(control.body.draft?.text, 'hello', 'the same box with only a quote of the row reads');
+  });
+
+  test('(−) a permission prompt or a dialog on screen owns the slot: survey null, whatever rows sit above it', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf([SURVEY_Q, SURVEY_O, '', ...PROMPT]);
+    const p = await pane(a, '%6', 'capture');
+    assert.ok(p.body.prompt, 'the permission prompt is read');
+    assert.equal(p.body.survey, null);
+    const dialog = dialogRows({ tabs: [TAB.project] });
+    screens['%6'] = Object.assign([...rowsOf([SURVEY_Q, SURVEY_O, '']), ...dialog], { cursor: dialog.cursor, cols: dialog.cols });
+    const d = await pane(a, '%6', 'capture');
+    assert.ok(d.body.dialog, 'the dialog is read');
+    assert.equal(d.body.survey, null);
+  });
+
+  test('(−) the survey is on the app tier\'s capture only: the browser tier has neither the capture nor the survey route, and its agent list carries no survey', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method, p, bodyText) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'x-nika-token': 'tok', origin: `http://127.0.0.1:${port}`, ...(method === 'GET' ? {} : { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(bodyText)) }) } }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      });
+      q.on('error', reject);
+      q.end(method === 'GET' ? undefined : bodyText);
+    });
+    assert.equal((await call('GET', '/api/app/pane/%256/capture')).status, 404);
+    assert.equal((await call('POST', '/api/app/pane/%256/survey', JSON.stringify({ n: 3, sig: DSIG }))).status, 404, 'answering the survey presses a key: app tier only');
+    const agents = await call('GET', '/api/agents?since=all');
+    assert.equal(agents.status, 200);
+    assert.doesNotMatch(agents.data, /"survey"/);
+  });
+});
+
+describe('POST /api/app/pane/:id/survey', () => {
+  const body = { n: 3, sig: DSIG };
+
+  test('(+) hands the pane and exactly { n, sig } to the controller and relays its answer and status (every digit)', async () => {
+    for (const n of [0, 1, 2, 3]) {
+      const json = { n, sig: DSIG };
+      const { a, control } = await bootScreens({ ctlAnswers: { answerSurvey: { status: 200, body: { answered: n } } } });
+      const r = await pane(a, '%6', 'survey', { method: 'POST', json });
+      assert.deepEqual([r.status, r.body], [200, { answered: n }]);
+      assert.deepEqual(control.calls, [['answerSurvey', '%6', json]]);
+      assert.equal(r.headers['cache-control'], 'no-store');
+    }
+  });
+
+  test('(+) a started pane is eligible; every 400, 409 and 429 the controller gives (with `sent`) is relayed as it is', async () => {
+    const answers = [
+      { status: 409, body: { error: 'survey-changed' } },
+      { status: 409, body: { error: 'already-answered' } },
+      { status: 409, body: { error: 'no-survey' } },
+      { status: 409, body: { error: 'prompt-open' } },
+      { status: 409, body: { error: 'input-not-empty' } },
+      { status: 409, body: { error: 'text-mode' } },
+      { status: 409, body: { error: 'not-idle' } },
+      { status: 409, body: { error: 'busy-switching' } },
+      { status: 409, body: { error: 'not-taken', sent: 1 } },
+      { status: 400, body: { error: 'terminal-only', message: 'answer this in the terminal' } },
+      { status: 400, body: { error: 'invalid', message: 'x' } },
+      { status: 429, body: { error: 'busy', message: 'x' } },
+    ];
+    for (const answer of answers) {
+      const { a, control } = await bootScreens({ ctlAnswers: { answerSurvey: answer } });
+      a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+      const r = await pane(a, '%8', 'survey', { method: 'POST', json: body });
+      assert.deepEqual([r.status, r.body], [answer.status, answer.body]);
+      assert.deepEqual(control.calls, [['answerSurvey', '%8', body]]);
+    }
+  });
+
+  test('(−) a bad body is 400 before the pane check, and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    const bad = [
+      {}, { n: 3 }, { sig: DSIG }, { n: 4, sig: DSIG }, { n: -1, sig: DSIG }, { n: '3', sig: DSIG }, { n: 1.5, sig: DSIG }, { n: null, sig: DSIG }, { n: [3], sig: DSIG },
+      { n: 3, sig: 'xyz' }, { n: 3, sig: DSIG.toUpperCase() }, { n: 3, sig: `${DSIG}0` }, { n: 3, sig: 3 }, { n: 3, sig: null },
+      { n: 3, sig: DSIG, extra: 1 }, { n: 3, sig: DSIG, text: '3' }, { n: 3, sig: DSIG, keys: ['Enter'] }, { n: 3, sig: DSIG, path: '/etc/passwd' },
+      [], 'sig',
+    ];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await pane(a, id, 'survey', { method: 'POST', json });
+        assert.equal(r.status, 400, `${JSON.stringify(json)} on ${id}`);
+      }
+      if (!Array.isArray(json) && typeof json === 'object') assert.equal((await pane(a, '%6', 'survey', { method: 'POST', json })).body.error, 'invalid');
+    }
+    const proto = await pane(a, '%6', 'survey', { method: 'POST', body: `{"__proto__":{"n":3},"n":3,"sig":"${DSIG}"}`, headers: { 'content-type': 'application/json' } });
+    assert.equal(proto.status, 400, '__proto__ is refused');
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, bad id) is 404 and the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    for (const id of ['%5', '%7', '%99', 'abc', '..']) {
+      const r = await a.call('POST', `/api/app/pane/${id.replace('%', '%25')}/survey`, { json: body });
+      assert.equal(r.status, 404, id);
+    }
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and PUT 405; a body over 4 KB 413 -- the controller is not called', async () => {
+    const { a, control } = await bootScreens();
+    assert.equal((await pane(a, '%6', 'survey', { method: 'POST', json: body, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await pane(a, '%6', 'survey', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await pane(a, '%6', 'survey', { method: 'GET' })).status, 405);
+    assert.equal((await pane(a, '%6', 'survey', { method: 'PUT', json: body })).status, 405);
+    assert.equal((await pane(a, '%6', 'survey', { method: 'POST', json: { n: 3, sig: DSIG, pad: 'x'.repeat(5000) } })).status, 413);
+    assert.deepEqual(control.calls, []);
+  });
+
+  test('(−) nothing of the body reaches a log line, on success and on an internal error', async () => {
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const ctlAnswers of [undefined, { answerSurvey: () => { throw new Error('boom'); } }]) {
+        const { a } = await bootScreens({ ctlAnswers });
+        await pane(a, '%6', 'survey', { method: 'POST', json: { n: 2, sig: 'fedcba9876543210' } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /POST .*survey failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => l.includes('fedcba9876543210')), []);
+  });
+
+  describe('with the real controller: one digit, nothing else', () => {
+    /** A pane whose keys change its screen the way Claude does: the digit is taken and the survey rows go. `takes: false` leaves them. */
+    async function live({ takes = true } = {}) {
+      const screens = {};
+      const typed = [];
+      const keys = { send: async (id, b) => { typed.push(b); if (takes && /^[0-3]$/.test(b.text ?? '')) screens[id] = rowsOf(['Done. Anything else?', FOOTER.plan]); return { status: 200, body: { sent: { text: 1, paste: 0, keys: 0 } } }; } };
+      const a = await boot({ deps: makeDeps({ mirror: screenMirror(screens), keys }) });
+      screens['%6'] = surveyScreen();
+      return { a, screens, typed };
+    }
+
+    test('(+) capture, then the answer: exactly one typed digit, no key, 200 { answered }', async () => {
+      const { a, typed } = await live();
+      const sig = (await pane(a, '%6', 'capture')).body.survey.sig;
+      const r = await pane(a, '%6', 'survey', { method: 'POST', json: { n: 2, sig } });
+      assert.deepEqual([r.status, r.body], [200, { answered: 2 }]);
+      assert.deepEqual(typed, [{ text: '2' }]);
+      assert.equal((await pane(a, '%6', 'capture')).body.survey, null, 'the survey is gone from the capture too');
+    });
+
+    test('(−) a sig the screen does not have, a digit that Claude does not take: 409, and in the first case no key at all', async () => {
+      const { a, typed } = await live();
+      const stale = await pane(a, '%6', 'survey', { method: 'POST', json: { n: 2, sig: '0000000000000000' } });
+      assert.deepEqual([stale.status, stale.body.error], [409, 'survey-changed']);
+      assert.deepEqual(typed, []);
+      const slow = await live({ takes: false });
+      const sig = (await pane(slow.a, '%6', 'capture')).body.survey.sig;
+      const r = await pane(slow.a, '%6', 'survey', { method: 'POST', json: { n: 3, sig } });
+      assert.deepEqual([r.status, r.body], [409, { error: 'not-taken', sent: 1 }]);
+      assert.deepEqual(slow.typed, [{ text: '3' }]);
+    });
+  });
+});
+
+// --- fit (0.5, W7, ADR 0017): PUT|DELETE /api/app/pane/:id/fit -------------------------------------------------------------
+
+const FIT_OK = (b) => ({ status: 200, body: { fit: { state: 'fitted', reason: null, pane: { cols: b.cols, rows: b.rows }, panes: 3, userZoom: false } } });
+
+/** A fit factory that records what the router builds it with (`opts`) and what the routes call; `answers[name]` (a value or a function) replaces a method's result. */
+function fakeFit(answers = {}) {
+  const f = { calls: [], opts: null, answers };
+  const method = (name, fallback) => async (...args) => {
+    f.calls.push([name, ...args]);
+    const given = f.answers[name];
+    return typeof given === 'function' ? given(...args) : given ?? fallback(...args);
+  };
+  f.factory = (opts) => {
+    f.opts = opts;
+    return {
+      hold: method('hold', (id, b) => FIT_OK(b)),
+      release: method('release', () => ({ status: 200, body: { released: true } })),
+      releaseWindow: method('releaseWindow', () => false),
+      releaseAll: method('releaseAll', () => 0),
+      recover: method('recover', () => ({ released: 0, dropped: 0 })),
+      size: () => 0,
+    };
+  };
+  return f;
+}
+const fitPane = (a, id, opts = {}) => a.call(opts.method ?? 'PUT', `/api/app/pane/${id.replace('%', '%25')}/fit`, opts);
+const FIT_BODY = { cols: 120, rows: 39, open: true };
+/** What the controller is handed for a 3-key body (F9): the route fills in the boolean `focus`, false when the page sent none. */
+const FIT_SEEN = { ...FIT_BODY, focus: false };
+const FIT_MESSAGE = 'cols must be an integer 40–400, rows 10–200, open a boolean, focus a boolean when present';
+const FIT_LIST = [TMUX, '-u', 'list-panes', '-a', '-F', ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}', '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}', '#{@nika-role}', '#{window_active_clients}'].join('\t')];
+
+describe('PUT|DELETE /api/app/pane/:id/fit', () => {
+  // F9 (requirement changed): the controller is handed { cols, rows, open, focus }; a 3-key body arrives with focus false (the safe side)
+  test('(+) PUT hands the pane and exactly { cols, rows, open, focus } to the controller and relays its status, body and no-store', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    const r = await fitPane(a, '%6', { json: FIT_BODY });
+    assert.deepEqual([r.status, r.body], [200, FIT_OK(FIT_BODY).body]);
+    assert.deepEqual(fit.calls, [['hold', '%6', FIT_SEEN]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    fit.answers.hold = { status: 200, body: { fit: { state: 'zoomed', reason: 'panel-smaller', pane: { cols: 200, rows: 50 }, panes: 3, userZoom: false } } };
+    a.clock.t += 2000;
+    assert.deepEqual((await fitPane(a, '%6', { json: { cols: 40, rows: 10, open: false } })).body.fit.reason, 'panel-smaller');
+    assert.deepEqual(fit.calls.at(-1), ['hold', '%6', { cols: 40, rows: 10, open: false, focus: false }]);
+  });
+
+  test('(+) F9: a PUT with focus true or false reaches the controller with that boolean, and a 200 relays its answer', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    const yes = await fitPane(a, '%6', { json: { ...FIT_BODY, focus: true } });
+    assert.deepEqual([yes.status, yes.body], [200, FIT_OK(FIT_BODY).body]);
+    assert.deepEqual(fit.calls.at(-1), ['hold', '%6', { ...FIT_BODY, focus: true }]);
+    a.clock.t += 2000;
+    assert.equal((await fitPane(a, '%6', { json: { ...FIT_BODY, focus: false } })).status, 200);
+    assert.deepEqual(fit.calls.at(-1), ['hold', '%6', { ...FIT_BODY, focus: false }]);
+  });
+
+  test('(−) F9: a focus that is not a boolean is 400 with the new message before the pane check (an eligible and an ineligible pane), the controller is not called and no rate slot is used', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (const focus of ['yes', 'true', 1, 0, null, [], {}]) { // (JSON drops `undefined`: that body has three keys and is the valid focus-less one)
+      for (const id of ['%6', '%5']) {
+        const r = await fitPane(a, id, { json: { ...FIT_BODY, focus } });
+        assert.equal(r.status, 400, `${String(focus)} on ${id}`);
+        assert.deepEqual([r.body.error, r.body.message], ['invalid', FIT_MESSAGE]);
+      }
+    }
+    assert.deepEqual(fit.calls, []);
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { json: { ...FIT_BODY, focus: true } })).status, 200, 'all four slots are still free');
+  });
+
+  test('(+) a started pane is eligible for a fit like for any control', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    assert.equal((await fitPane(a, '%8', { json: FIT_BODY })).status, 200);
+    assert.deepEqual(fit.calls, [['hold', '%8', FIT_SEEN]]);
+  });
+
+  test('(+) DELETE hands the pane id to release and relays { released }', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    const r = await fitPane(a, '%6', { method: 'DELETE' });
+    assert.deepEqual([r.status, r.body], [200, { released: true }]);
+    assert.deepEqual(fit.calls, [['release', '%6']]);
+    fit.answers.release = { status: 200, body: { released: false } };
+    assert.deepEqual((await fitPane(a, '%6', { method: 'DELETE' })).body, { released: false });
+  });
+
+  test('(+) the router builds the controller from the real exec, tmux binary, clock, the state dir and the session controller\'s pane lock, and puts it on ctx', async () => {
+    const fit = fakeFit();
+    const control = fakeControl();
+    const lock = async (id, fn) => fn();
+    const calls = [];
+    const exec = async (...args) => { calls.push(args); return { stdout: '', stderr: '' }; };
+    const a = await boot({ ctxOver: { exec }, deps: makeDeps({ createFit: fit.factory, createSessionControl: (o) => ({ ...control.factory(o), withPaneLock: lock }) }) });
+    assert.equal(fit.opts.exec, exec);
+    assert.equal(fit.opts.tmuxBin, a.ctx.tmuxBin);
+    assert.equal(fit.opts.stateDir, stateDir(w.env));
+    assert.equal(fit.opts.lock, lock);
+    a.clock.t = 4242;
+    assert.equal(fit.opts.now(), 4242, 'the controller reads the same clock as the router');
+    assert.equal(typeof a.ctx.fit.hold, 'function');
+    assert.equal(a.ctx.fit.size(), 0);
+    assert.deepEqual(calls, [], 'building it runs no tmux call');
+  });
+
+  test('(+) with the real controller behind the router, a PUT goes to tmux with the real exec and tmux binary, and tmux\'s answer decides (a pane tmux does not list: 404)', async () => {
+    const calls = [];
+    const exec = async (...args) => { calls.push(args); return { stdout: '', stderr: '' }; };
+    const { a } = await bootScreens({ ctxOver: undefined, over: {} });
+    const b = await boot({ ctxOver: { exec }, deps: a.deps });
+    const r = await fitPane(b, '%6', { json: FIT_BODY });
+    assert.deepEqual([r.status, r.body.error], [404, 'not_found']);
+    assert.deepEqual(calls, [[TMUX, ['-u', ...FIT_LIST.slice(2)]]]);
+  });
+
+  test('(+) a fit step shares the pane lock with End: it waits for a running End, and a draft write during the step is 409 busy-switching and types nothing', async () => {
+    const fit = fakeFit();
+    const { a, screens, mirror } = await bootScreens({ fake: false, over: { createFit: fit.factory } });
+    screens['%6'] = boxRows({ cols: 80, lines: [''] }).rows;
+    let enter;
+    const entered = new Promise((r) => { enter = r; });
+    let letGo;
+    const gate = new Promise((r) => { letGo = r; });
+    const capture = mirror.capture;
+    mirror.capture = async (...args) => { enter(); await gate; return capture(...args); };
+    const order = [];
+    let release;
+    const held = new Promise((r) => { release = r; });
+    fit.answers.hold = (id, b) => fit.opts.lock(id, async () => {
+      order.push('step');
+      await held;
+      return FIT_OK(b);
+    });
+    release(); // the first step does not stop
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const put = fitPane(a, '%6', { json: FIT_BODY });
+    await new Promise((r) => setTimeout(r, 120)); // several polls of the waiting lock
+    assert.deepEqual(order, [], 'the fit waits while End holds the pane');
+    letGo();
+    await end;
+    assert.equal((await put).status, 200);
+    assert.deepEqual(order, ['step']);
+    // second step: it holds the pane until the test lets go
+    let letStep;
+    const held2 = new Promise((r) => { letStep = r; });
+    fit.answers.hold = (id, b) => fit.opts.lock(id, async () => {
+      order.push('step2');
+      await held2;
+      return FIT_OK(b);
+    });
+    a.clock.t += 2000;
+    const put2 = fitPane(a, '%6', { json: FIT_BODY });
+    while (!order.includes('step2')) await new Promise((r) => setTimeout(r, 5));
+    const typed = a.deps.calls.filter((c) => c[0] === 'keys').length;
+    const draft = await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'hi', base: '' } });
+    assert.deepEqual([draft.status, draft.body.error], [409, 'busy-switching']);
+    assert.equal((await pane(a, '%6', 'end', { method: 'POST', json: {} })).body.error, 'busy-switching');
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, typed, 'nothing was typed');
+    letStep();
+    assert.equal((await put2).status, 200);
+  });
+
+  test('(+) PUT: 4 per second per pane, the 5th is 429 and reaches no controller; a second later it is served again; another pane has its own count', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.equal(fit.calls.length, 4);
+    const fifth = await fitPane(a, '%6', { json: FIT_BODY });
+    assert.deepEqual([fifth.status, fifth.body.error], [429, 'busy']);
+    assert.match(fifth.body.message, /at most 4 fit requests per second per pane/);
+    assert.equal(fit.calls.length, 4, 'the refused request reached nothing');
+    assert.equal((await fitPane(a, '%8', { json: FIT_BODY })).status, 200, 'another pane');
+    a.clock.t += 1001;
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.equal(fit.calls.length, 6);
+  });
+
+  test('(+) DELETE has its own bucket: 4 PUTs in one second, then a DELETE is 200 and releases (a page that closes right after a heartbeat gives the window back)', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 429, 'the PUT bucket is full');
+    const del = await fitPane(a, '%6', { method: 'DELETE' });
+    assert.deepEqual([del.status, del.body], [200, { released: true }]);
+    assert.deepEqual(fit.calls.at(-1).slice(0, 2), ['release', '%6']);
+    assert.equal(fit.calls.length, 5);
+  });
+
+  test('(+) and a full DELETE bucket does not take PUT slots: 4 DELETEs, then a PUT is 200', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { method: 'DELETE' })).status, 200);
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.deepEqual(fit.calls.map((c) => c[0]), ['release', 'release', 'release', 'release', 'hold']);
+  });
+
+  test('(−) 5 DELETEs in one second: the 5th is 429 busy and reaches no controller (no release, so no tmux call); another pane is served; a second later it is served again', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { method: 'DELETE' })).status, 200);
+    const fifth = await fitPane(a, '%6', { method: 'DELETE' });
+    assert.deepEqual([fifth.status, fifth.body.error], [429, 'busy']);
+    assert.match(fifth.body.message, /at most 4 fit requests per second per pane/);
+    assert.equal(fit.calls.length, 4, 'the refused DELETE reached nothing');
+    assert.equal((await fitPane(a, '%99', { method: 'DELETE' })).status, 200, 'another pane has its own count');
+    a.clock.t += 1001;
+    assert.equal((await fitPane(a, '%6', { method: 'DELETE' })).status, 200);
+    assert.equal(fit.calls.length, 6);
+  });
+
+  test('(−) the real controller with no lease: five DELETEs in one second answer 200 x4 then 429, and no tmux call runs for any of them', async () => {
+    const calls = [];
+    const exec = async (...args) => { calls.push(args); return { stdout: '', stderr: '' }; };
+    const { a } = await bootScreens({});
+    const b = await boot({ ctxOver: { exec }, deps: a.deps });
+    const statuses = [];
+    for (let i = 0; i < 5; i += 1) statuses.push((await fitPane(b, '%6', { method: 'DELETE' })).status);
+    assert.deepEqual(statuses, [200, 200, 200, 200, 429]);
+    assert.deepEqual(calls, []);
+  });
+
+  test('(−) a bad body is 400 before the pane check (an eligible and an ineligible pane alike), the controller is not called, and the 400 uses no rate slot', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    const bad = [
+      {}, { cols: 120, rows: 39 }, { cols: 120, open: true }, { rows: 39, open: true }, { cols: 120, rows: 39, open: 'true' }, { cols: 120, rows: 39, open: 1 },
+      { cols: 120.5, rows: 39, open: true }, { cols: '120', rows: 39, open: true }, { cols: 120, rows: '39', open: true }, { cols: null, rows: 39, open: true },
+      { cols: 39, rows: 39, open: true }, { cols: 401, rows: 39, open: true }, { cols: 120, rows: 9, open: true }, { cols: 120, rows: 201, open: true },
+      { cols: 120, rows: 39, open: true, extra: 1 }, { cols: 120, rows: 39, open: true, path: '/etc/passwd' },
+    ];
+    for (const json of bad) {
+      for (const id of ['%6', '%5']) {
+        const r = await fitPane(a, id, { json });
+        assert.equal(r.status, 400, `${JSON.stringify(json)} on ${id}`);
+        assert.deepEqual([r.body.error, r.body.message], ['invalid', FIT_MESSAGE]); // F9 (requirement changed): the message names focus
+      }
+    }
+    assert.deepEqual((await a.call('PUT', '/api/app/pane/%256/fit', { body: '[]', headers: { 'content-type': 'application/json' } })).body.error, 'invalid');
+    assert.deepEqual(fit.calls, []);
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200, 'all four slots are still free');
+  });
+
+  test('(−) the bounds are inclusive: 40 x 10 and 400 x 200 pass', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (const json of [{ cols: 40, rows: 10, open: false }, { cols: 400, rows: 200, open: true }]) assert.equal((await fitPane(a, '%6', { json })).status, 200);
+  });
+
+  test('(−) an ineligible pane (zsh, not live, unknown id, a bad id) is 404, the controller is not called, and the 404 uses no rate slot', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (let round = 0; round < 3; round += 1) {
+      for (const id of ['%5', '%7', '%8', '%99', 'abc', '..']) assert.equal((await fitPane(a, id, { json: FIT_BODY })).status, 404, id);
+    }
+    assert.deepEqual(fit.calls, []);
+  });
+
+  test('(−) DELETE with a malformed pane id is 400, nothing is released; a well-formed id of a pane that is gone or is no claude is still passed on (not eligibility-gated)', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (const id of ['abc', '%x', '5', '%1%2', '%6;ls', 'x'.repeat(30)]) {
+      const r = await a.call('DELETE', `/api/app/pane/${encodeURIComponent(id)}/fit`);
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], id);
+    }
+    assert.deepEqual(fit.calls, []);
+    for (const id of ['%5', '%99', '%7']) assert.equal((await fitPane(a, id, { method: 'DELETE' })).status, 200, id);
+    assert.deepEqual(fit.calls.map((c) => c.slice(0, 2)), [['release', '%5'], ['release', '%99'], ['release', '%7']]);
+  });
+
+  test('(−) DELETE for a pane that holds no lease is 200 { released: false } and runs no tmux call (the real controller)', async () => {
+    const calls = [];
+    const exec = async (...args) => { calls.push(args); return { stdout: '', stderr: '' }; };
+    const { a } = await bootScreens({});
+    const b = await boot({ ctxOver: { exec }, deps: a.deps });
+    for (const id of ['%6', '%99', '%5']) {
+      const r = await fitPane(b, id, { method: 'DELETE' });
+      assert.deepEqual([r.status, r.body], [200, { released: false }], id);
+    }
+    assert.deepEqual(calls, []);
+  });
+
+  test('(−) a request for a tmux window another pane\'s request is still working on is 409 busy (the real controller over a scripted tmux)', async () => {
+    const calls = [];
+    let letGo;
+    const gate = new Promise((r) => { letGo = r; });
+    let reached;
+    const waiting = new Promise((r) => { reached = r; });
+    const row = (id, active) => [id, '@1', '2', '0', active, '200', '50', '100', '50', 'claude', '', '', '0'].join('\t'); // 13 fields: ..., @nika-fit, @nika-role, window_active_clients
+    const exec = async (bin, argv) => {
+      calls.push(argv);
+      if (argv[1] === 'list-panes') return { stdout: `${row('%6', '1')}\n${row('%7', '0')}\n`, stderr: '' };
+      if (argv[1] === 'show-options') { reached(); await gate; return { stdout: '', stderr: '' }; }
+      if (argv[1] === 'display-message') return { stdout: '{"w":200,"h":50}\n', stderr: '' };
+      return { stdout: '', stderr: '' };
+    };
+    const { a } = await bootScreens({});
+    const b = await boot({ ctxOver: { exec }, deps: a.deps });
+    b.ctx.started.set('%7', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    const first = fitPane(b, '%6', { json: FIT_BODY });
+    await waiting;
+    const second = await fitPane(b, '%7', { json: { cols: 130, rows: 40, open: true } });
+    assert.deepEqual([second.status, second.body.error], [409, 'busy']);
+    letGo();
+    await first;
+    assert.ok(calls.every((c) => c[0] === '-u'), 'every call carried -u first');
+  });
+
+  test('(−) the controller\'s 502 tmux_failed, 409 busy and 404 pass through as they are', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    for (const answer of [{ status: 502, body: { error: 'tmux_failed', message: 'x' } }, { status: 409, body: { error: 'busy', message: 'y' } }, { status: 404, body: { error: 'not_found', message: 'pane not found' } }, { status: 503, body: { error: 'tmux_unavailable', message: 'z' } }]) {
+      fit.answers.hold = answer;
+      fit.answers.release = answer;
+      a.clock.t += 2000;
+      const put = await fitPane(a, '%6', { json: FIT_BODY });
+      assert.deepEqual([put.status, put.body], [answer.status, answer.body]);
+      const del = await fitPane(a, '%6', { method: 'DELETE' });
+      assert.deepEqual([del.status, del.body], [answer.status, answer.body]);
+    }
+  });
+
+  test('(−) without the secret 403; text/plain 415; GET and POST 405; a body over 4 KB 413 -- the controller is not called', async () => {
+    const fit = fakeFit();
+    const { a } = await bootScreens({ over: { createFit: fit.factory } });
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await fitPane(a, '%6', { method: 'DELETE', headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await fitPane(a, '%6', { body: JSON.stringify(FIT_BODY), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await fitPane(a, '%6', { method: 'GET' })).status, 405);
+    assert.equal((await fitPane(a, '%6', { method: 'POST', json: FIT_BODY })).status, 405);
+    assert.equal((await fitPane(a, '%6', { json: { ...FIT_BODY, pad: 'p'.repeat(4097) } })).status, 413);
+    assert.deepEqual(fit.calls, []);
+  });
+
+  test('(−) the browser tier has no fit route: PUT and DELETE are 404 there, whatever the headers', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: '/api/app/pane/%256/fit', headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'content-type': 'application/json', 'content-length': '2' } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      q.on('error', reject);
+      q.end('{}');
+    });
+    assert.equal(await call('PUT'), 404);
+    assert.equal(await call('DELETE'), 404);
+  });
+
+  test('(−) the browser tier never loads fit.js: only api-app.js and appio.js import it, only appio.js imports api-app.js, and cli.js reaches appio.js by a dynamic import', () => {
+    const dir = new URL('../src/', import.meta.url);
+    const files = fs.readdirSync(dir, { recursive: true }).filter((f) => f.endsWith('.js'));
+    const read = (f) => fs.readFileSync(new URL(f, dir), 'utf8');
+    const importers = (name) => files.filter((f) => new RegExp(`(from\\s+|import\\()\\s*'(\\./|\\.\\./)${name}\\.js'`).test(read(f)));
+    assert.deepEqual(importers('fit'), ['api-app.js', 'appio.js']);
+    assert.deepEqual(importers('api-app'), ['appio.js']);
+    const cli = read('cli.js');
+    assert.doesNotMatch(cli, /^import .* from '\.\/appio\.js'/m);
+    assert.match(cli, /await import\('\.\/appio\.js'\)/);
+    assert.deepEqual(importers('appio'), ['cli.js']);
+    assert.doesNotMatch(read('spawn.js'), /^import .*fit\.js/m, 'spawn.js (loaded by the CLI) takes the controller from ctx and imports nothing of it');
+  });
+
+  test('(−) nothing of the body reaches a log line, on success and on an internal error', async () => {
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const answers of [{}, { hold: () => { throw new Error('boom'); } }]) {
+        const fit = fakeFit(answers);
+        const { a } = await bootScreens({ over: { createFit: fit.factory } });
+        await fitPane(a, '%6', { json: { cols: 321, rows: 77, open: true } });
+      }
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /PUT .*fit failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => /\bcols\b|\brows\b|"open"|321|\b77\b/.test(l.split('\n')[0])), []);
+  });
+});
+
+// --- scroll (0.5, W3, ADR 0018): POST /api/app/pane/:id/scroll ---------------------------------------------------------------
+
+/** A scroll factory that records what the router builds it with (`opts`) and what the route calls; `answer` (a value or a function) replaces the result. */
+function fakeScroller(answer) {
+  const f = { calls: [], opts: null, answer };
+  f.factory = (opts) => {
+    f.opts = opts;
+    return {
+      scroll: async (id, body) => {
+        f.calls.push([id, body]);
+        return typeof f.answer === 'function' ? f.answer(id, body) : f.answer ?? { status: 200, body: { sent: body.pages ?? 1, scrolled: true } };
+      },
+    };
+  };
+  return f;
+}
+const scrollPane = (a, id, opts = {}) => pane(a, id, 'scroll', { method: 'POST', ...opts });
+const SCROLL_UP3 = { dir: 'up', pages: 3 };
+const keyCalls = (a) => a.deps.calls.filter((c) => c[0] === 'keys').map((c) => c[2]);
+
+describe('POST /api/app/pane/:id/scroll', () => {
+  /** A router with the REAL session and scroll controllers over a mirror that shows a plain input box in Claude's full-screen view. `seen` lists every capture { pane, fresh }; `hold()` stops the next captures until `open()`. */
+  async function liveRouter(over = {}) {
+    const { a, mirror } = await bootScreens({ fake: false, over });
+    const seen = [];
+    const gate = { wait: null, hit: null };
+    const shot = () => ({ status: 200, body: { ...boxRows({ cols: 80, lines: [''] }), alt: true, scrolled: true, etag: 'e' }, etag: 'e' });
+    mirror.capture = async (pane, inm, o) => {
+      seen.push({ pane, fresh: o?.fresh === true });
+      gate.hit?.();
+      if (gate.wait) await gate.wait;
+      return shot();
+    };
+    const hold = () => {
+      let open;
+      gate.wait = new Promise((r) => { open = r; });
+      const entered = new Promise((r) => { gate.hit = r; });
+      return { entered, open };
+    };
+    return { a, seen, hold };
+  }
+
+  test('(+) the route hands the pane id and exactly the body to the controller and relays its status, body and no-store; every shape of the body passes', async () => {
+    const sc = fakeScroller();
+    const { a } = await bootScreens({ over: { createScroll: sc.factory } });
+    const r = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+    assert.deepEqual([r.status, r.body], [200, { sent: 3, scrolled: true }]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    for (const json of [{ dir: 'down', pages: 1 }, { dir: 'up', pages: 8 }, { to: 'top' }, { to: 'bottom' }]) assert.equal((await scrollPane(a, '%6', { json })).status, 200, JSON.stringify(json));
+    assert.deepEqual(sc.calls, [['%6', SCROLL_UP3], ['%6', { dir: 'down', pages: 1 }], ['%6', { dir: 'up', pages: 8 }], ['%6', { to: 'top' }], ['%6', { to: 'bottom' }]]);
+    sc.answer = { status: 409, body: { error: 'prompt-open', message: 'x' } };
+    const refused = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+    assert.deepEqual([refused.status, refused.body.error], [409, 'prompt-open'], 'a refusal passes through');
+    sc.answer = { status: 200, body: { sent: 1, scrolled: null } };
+    assert.deepEqual((await scrollPane(a, '%6', { json: { to: 'bottom' } })).body, { sent: 1, scrolled: null });
+  });
+
+  test('(+) a started pane is eligible, like for any control', async () => {
+    const sc = fakeScroller();
+    const { a } = await bootScreens({ over: { createScroll: sc.factory } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    assert.equal((await scrollPane(a, '%8', { json: SCROLL_UP3 })).status, 200);
+    assert.deepEqual(sc.calls, [['%8', SCROLL_UP3]]);
+  });
+
+  test('(+) the router builds the controller with the mirror, the keys, the session controller\'s pane lock and keyGap, and the router\'s clock; building it touches nothing', async () => {
+    const sc = fakeScroller();
+    const control = fakeControl();
+    const lock = async (id, fn) => fn();
+    const gap = () => false;
+    const { a } = await bootScreens({ fake: false, over: { createScroll: sc.factory, createSessionControl: (o) => ({ ...control.factory(o), withPaneLock: lock, keyGap: gap }) } });
+    assert.equal(sc.opts.mirror, a.deps.mirror);
+    assert.equal(sc.opts.keys, a.deps.keys);
+    assert.equal(sc.opts.lock, lock);
+    assert.equal(sc.opts.keyGap, gap);
+    a.clock.t = 4242;
+    assert.equal(sc.opts.now(), 4242, 'the controller reads the same clock as the router');
+    assert.deepEqual(keyCalls(a), []);
+  });
+
+  test('(−) Stop, then a scroll before its Escape is 40 ms old, is 409 busy-switching: nothing is captured or sent; once the gap has passed it goes (the real controllers share keyGap)', async () => {
+    const busy = { groups: [{ agents: [{ live: true, state: 'busy', pane: { id: '%6' } }] }] };
+    const { a, seen } = await liveRouter({ collect: async () => busy });
+    const stopped = await pane(a, '%6', 'stop', { method: 'POST', json: {} });
+    assert.deepEqual([stopped.status, stopped.body], [200, { stopped: true, presses: 1 }]);
+    const captures = seen.length;
+    const early = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+    assert.deepEqual([early.status, early.body.error], [409, 'busy-switching']);
+    assert.deepEqual([seen.length, keyCalls(a)], [captures, [{ keys: ['Escape'] }]], 'the Escape is the only key, and the refused scroll captured nothing');
+    a.clock.t += 41;
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3 })).status, 200);
+    assert.deepEqual(keyCalls(a), [{ keys: ['Escape'] }, { keys: ['PPage', 'PPage', 'PPage'] }]);
+  });
+
+  test('(+) end to end with the real controllers: up 3 is one keys.send of PPage x 3 after a fresh capture, and the answer says where Claude\'s view is; bottom is C-End', async () => {
+    const { a, seen } = await liveRouter();
+    const r = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+    assert.deepEqual([r.status, r.body], [200, { sent: 3, scrolled: true }]);
+    assert.deepEqual(keyCalls(a), [{ keys: ['PPage', 'PPage', 'PPage'] }]);
+    assert.deepEqual(seen, [{ pane: '%6', fresh: true }, { pane: '%6', fresh: true }], 'one fresh capture before the keys, one after');
+    a.clock.t += 1500;
+    assert.equal((await scrollPane(a, '%6', { json: { to: 'bottom' } })).status, 200);
+    assert.deepEqual(keyCalls(a).at(-1), { keys: ['C-End'] });
+    assert.equal(keyCalls(a).length, 2);
+  });
+
+  test('(+) the capture body carries alt and scrolled from the mirror, and its ETag changes when only alt flips (the real mirror over a scripted tmux)', async () => {
+    const pill = `${'\u001b'}[38;5;231m${'\u001b'}[48;5;237m Jump to bottom: fn+↓ to scroll ${'\u001b'}[39m${'\u001b'}[49m\n`;
+    const view = { alt: '1' };
+    const exec = async (cmd, args) => (args.includes('display-message')
+      ? { stdout: `80\t24\t0\t0\t1\t${view.alt}\n`, stderr: '' }
+      : { stdout: `older output\n${pill}input\n`, stderr: '' });
+    const clock = { t: 1_000_000 };
+    const mirror = createMirror({ exec, now: () => clock.t });
+    const a = await boot({ deps: makeDeps({ mirror }) });
+    const on = await pane(a, '%6', 'capture');
+    assert.deepEqual([on.status, on.body.alt, on.body.scrolled], [200, true, true]);
+    view.alt = '0';
+    clock.t += 1000;
+    const off = await pane(a, '%6', 'capture', { headers: { 'if-none-match': on.headers.etag } });
+    assert.equal(off.status, 200, 'only alt changed: not a 304');
+    assert.deepEqual([off.body.alt, off.body.scrolled], [false, false], 'no scrolled without the alternate screen');
+    assert.notEqual(off.body.etag, on.body.etag);
+  });
+
+  test('(+) scrolled is true for the pill after text on the same row and for the new-message pills (live shapes, Claude Code 2.1.325); false for the divider rule (the real mirror over a scripted tmux)', async () => {
+    const esc = '\u001b';
+    const pillAfter = (left, words) => `${left}${esc}[38;5;231m${esc}[48;5;237m ${words} ${esc}[39m${esc}[49m\n`;
+    const rule = (words) => `${esc}[38;5;246m${'─'.repeat(52)} ${words} ${'─'.repeat(52)}${esc}[39m\n`;
+    const view = { screen: '' };
+    const exec = async (cmd, args) => (args.includes('display-message')
+      ? { stdout: '120\t40\t0\t0\t1\t1\n', stderr: '' }
+      : { stdout: view.screen, stderr: '' });
+    const clock = { t: 1_000_000 };
+    const a = await boot({ deps: makeDeps({ mirror: createMirror({ exec, now: () => clock.t }) }) });
+    for (const [screen, want] of [
+      [`  150\n${pillAfter(`  151${' '.repeat(40)}`, 'Jump to bottom: fn+↓ to scroll')}input\n`, true],
+      [`  12\n${pillAfter(`  13${' '.repeat(41)}`, '1 new message: fn+↓ to scroll')}input\n`, true],
+      [`  12\n${pillAfter(' '.repeat(44), '2 new messages: fn+↓ to scroll')}input\n`, true],
+      [`${rule('1 new message')}  12\n  13\ninput\n`, false],
+    ]) {
+      view.screen = screen;
+      clock.t += 1000;
+      const r = await pane(a, '%6', 'capture');
+      assert.deepEqual([r.status, r.body.alt, r.body.scrolled], [200, true, want], screen.split('\n').find((l) => /message|bottom/.test(l)).replace(/\u001b\[[0-9;]*m/g, ''));
+    }
+  });
+
+  test('(−) 400 before 404 before 429: a bad body is 400 on any pane and on a full bucket, an ineligible pane is 404 and takes no rate slot, then the 11th good request is 429', async () => {
+    const sc = fakeScroller();
+    const { a } = await bootScreens({ over: { createScroll: sc.factory } });
+    const bad = [{}, { dir: 'up' }, { pages: 3 }, { dir: 'up', pages: 0 }, { dir: 'up', pages: 9 }, { dir: 'up', pages: 1.5 }, { dir: 'up', pages: '3' }, { dir: 'left', pages: 1 }, { to: 'middle' },
+      { to: 'top', dir: 'up' }, { to: 'top', pages: 1 }, { dir: 'up', pages: 3, keys: ['PPage'] }, { to: 'bottom', text: 'x' }, { dir: 'PPage', pages: 1 }, { to: 'C-End' }];
+    for (const json of bad) {
+      for (const id of ['%6', '%5', '%99']) {
+        const r = await scrollPane(a, id, { json });
+        assert.deepEqual([r.status, r.body.error], [400, 'invalid'], `${JSON.stringify(json)} on ${id}`);
+        assert.equal(r.body.message, 'body must be { dir: up|down, pages: 1-8 } or { to: top|bottom }');
+      }
+    }
+    assert.equal((await scrollPane(a, '%6', { body: '[]', headers: { 'content-type': 'application/json' } })).body.error, 'invalid');
+    assert.deepEqual(sc.calls, [], 'a bad body reaches no controller');
+    for (let i = 0; i < 15; i += 1) for (const id of ['%5', '%7', '%8', '%99', 'abc', '..']) assert.equal((await scrollPane(a, id, { json: SCROLL_UP3 })).status, 404, id);
+    assert.deepEqual(sc.calls, [], 'an ineligible pane reaches no controller either');
+  });
+
+  test('(−) the 11th scroll request on one pane within a second is 429 busy: nothing is captured or sent for it; another pane is served; a second later it is served again (real controllers)', async () => {
+    const { a, seen } = await liveRouter();
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
+    for (let i = 0; i < 10; i += 1) assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3 })).status, 200, `request ${i + 1}`);
+    const captures = seen.length;
+    const sent = keyCalls(a).length;
+    const eleventh = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+    assert.deepEqual([eleventh.status, eleventh.body.error], [429, 'busy']);
+    assert.match(eleventh.body.message, /at most 10 scroll requests per second per pane/);
+    assert.deepEqual([seen.length, keyCalls(a).length], [captures, sent], 'the refused request captured and sent nothing');
+    assert.equal((await scrollPane(a, '%8', { json: SCROLL_UP3 })).status, 200, 'another pane has its own count');
+    a.clock.t += 1001;
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3 })).status, 200);
+  });
+
+  test('(−) a shell pane, an ended agent, a pane that is not claude and an unknown or malformed id are 404: nothing is captured or sent (real controllers)', async () => {
+    const { a, seen } = await liveRouter();
+    for (const id of ['%5', '%7', '%8', '%99', 'abc', '..']) {
+      const r = await scrollPane(a, id, { json: SCROLL_UP3 });
+      assert.deepEqual([r.status, r.body.error], [404, 'not_found'], id);
+    }
+    assert.deepEqual([seen.length, keyCalls(a).length], [0, 0]);
+    await leaveAndReturn(a, '%6'); // a pane that dropped out of the tmux list is 404 as well, and comes back
+    assert.deepEqual([seen.length, keyCalls(a).length], [0, 0]);
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3 })).status, 200);
+  });
+
+  test('(−) the guard of every /api/app route holds: no secret or a wrong one 403, a wrong Origin 403, text/plain 415, GET 405, a body over 4 KB 413; no controller is reached', async () => {
+    const sc = fakeScroller();
+    const { a } = await bootScreens({ over: { createScroll: sc.factory } });
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3, headers: { 'x-nika-app': WRONG_SAME_LENGTH } })).status, 403);
+    assert.equal((await scrollPane(a, '%6', { json: SCROLL_UP3, headers: { origin: 'http://evil.example' } })).status, 403);
+    assert.equal((await scrollPane(a, '%6', { body: JSON.stringify(SCROLL_UP3), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await scrollPane(a, '%6', { method: 'GET' })).status, 405);
+    assert.equal((await scrollPane(a, '%6', { json: { ...SCROLL_UP3, pad: 'p'.repeat(4097) } })).status, 413);
+    assert.deepEqual(sc.calls, []);
+  });
+
+  test('(+) a scroll waits for a running End on the same pane (one lock), then goes: PPage x 3 is sent after End finished', async () => {
+    const { a, hold } = await liveRouter();
+    const stop = hold();
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await stop.entered;
+    let answered = false;
+    const scroll = scrollPane(a, '%6', { json: SCROLL_UP3 }).then((r) => { answered = true; return r; });
+    await new Promise((r) => setTimeout(r, 120)); // several polls of the waiting lock
+    assert.equal(answered, false, 'the scroll waits while End holds the pane');
+    assert.deepEqual(keyCalls(a).filter((b) => b.keys?.includes('PPage')), [], 'no scroll key went out yet');
+    stop.open();
+    await end;
+    const r = await scroll;
+    assert.deepEqual([r.status, r.body.sent], [200, 3]);
+    assert.deepEqual(keyCalls(a).at(-1), { keys: ['PPage', 'PPage', 'PPage'] }, 'the scroll keys went out last, after End was done');
+  });
+
+  test('(−) while a scroll holds the pane, End, a mode switch, a command and a draft write answer 409 busy-switching and type nothing; then the scroll finishes', async () => {
+    const { a, hold } = await liveRouter();
+    const stop = hold();
+    const scroll = scrollPane(a, '%6', { json: SCROLL_UP3 });
+    await stop.entered;
+    const typed = keyCalls(a).length;
+    assert.equal((await pane(a, '%6', 'end', { method: 'POST', json: {} })).body.error, 'busy-switching');
+    assert.equal((await pane(a, '%6', 'mode', { method: 'POST', json: { target: 'plan' } })).body.error, 'busy-switching');
+    assert.equal((await pane(a, '%6', 'command', { method: 'POST', json: { text: '/compact' } })).body.error, 'busy-switching');
+    const draft = await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'hi', base: '' } });
+    assert.deepEqual([draft.status, draft.body.error], [409, 'busy-switching']);
+    assert.equal(keyCalls(a).length, typed, 'nothing was typed');
+    stop.open();
+    assert.equal((await scroll).status, 200);
+    assert.deepEqual(keyCalls(a), [{ keys: ['PPage', 'PPage', 'PPage'] }]);
+  });
+
+  test('(−) a screen that is not a plain input box in Claude\'s full-screen view is a 409 and no key goes (alt off, a permission prompt, a dialog footer, a slash menu)', async () => {
+    const { a, mirror } = await bootScreens({ fake: false });
+    const shot = (body) => ({ status: 200, body: { cols: 80, cursor: { x: 0, y: 0, visible: true }, alt: true, scrolled: false, ...body, etag: 'e' }, etag: 'e' });
+    const screens = {
+      'no-view': shot({ ...boxRows({ cols: 80, lines: [''] }), alt: false }),
+      'prompt-open': shot({ rows: rowsOf(PROMPT), cursor: null }),
+      'screen-unclear': shot({ ...boxRows({ cols: 80, lines: ['hello'], footer: 'Enter to select · ↑/↓ to navigate · Esc to cancel' }) }),
+      'menu-open': shot({ ...boxRows({ cols: 80, lines: ['/com'] }) }),
+    };
+    for (const [code, view] of Object.entries(screens)) {
+      mirror.capture = async () => view;
+      a.clock.t += 1500;
+      const r = await scrollPane(a, '%6', { json: SCROLL_UP3 });
+      assert.deepEqual([r.status, r.body.error], [409, code]);
+    }
+    assert.deepEqual(keyCalls(a), []);
+  });
+
+  test('(−) the browser tier has no scroll route: POST is 404 there, whatever the headers', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const status = await new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/api/app/pane/%256/scroll', headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'content-type': 'application/json', 'content-length': '2' } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      q.on('error', reject);
+      q.end('{}');
+    });
+    assert.equal(status, 404);
+  });
+
+  test('(−) the browser tier never loads scroll.js: only api-app.js imports it (and only appio.js imports api-app.js, which cli.js reaches by a dynamic import)', () => {
+    const dir = new URL('../src/', import.meta.url);
+    const files = fs.readdirSync(dir, { recursive: true }).filter((f) => f.endsWith('.js'));
+    const importers = files.filter((f) => /(from\s+|import\()\s*'(\.\/|\.\.\/)scroll\.js'/.test(fs.readFileSync(new URL(f, dir), 'utf8')));
+    assert.deepEqual(importers, ['api-app.js']);
+  });
+
+  test('(−) nothing of the body reaches a log line, on success and on an internal error', async () => {
+    const lines = [];
+    const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info };
+    for (const name of Object.keys(saved)) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+    try {
+      for (const answer of [undefined, () => { throw new Error('boom'); }]) {
+        const sc = fakeScroller(answer);
+        const { a } = await bootScreens({ over: { createScroll: sc.factory } });
+        await scrollPane(a, '%6', { json: { dir: 'up', pages: 7 } });
+      }
+      // and the real controller, whose capture fails with an error
+      const real = await liveRouter();
+      real.a.deps.mirror.capture = async () => { throw new Error('boom'); };
+      await scrollPane(real.a, '%6', { json: { dir: 'down', pages: 5 } });
+    } finally {
+      Object.assign(console, saved);
+    }
+    assert.ok(lines.some((l) => /POST .*scroll failed/.test(l)), 'the internal error was logged (so the check is real)');
+    assert.deepEqual(lines.filter((l) => /\bdir\b|\bpages\b|"up"|"down"|\b7\b|\b5\b/.test(l.split('\n')[0])), []);
+  });
+});
+
+// --- attachments (0.5, W2, ADR 0016): upload, delete, send ---
+
+const ATT = '0123456789abcdef'; // a synthetic attachment id
+const ATT2 = 'fedcba9876543210';
+const BASE16 = 'aaaaaaaaaaaaaaaa';
+const UPLOAD = { name: 'shot.png', data: Buffer.from('synthetic-bytes').toString('base64') };
+const GROUP_KEY = 'b1b2b3b4b5b6b7b8'; // a project key for a snapshot group (any 16 chars of [a-z0-9])
+
+/** A store that records its calls; `over` replaces a method (a function, or a value to return / an Error to throw). */
+function fakeStore(over = {}) {
+  const f = { calls: [] };
+  const method = (name, fallback) => async (...args) => {
+    f.calls.push([name, ...args]);
+    const given = over[name];
+    if (given instanceof Error) throw given;
+    return typeof given === 'function' ? given(...args) : given !== undefined ? given : fallback(...args);
+  };
+  f.save = method('save', () => ({ status: 200, body: { id: ATT, type: 'png', size: 15 } }));
+  f.remove = method('remove', () => true);
+  f.lookup = method('lookup', () => null);
+  f.markSent = (...args) => { f.calls.push(['markSent', ...args]); };
+  return f;
+}
+
+/** A send factory that records what the router builds it with and what the route calls. */
+function fakeSender(answer) {
+  const f = { calls: [], opts: null };
+  f.factory = (opts) => {
+    f.opts = opts;
+    return { send: async (pane, body) => { f.calls.push([pane, body]); return typeof answer === 'function' ? answer(pane, body) : answer ?? { status: 200, body: { sent: 1, images: 0 } }; } };
+  };
+  return f;
+}
+
+/** Snapshot whose group carries a project key: panes `claims` (pane ids) each have one live agent in it. */
+const keyedSnapshot = (...claims) => ({ groups: [{ key: GROUP_KEY, agents: claims.map((id) => ({ live: true, state: 'idle', pane: { id } })) }] });
+const att = (a, id, suffix, opts) => pane(a, id, suffix, opts);
+const capturingLog = async (fn) => {
+  const lines = [];
+  const saved = { error: console.error, log: console.log, warn: console.warn, info: console.info, write: process.stderr.write };
+  for (const name of ['error', 'log', 'warn', 'info']) console[name] = (...args) => { lines.push(args.map((x) => (x instanceof Error ? `${x.message}\n${x.stack}` : String(x))).join(' ')); };
+  process.stderr.write = (s) => { lines.push(String(s)); return true; };
+  try {
+    await fn();
+  } finally {
+    Object.assign(console, saved);
+    process.stderr.write = saved.write;
+  }
+  return lines;
+};
+
+describe('attachments: upload', () => {
+  test('(+) the store gets the pane, the key of the group that claims it, and the name and data; its answer goes to the page as is', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    const r = await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD });
+    assert.deepEqual([r.status, r.body], [200, { id: ATT, type: 'png', size: 15 }]);
+    assert.deepEqual(store.calls, [['save', { pane: '%6', key: GROUP_KEY, name: UPLOAD.name, data: UPLOAD.data }]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+  });
+
+  test('(+) a pane nika started has its start key; the store answer 4xx of its own (wrong-type, too-big, rate) goes through', async () => {
+    const store = fakeStore({ save: () => ({ status: 415, body: { error: 'wrong-type', message: 'x' } }) });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    const r = await att(a, '%8', 'attachments', { method: 'POST', json: UPLOAD });
+    assert.deepEqual([r.status, r.body.error], [415, 'wrong-type']);
+    assert.equal(store.calls[0][1].key, w.project.key);
+    assert.equal(store.calls[0][1].pane, '%8');
+  });
+
+  test('(−) the key is never the request\'s: a body with a key, a path or an extra field is 400 and the store is not called', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    for (const json of [{ ...UPLOAD, key: 'ffffffffffffffff' }, { ...UPLOAD, path: '/etc/passwd' }, { name: 'x' }, { data: UPLOAD.data }, { name: 5, data: UPLOAD.data }, { name: 'x', data: 'not base64!' }, { name: 'x', data: 'abc' }, { name: 'n'.repeat(256), data: UPLOAD.data }]) {
+      const r = await att(a, '%6', 'attachments', { method: 'POST', json });
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], JSON.stringify(json).slice(0, 60));
+    }
+    for (const body of ['[]', 'null', '"x"', '{bad', '']) {
+      assert.equal((await att(a, '%6', 'attachments', { method: 'POST', body, headers: { 'content-type': 'application/json' } })).status, 400, body);
+    }
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) M4: a body named .env, .env.*, *.key or *.pem is 400 secret-file before the pane is looked at; the store is not called, and an ordinary name still goes', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    for (const name of ['.env', '.ENV.dev', 'prod.key', 'CERT.PEM', 'dir/.env']) {
+      for (const id of ['%6', '%99']) { // an unknown pane too: the body comes first
+        const r = await att(a, id, 'attachments', { method: 'POST', json: { name, data: UPLOAD.data } });
+        assert.deepEqual([r.status, r.body.error], [400, 'secret-file'], `${name} ${id}`);
+      }
+    }
+    assert.deepEqual(store.calls, []);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'notes.txt', data: UPLOAD.data } })).status, 200);
+    assert.equal(store.calls.length, 1);
+  });
+
+  test('(−) F3: a body named .envrc, *.p12, *.pfx, *.jks, *.keystore, an SSH private key or .netrc (any case, path in front) is 400 secret-file before the pane is looked at; the store is not called', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    for (const name of ['.envrc', '.ENVRC', '.envrc.dev', '.ENVRC.BAK', '/x/y/.envrc.dev', '.envrc.', 'cert.p12', 'CERT.PFX', 'store.jks', 'App.KeyStore', 'id_rsa', 'ID_RSA', '/x/y/ID_RSA', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'Id_Ecdsa_Sk', 'id_ed25519_sk', '.netrc', '.NETRC', '/x/y/.netrc']) { // the .netrc rows: G2's list (src/attachments.js)
+      for (const id of ['%6', '%99']) {
+        const r = await att(a, id, 'attachments', { method: 'POST', json: { name, data: UPLOAD.data } });
+        assert.deepEqual([r.status, r.body.error], [400, 'secret-file'], `${name} ${id}`);
+      }
+    }
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(+) F3: a public key and the look-alikes of the new kinds still go to the store', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    const names = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt', 'envrc.dev', '.envrcx', 'netrc', '.netrc.bak'];
+    for (const name of names) assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name, data: UPLOAD.data } })).status, 200, name);
+    assert.equal(store.calls.length, names.length);
+  });
+
+  test('(−) the body is checked before the pane: a bad body to an unknown pane is 400, a good body to it is 404; the store is not called', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await att(a, '%99', 'attachments', { method: 'POST', json: { name: 'x' } })).status, 400);
+    assert.equal((await att(a, '%99', 'attachments', { method: 'POST', json: UPLOAD })).status, 404);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) a pane that is not in the tmux list, runs a shell, is not live Claude or was not started is 404; the store is not called', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6', '%5') } });
+    for (const id of ['%5', '%8', '%99']) assert.equal((await att(a, id, 'attachments', { method: 'POST', json: UPLOAD })).status, 404, id); // %5 = zsh, %8 = node not claimed, %99 = no pane
+    assert.equal((await a.call('POST', '/api/app/pane/abc/attachments', { json: UPLOAD })).status, 404);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) no-project: two live agents claim the pane, no group names it, or the key is not a project key; 409 and the store is not called', async () => {
+    const store = fakeStore();
+    const twice = { groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }, { key: 'c1c2c3c4c5c6c7c8', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+    for (const snapshot of [twice, { groups: [{ key: 'BAD KEY', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] }, { groups: [{ agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] }]) {
+      const { a } = await bootScreens({ over: { attachments: store, collect: async () => snapshot } });
+      const r = await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD });
+      assert.deepEqual([r.status, r.body.error], [409, 'no-project'], JSON.stringify(snapshot).slice(0, 80));
+    }
+    const { a } = await bootScreens({ over: { attachments: store } }); // a started pane whose entry carries a key that is not a project key
+    a.ctx.started.set('%8', { key: 'not a key', name: 'x', sessionId: null, role: 'agent' });
+    assert.deepEqual([(await att(a, '%8', 'attachments', { method: 'POST', json: UPLOAD })).body.error], ['no-project']);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) a body over 12 MiB is 413, one just under it reaches the store; text/plain is 415; GET and PUT are 405; no secret is 403', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'x', data: 'A'.repeat(12 * 1024 * 1024) } })).status, 413);
+    assert.equal(store.calls.length, 0);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'x', data: 'A'.repeat(11 * 1024 * 1024) } })).status, 200);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', body: JSON.stringify(UPLOAD), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'GET' })).status, 405);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'PUT', json: UPLOAD })).status, 405);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal(store.calls.length, 1, 'only the 11 MiB body got through');
+  });
+
+  test('(−) a store that throws is 500 write-failed; the log has the node code only, and neither the answer nor the log carries the name, the data, a path or an id', async () => {
+    const boom = Object.assign(new Error('EACCES /srv/nika/attachments/secret-name.png'), { code: 'EACCES' });
+    const store = fakeStore({ save: boom });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    let r;
+    const lines = await capturingLog(async () => { r = await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'secret-name.png', data: UPLOAD.data } }); });
+    assert.deepEqual([r.status, r.body.error], [500, 'write-failed']);
+    assert.equal(/secret-name|srv|EACCES/.test(r.raw), false);
+    assert.deepEqual(lines, ['nika: attachments: EACCES\n']);
+  });
+});
+
+// The paperclip's own file chooser (W2-T6): the page asks for a native dialog and polls for what the user picked. The server owns the reads.
+const PICK = 'attachments/pick';
+const FILES_DONE = [
+  { ok: true, id: ATT, name: 'shot.png', size: 15, type: 'png' },
+  { ok: false, name: 'big.bin', error: 'too_large' },
+];
+
+/** A picker whose files half records what it is given; `files` = reqId -> { pane, answer } for the status route. */
+function fakePicker(over = {}) {
+  const f = { starts: [], reqs: new Map(), calls: [] };
+  f.start = () => null;
+  f.status = () => null;
+  f.startFiles = (arg) => {
+    f.starts.push(arg);
+    if (over.busy) return null;
+    const id = over.reqId ?? REQ_ID;
+    f.reqs.set(id, { pane: arg.pane, answer: over.answer ?? { state: 'pending' } });
+    return id;
+  };
+  f.filesStatus = (pane, reqId) => {
+    f.calls.push([pane, reqId]);
+    const r = f.reqs.get(reqId);
+    return r && r.pane === pane ? r.answer : null;
+  };
+  return f;
+}
+
+describe('attachments: the file chooser (POST pick)', () => {
+  test('(+) a room of 1 to 6 starts a request for the pane and the key of the group that claims it; 202 with the id, nothing else', async () => {
+    for (const room of [1, 2, 3, 4, 5, 6]) {
+      const picker = fakePicker();
+      const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+      const r = await att(a, '%6', PICK, { method: 'POST', json: { room } });
+      assert.deepEqual([r.status, r.body], [202, { reqId: REQ_ID }], String(room));
+      assert.deepEqual(picker.starts, [{ pane: '%6', key: GROUP_KEY, room }]);
+      assert.equal(r.headers['cache-control'], 'no-store');
+    }
+  });
+
+  test('(+) a pane nika started has its start key', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    const r = await att(a, '%8', PICK, { method: 'POST', json: { room: 3 } });
+    assert.equal(r.status, 202);
+    assert.deepEqual(picker.starts, [{ pane: '%8', key: w.project.key, room: 3 }]);
+  });
+
+  test('(−) the body is exactly { room } with room an integer 1 to 6: anything else is 400 invalid and no chooser starts', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    const bad = [{}, { room: 0 }, { room: 7 }, { room: -1 }, { room: 1.5 }, { room: '3' }, { room: null }, { room: [3] }, { room: true }, { room: NaN },
+      { room: 1, key: GROUP_KEY }, { room: 1, path: '/etc/passwd' }, { room: 1, pane: '%7' }, { ROOM: 1 }, { rooms: 1 }, { room: 1, extra: 0 }];
+    for (const json of bad) {
+      const r = await att(a, '%6', PICK, { method: 'POST', json });
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], JSON.stringify(json));
+    }
+    for (const body of ['[]', 'null', '"x"', '{bad', '', '{"room":1,"room":2,"x":1}']) {
+      const r = await att(a, '%6', PICK, { method: 'POST', body, headers: { 'content-type': 'application/json' } });
+      assert.equal(r.status, 400, body);
+    }
+    assert.equal((await att(a, '%6', PICK, { method: 'POST', body: '{"room":1}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(−) a body over 4 KB is 413 and no chooser starts', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await att(a, '%6', PICK, { method: 'POST', json: { room: 1, pad: 'x'.repeat(5000) } })).status, 413);
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(−) the body is checked before the pane: a bad body to an unknown pane is 400, a good body to it is 404', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await att(a, '%99', PICK, { method: 'POST', json: {} })).status, 400);
+    assert.equal((await att(a, '%99', PICK, { method: 'POST', json: { room: 1 } })).status, 404);
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(−) a pane that is not in the tmux list, runs a shell, is not live Claude or was not started is 404; no chooser starts', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6', '%5') } });
+    for (const id of ['%5', '%8', '%99']) assert.equal((await att(a, id, PICK, { method: 'POST', json: { room: 1 } })).status, 404, id);
+    assert.equal((await a.call('POST', '/api/app/pane/abc/attachments/pick', { json: { room: 1 } })).status, 404);
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(−) no-project: two live agents claim the pane, or no group names it: 409 and no chooser starts', async () => {
+    const picker = fakePicker();
+    const twice = { groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }, { key: 'c1c2c3c4c5c6c7c8', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+    for (const snapshot of [twice, { groups: [{ key: 'BAD KEY', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] }]) {
+      const { a } = await bootScreens({ over: { picker, collect: async () => snapshot } });
+      const r = await att(a, '%6', PICK, { method: 'POST', json: { room: 1 } });
+      assert.deepEqual([r.status, r.body.error], [409, 'no-project']);
+    }
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(−) 429 busy while any chooser (a folder or files) is open', async () => {
+    const picker = fakePicker({ busy: true });
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    const r = await att(a, '%6', PICK, { method: 'POST', json: { room: 2 } });
+    assert.deepEqual([r.status, r.body.error], [429, 'busy']);
+    assert.equal(picker.starts.length, 1, 'the picker was asked, and it said busy');
+  });
+
+  test('(−) GET and PUT on the start route are 405; no secret is 403', async () => {
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await att(a, '%6', PICK, { method: 'GET' })).status, 405);
+    assert.equal((await att(a, '%6', PICK, { method: 'PUT', json: { room: 1 } })).status, 405);
+    assert.equal((await att(a, '%6', PICK, { method: 'POST', json: { room: 1 }, headers: { 'x-nika-app': null } })).status, 403);
+    assert.deepEqual(picker.starts, []);
+  });
+});
+
+describe('attachments: the file chooser (GET pick/:reqId)', () => {
+  const get = (a, id, reqId, opts) => att(a, id, `${PICK}/${reqId}`, opts);
+
+  test('(+) pending, cancelled and done (with the files) as the picker says; done carries ids, names, sizes, types and error codes, no path', async () => {
+    const answers = [{ state: 'pending' }, { state: 'cancelled' }, { state: 'done', files: FILES_DONE }];
+    const ids = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'];
+    const picker = fakePicker();
+    ids.forEach((id, i) => picker.reqs.set(id, { pane: '%6', answer: answers[i] }));
+    const { a } = await bootScreens({ over: { picker } });
+    for (const [i, id] of ids.entries()) {
+      const r = await get(a, '%6', id);
+      assert.deepEqual([r.status, r.body], [200, answers[i]], id);
+      assert.equal(r.headers['cache-control'], 'no-store');
+    }
+    const done = (await get(a, '%6', ids[2])).raw;
+    assert.equal(/\/|\\/.test(done), false, 'no path separator anywhere in a done answer');
+    assert.deepEqual(picker.calls.at(-1), ['%6', ids[2]], 'the picker is asked with the pane of the URL and the id');
+  });
+
+  test('(−) an unknown id, a malformed id and an id started for another pane are 404 (the same answer for all three)', async () => {
+    const picker = fakePicker();
+    picker.reqs.set(REQ_ID, { pane: '%6', answer: { state: 'done', files: FILES_DONE } });
+    const { a } = await bootScreens({ over: { picker } });
+    const unknown = await get(a, '%6', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+    const other = await get(a, '%7', REQ_ID);
+    assert.deepEqual([unknown.status, other.status], [404, 404]);
+    assert.equal(unknown.raw, other.raw);
+    for (const bad of ['not-a-uuid', '..%2F..%2Fetc', '%00', 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA'.slice(0, 35)]) {
+      assert.equal((await get(a, '%6', bad)).status, 404, bad);
+    }
+    assert.equal((await a.call('GET', `/api/app/pane/abc/attachments/pick/${REQ_ID}`)).status, 404, 'a malformed pane id');
+  });
+
+  test('(+) the poll is not eligibility-gated: a pane that left the tmux list after the dialog opened still gets its answer', async () => {
+    const picker = fakePicker();
+    picker.reqs.set(REQ_ID, { pane: '%6', answer: { state: 'done', files: FILES_DONE } });
+    const { a } = await bootScreens({ over: { picker } });
+    a.deps.state.panes.delete('%6');
+    assert.equal((await get(a, '%6', REQ_ID)).status, 200);
+  });
+
+  test('(−) POST, PUT and DELETE are 405 on the status route; no secret is 403', async () => {
+    const picker = fakePicker();
+    picker.reqs.set(REQ_ID, { pane: '%6', answer: { state: 'pending' } });
+    const { a } = await bootScreens({ over: { picker } });
+    for (const method of ['POST', 'PUT', 'DELETE']) assert.equal((await get(a, '%6', REQ_ID, { method, ...(method === 'DELETE' ? {} : { json: {} }) })).status, 405, method);
+    assert.equal((await get(a, '%6', REQ_ID, { headers: { 'x-nika-app': null } })).status, 403);
+  });
+
+  test('(−) the delete route still takes only an attachment id: DELETE .../attachments/pick is 400 invalid, not a chooser', async () => {
+    const picker = fakePicker();
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { picker, attachments: store } });
+    const r = await att(a, '%6', PICK, { method: 'DELETE' });
+    assert.deepEqual([r.status, r.body.error], [400, 'invalid']);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) the browser tier has neither chooser route: POST and GET are 404 there, whatever the headers', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method, p, payload) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'content-type': 'application/json', ...(payload ? { 'content-length': String(payload.length) } : {}) } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      q.on('error', reject);
+      q.end(payload);
+    });
+    assert.equal(await call('POST', '/api/app/pane/%256/attachments/pick', '{"room":1}'), 404);
+    assert.equal(await call('GET', `/api/app/pane/%256/attachments/pick/${REQ_ID}`), 404);
+  });
+
+  test('(−) nothing of a chooser is logged by the routes: no path, name or id on any console or stderr', async () => {
+    const picker = fakePicker({ answer: { state: 'done', files: FILES_DONE } });
+    const { a } = await bootScreens({ over: { picker, collect: async () => keyedSnapshot('%6') } });
+    const lines = await capturingLog(async () => {
+      await att(a, '%6', PICK, { method: 'POST', json: { room: 2 } });
+      await get(a, '%6', REQ_ID);
+      await get(a, '%7', REQ_ID);
+    });
+    assert.deepEqual(lines, []);
+  });
+});
+
+describe('attachments: delete', () => {
+  test('(+) removes by pane and id: { removed: true }; an unknown, another pane\'s or a sent id is { removed: false } (no oracle)', async () => {
+    const store = fakeStore({ remove: (p, id) => p === '%6' && id === ATT });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    assert.deepEqual((await att(a, '%6', `attachments/${ATT}`, { method: 'DELETE' })).body, { removed: true });
+    assert.deepEqual((await att(a, '%6', `attachments/${ATT2}`, { method: 'DELETE' })).body, { removed: false });
+    assert.deepEqual((await att(a, '%7', `attachments/${ATT}`, { method: 'DELETE' })).body, { removed: false });
+    assert.deepEqual(store.calls.map((c) => c.slice(0, 3)), [['remove', '%6', ATT], ['remove', '%6', ATT2], ['remove', '%7', ATT]]);
+  });
+
+  test('(+) not gated by the pane being live Claude: a pane that is gone still gets its file removed', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store } });
+    const r = await att(a, '%99', `attachments/${ATT}`, { method: 'DELETE' });
+    assert.deepEqual([r.status, r.body], [200, { removed: true }]);
+    assert.deepEqual(store.calls, [['remove', '%99', ATT]]);
+  });
+
+  test('(−) a bad pane id or attachment id is 400 and the store is not called; POST and GET are 405; no secret is 403', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store } });
+    for (const [p, id] of [['%6', 'zz'], ['%6', ATT.toUpperCase().replace(/[0-9]/g, 'A')], ['%6', `${ATT}0`], ['abc', ATT], ['%6;rm', ATT], ['%0x', ATT]]) {
+      const r = await a.call('DELETE', `/api/app/pane/${encodeURIComponent(p)}/attachments/${encodeURIComponent(id)}`);
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], `${p} ${id}`);
+    }
+    assert.equal((await att(a, '%6', `attachments/${ATT}`, { method: 'POST', json: {} })).status, 405);
+    assert.equal((await att(a, '%6', `attachments/${ATT}`, { method: 'GET' })).status, 405);
+    assert.equal((await att(a, '%6', `attachments/${ATT}`, { method: 'DELETE', headers: { 'x-nika-app': null } })).status, 403);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) a store that throws answers { removed: false } with the code logged only', async () => {
+    const store = fakeStore({ remove: Object.assign(new Error('EBUSY /srv/nika/attachments/x'), { code: 'EBUSY' }) });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    let r;
+    const lines = await capturingLog(async () => { r = await att(a, '%6', `attachments/${ATT}`, { method: 'DELETE' }); });
+    assert.deepEqual([r.status, r.body], [200, { removed: false }]);
+    assert.deepEqual(lines, ['nika: attachments: EBUSY\n']);
+  });
+});
+
+describe('attachments: send', () => {
+  const control = fakeControl();
+  const lock = async (id, fn) => fn();
+  const gap = () => false;
+  const overWith = (sender, store = fakeStore(), more = {}) => ({ attachments: store, createAttachSend: sender.factory, createSessionControl: (o) => ({ ...control.factory(o), withPaneLock: lock, keyGap: gap }), ...more });
+
+  test('(+) the router builds the sender with the mirror, the keys, the store, the controller\'s pane lock and keyGap, and the edit-mode readers; (−) no registry reader (W13: it sends while Claude works)', async () => {
+    const sender = fakeSender();
+    const store = fakeStore();
+    const { a } = await bootScreens({ fake: false, over: overWith(sender, store) });
+    const o = sender.opts;
+    assert.equal(o.mirror, a.deps.mirror);
+    assert.equal(o.keys, a.deps.keys);
+    assert.equal(o.store, store);
+    assert.equal(o.lock, lock);
+    assert.equal(o.keyGap, gap);
+    for (const name of ['vimOf', 'plainOf']) assert.equal(typeof o[name], 'function', name);
+    assert.equal('stateOf' in o, false, 'the sender gets no registry reader');
+    assert.equal(o.vimOf('%6'), false);
+    assert.equal(o.plainOf('%6'), false);
+    assert.deepEqual(a.deps.calls.filter((c) => c[0] === 'keys'), [], 'building it sends nothing');
+  });
+
+  test('(+) an eligible pane: the sender gets the pane id and exactly { ids, base }; its status and body go to the page', async () => {
+    const sender = fakeSender({ status: 200, body: { sent: 2, images: 1 } });
+    const { a } = await bootScreens({ over: overWith(sender) });
+    const r = await att(a, '%6', 'attach-send', { method: 'POST', json: { ids: [ATT, ATT2], base: BASE16 } });
+    assert.deepEqual([r.status, r.body], [200, { sent: 2, images: 1 }]);
+    assert.deepEqual(sender.calls, [['%6', { ids: [ATT, ATT2], base: BASE16 }]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+  });
+
+  test('(+) the sender\'s refusals reach the page with their status and body (409 draft-changed with the draft, 429, 500 internal)', async () => {
+    for (const answer of [{ status: 409, body: { error: 'draft-changed', pasted: 0, draft: { state: 'text' } } }, { status: 429, body: { error: 'busy', pasted: 1 } }, { status: 500, body: { error: 'internal', pasted: 2 } }]) {
+      const sender = fakeSender(answer);
+      const { a } = await bootScreens({ over: overWith(sender) });
+      const r = await att(a, '%6', 'attach-send', { method: 'POST', json: { ids: [ATT], base: BASE16 } });
+      assert.deepEqual([r.status, r.body], [answer.status, answer.body]);
+    }
+  });
+
+  test('(−) a bad body is 400 before the pane and the sender: no ids, 7 ids, a duplicate, a bad id, a bad base, an extra key', async () => {
+    const sender = fakeSender();
+    const { a } = await bootScreens({ over: overWith(sender) });
+    const seven = Array.from({ length: 7 }, (_, i) => `${i}`.repeat(16));
+    for (const json of [{ ids: [], base: BASE16 }, { ids: seven, base: BASE16 }, { ids: [ATT, ATT], base: BASE16 }, { ids: ['xyz'], base: BASE16 }, { ids: [ATT], base: 'short' }, { ids: [ATT] }, { base: BASE16 }, { ids: [ATT], base: BASE16, path: '/etc/passwd' }]) {
+      assert.deepEqual([(await att(a, '%99', 'attach-send', { method: 'POST', json })).status, (await att(a, '%6', 'attach-send', { method: 'POST', json })).status], [400, 400], JSON.stringify(json).slice(0, 60));
+    }
+    assert.deepEqual(sender.calls, []);
+  });
+
+  test('(−) a pane that is not live Claude and was not started is 404; the sender is not called', async () => {
+    const sender = fakeSender();
+    const { a } = await bootScreens({ over: overWith(sender) });
+    for (const id of ['%5', '%8', '%99']) assert.equal((await att(a, id, 'attach-send', { method: 'POST', json: { ids: [ATT], base: BASE16 } })).status, 404, id);
+    assert.deepEqual(sender.calls, []);
+  });
+
+  test('(−) no secret 403; text/plain 415; GET and PUT 405; a body over 4 KB 413 -- the sender is not called', async () => {
+    const sender = fakeSender();
+    const { a } = await bootScreens({ over: overWith(sender) });
+    const json = { ids: [ATT], base: BASE16 };
+    assert.equal((await att(a, '%6', 'attach-send', { method: 'POST', json, headers: { 'x-nika-app': null } })).status, 403);
+    assert.equal((await att(a, '%6', 'attach-send', { method: 'POST', body: JSON.stringify(json), headers: { 'content-type': 'text/plain' } })).status, 415);
+    assert.equal((await att(a, '%6', 'attach-send', { method: 'GET' })).status, 405);
+    assert.equal((await att(a, '%6', 'attach-send', { method: 'PUT', json })).status, 405);
+    assert.equal((await att(a, '%6', 'attach-send', { method: 'POST', json: { ...json, pad: 'p'.repeat(4097) } })).status, 413);
+    assert.deepEqual(sender.calls, []);
+  });
+
+  test('(+) with the real sender behind the router: it shares the pane lock with End (an End refuses while it runs; it waits for a running End); nothing is pasted', async () => {
+    const store = fakeStore({ lookup: (p, id) => ({ id, path: `/srv/nika/attachments/${GROUP_KEY}/${id}.pdf`, type: 'pdf', size: 3 }) });
+    const { a, screens, mirror } = await bootScreens({ fake: false, over: { attachments: store } });
+    const fixture = boxRows({ cols: 80, lines: [''] });
+    screens['%6'] = Object.assign(fixture.rows, { cursor: fixture.cursor });
+    const capture = mirror.capture;
+    let enter;
+    let entered = new Promise((r) => { enter = r; });
+    let letGo;
+    let gate = new Promise((r) => { letGo = r; });
+    mirror.capture = async (...args) => { enter(); await gate; return capture(...args); };
+    const body = { ids: [ATT], base: BASE16 };
+    // 1. the send holds the pane: an End and a draft write are refused at once and type nothing
+    const sending = att(a, '%6', 'attach-send', { method: 'POST', json: body });
+    await entered;
+    const typed = a.deps.calls.filter((c) => c[0] === 'keys').length;
+    assert.equal((await pane(a, '%6', 'end', { method: 'POST', json: {} })).body.error, 'busy-switching');
+    assert.equal((await pane(a, '%6', 'draft', { method: 'PUT', json: { text: 'hi', base: '' } })).body.error, 'busy-switching');
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys').length, typed, 'nothing was typed');
+    letGo();
+    const done = await sending;
+    assert.deepEqual([done.status, done.body.error, done.body.pasted], [409, 'draft-changed', 0], 'the base was not what the screen reads: nothing is pasted');
+    // 2. an End holds the pane: the send waits for it (the store is not asked meanwhile)
+    store.calls.length = 0;
+    entered = new Promise((r) => { enter = r; });
+    gate = new Promise((r) => { letGo = r; });
+    a.clock.t += 2000;
+    const end = pane(a, '%6', 'end', { method: 'POST', json: {} });
+    await entered;
+    const waiting = att(a, '%6', 'attach-send', { method: 'POST', json: body });
+    await new Promise((r) => setTimeout(r, 120)); // several polls of the waiting lock
+    assert.deepEqual(store.calls, [], 'the send waits while End holds the pane');
+    mirror.capture = capture; // the End goes on; the send runs after it
+    letGo();
+    await end;
+    assert.equal((await waiting).body.pasted, 0);
+    assert.equal(a.deps.calls.filter((c) => c[0] === 'keys' && c[2]?.paste !== undefined).length, 0, 'no paste went out');
+  });
+
+  test('(−) the browser tier has none of the three routes: POST, DELETE and POST are 404 there, whatever the headers', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (method, p) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'x-nika-token': 'tok', 'content-type': 'application/json', 'content-length': '2' } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      q.on('error', reject);
+      q.end('{}');
+    });
+    assert.equal(await call('POST', '/api/app/pane/%256/attachments'), 404);
+    assert.equal(await call('DELETE', `/api/app/pane/%256/attachments/${ATT}`), 404);
+    assert.equal(await call('POST', '/api/app/pane/%256/attach-send'), 404);
+  });
+
+  test('(−) the browser tier never loads the attachment modules: attach-send.js is imported by api-app.js only; attachments.js by api-app.js, appio.js and attach-send.js; none by server.js, cli.js or the collectors', () => {
+    const dir = new URL('../src/', import.meta.url);
+    const files = fs.readdirSync(dir, { recursive: true }).filter((f) => f.endsWith('.js'));
+    const read = (f) => fs.readFileSync(new URL(f, dir), 'utf8');
+    const importers = (name) => files.filter((f) => new RegExp(`(from\\s+|import\\()\\s*'(\\./|\\.\\./)${name}\\.js'`).test(read(f)));
+    assert.deepEqual(importers('attach-send'), ['api-app.js']);
+    assert.deepEqual(importers('attachments'), ['api-app.js', 'appio.js', 'attach-send.js']);
+    assert.doesNotMatch(read('cli.js'), /attachments|attach-send/);
+    assert.doesNotMatch(read('server.js'), /attachments|attach-send/);
+  });
+});
+
+describe('attachments: the log is injected (0.5, W2 fix round 1, M7)', () => {
+  test('(+) a store error in the upload and the delete route goes to deps.log as `nika: attachments: <code>` and nowhere else', async () => {
+    const lines = [];
+    const store = fakeStore({
+      save: Object.assign(new Error('EACCES /srv/nika/attachments/secret-name.png'), { code: 'EACCES' }),
+      remove: Object.assign(new Error('EBUSY /srv/nika/attachments/x'), { code: 'EBUSY' }),
+    });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6'), log: (line) => lines.push(line) } });
+    const others = await capturingLog(async () => {
+      assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'secret-name.png', data: UPLOAD.data } })).status, 500);
+      assert.deepEqual((await att(a, '%6', `attachments/${ATT}`, { method: 'DELETE' })).body, { removed: false });
+    });
+    assert.deepEqual(lines, ['nika: attachments: EACCES', 'nika: attachments: EBUSY']);
+    assert.deepEqual(others, [], 'process.stderr and the console got nothing');
+  });
+
+  test('(+) the sender is built with that log; without one it writes the line to stderr', async () => {
+    const given = (line) => line;
+    const sender = fakeSender();
+    await bootScreens({ over: { attachments: fakeStore(), createAttachSend: sender.factory, log: given } });
+    assert.equal(sender.opts.log, given);
+    const plainSender = fakeSender();
+    await bootScreens({ over: { attachments: fakeStore(), createAttachSend: plainSender.factory } });
+    const lines = await capturingLog(async () => plainSender.opts.log('nika: attachments: EIO'));
+    assert.deepEqual(lines, ['nika: attachments: EIO\n']);
+  });
+
+  test('(−) the line never carries a message, a path, a name or an id, whatever the error holds', async () => {
+    const lines = [];
+    const store = fakeStore({ save: Object.assign(new Error(`${GROUP_KEY} ${ATT} /srv/secret.png`), { code: 'not a code /srv/secret.png' }) });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6'), log: (line) => lines.push(line) } });
+    await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD });
+    assert.deepEqual(lines, ['nika: attachments: ERR']);
+  });
+});
+
+// --- a dead pane is not eligible (0.5, W11; docs/security.md residual j) ------------------------------------------------------
+// tmux's remain-on-exit keeps a pane whose process ended, with its tags, and names its command after the pane's argv, so it still "looks
+// like claude". #{pane_dead} is the only thing that tells it apart: the pane list carries it (src/collect/tmux.js) and the check reads it.
+
+describe('a dead pane (remain-on-exit) gets no keys and no capture', () => {
+  // every route that goes through the eligibility check, each with a body that passes its own validation, so a 404 can only be the pane check
+  const GATED = [
+    ['GET', 'capture'], ['POST', 'keys', { text: 'hi' }], ['POST', 'mode', { target: 'plan' }], ['PUT', 'draft', { text: 'hello world', base: DSIG }],
+    ['POST', 'submit', { base: DSIG }], ['PUT', 'fit', FIT_BODY], ['POST', 'scroll', SCROLL_UP3], ['POST', 'attachments', UPLOAD],
+    ['POST', 'attachments/pick', { room: 1 }], ['POST', 'attach-send', { ids: [ATT], base: BASE16 }], ['POST', 'suggestion', { text: 'run the tests' }],
+    ['POST', 'dialog', { picks: [2], sig: DSIG }], ['POST', 'answer', { n: 1, sig: DSIG }], ['POST', 'command', { text: '/compact' }],
+    ['POST', 'end', {}], ['POST', 'stop', {}],
+  ];
+  const request = (a, id, [method, suffix, json]) => pane(a, id, suffix, { method, ...(json === undefined ? {} : { json }) });
+  const setPane = (a, id, entry) => {
+    a.deps.state.panes.set(id, entry);
+    a.clock.t += 2000; // past the eligibility cache
+  };
+
+  test('(−) a live Claude session whose pane is dead is 404 not_found on every eligibility-gated route, and nothing reaches the mirror, the keys, the controller, the fit or the attachments', async () => {
+    const fit = fakeFit();
+    const { a, mirror, control } = await bootScreens({ over: { createFit: fit.factory } });
+    setPane(a, '%6', { command: 'claude', dead: true });
+    for (const route of GATED) {
+      const r = await request(a, '%6', route);
+      assert.equal(r.status, 404, `${route[0]} ${route[1]}`);
+      assert.equal(r.body.error, 'not_found', `${route[0]} ${route[1]}`);
+    }
+    assert.deepEqual(mirror.seen, [], 'no capture');
+    assert.deepEqual(control.calls, [], 'no controller action');
+    assert.deepEqual(fit.calls, []);
+    assert.equal(a.deps.calls.some((c) => ['keys', 'capture'].includes(c[0])), false);
+  });
+
+  test('(−) a pane nika started that is dead is just as ineligible (the started record does not qualify it)', async () => {
+    const { a, mirror, control } = await bootScreens();
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    setPane(a, '%8', { command: 'node', dead: true });
+    for (const route of GATED.slice(0, 4)) assert.equal((await request(a, '%8', route)).status, 404, `${route[0]} ${route[1]}`);
+    assert.deepEqual(mirror.seen, []);
+    assert.deepEqual(control.calls, []);
+    assert.equal(a.ctx.started.has('%8'), true, 'the pane still exists, so its record stays');
+  });
+
+  test('(−) GET /modes leaves a dead pane out and does not capture it', async () => {
+    const { a, screens, mirror } = await bootScreens();
+    screens['%6'] = rowsOf(['t', FOOTER.plan]);
+    setPane(a, '%6', { command: 'claude', dead: true });
+    const r = await a.call('GET', '/api/app/modes');
+    assert.deepEqual(r.body, { modes: {} });
+    assert.deepEqual(mirror.seen, []);
+  });
+
+  test('(+) a live pane is unchanged: pane_dead false, or no field at all, is eligible for capture, keys, mode and /modes', async () => {
+    for (const entry of [{ command: 'claude', dead: false }, { command: 'claude' }]) {
+      const { a, screens, mirror } = await bootScreens();
+      screens['%6'] = rowsOf(['t', FOOTER.plan]);
+      setPane(a, '%6', entry);
+      assert.equal((await request(a, '%6', ['GET', 'capture'])).status, 200, JSON.stringify(entry));
+      assert.equal((await request(a, '%6', ['POST', 'keys', { text: 'hi' }])).status, 200, JSON.stringify(entry));
+      assert.equal((await request(a, '%6', ['POST', 'mode', { target: 'plan' }])).status, 200, JSON.stringify(entry));
+      assert.deepEqual(Object.keys((await a.call('GET', '/api/app/modes')).body.modes), ['%6'], JSON.stringify(entry));
+      assert.ok(mirror.seen.includes('%6'));
+    }
+  });
+
+  test('(+) a pane that was dead and is listed alive again (tmux reused the id) is eligible again at the next listing', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['t', FOOTER.plan]);
+    setPane(a, '%6', { command: 'claude', dead: true });
+    assert.equal((await request(a, '%6', ['GET', 'capture'])).status, 404);
+    setPane(a, '%6', { command: 'claude', dead: false });
+    assert.equal((await request(a, '%6', ['GET', 'capture'])).status, 200);
+  });
+
+  test('(−) the memory kept for a pane (held mode, vim, plain) is dropped when the pane dies, so a reused id starts unknown', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['t', FOOTER.plan]);
+    assert.equal((await request(a, '%6', ['GET', 'capture'])).body.mode, 'plan');
+    setPane(a, '%6', { command: 'claude', dead: true });
+    assert.equal((await request(a, '%6', ['GET', 'capture'])).status, 404);
+    screens['%6'] = rowsOf(PROMPT); // a prompt covers the footer: only a remembered mode could still say "plan"
+    setPane(a, '%6', { command: 'claude', dead: false });
+    const again = await request(a, '%6', ['GET', 'capture']);
+    assert.equal(again.status, 200);
+    assert.equal(again.body.mode, 'unknown');
   });
 });

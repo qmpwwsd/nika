@@ -56,11 +56,16 @@ Never report success without having run the checks.
 Start a sub-agent in its own tmux pane:
 
 ```
-nika spawn <name> <model> <brief>
+nika spawn <name> <model> <brief> --kind <kind>
 ```
 
 `<name>` is lowercase letters, digits and hyphens. `<model>` is one of the models above. `<brief>` is a file with the
 delegation brief, or `-` to read it from stdin.
+
+`<kind>` says what the agent does; nika shows it as a label on the agent's row. Use one of `coder` (writes and changes code),
+`reviewer` (reviews code or designs), `tester` (writes and runs tests), `designer` (designs and plans), `scout` (finds files and
+facts, read-only), `writer` (writes docs and reports) or `agent` (none of these). Always pass it. Without it nika picks one from the
+model: the Builder model gives `coder`, the Reasoner model `designer`, the Scout model `scout`, any other model `agent`.
 
 - Pane placement: `{{panePlacement}}` (`beside` splits next to the orchestrator, `under-last` stacks under the newest agent pane).
 - At most {{limits.maxAgents}} spawned agents are live at a time under each orchestrator (a sub-orchestrator counts as one), and a
@@ -80,6 +85,7 @@ nika spawn <name> <model> <brief> --role orchestrator
 
 - Only the main orchestrator can start one. nika allows three levels: the orchestrator, its sub-orchestrators, and their
   agents. A sub-orchestrator cannot start another sub-orchestrator, and an agent cannot start anything.
+- A sub-orchestrator takes no `--kind`: its row always shows sub-orchestrator.
 - A sub-orchestrator may run only `nika spawn` and `nika status` of nika's commands, and its agents are blocked from nika
   commands altogether.
 - Each orchestrator runs at most {{limits.maxAgents}} agents of its own at a time, and a sub-orchestrator counts as one of the

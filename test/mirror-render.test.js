@@ -2,7 +2,10 @@
 // applyMirror, so the test also proves that hostile text only ever lands in textContent and that styles go through element.style.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { toRenderModel, withCursor, applyMirror, cellWidth, planSend, planPaste, chunkText, keyForEvent, arrowEcho, LIMITS } from '../public/mirror-render.js';
+import { boxRows } from './helpers.js';
+import { parseDraft } from '../src/draft.js';
+import { cutAt } from '../public/draft-sync.js';
+import { toRenderModel, withCursor, cutCursor, applyMirror, cellWidth, planSend, planPaste, chunkText, keyForEvent, arrowEcho, LIMITS } from '../public/mirror-render.js';
 
 const S = (over = {}) => ({ b: false, fg: null, bg: null, u: false, i: false, d: false, ...over });
 const cap = (rows, cursor) => ({ cols: 80, rows, cursor: cursor ?? { x: 0, y: 0, visible: false } });
@@ -251,22 +254,46 @@ describe('applyMirror', () => {
 // ---- input encoding ---------------------------------------------------------------------------------------------
 
 describe('planSend', () => {
-  test('(+) empty or blank composer sends just Enter', () => {
-    for (const v of ['', '   ', '\n', null, undefined]) assert.deepEqual(planSend(v).payload, { keys: ['Enter'] });
+  test('(+) empty or blank composer has nothing to type: no body at all, the summary is just Enter', () => {
+    for (const v of ['', '   ', '\n', null, undefined]) {
+      const p = planSend(v);
+      assert.deepEqual(p.payloads, []);
+      assert.equal(p.summary, 'Enter');
+    }
   });
 
-  test('(+) one plain line goes as text + Enter; trailing newlines are dropped', () => {
-    assert.deepEqual(planSend('hello world').payload, { text: 'hello world', keys: ['Enter'] });
-    assert.deepEqual(planSend('hello\n\n').payload, { text: 'hello', keys: ['Enter'] });
-    assert.deepEqual(planSend('x'.repeat(1024)).payload.text.length, 1024);
-    assert.match(planSend('abc').summary, /3 characters/);
+  test('(+) one plain line goes as text; trailing newlines are dropped; the summary still names the Enter', () => {
+    assert.deepEqual(planSend('hello world').payloads, [{ text: 'hello world', send: true }]);
+    assert.deepEqual(planSend('hello\n\n').payloads, [{ text: 'hello', send: true }]);
+    assert.deepEqual(planSend('x'.repeat(1024)).payloads[0].text.length, 1024);
+    assert.match(planSend('abc').summary, /3 characters \+ Enter/);
   });
 
-  test('(+) several lines, a line over 1024 chars or a line with a tab go as a paste + Enter', () => {
-    assert.deepEqual(planSend('a\nb\r\nc').payload, { paste: 'a\nb\nc', keys: ['Enter'] });
-    assert.equal(planSend('x'.repeat(1025)).payload.paste.length, 1025);
-    assert.deepEqual(planSend('a\tb').payload, { paste: 'a\tb', keys: ['Enter'] });
+  test('(+) several lines, a line over 1024 chars or a line with a tab go as a paste', () => {
+    assert.deepEqual(planSend('a\nb\r\nc').payloads, [{ paste: 'a\nb\nc', send: true }]);
+    assert.equal(planSend('x'.repeat(1025)).payloads[0].paste.length, 1025);
+    assert.deepEqual(planSend('a\tb').payloads, [{ paste: 'a\tb', send: true }]);
     assert.match(planSend('a\nb').summary, /2 lines/);
+  });
+
+  test('(+) T54: every body of Send\'s typing carries send: true, so the keys route looks at a fresh screen first', () => {
+    for (const v of ['hello', 'a\nb', 'x'.repeat(2000), 'a\tb', '2', '1. yes']) {
+      const { payloads } = planSend(v);
+      assert.ok(payloads.length > 0, v.slice(0, 10));
+      for (const body of payloads) assert.equal(body.send, true, v.slice(0, 10));
+    }
+  });
+
+  test('(−) T54: the passthrough bodies (planPaste, typed characters, named keys) never carry send', () => {
+    for (const v of ['hello', 'a\nb', 'x'.repeat(2000)]) assert.equal(Object.hasOwn(planPaste(v).payload, 'send'), false, v.slice(0, 10));
+    for (const key of [{ key: 'a' }, { key: 'Enter' }, { key: 'ArrowUp' }, { key: 'c', ctrlKey: true }, { key: 'Tab', shiftKey: true }]) {
+      const r = keyForEvent({ metaKey: false, isComposing: false, altKey: false, ctrlKey: false, shiftKey: false, ...key });
+      assert.equal(Object.hasOwn(r, 'send'), false, JSON.stringify(key));
+    }
+  });
+
+  test('(−) W13: no body carries an Enter key (Send presses Enter only through the submit route), whatever the text', () => {
+    for (const v of ['', 'hello', 'a\nb', 'x'.repeat(2000), 'a\tb']) assert.equal(JSON.stringify(planSend(v).payloads).includes('Enter'), false, v.slice(0, 10));
   });
 
   test('(+) a paste of exactly 16 KB passes, counted in UTF-8 bytes', () => {
@@ -278,14 +305,15 @@ describe('planSend', () => {
     for (const v of ['y'.repeat(16 * 1024 + 1), 'é'.repeat(8 * 1024 + 1), `${'line\n'.repeat(4000)}`]) {
       const p = planSend(v);
       assert.equal(p.ok, false);
-      assert.equal(p.payload, undefined);
+      assert.equal(p.payloads, undefined);
       assert.match(p.message, /16 KB/);
     }
   });
 
   test('(−) text and paste are never both set', () => {
     for (const v of ['a', 'a\nb', 'x'.repeat(2000)]) {
-      const p = planSend(v).payload;
+      const [p, ...rest] = planSend(v).payloads;
+      assert.equal(rest.length, 0);
       assert.ok(!('text' in p && 'paste' in p));
     }
   });
@@ -397,5 +425,100 @@ describe('arrowEcho: the echo line for the arrow keys the message box forwarded 
 
   test('(−) no accepted key says nothing', () => {
     assert.equal(arrowEcho([], '%12'), '');
+  });
+});
+
+// ---- 0.5 (W6): the cut. Claude's input box is hidden from the mirror while its text lives in the message box -------------------
+
+describe('toRenderModel with cutAt: the mirror stops above the input box', () => {
+  const screen = (n) => cap(Array.from({ length: n }, (_, i) => [span(`row ${i}`)]));
+
+  test('(+) rows 0 to cutAt - 1 are modelled, the rest are dropped before they are modelled', () => {
+    const m = toRenderModel(screen(10), { cutAt: 6 });
+    assert.deepEqual(m.map((r) => r[0].text), ['row 0', 'row 1', 'row 2', 'row 3', 'row 4', 'row 5']);
+    assert.equal(toRenderModel(screen(10), { cutAt: 1 }).length, 1);
+  });
+
+  test('(+) a cut at 0 leaves no rows at all (the strip is all that shows)', () => {
+    assert.deepEqual(toRenderModel(screen(10), { cutAt: 0 }), []);
+  });
+
+  test('(−) no cut: no option, null, undefined, or a value that is not a row of this capture shows every row', () => {
+    for (const opt of [undefined, {}, { cutAt: null }, { cutAt: undefined }, { cutAt: -1 }, { cutAt: 1.5 }, { cutAt: '3' }, { cutAt: NaN }, { cutAt: 10 }, { cutAt: 11 }, { cutAt: 1e9 }]) {
+      assert.equal(toRenderModel(screen(10), opt).length, 10, JSON.stringify(opt));
+    }
+    assert.equal(toRenderModel(screen(10)).length, 10);
+  });
+
+  test('(−) the cut works inside the 2000-row limit and hostile text in a kept row is still only data', () => {
+    const m = toRenderModel(cap([[span('<img src=x onerror=alert(1)>')], [span('hidden')]]), { cutAt: 1 });
+    assert.equal(m.length, 1);
+    assert.deepEqual(Object.keys(m[0][0]).sort(), ['classes', 'style', 'text']);
+    assert.equal(toRenderModel(screen(5000), { cutAt: 3000 }).length, LIMITS.rows, 'a cut past the limit changes nothing');
+  });
+});
+
+describe('cutCursor: the cursor goes with the rows it was on', () => {
+  const at = (y) => ({ x: 4, y, visible: true });
+
+  test('(+) a cursor above the cut stays', () => {
+    assert.deepEqual(cutCursor(at(5), 6), at(5));
+    assert.deepEqual(cutCursor(at(0), 1), at(0));
+  });
+
+  test('(+) a cursor on or below the cut row is dropped (null: withCursor draws none, and adds no padding rows)', () => {
+    assert.equal(cutCursor(at(6), 6), null);
+    assert.equal(cutCursor(at(39), 6), null);
+    const rows = toRenderModel(cap([[span('a')], [span('b')]]), { cutAt: 1 });
+    assert.equal(withCursor(rows, cutCursor(at(30), 1)).length, 1, 'no blank rows are padded for a cursor that is cut');
+  });
+
+  test('(−) no cut: the cursor is returned as it was, including a missing one', () => {
+    assert.deepEqual(cutCursor(at(30), null), at(30));
+    assert.deepEqual(cutCursor(at(30), undefined), at(30));
+    assert.equal(cutCursor(undefined, 6), undefined);
+    assert.equal(cutCursor(null, 6), null);
+  });
+
+  test('(−) a malformed cursor is passed on unchanged for withCursor to refuse', () => {
+    for (const c of [{}, { x: 1 }, { x: 1, y: '9', visible: true }, 'cursor', 7]) assert.deepEqual(cutCursor(c, 6), c);
+  });
+});
+
+describe('the cut on a screen parsed by the real draft parser', () => {
+  const above = [[span('Reading src/server.js')], [span('Edited src/server.js')]];
+  const screen = (opts) => {
+    const b = boxRows(opts);
+    return { rows: [...above, ...b.rows], cols: b.cols, cursor: b.cursor === null ? null : { ...b.cursor, y: b.cursor.y + above.length } };
+  };
+
+  test('(+) a readable box is cut from its top rule down: the output above stays, the rules, the box, the status and the mode line go', () => {
+    const cap1 = screen({ lines: ['fix the typo in acme-api'] });
+    const draft = parseDraft(cap1.rows, cap1.cursor, cap1.cols);
+    const cut = cutAt(draft, false);
+    assert.equal(cut, above.length, 'the top rule is the first row after the output');
+    const model = toRenderModel(cap1, { cutAt: cut });
+    assert.deepEqual(model.map((r) => r.map((s) => s.text).join('')), ['Reading src/server.js', 'Edited src/server.js']);
+    assert.equal(cutCursor(cap1.cursor, cut), null, 'the cursor sat in the box');
+  });
+
+  test('(+) an empty box is cut the same way; a tall readable box too', () => {
+    for (const opts of [{ lines: [''] }, { lines: Array.from({ length: 5 }, (_, i) => `line ${i}`) }]) {
+      const c = screen(opts);
+      const cut = cutAt(parseDraft(c.rows, c.cursor, c.cols), false);
+      assert.equal(toRenderModel(c, { cutAt: cut }).length, above.length);
+    }
+  });
+
+  test('(−) Type into pane on, an unreadable box (a pasted block) or no plain box (a dialog): every row shows', () => {
+    const readable = screen({ lines: ['hello'] });
+    assert.equal(cutAt(parseDraft(readable.rows, readable.cursor, readable.cols), true), null);
+    const pasted = screen({ lines: ['[Pasted text #4 +3 lines]'] });
+    assert.equal(parseDraft(pasted.rows, pasted.cursor, pasted.cols).state, 'unreadable');
+    assert.equal(cutAt(parseDraft(pasted.rows, pasted.cursor, pasted.cols), false), null);
+    assert.equal(toRenderModel(pasted, { cutAt: cutAt(parseDraft(pasted.rows, pasted.cursor, pasted.cols), false) }).length, pasted.rows.length);
+    const dialog = screen({ lines: ['hello'], footer: 'Select a model' });
+    assert.equal(parseDraft(dialog.rows, dialog.cursor, dialog.cols), null);
+    assert.equal(cutAt(parseDraft(dialog.rows, dialog.cursor, dialog.cols), false), null);
   });
 });

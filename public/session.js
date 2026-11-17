@@ -1,13 +1,18 @@
 // nika session window (app tier): transcript history + live terminal mirror + input composer for one agent, with the permission
 // mode switcher, the quick actions (Stop, Compact, Clear, Model, Rewind, End), the permission-prompt buttons, Shell mode and the
-// slash-command palette.
+// slash-command palette. The message box and Claude's input box mirror each other (draft-sync.js, design W5), and the mirror leaves
+// Claude's input box out while the message box carries it (W6). The terminal panel is measured in cells and the mirrored pane is asked to
+// fit it, or the text is scaled down when it cannot (fit-ui.js, design W7).
 // URL: session.html?session=<UUID>&pane=<%n>&project=<key>   (pane is sent as %25n, i.e. encodeURIComponent('%n')).
+// Also the read-only view of one of Claude's own subagents (0.5, design W8): session.html?session=<UUID>&agent=<id>&project=<key>. It shows
+// the subagent's transcript only (no pane, no input; the pane parameter is ignored) and a session window lists its subagents (renderSubs).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
-import { h, icon, roleTagEl, ctxEl } from './dom.js';
+import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl, labelEl, placeMenuX, clearMenuPlacement } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
-import { roleTag, savedPick } from './dash-model.js';
-import { toRenderModel, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
+import { roleTag, savedPick, subagentView, subagentHref, SUBAGENT_ID, agentLabelView, subLabelView } from './dash-model.js';
+import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
+import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage, STILL_SENDING, STILL_SENDING_MS } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
   quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
@@ -17,6 +22,12 @@ import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
+import { panelSize, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS, GROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion } from './fit-ui.js';
+import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
+import { createGlideArm, frameOf, glideFrom, matrixY, paneWriteDisarms, GLIDE_MS } from './glide.js';
+import { createAttachTray } from './attach.js';
+import { createDialogForm, cleanDialog } from './dialog-form.js';
+import { createSurveyPanel, cleanSurvey } from './survey-panel.js';
 
 const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
@@ -76,12 +87,20 @@ function showUrlNotice() {
   if (asked.length === 1 && URL_NOTICES.has(asked[0])) toast(URL_NOTICES.get(asked[0]));
 }
 
+const agentId = param('agent', SUBAGENT_ID); // the read-only subagent view (design W8): a valid `agent` parameter
+const SUB = agentId !== null;
+const BAD_AGENT = !SUB && new URLSearchParams(location.search).has('agent'); // an `agent` that is not an id: the empty state, never a guess
 let sessionId = param('session', SESSION_ID); // follows the pane to its new session after /clear (followSession)
-const paneId = param('pane', PANE_ID);
+const paneId = SUB ? null : param('pane', PANE_ID); // a subagent has no pane of its own: the parameter is ignored and nothing below can reach a pane route
 const projectKey = param('project', PROJECT_KEY);
 
-/** appFetch that never throws: { status, body }; status 0 = network failure. */
+// F17 (design F17): arm, the matcher of glide.js made by wireScroll (a scroll request arms it; any write to the pane but the scroll, the capture and the fit heartbeat disarms it, see call); timer, the fallback that ends a slide.
+// Declared before call(), which reads it from the first request on.
+const GL = { arm: null, timer: 0 };
+
+/** appFetch that never throws: { status, body }; status 0 = network failure. A write to the pane (a key, a submit, a command, a dialog answer, Stop, a mode switch, ...) first ends a pending glide (F17): this is the one place they all pass. */
 async function call(path, opts = {}) {
+  if (paneWriteDisarms(path, opts.method)) GL.arm?.disarm();
   try {
     const r = await appFetch(path, opts);
     return { status: r.status, body: r.body ?? null };
@@ -124,6 +143,22 @@ function showProblem(msg, kind = 'warn', ms = 0) {
 }
 const clearProblem = () => showProblem('');
 
+/**
+ * The notes row (#notes) holds four visible parts (the argument hint, the shell hint, the draft note, the problem line) and, screen-reader-only, the echo
+ * and the attachment help. It is a grid item of the composer, so even an empty row would cost one gap. While none of the four shows the row is `quiet`
+ * (session.css: out of the grid, 1px and clipped, still rendered), so it takes no height and no gap and the echo is still announced.
+ */
+function syncNotes() {
+  const quiet = $('arg-hint').hidden && $('shell-hint').hidden && $('draft-note').hidden && $('problem').textContent === '';
+  $('notes').classList.toggle('quiet', quiet);
+}
+
+/** Syncs the row now and after every change inside it (a part shown or hidden, the problem line filled or cleared): one place, no call at each toggle. */
+function watchNotes() {
+  new MutationObserver(syncNotes).observe($('notes'), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['hidden'] });
+  syncNotes();
+}
+
 const notices = [];
 function showNotice(msg) {
   notices.push(msg);
@@ -153,8 +188,10 @@ function claudeUrl(raw) {
 
 // ---- header and agent poll ---------------------------------------------------------------------------------------
 
-// A is what the agent poll said: name, status kind, the attention reason (why a 'Needs you' agent waits), the model id and label.
-const A = { name: 'the agent', kind: null, attention: '', modelId: '', projectLooked: false, pickId: null, pickAsked: false };
+// A is what the agent poll said: name, status kind, the attention reason (why a 'Needs you' agent waits), the model id and label, and
+// the session's subagents as the last poll listed them (subs: the transcript link names the one it opens). In the subagent view `kind`
+// follows the subagent: busy = running, idle = finished (still polled: Claude wakes a subagent again), ended = stopped (its session is gone).
+const A = { name: 'the agent', kind: null, attention: '', modelId: '', projectLooked: false, pickId: null, pickAsked: false, subs: [] };
 
 /** The role badge next to the title (design 0.4 section 1.1, the same markup as the rows): orchestrator, sub-orchestrator or, for a session that ended, saved. */
 function renderRole(agent) {
@@ -162,6 +199,14 @@ function renderRole(agent) {
   const el = $('sess-role');
   el.replaceChildren(...(tag ? [tag] : []));
   el.hidden = !tag;
+}
+
+/** The kind chip next to the role badge (design W9 4.4): a pane the server tagged agent shows its kind; the orchestrator, a sub-orchestrator, a user's own session and an ended one show nothing. Replaced at every poll, never added to. */
+function renderKind(agent) {
+  const chip = labelEl(agentLabelView(agent));
+  const el = $('sess-kind');
+  el.replaceChildren(...(chip ? [chip] : []));
+  el.hidden = !chip;
 }
 
 /** App tier, once per window and only for a session that ended: is it the project's saved orchestrator? (A running one shows its tmux tags.) True when it has just learned the answer. */
@@ -188,7 +233,47 @@ function renderContext(agent) {
   el.hidden = false;
 }
 
+// The subagent list of a session window (design W8, 4.3): `show` is the "Show ended" box (own choice, nika.showEndedSession; only the
+// stored word "true" is on), `sig` what is drawn, `last` the agent the last poll gave (the box redraws from it without waiting).
+const SUBS = { show: storeGet('showEndedSession') === 'true', sig: '', last: null };
+
+/** The list of Claude's own subagents at the top of the Transcript column. Redrawn only when what it shows changes; the disclosure's open state is the reader's. */
+function renderSubs(agent) {
+  SUBS.last = agent;
+  A.subs = Array.isArray(agent.subagents) ? agent.subagents : [];
+  const v = subagentView(agent.subagents, SUBS.show);
+  $('sess-subs').hidden = !v;
+  if (!v) {
+    SUBS.sig = '';
+    return;
+  }
+  const sig = JSON.stringify([agent.id, A.name, SUBS.show, v.summary, v.hint, v.shown.map((s) => [s.id, s.state, s.description, s.type, s.label, s.modelLabel])]);
+  if (sig === SUBS.sig) return;
+  SUBS.sig = sig;
+  $('subs-sum').replaceChildren(...(v.hint ? [v.summary, ' ', h('span', { class: 'muted sub-hid', text: v.hint })] : [v.summary]));
+  const list = $('subs-list');
+  const focused = list.contains(document.activeElement) ? document.activeElement.getAttribute('data-fk') : null; // keep the reader's place across the redraw
+  list.setAttribute('aria-label', `Subagents of ${A.name}`);
+  list.replaceChildren(...v.shown.map((s) => subagentItemEl(s, { href: subagentHref({ session: agent.id, agent: s.id, project: projectKey }), fk: `sub:${s.id}` })));
+  if (focused) [...list.querySelectorAll('a')].find((a) => a.getAttribute('data-fk') === focused)?.focus({ preventScroll: true });
+}
+
+/** At boot: the box starts from the stored choice, and a change is remembered and drawn at once. */
+function wireSubs() {
+  const box = $('subs-ended');
+  box.checked = SUBS.show;
+  box.addEventListener('change', () => {
+    SUBS.show = box.checked;
+    storeSet('showEndedSession', String(SUBS.show));
+    if (SUBS.last) renderSubs(SUBS.last);
+  });
+}
+
 function applyAgent(agent, group) {
+  if (SUB) {
+    applySubagent(agent); // the polled session is the parent of the subagent this window shows (it has no pane: nothing to follow after /clear)
+    return;
+  }
   const untitled = !agent.name || (sessionId && agent.name === sessionId.slice(0, 8));
   A.name = untitled ? 'untitled session' : String(agent.name);
   const h1 = $('sess-h');
@@ -209,6 +294,7 @@ function applyAgent(agent, group) {
   $('sess-branch').hidden = !agent.gitBranch;
   $('sess-branch').textContent = agent.gitBranch ? String(agent.gitBranch) : '';
   renderRole(agent);
+  renderKind(agent);
   loadPick(agent).then((learned) => { if (learned) renderRole(agent); }, () => {});
 
   const link = $('claude-link');
@@ -226,7 +312,8 @@ function applyAgent(agent, group) {
   }
   renderAttn();
   renderPrompt();
-  $('composer-label').textContent = `Message to ${A.name}. Enter sends, Shift+Enter adds a line. Escape, Control+C and Shift+Tab go to Claude, and so do the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.`;
+  renderSubs(agent);
+  $('composer-label').textContent = `Message to ${A.name}. Enter sends, Shift+Enter adds a line. Escape and Control+C go to Claude; so does Shift+Tab when no question or prompt is open, and the arrow keys and Enter when the box is empty. Control+Shift+Tab moves focus back.`;
   if (!$('composer').disabled) $('composer').placeholder = idlePlaceholder();
   $('pb-pane').textContent = paneId ?? '';
 }
@@ -271,6 +358,74 @@ async function refreshAgent() {
   }
 }
 
+// ---- the read-only subagent view (design W8, 4.4) ----------------------------------------------------------------------
+
+/** The one place the Back address is set: boot sets the dashboard or the project, the subagent view then sets the parent's window. */
+function setBackHref(target) {
+  $('back').href = target;
+}
+
+/** Subagent mode, at boot: the header says "Subagent" until a poll names it, and the parts that belong to a message box and a pane are out. */
+function readOnlyView() {
+  document.body.classList.add('sub-view');
+  document.querySelector('.skip-2').hidden = true; // "Skip to message input": there is no message box
+  $('sess-st').hidden = true; // no state badge until a poll names the state
+  $('sess-h').textContent = 'Subagent';
+  document.title = `Subagent${MID}nika`;
+}
+
+/** What the subagent is called: its description, else its type, else "Subagent" and the start of its id. A blank text counts as none. */
+function subTitle(s) {
+  for (const v of [s?.description, s?.type]) {
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return `Subagent ${agentId.slice(0, 8)}`;
+}
+
+/** Back goes up to the session that runs the subagent: its window, with its pane while it is live, and the project when this address had one. */
+function subBack(parent) {
+  const pane = parent.live === true && typeof parent.pane?.id === 'string' && PANE_ID.test(parent.pane.id) ? parent.pane.id : null;
+  const q = [`session=${sessionId}`, pane && `pane=${encodeURIComponent(pane)}`, projectKey && `project=${projectKey}`].filter(Boolean);
+  setBackHref(`session.html?${q.join('&')}`);
+  const name = typeof parent.name === 'string' && parent.name && parent.name !== sessionId.slice(0, 8) ? parent.name : 'untitled session';
+  $('proj').textContent = name;
+  setBack(name);
+}
+
+/** Subagent mode: the agent poll's answer, the parent session (the poll hands over nothing when the snapshot does not list it). */
+function applySubagent(parent) {
+  if (parent) subBack(parent);
+  const s = (Array.isArray(parent?.subagents) ? parent.subagents : []).find((x) => x?.id === agentId) ?? null;
+  const badge = s ? subStateEl(s.state, { pill: true }) : null;
+  $('sess-st').hidden = !badge;
+  $('sess-st').replaceChildren(...(badge ? [badge] : []));
+  if (!badge) {
+    A.kind = null; // unknown subagent or state: the polls go on and the header keeps what it had
+    return;
+  }
+  const title = subTitle(s);
+  A.name = title;
+  $('sess-h').textContent = title;
+  $('sess-h').title = title;
+  document.title = `${title}${MID}nika`;
+  const role = roleTagEl('subagent');
+  $('sess-role').replaceChildren(...(role ? [role] : []));
+  $('sess-role').hidden = !role;
+  const chip = labelEl(subLabelView(s)); // never empty: the label is 'agent' at worst, and its title names Claude's own type
+  $('sess-kind').replaceChildren(...(chip ? [chip] : []));
+  $('sess-kind').hidden = !chip;
+  $('sess-model').textContent = typeof s.modelLabel === 'string' ? s.modelLabel : '';
+  $('sess-model').hidden = !$('sess-model').textContent;
+  const kind = ({ running: 'busy', finished: 'idle', stopped: 'ended' })[s.state]; // finished is still polled: Claude removes it again when the subagent wakes up
+  if (kind !== A.kind) {
+    if (A.kind !== null) {
+      announce(kind === 'busy' ? `${title} is running again` : `${title} ${s.state}`);
+      if (kind !== 'busy') refreshHistory(); // one last read at the live edge, before an 'ended' kind stops the poll
+    }
+    A.kind = kind;
+  }
+}
+
 function startAgentPoll() {
   const loop = async () => {
     if (!document.hidden) await refreshAgent();
@@ -286,8 +441,11 @@ function startAgentPoll() {
 // the Shift-Tab cycle does not hold, struck at strikeAt. SW: the switch in flight (its target) and the four segments.
 // prompt: the capture's prompt as cleanPrompt allows it, for drawing the buttons only. promptOpen: the capture has a prompt at all
 // (even an off-contract one), for every gate: the switcher, the quick actions, the message box keys (composerKey) and the End note.
-const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
+// dialog: the capture's question dialog or plan approval as cleanDialog allows it (0.5): the form draws from it, a dialog also counts as promptOpen.
+const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, dialog: null, survey: null, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
 const SW = { busy: null, pressed: null, parts: [] };
+let DF = null; // the question dialog form (dialog-form.js), built in boot() with the pane
+let SV = null; // the feedback survey panel (survey-panel.js), built in boot() with the pane
 
 function renderTag() {
   const key = W.pane === 'ok' ? modeKey(W.mode) : '';
@@ -366,6 +524,8 @@ function renderMode() {
   renderQuick();
   renderAttn();
   renderPrompt();
+  DF?.render({ pane: W.pane, dialog: W.dialog, name: A.name, attention: A.attention, growing: growing() });
+  SV?.render({ pane: W.pane, survey: W.survey, blocked: W.promptOpen || A.kind === 'attn', name: A.name }); // never beside a prompt, a dialog or the attention note
 }
 
 /** What a capture says about the mode and the prompt. The tag follows every capture; only a change is announced. */
@@ -375,7 +535,9 @@ function noteScreen(body) {
   W.mode = modeKey(body.mode);
   W.confirmed = body.modeConfirmed === true;
   W.prompt = cleanPrompt(body.prompt); // null for anything but the contract shape: no panel, no buttons
-  W.promptOpen = Boolean(body.prompt); // but an off-contract prompt still counts as a prompt for the gates
+  W.dialog = cleanDialog(body.dialog); // null only when the capture has none; anything off the contract is { state: 'unreadable' }
+  W.promptOpen = Boolean(body.prompt) || W.dialog !== null; // an off-contract prompt or dialog still counts as a prompt for the gates
+  W.survey = cleanSurvey(body.survey); // null for anything but the contract shape (0.5, F14): no panel
   if (W.struck.size && W.confirmed && W.mode !== 'unknown' && W.mode !== W.strikeAt) W.struck.clear();
   if (!SW.busy) { // a switch announces its end result once, when the route answers
     const n = modeNote(A.name, W.last, { mode: W.mode, confirmed: W.confirmed });
@@ -428,6 +590,7 @@ async function switchTo(target) {
   W.msg = null;
   renderMode();
   try {
+    if (HOLD.active) await HOLD.wait(); // F10: the segment shows busy while the redraw hold runs
     const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/mode`, { method: 'POST', json: { target } });
     const presses = r.body?.presses; // the echo only, never a live count
     if (Number.isInteger(presses) && presses > 0 && presses <= 6) say(`Sent ${presses} ${TIMES} Shift-Tab to ${paneId}`);
@@ -489,7 +652,7 @@ function roveKeys(bar, buttons) {
 // control lock, so Stop must work while a command waits), the model popover (pop: open?, catalog:
 // null until GET /api/app/models answered), the reason line shown (whySig). PA: the prompt panel's question (sig), a request in
 // flight (pending) and the question that was answered (lock: its sig; the buttons stay off until a capture shows another one).
-const Q = { ready: false, b: {}, busy: null, stopping: false, pop: false, catalog: null, loading: false, whySig: null, nameSig: null };
+const Q = { ready: false, b: {}, busy: null, stopping: false, pop: false, catalog: null, loading: false, whySig: null, nameSig: null, queued: false }; // queued: the capture says Claude holds a message of ours (Stop's title says what Stop does with it)
 const PA = { sig: null, pending: false, lock: null, esc: null, btns: [] };
 const S = { on: false }; // Shell mode
 // PL: the command palette (spec 9.7). open: is the list on screen; list: null until GET /api/app/commands answered; failed: the first load
@@ -510,7 +673,7 @@ function renderModelName(name) {
 
 function renderQuick() {
   if (!Q.ready) return;
-  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, switching: SW.busy !== null || Q.busy !== null || Q.stopping });
+  const st = quickState({ pane: W.pane, status: A.kind, prompt: W.promptOpen, dialog: W.dialog !== null, switching: SW.busy !== null || Q.busy !== null || Q.stopping, queued: Q.queued });
   for (const id of Object.keys(Q.b)) {
     const b = Q.b[id];
     b.setAttribute('aria-disabled', String(st[id].off));
@@ -534,6 +697,7 @@ async function sendCommand(text) {
   if (Q.busy || M.gone || !paneId) return;
   Q.busy = text.slice(1).split(' ')[0]; // compact | clear | model | rewind: the button that shows it is busy
   renderQuick();
+  if (HOLD.active) await HOLD.wait(); // F10
   const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/command`, { method: 'POST', json: { text } });
   Q.busy = null;
   renderQuick();
@@ -554,7 +718,7 @@ async function stop() {
   const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/stop`, { method: 'POST', json: {} });
   Q.stopping = false;
   renderQuick();
-  const out = stopOutcome({ status: r.status, code: r.body?.error, name: A.name });
+  const out = stopOutcome({ status: r.status, code: r.body?.error, name: A.name, dialog: W.dialog !== null });
   if (out.ok) {
     clearProblem();
     say(out.say);
@@ -565,7 +729,8 @@ async function stop() {
 }
 
 function openEnd() {
-  openEndDialog({
+  GL.arm?.disarm(); // F17: its own request is sent by end-dialog.js (not through call), and ending the session redraws everything
+  const open = () => openEndDialog({
     pane: paneId,
     name: A.name,
     working: A.kind === 'busy',
@@ -575,6 +740,8 @@ function openEnd() {
       setGone(); // the pane no longer runs Claude: the mirror shows its pane-gone state now instead of at the next capture
     },
   });
+  if (HOLD.active) HOLD.wait().then(open); // F10: the dialog's own request is sent by end-dialog.js, so the dialog opens after the redraw hold
+  else open();
 }
 
 /** Short-lived status message at the bottom of the window (polite, never takes focus). */
@@ -713,7 +880,7 @@ function wireQuick() {
 /** The attention note (0.2) for a 'Needs you' agent whose layout has no prompt panel; the panel replaces it. */
 function renderAttn() {
   const note = $('attn-note');
-  const panel = W.pane === 'ok' && W.prompt !== null;
+  const panel = W.pane === 'ok' && (W.prompt !== null || DF?.shown() === true);
   note.hidden = A.kind !== 'attn' || panel;
   if (!note.hidden) $('attn-text').textContent = attnNote(A.name, A.attention, passKeyLabel(MAC));
 }
@@ -822,6 +989,7 @@ function cleanEntries(list) {
       text: e.text.slice(0, 40000),
       tool: typeof e.tool === 'string' ? e.tool.slice(0, 100) : '',
       truncated: e.truncated === true,
+      subagent: e.kind === 'tool_use' && typeof e.subagent === 'string' && SUBAGENT_ID.test(e.subagent) ? e.subagent : '', // the subagent a call started, when the server linked it
     }));
 }
 
@@ -852,14 +1020,40 @@ function foldBlock(e) {
   return det;
 }
 
+/** The link from a tool call to its subagent's transcript (design W8, 4.5): only in a session window, only for an id of the right shape. */
+function subLinkEl(e) {
+  if (SUB || !e.subagent) return null;
+  const href = subagentHref({ session: sessionId, agent: e.subagent, project: projectKey });
+  if (!href) return null;
+  const known = A.subs.find((x) => x?.id === e.subagent);
+  const attrs = { class: 'hx-sub', href, text: 'Open subagent transcript' };
+  if (typeof known?.description === 'string' && known.description) attrs['aria-label'] = `Open the transcript of subagent ${known.description}`;
+  return h('a', attrs);
+}
+
+/** A call already on screen whose subagent got its meta since (the server links it at a later read): the link joins it, once. */
+function linkLate(entries) {
+  for (const e of entries) {
+    if (!e.subagent) continue;
+    const it = H.items.find((x) => x.e.id === e.id);
+    if (!it || it.e.subagent) continue;
+    const link = subLinkEl(e);
+    if (!link) continue;
+    it.el.append(link);
+    it.e.subagent = e.subagent;
+  }
+}
+
 function entryEl(e) {
   const when = Date.parse(e.at);
   const time = Number.isFinite(when)
     ? h('time', { class: 'hx-at', datetime: new Date(when).toISOString(), title: new Date(when).toLocaleString(), text: new Date(when).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })
     : null;
-  const who = e.kind === 'tool_result' ? 'Tool' : e.role === 'user' ? 'You' : 'Claude';
+  const who = e.kind === 'tool_result' ? 'Tool' : e.role === 'user' ? (SUB ? 'Parent' : 'You') : 'Claude';
   const li = h('li', { class: 'hx', 'data-role': e.role, 'data-kind': e.kind }, h('div', { class: 'hx-meta' }, h('span', { class: 'hx-who', text: who }), time));
   li.append(...(e.kind === 'text' ? textBlock(e) : [foldBlock(e)]));
+  const link = subLinkEl(e);
+  if (link) li.append(link);
   if (e.truncated) li.append(h('p', { class: 'hx-trunc', text: 'This entry is over 32 KB; nika shows the first part only.' }));
   return li;
 }
@@ -913,7 +1107,7 @@ function updateHistoryChrome() {
   const n = H.items.length;
   $('hist-count').textContent = `${n} ${n === 1 ? 'entry' : 'entries'}`;
   const start = $('hx-list').parentNode.querySelector('.hx-start');
-  if (H.older === null && n > 0 && !start) $('hx-list').before(h('p', { class: 'hx-start', text: 'Start of the session' }));
+  if (H.older === null && n > 0 && !start) $('hx-list').before(h('p', { class: 'hx-start', text: SUB ? "Start of the subagent's transcript" : 'Start of the session' }));
   if (H.older !== null && start) start.remove();
 }
 
@@ -926,7 +1120,7 @@ function historyNote(msg) {
 const fetchHistory = (before) => {
   const qs = new URLSearchParams({ limit: '50' });
   if (before !== null) qs.set('before', String(before));
-  return call(`/api/app/session/${sessionId}/history?${qs}`);
+  return call(SUB ? `/api/app/session/${sessionId}/subagents/${agentId}/history?${qs}` : `/api/app/session/${sessionId}/history?${qs}`);
 };
 
 function resetHistory(entries, before) {
@@ -948,7 +1142,7 @@ async function loadNewest() {
     historyNote(r.body?.entries?.length ? '' : 'No messages in this transcript yet.');
     resetHistory(cleanEntries(r.body?.entries), nextBefore(r.body?.nextBefore));
   } else if (r.status === 404) {
-    historyNote('No transcript found for this session yet. nika keeps looking.');
+    historyNote(SUB ? 'No transcript for this subagent yet. nika keeps looking.' : 'No transcript found for this session yet. nika keeps looking.');
   } else {
     historyNote(serverMessage(r, 'The transcript could not be read. nika keeps trying.'));
   }
@@ -967,6 +1161,8 @@ async function refreshHistory() {
     if (r.status !== 200) return;
     const entries = cleanEntries(r.body?.entries);
     if (!entries.length) return;
+    const late = entries.filter((e) => e.subagent);
+    if (late.length) linkLate(late); // a call on screen that has its subagent now
     if (H.items.length && !entries.some((e) => H.ids.has(e.id))) {
       resetHistory(entries, nextBefore(r.body?.nextBefore)); // more than one page arrived since the last poll
       return;
@@ -1025,7 +1221,7 @@ function startHistoryPoll() {
 
 // ---- terminal mirror ---------------------------------------------------------------------------------------------
 
-const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [] };
+const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [], body: null, draft: null, cut: null };
 
 function setLive(state, text) {
   $('term-head').dataset.s = state;
@@ -1053,7 +1249,9 @@ function setInputEnabled(on, why) {
   if (!on) { AR.buf = []; clearTimeout(AR.timer); } // arrows not yet sent are dropped with the box
   for (const el of controls) el.disabled = !on;
   $('composer').placeholder = on ? idlePlaceholder() : why;
+  renderSuggestion(); // the state class goes with the box being usable
   document.querySelector('.inbox').classList.toggle('off', !on);
+  ATT.enable(on);
   if (!on) setPass(false, true);
   else if (refocus.composer) $('composer').focus({ preventScroll: true });
   if (on) refocus.composer = false;
@@ -1061,7 +1259,13 @@ function setInputEnabled(on, why) {
 
 function setGone() {
   M.gone = true;
+  GR = GROW_IDLE; // F16: the lease is over (the close below gives the window back)
   clearTimeout(M.timer);
+  DS.stop();
+  FIT.planner?.close(); // the heartbeat stops and the tmux window comes back (one DELETE); the next capture that answers starts a new lease
+  SC.planner?.close();
+  GL.arm?.disarm(); // F17
+  endGlide();
   setLive('off', 'Not live');
   setPaneState('gone');
   setInputEnabled(false, 'Pane is gone');
@@ -1072,8 +1276,7 @@ function setGone() {
 function setFrozen(on) {
   if (on === M.frozen) return;
   M.frozen = on;
-  $('jump-live').hidden = !on;
-  $('paused-note').hidden = !on;
+  renderNote();
   if (on) setLive('paused', `Paused${MID}${M.cols} ${TIMES} ${M.rows}`);
   else {
     setLive('live', `Live${MID}${M.cols} ${TIMES} ${M.rows}`);
@@ -1082,6 +1285,7 @@ function setFrozen(on) {
 }
 
 function recovered() {
+  if (M.errors) DS.reset(); // tmux answers again: the first readable capture follows the first-capture rule (no wipe)
   M.errors = 0;
   hideOverlay();
   const pane = W.got ? 'ok' : 'connecting';
@@ -1092,9 +1296,31 @@ function recovered() {
   }
 }
 
+/**
+ * Draws the last capture: every row, or, while the message box carries Claude's input box (a readable draft, Type into pane off), the rows above it and the one-row strip in its place.
+ * F11: the cut drawn is kept in M.cut (null with no strip) for the commit points, and an unpaused mirror is pinned to the bottom at once (a Type into pane toggle shows
+ * Claude's box and footer, or the strip, without waiting for the next capture).
+ */
+function drawMirror() {
+  const body = M.body;
+  if (!body) return;
+  const cut = cutAt(M.draft, P.on);
+  const on = cut !== null && cut < body.rows.length;
+  M.cut = on ? cut : null;
+  applyMirror($('term-rows'), toRenderModel(body, { cutAt: on ? cut : null }), cutCursor(body.cursor, on ? cut : null));
+  $('term-cut').hidden = !on;
+  const term = $('term');
+  if (!M.frozen) term.scrollTop = term.scrollHeight;
+}
+
 function handleCapture(r) {
   if (r.status === 304) {
     recovered();
+    try {
+      growTick(); // F16: the screen is the same, but time has passed
+    } catch {
+      // the mirror keeps working without the grow
+    }
     return;
   }
   if (r.status === 200 && Array.isArray(r.body?.rows) && Number.isInteger(r.body.cols)) {
@@ -1106,8 +1332,45 @@ function handleCapture(r) {
     M.rows = r.body.rows.length;
     M.etag = typeof r.body.etag === 'string' && ETAG.test(r.body.etag) ? r.body.etag : null;
     $('term-rows').style.minWidth = `${cols}ch`;
-    applyMirror($('term-rows'), toRenderModel(r.body), r.body.cursor);
-    setLive(M.frozen ? 'paused' : 'live', `${M.frozen ? 'Paused' : 'Live'}${MID}${cols} ${TIMES} ${M.rows}`);
+    const draft = cleanDraft(r.body.draft);
+    let glide = null; // F17: the first changed frame after a scroll request, matched with the one drawn (null: nothing to slide)
+    try {
+      if (GL.arm?.armed()) glide = GL.arm.offer(frameOf(r.body, draft)) ?? null; // a frame is built only inside the window of a scroll request
+    } catch {
+      glide = null; // the mirror keeps working without the glide
+    }
+    M.body = r.body;
+    M.draft = draft;
+    drawMirror();
+    if (glide?.act === 'glide') {
+      try {
+        startGlide(glide);
+      } catch {
+        endGlide();
+      }
+    }
+    try {
+      if (!ATT.sending()) DS.capture(M.draft, cols); // the box holds placeholders for a moment while attachments go in: no paused note then
+      renderSuggestion(); // the placeholder follows the screen's draft
+    } catch {
+      // the mirror keeps working without the sync
+    }
+    const queued = M.draft?.queued === true; // outside the try: Stop's title follows the last capture even when the sync threw
+    if (queued !== Q.queued) { // it says what Stop does with a message Claude holds in its queue
+      Q.queued = queued;
+      renderQuick();
+    }
+    setLive(M.frozen ? 'paused' : 'live', `${M.frozen ? 'Paused' : 'Live'}${MID}${cols} ${TIMES} ${M.rows}`); // the pane's real size, not the panel's
+    try {
+      fitCaptured();
+    } catch {
+      // the mirror keeps working without the fit
+    }
+    try {
+      scrollCaptured(r.body);
+    } catch {
+      // the mirror keeps working without scrolling
+    }
     if (!M.frozen) term.scrollTop = term.scrollHeight; // a paused mirror still applies captures but keeps the reader's place
     return;
   }
@@ -1118,6 +1381,10 @@ function handleCapture(r) {
   if (r.status === 403) {
     M.fatal = true;
     clearTimeout(M.timer);
+    SC.planner?.close();
+    GR = GROW_IDLE; // F16
+    GL.arm?.disarm(); // F17
+    endGlide();
     setLive('off', 'Not live');
     setPaneState('tmux');
     showOverlay('nika lost its connection to the app', 'The app refused this request. Close this window and open it again from the nika app.', { alert: true });
@@ -1138,7 +1405,7 @@ function kickMirror(ms) {
   M.timer = setTimeout(tickMirror, ms);
 }
 
-// One request in flight; ~4 Hz while the tab is visible and the view is live. Paused states re-kick themselves.
+// One request in flight; ~4 Hz while the tab is visible and the view is live (10 Hz during a redraw hold, F10). Paused states re-kick themselves.
 async function tickMirror() {
   M.timer = 0;
   if (M.gone || M.fatal || M.busy || document.hidden) return; // a paused mirror keeps polling: the mode and the prompt must stay true
@@ -1148,8 +1415,9 @@ async function tickMirror() {
   const t0 = Date.now();
   try {
     const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/capture`, { headers: M.etag ? { 'If-None-Match': `"${M.etag}"` } : {} });
+    let applied = true; // R2 #7: a capture the redraw hold kept back was not drawn, so it is no look at where a mode switch stopped
     try {
-      handleCapture(r);
+      applied = handleHeld(r, sent) !== false;
     } catch {
       M.errors += 1;
       M.inputOff = true;
@@ -1157,11 +1425,11 @@ async function tickMirror() {
       setInputEnabled(false, 'tmux is not answering');
       showOverlay('The terminal could not be drawn', 'nika retries every 2 seconds.', { retry: 'Retry now', alert: true });
     }
-    captureHandled(sent);
+    if (applied) captureHandled(sent);
   } finally {
     M.busy = false;
   }
-  kickMirror(M.errors ? 2000 : Math.max(0, 250 - (Date.now() - t0)));
+  kickMirror(M.errors ? 2000 : Math.max(0, (HOLD.active ? HOLD_POLL_MS : 250) - (Date.now() - t0))); // F10: 100 ms while a redraw hold waits for Claude's repaint
 }
 
 function jumpToLive() {
@@ -1169,8 +1437,665 @@ function jumpToLive() {
   M.etag = null;
   term.scrollTop = term.scrollHeight;
   term.scrollLeft = 0; // a wide pane: back to column 0 as well
+  if (SC.scrolled && !M.gone && !M.fatal) SC.planner?.jump('bottom'); // Claude's own view too (not while the pane is gone or the connection is lost: the route would only refuse)
   setFrozen(false);
   $('composer').focus();
+}
+
+// ---- fit (design W7): the panel in cells goes to the server, which fits the pane to it; a pane that stays larger is drawn at a smaller text scale ----
+
+// planner: the request planner of fit-ui.js, made when the window has a pane. panel: the held frame's size, { cols, rows } in cells (null before one).
+// frame: the held frame, { cols, rows, width, height, cellW, cellH, iw, ih } (F10: measured only at the commit points of fitCommit). scale: the --fit-scale now
+// set. view: the chip's last drawn view (null while there is no chip). ui: the chip panel's own state (F1): pending, a Fit again is on its way; note, it was
+// refused or lost. pop: the panel is open. F10: state, the chip state of the latest answer (drawn or held); room, the page asked for the room (33 rows or more, F11) because Claude's
+// footer did not fit (kept for this window until Fit again or a new window size); d, the border row (asked rows minus the pane's rows, 0 or 1); sentRows, the
+// rows of the request on its way; held, the chip view an answer brought during a redraw hold, { view, opts }; refitTimer, the timer that ends the transition.
+// F11: hide and strip, the hidden rows under the strip and its height in px as read at the last commit point; sentCols, the columns of the request on its way (an answer
+// with those columns is nika's own size); scaledAt, the pane size { cols, rows } the text scale was last worked out for (null before the first).
+// F16: base, the size the fit asks without the grow ({ cols, rows }, the last commit's or room step's; null before the first).
+// FX2 (RV16 M3): short, the last commit measured the box while a panel that takes height from it was shown (fitPanelClosed takes one fresh commit when it closes).
+const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false };
+// F16: the grow of a cut-off question (fit-ui.js growStep): more rows for the pane while the question is open, the size back when it closes
+let GR = GROW_IDLE;
+// F10, design F10 4: after nika's own resize the last good frame stays drawn until a capture at the new size shows Claude's input box, for 1.2 s at most
+const HOLD = createRedrawHold({
+  after: (fn, ms) => setTimeout(fn, ms),
+  cancel: (timer) => clearTimeout(timer),
+  timeout: holdTimeout,
+  ended: holdEnded,
+});
+
+/** The pane's fit route; a window with no pane has none, and asks nothing. */
+function fitCall(method, opts = {}) {
+  if (!paneId) return Promise.resolve({ status: 0, body: null });
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/fit`, { method, ...opts });
+}
+
+/**
+ * Whether this window has focus (F9, the focused window wins the pane's size): visible, and document.hasFocus() is the boolean true. Anything unreadable is
+ * no focus, so a page that cannot tell never holds the size of a window a terminal shows. The planner reads it fresh on every event, poll and request.
+ */
+function fitFocused() {
+  try {
+    return document.visibilityState === 'visible' && typeof document.hasFocus === 'function' && document.hasFocus() === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The panel as it is now (F10): the terminal's border box over one glyph cell (the probe: 100 glyphs in the unscaled font), with the window's inner size. null while
+ * any number cannot be measured (a hidden tab). Nothing is stored: only fitMeasure holds a frame.
+ */
+function fitProbe() {
+  const rect = $('term').getBoundingClientRect();
+  const cell = $('fit-probe').getBoundingClientRect();
+  const cellW = cell.width / 100;
+  const panel = panelSize({ width: rect.width, height: rect.height, cellW, cellH: cell.height });
+  return panel && { ...panel, width: rect.width, height: rect.height, cellW, cellH: cell.height, iw: window.innerWidth, ih: window.innerHeight };
+}
+
+/** Holds the frame measured now and its size in cells. A box that cannot be measured (a hidden tab) keeps the last good one. */
+function fitMeasure() {
+  const frame = fitProbe();
+  if (frame) {
+    FIT.frame = frame;
+    FIT.panel = { cols: frame.cols, rows: frame.rows };
+  }
+  return FIT.panel;
+}
+
+/**
+ * F11: the height in CSS px of the one-row strip that stands in for Claude's input box and footer: from the bottom of the rows to the bottom of the strip, both
+ * layout values of the same offset parent (.term), so the refit transform does not distort them. 0 while the strip is not shown or the webview gives no
+ * usable offsets (fillSize and drawnScale then count 2 cells).
+ */
+function fitStrip() {
+  const cut = $('term-cut');
+  const rows = $('term-rows');
+  if (!cut || !rows || cut.hidden) return 0;
+  const px = cut.offsetTop + cut.offsetHeight - (rows.offsetTop + rows.offsetHeight);
+  return px > 0 ? px : 0; // NaN (no offsets) fails the comparison too
+}
+
+/** The text scale: 1 while the pane fits the panel, smaller while it is larger (not below fit-ui.js SCALE_MIN, never above 1). Set through CSSOM only: the CSP allows no style attribute. */
+function fitScale() {
+  const p = FIT.panel;
+  if (!p || !M.cols) return;
+  FIT.scaledAt = { cols: M.cols, rows: M.rows };
+  // F11: the rows actually drawn count (the rows above the cut and the strip), not the hidden ones; with no strip it is F10's scale
+  const hide = hiddenRows(M.body?.rows, M.cut);
+  // F16: while the pane is taller because of the grow, the text keeps the size it has without it (the mirror overflows, pinned to the bottom); FIT.hide: the base counts the rows hidden at the commit
+  const rows = scaleRows({ paneRows: M.rows, G: GR, fitted: FIT.state === 'fitted', baseRows: FIT.base?.rows, d: FIT.d, hide: FIT.hide });
+  const s = drawnScale({ frame: FIT.frame ?? p, cols: M.cols, rows, hide, strip: hide > 0 ? fitStrip() || FIT.strip : 0 });
+  if (s === FIT.scale) return;
+  FIT.scale = s;
+  $('term').style.setProperty('--fit-scale', String(s));
+}
+
+/**
+ * A commit point (F10: the start, a focus, a change of the window, the font or the panel's width, Fit again): the frame is measured and held, its size is
+ * asked for (the room size while FIT.room is on), and the text scale follows. A new window size ends the room: it deserves a try at the panel's own size.
+ * F11: the hidden rows under the strip and the strip's height are read here, from the frame drawn now, and the size asked counts them (fillSize); never per capture.
+ */
+function fitCommit() {
+  const prev = FIT.frame;
+  fitMeasure();
+  const frame = FIT.frame;
+  if (!frame) return;
+  FIT.short = boxShortened(); // FX2: a box measured with a panel shown is shorter than the resting layout; fitPanelClosed commits again when the panel goes
+  if (FIT.room && prev && (frame.iw !== prev.iw || frame.ih !== prev.ih || Math.abs(frame.width - prev.width) >= prev.cellW)) FIT.room = false;
+  FIT.hide = hiddenRows(M.body?.rows, M.cut);
+  FIT.strip = FIT.hide > 0 ? fitStrip() : 0;
+  const ask = fillSize(frame, FIT.room, FIT.d, FIT.hide, FIT.strip);
+  FIT.base = ask;
+  GR = growRebase(GR, ask.cols, ask.rows); // F16: a given-up question gets one new try at a new base size
+  const want = growAsk(ask, GR); // F16: while a cut-off question is open the grown rows stay asked
+  FIT.planner?.size(want.cols, want.rows);
+  fitScale();
+}
+
+/**
+ * FX2 (RV16 M3, live check LC17 K2): whether a panel that takes height from the terminal box is shown now: the prompt panel, the question form, the feedback
+ * survey or the attention note (the roots' own `hidden`, which the panels and renderAttn set). A commit taken then measures a box shorter than the resting layout.
+ */
+function boxShortened() {
+  return ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note'].some((id) => $(id).hidden === false);
+}
+
+/**
+ * FX2: a commit taken while such a panel was shown (FIT.short, set by fitCommit; a focus is a commit point, F9) measured the short box, so FIT.base dropped and
+ * the pane stayed below the panel after the panel closed, until the next commit. growTick looks here after every drawn capture and every 304, before the grow
+ * asks the size back, so that the size back counts from the new base. Once no panel is shown the flag ends; and when the window still has focus and the fit is
+ * on (a chip other than "off"), the panel is measured again, once. This is no commit point of its own (F10: a height change alone is never one): it needs a
+ * commit that was measured short, and a panel that closed while the window was blurred waits for the focus commit.
+ */
+function fitPanelClosed() {
+  if (!FIT.short || boxShortened()) return;
+  FIT.short = false;
+  if (!FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitFocused()) return;
+  fitCommit();
+}
+
+/**
+ * FX3 (live check LC18 R4b): the size the grow goes back to is checked once more when the grow asks for it. A commit (a focus while a question was open) that
+ * measured a box shorter than the resting layout, with none of the panels of boxShortened shown, left FIT.base too small for good: LC18 ended at 10 rows where
+ * a fresh fit in the same layout gave 12, and the next grow counted from the 10. The panel is probed now and a bigger answer replaces the base and the held
+ * frame (the text scale follows with the capture of the new pane size). Only while the window has focus and the fit is on, with no panel shown and the same
+ * columns (a change of the columns is a commit's work, F10). A base that is as large as the probe or larger stays: a box that is shorter now is a layout of
+ * this moment, not a new commit.
+ */
+function fitBaseFresh() {
+  if (!FIT.base || !FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitFocused() || boxShortened()) return;
+  const next = fitProbe();
+  if (!next) return;
+  const ask = fillSize(next, FIT.room, FIT.d, FIT.hide, FIT.strip);
+  if (ask.cols !== FIT.base.cols || ask.rows <= FIT.base.rows) return;
+  fitMeasure();
+  FIT.base = ask;
+}
+
+/**
+ * The box changed size, or the font arrived. Only a change of the window, the font or the panel's width is a commit; a box that only got taller or shorter (a
+ * line, a chip or a panel came or went) asks nothing, scales nothing, and keeps the mirror pinned to the bottom (F10).
+ */
+function fitResize() {
+  const next = fitProbe();
+  if (next && !remeasure(FIT.frame, next)) {
+    if (!M.frozen) $('term').scrollTop = $('term').scrollHeight;
+    return;
+  }
+  fitCommit();
+}
+
+/**
+ * After every drawn capture: the first one of a lease starts the fit (the pane answered, so it is live), and the scale follows the pane's size.
+ * F11: that first frame is a commit point (its hidden rows go into the start request, which is still one request), and the text is worked out again only when the
+ * pane's size is not the one it was worked out for (held between those moments, so a draft growing a line never moves the text).
+ */
+function fitCaptured() {
+  if (FIT.planner?.startable) fitCommit();
+  FIT.planner?.start();
+  const at = FIT.scaledAt;
+  if (!at || at.cols !== M.cols || at.rows !== M.rows) fitScale();
+  growTick();
+}
+
+/** F16: whether a step of the grow runs and the fit is `fitted`: the dialog form keeps its Reading note while it does. */
+function growing() {
+  return GR.phase === 'stepping' && FIT.state === 'fitted';
+}
+
+/**
+ * F16: one look at the drawn capture for the grow of a cut-off question (fit-ui.js growStep): called after every drawn capture and every 304. It may ask
+ * more rows, or the base size back, at once. The page is drawn again when a step starts or ends (the form keeps its Reading note while one runs, D11), and
+ * the chip's panel when its grow line comes or goes.
+ */
+function growTick() {
+  if (!FIT.planner || !FIT.base || M.gone || M.fatal) return;
+  fitPanelClosed(); // FX2: a panel that a commit was measured under has closed: the base is measured again before the grow looks at it
+  const was = GR.phase === 'stepping' || GR.phase === 'held';
+  const before = growing();
+  const { G, ask } = growStep(GR, { now: Date.now(), dialog: W.dialog, fitted: FIT.state === 'fitted', paneRows: M.rows, baseRows: FIT.base.rows, baseCols: FIT.base.cols });
+  GR = G;
+  if (ask) {
+    if (ask.back === true) fitBaseFresh(); // FX3: the way back is counted from a base that is looked at now
+    const want = growAsk(FIT.base, GR); // the grown rows, or the base size after a give-up or a close
+    FIT.planner.size(want.cols, want.rows, { now: true });
+  }
+  if ((GR.phase === 'stepping' || GR.phase === 'held') !== was && FIT.pop) drawFitPop();
+  if (growing() !== before) renderMode(); // no capture may come for a while (a redraw hold keeps them back): the form must not let its Reading note run out meanwhile
+}
+
+// ---- the redraw hold (F10, design F10 4): the last good frame stays up while Claude repaints after nika's own resize ----
+
+/** The planner's word on a 200 answer's pane size: the border row is learned, and a pane that is not the drawn size starts a hold (a first capture is kept for the new size). */
+function fitSized(pane) {
+  if (pane.cols === FIT.sentCols) { // F11: only nika's own size tells the border row; a terminal's or a zoomed size says nothing about it, so the old one stays
+    const d = FIT.sentRows - pane.rows;
+    if (d === 0 || d === 1) FIT.d = d;
+  }
+  if (!M.body) return; // nothing drawn yet: nothing to hold
+  if (pane.cols === M.cols && pane.rows === M.rows) { // the drawn frame is the answered size: nothing to wait for
+    HOLD.end();
+    return;
+  }
+  // F12: besides the box, did the drawn frame show Claude's mode line (a confirmed, known mode)? Then the hold waits for the mode line too.
+  const plainBefore = M.body.alt === true && M.draft !== null;
+  const modeBefore = plainBefore && M.body.modeConfirmed === true && modeKey(M.body.mode) !== 'unknown';
+  const cutBefore = GR.phase === 'stepping' && cutQuestion(M.body.dialog); // F16: a grow step waits for Claude to repaint the question whole
+  HOLD.start({ want: { cols: pane.cols, rows: pane.rows }, plainBefore, modeBefore, cutBefore });
+  kickMirror(0);
+}
+
+/** The chip sink of the planner: the latest state is kept, and a view that comes during a hold waits for the frame (null hides the chip at once). */
+function fitChip(view, opts) {
+  FIT.state = view ? view.state : null;
+  if (view && HOLD.active) {
+    FIT.held = { view, opts };
+    return;
+  }
+  FIT.held = null;
+  renderFit(view, opts);
+}
+
+/** The hold is over: the chip an answer brought meanwhile is drawn now, in the step of the frame. */
+function flushChip() {
+  const held = FIT.held;
+  FIT.held = null;
+  if (held) renderFit(held.view, held.opts);
+}
+
+function holdEnded() {
+  flushChip();
+}
+
+/**
+ * One answered capture (`n`: the number of its request): kept back while a hold waits for Claude's repaint; else drawn. A gone pane, a refusal or an error ends
+ * the hold at once and is handled as always. Returns false for a capture that was kept back (not drawn), true for any other: only a drawn one tells the
+ * waiters of nextCapture (R2 #7); a kept one carries `n`, so that holdTimeout can tell them when it draws it.
+ */
+function handleHeld(r, n) {
+  if (HOLD.active) {
+    if (r.status === 200 && Array.isArray(r.body?.rows) && Number.isInteger(r.body.cols)) {
+      if (HOLD.offer({ r, body: r.body, draft: cleanDraft(r.body.draft), n }) === 'keep') return false;
+      applyHeld(r);
+      return true;
+    }
+    if (r.status !== 304) HOLD.end();
+  }
+  handleCapture(r);
+  return true;
+}
+
+/** Draws a capture a hold let through; when it has another size than the drawn one, the new frame fades in (and zooms in when the text grows). */
+function applyHeld(r) {
+  const was = { cols: M.cols, rows: M.rows, scale: FIT.scale };
+  handleCapture(r);
+  if (was.cols && (M.cols !== was.cols || M.rows !== was.rows)) {
+    GL.arm?.disarm(); // F17: nika's own resize is never a scroll; a slide still running ends before the refit starts
+    endGlide();
+    refit(was.scale);
+  }
+}
+
+/** The new frame's transition (F10 6.2): --refit-from through CSSOM, the class restarted; it ends on animationend or, with no animation (reduced motion), after REFIT_MS + 50 ms. */
+function refit(oldScale) {
+  const rows = $('term-rows');
+  rows.style.setProperty('--refit-from', String(refitFrom(oldScale, FIT.scale)));
+  rows.classList.remove('refit');
+  void rows.offsetWidth; // the animation starts again
+  rows.classList.add('refit');
+  clearTimeout(FIT.refitTimer);
+  FIT.refitTimer = setTimeout(endRefit, REFIT_MS + 50);
+}
+
+function endRefit() {
+  clearTimeout(FIT.refitTimer);
+  FIT.refitTimer = 0;
+  $('term-rows').classList.remove('refit');
+}
+
+/**
+ * The hold ran out (F10 4.4). With the room conditions (fit-ui.js roomStep; F12: also a readable box whose mode line is gone) the page asks once for 33 rows and
+ * the hold goes on until that answer; else the latest kept capture is drawn as it is, so the page then shows the truth (the server refuses what it must).
+ */
+function holdTimeout(pending, ctx) {
+  const frame = FIT.frame;
+  const ask = frame ? fillSize(frame, true, FIT.d, FIT.hide, FIT.strip) : null; // F11: the room fill size, with the hidden rows of the last commit
+  if (pending && frame && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, modeBefore: ctx.modeBefore, want: ctx.want, body: pending.body, draft: pending.draft, gain: ask.rows > FIT.sentRows })) {
+    FIT.room = true;
+    FIT.base = ask; // F16: the grow counts from the size the fit asks without it
+    const want = growAsk(ask, GR);
+    if (FIT.pop) drawFitPop();
+    HOLD.start({ want: null, plainBefore: ctx.plainBefore, modeBefore: ctx.modeBefore });
+    FIT.planner?.size(want.cols, want.rows, { now: true });
+    return;
+  }
+  if (pending) {
+    applyHeld(pending.r);
+    if (Number.isInteger(pending.n)) captureHandled(pending.n); // R2 #7: drawn now, so the waiters that were there before its request see it
+  }
+}
+
+/**
+ * The fit chip, a button (F1): hidden until the server has answered, then one of five states, each with its own colour (data-k), icon and
+ * words; the reason is the title and the announcement. The button is named by the label alone (the words and the chevron are decoration).
+ * Called on a change of state, so it is announced once (not when `opts.quiet` is true: the planner says so for a change that followed a change of the
+ * window's focus, F9; the chip, its title and its name still change); an open panel is drawn again in place. With no view the wrapper hides, the panel
+ * closes and focus, if it was in there, goes to the transcript button.
+ */
+function renderFit(view, opts) {
+  const wrap = $('fit-wrap');
+  const el = $('fit-chip');
+  const inside = !view && wrap.contains(document.activeElement); // asked before the wrapper hides: a hidden element loses focus
+  FIT.view = view;
+  wrap.hidden = !view;
+  if (!view) {
+    closeFitPop(false);
+    FIT.ui = { pending: false, note: false };
+    el.removeAttribute('data-k');
+    el.removeAttribute('title');
+    el.removeAttribute('aria-label');
+    el.replaceChildren();
+    if (inside) $('hist-toggle').focus();
+    return;
+  }
+  el.setAttribute('data-k', view.state);
+  el.setAttribute('title', view.title);
+  el.setAttribute('aria-label', view.label);
+  el.replaceChildren(icon(view.icon), h('span', { text: view.text }), icon('chev', 'ic chev'));
+  if (FIT.pop) drawFitPop();
+  if (opts?.quiet !== true) announce(view.say); // F9: a change that followed the window's own focus is drawn, not announced twice (the status stays readable on the chip)
+}
+
+/**
+ * The chip's panel from FIT.view and FIT.ui (fit-ui.js fitPanelView): text through textContent and h() only. Focus stays where it is,
+ * unless the action button it was on has just gone: then it goes to Close.
+ */
+function drawFitPop() {
+  const v = fitPanelView(FIT.view, { ...FIT.ui, room: FIT.room, grow: GR.phase === 'stepping' || GR.phase === 'held' });
+  if (!v) return;
+  const again = $('fit-again');
+  const held = document.activeElement === again;
+  $('fit-pop-h').textContent = v.heading;
+  $('fit-pop-why').textContent = v.why;
+  const hint = $('fit-pop-hint');
+  hint.hidden = v.hint === null;
+  hint.replaceChildren(...(v.hint === null ? [] : [v.hint, v.code === null ? null : h('code', { text: v.code })].filter(Boolean)));
+  const note = $('fit-pop-note');
+  note.hidden = v.note === null;
+  note.replaceChildren(...(v.note === null ? [] : [icon('warn'), v.note]));
+  again.hidden = v.action === null;
+  if (v.action === null) again.removeAttribute('aria-disabled');
+  else {
+    again.textContent = v.action.text;
+    if (FIT.ui.pending) again.setAttribute('aria-disabled', 'true'); // not disabled: focus stays on it
+    else again.removeAttribute('aria-disabled');
+  }
+  if (held && again.hidden) $('fit-pop-close').focus();
+}
+
+/** Opens the panel under the chip: drawn, placed by dom.js (it needs to be shown to have a width), focus on the action, else on Close. */
+function openFitPop() {
+  if (FIT.pop || !FIT.view) return;
+  const pop = $('fit-pop');
+  const chip = $('fit-chip');
+  FIT.pop = true;
+  drawFitPop();
+  clearMenuPlacement(pop); // measured again on every open
+  pop.hidden = false;
+  chip.setAttribute('aria-expanded', 'true');
+  placeMenuX(pop, chip);
+  document.addEventListener('pointerdown', fitAway);
+  ($('fit-again').hidden ? $('fit-pop-close') : $('fit-again')).focus();
+}
+
+/** Closes the panel; `refocus` puts focus on the chip (Esc, Close, the chip again), else it stays where the user went. */
+function closeFitPop(refocus) {
+  if (!FIT.pop) return;
+  FIT.pop = false;
+  FIT.ui.note = false;
+  $('fit-pop').hidden = true;
+  $('fit-chip').setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', fitAway);
+  if (refocus) $('fit-chip').focus();
+}
+
+/** A pointer went down somewhere: outside the panel and the chip, it closes the panel (and focus stays where the user went). Listens only while the panel is open. */
+function fitAway(e) {
+  const t = e.target;
+  if (t instanceof Node && !$('fit-pop').contains(t) && !$('fit-chip').contains(t)) closeFitPop(false);
+}
+
+/**
+ * The planner's word on the user's Fit again (fit-ui.js reopen): { pending: true } when it starts, else { pending: false, status, view, changed }
+ * when its request was answered. Fitted, zoomed and terminal close the panel; another state or the same one redraws it (the same one is announced here,
+ * a new one by renderFit); a refusal shows the note; a 403 has already hidden the chip.
+ */
+function fitAgainEvent(e) {
+  if (e.pending) {
+    FIT.ui = { pending: true, note: false };
+    if (FIT.pop) drawFitPop();
+    return;
+  }
+  FIT.ui = { pending: false, note: false };
+  if (e.status === 403) return;
+  if (e.status === 200 && e.view) {
+    if (['fitted', 'zoomed', 'terminal'].includes(e.view.state)) closeFitPop(true);
+    else {
+      if (FIT.pop) drawFitPop();
+      if (!e.changed) announce(stillOffSay(e.view));
+    }
+    return;
+  }
+  if (FIT.pop) {
+    FIT.ui.note = true;
+    drawFitPop();
+  }
+  const p = fitPanelView(FIT.view, { pending: false, note: true });
+  if (p) announce(p.note);
+}
+
+/** The chip's button, the panel's Close and action, and the ways out: Esc, Tab out, a pointer elsewhere, a resized window. */
+function wireFitPop() {
+  const chip = $('fit-chip');
+  const pop = $('fit-pop');
+  chip.addEventListener('click', () => (FIT.pop ? closeFitPop(true) : openFitPop()));
+  $('fit-pop-close').addEventListener('click', () => closeFitPop(true));
+  $('fit-again').addEventListener('click', () => {
+    if ($('fit-again').getAttribute('aria-disabled') === 'true') return; // an ask is on its way
+    FIT.room = false; // F10: Fit again tries the panel's own size
+    fitCommit();
+    FIT.planner?.reopen();
+  });
+  const onKey = (e) => {
+    if (e.key !== 'Escape' || !FIT.pop) return; // shut: Esc is the page's
+    e.preventDefault();
+    e.stopPropagation(); // the page's own Esc handlers never see it
+    closeFitPop(true);
+  };
+  const onOut = (e) => { // Tab out of the chip or the panel
+    const to = e.relatedTarget;
+    if (to instanceof Node && !$('fit-wrap').contains(to)) closeFitPop(false);
+  };
+  for (const el of [chip, pop]) {
+    el.addEventListener('keydown', onKey);
+    el.addEventListener('focusout', onOut);
+  }
+  window.addEventListener('resize', () => {
+    if (FIT.pop) closeFitPop(pop.contains(document.activeElement));
+  });
+}
+
+function wireFit() {
+  FIT.planner = createFitPlanner({
+    send: (body) => {
+      FIT.sentCols = body.cols; // F11: an answer with these columns is nika's own size
+      FIT.sentRows = body.rows; // F10: with the answer's pane rows it gives the border row
+      return fitCall('PUT', { json: body });
+    },
+    release: () => fitCall('DELETE', { keepalive: true }), // the lease goes back when the page does
+    after: (fn, ms) => setTimeout(fn, ms),
+    cancel: (timer) => clearTimeout(timer),
+    chip: fitChip, // F10: held during a redraw hold
+    fitAgain: fitAgainEvent,
+    focused: fitFocused, // F9: the focus every request carries
+    sized: fitSized, // F10: the pane size of each answer starts the redraw hold
+  });
+  wireFitPop();
+  if (typeof ResizeObserver === 'function') new ResizeObserver(fitResize).observe($('term')); // the app's zoom changes the box too
+  document.fonts?.ready.then(fitResize, () => {});
+  $('term-rows').addEventListener('animationend', (e) => {
+    if (e?.animationName === 'nika-refit') endRefit();
+    if (e?.animationName === 'nika-glide') endGlide(); // F17: each sliding row ends one; endGlide is idempotent
+  });
+  window.addEventListener('pagehide', () => FIT.planner.close());
+  // F9: events are only triggers, the planner reads the value itself; hidden (visibilitychange, in boot) is sent at once, these two settle first. e.target is the window
+  // itself: the focus and blur of an element inside the page are not the window's
+  // F10: a focus is a commit point (the take gets the size of the resting layout of this moment); a blur measures nothing
+  window.addEventListener('focus', (e) => { if (e?.target === window) { fitCommit(); FIT.planner.focusChanged(false); } });
+  window.addEventListener('blur', (e) => { if (e?.target === window) FIT.planner.focusChanged(false); });
+  window.addEventListener('pageshow', (e) => { // back from the back/forward cache: pagehide gave the window back, so this is a new page load (open: true)
+    if (!e || e.persisted !== true || M.gone || !M.cols) return; // a first load, a pane that is gone, or no capture yet: nothing to restart
+    fitCommit();
+    FIT.planner.restart();
+  });
+  fitCommit();
+}
+
+// ---- scroll (design W3): the wheel, PgUp/PgDn/Home/End and Jump to live move Claude's own full-screen view (POST /api/app/pane/:id/scroll) ----
+
+// planner: the request planner of scroll.js, made by wireScroll. scrolled: Claude's own view is not at the bottom (the capture's `scrolled`, or
+// the route's answer). lastLine: when a refusal line was last shown (at most one per NOTE_MS).
+const SC = { planner: null, scrolled: false, lastLine: 0 };
+// PgUp/PgDn are one page; Home/End (and Ctrl+Home/Ctrl+End) are the ends of Claude's view. dir: -1 up, 1 down, for the native-first rule.
+const SCROLL_KEYS = new Map([['PageUp', ['page', 'up', -1]], ['PageDown', ['page', 'down', 1]], ['Home', ['jump', 'top', -1]], ['End', ['jump', 'bottom', 1]]]);
+
+/** The scroll route; a window with no pane, or a pane that is gone, has none. A call that does not answer within 10 s is cut off and settles as a lost request (status 0), so the planner is never stuck waiting. */
+function scrollCall(body) {
+  if (!paneId || M.gone) return Promise.resolve({ status: 0, body: null });
+  if (HOLD.active) return HOLD.wait().then(() => scrollCall(body)); // F10: after the redraw hold; the server still decides on its own fresh capture
+  const ctl = new AbortController(); // AbortSignal.timeout() is missing in older macOS web views (project.js does the same)
+  const timer = setTimeout(() => ctl.abort(), 10000);
+  try {
+    if (!lessMotion() && M.body) GL.arm?.arm(body, { scrolled: SC.scrolled, before: frameOf(M.body, M.draft) }); // F17: the frame drawn as the keys go is the base
+  } catch {
+    // scrolling works without the glide
+  }
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/scroll`, { method: 'POST', json: body, signal: ctl.signal }).finally(() => clearTimeout(timer));
+}
+
+/** Jump to live and the corner note follow nika's own Paused (M.frozen) and Claude's scrolled-up view (SC.scrolled): each state its own colour (data-k), icon and words. */
+function renderNote() {
+  const v = noteView({ frozen: M.frozen, scrolled: SC.scrolled });
+  const el = $('paused-note');
+  $('jump-live').hidden = !v.jump;
+  el.hidden = v.note === null;
+  if (v.note === null) {
+    el.removeAttribute('data-k');
+    el.replaceChildren();
+    return;
+  }
+  el.setAttribute('data-k', v.note.kind);
+  el.replaceChildren(icon(v.note.icon), h('span', { text: v.note.text }));
+}
+
+/** A change of Claude's scrolled-up view: the corner note and Jump to live follow, announced once. */
+function setScrolled(on) {
+  if (on === SC.scrolled) return;
+  SC.scrolled = on;
+  renderNote();
+  announce(scrolledSay(on));
+}
+
+/** After every drawn capture: the pill Claude draws when its view is scrolled up (the server reads it: `scrolled`, only with its full-screen view on). */
+function scrollCaptured(body) {
+  setScrolled(body.alt === true && body.scrolled === true);
+}
+
+/** A refusal in fixed words, at most once per NOTE_MS (design 6.4). */
+function scrollLine(answer) {
+  const line = refusalLine(answer);
+  const t = Date.now();
+  if (line === null || t - SC.lastLine < NOTE_MS) return;
+  SC.lastLine = t;
+  showProblem(line, 'warn', NOTE_MS);
+}
+
+/** The route answered (the planner has already dropped what was queued behind a refusal): 200 says where Claude's view is now, 404 the pane is gone, the rest is a line. */
+function scrollDone(r) {
+  if (r.status !== 200) GL.arm?.drop(); // F17: refused or lost, so no frame of this request will come: it must not leave the arm open for a prompt or for output
+  if (r.status === 200) {
+    if (typeof r.body?.scrolled === 'boolean') setScrolled(r.body.scrolled);
+    GL.arm?.extend(); // F17: the frame comes after the answer, so the window is renewed
+    kickMirror(0); // the route refreshed the capture: the mirror shows the new view on its next tick
+  } else if (r.status === 404) setGone();
+  else scrollLine({ status: r.status, code: r.body?.error });
+}
+
+/** F17: the OS asks for less motion (read fresh each time; unreadable counts as no). */
+function lessMotion() {
+  try {
+    return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+  } catch {
+    return false;
+  }
+}
+
+/** F17: slides the conversation rows from where they were; the rows below (Claude's box, footer, task list) stay and cover them. Class and CSSOM only. */
+function startGlide(g) {
+  if (lessMotion()) return;
+  const rows = $('term-rows');
+  const els = rows.children;
+  const rowPx = $('fit-probe').getBoundingClientRect().height * FIT.scale; // the drawn row height, as the wheel counts it
+  const current = rows.classList.contains('glide') && els[0] ? matrixY(getComputedStyle(els[0]).transform) : 0; // a slide still running: continue from where the rows are
+  const from = glideFrom({ k: g.k, rowPx, current, maxPx: g.end * rowPx });
+  if (from === 0) {
+    endGlide();
+    return;
+  }
+  for (let i = 0; i < els.length; i += 1) els[i].classList.toggle('gl', i < g.end);
+  rows.style.setProperty('--glide-from', `${from}px`);
+  rows.classList.remove('glide');
+  void rows.offsetWidth; // the animation starts again
+  rows.classList.add('glide');
+  clearTimeout(GL.timer);
+  GL.timer = setTimeout(endGlide, GLIDE_MS + 50); // the fallback for a web view that gives no animationend
+}
+
+function endGlide() {
+  clearTimeout(GL.timer);
+  GL.timer = 0;
+  const rows = $('term-rows');
+  if (rows.classList.contains('glide')) rows.classList.remove('glide'); // idempotent: setGone, the 403 branch and every animationend may call it
+}
+
+/** After the native check chose Claude: true when a request may go. A pane that is not in its full-screen view, or not read yet, gets nothing at all (no line); a closed gate gets the line. */
+function scrollOpen() {
+  if (!SC.planner || M.gone || M.fatal || !M.body || M.body.alt !== true) return false;
+  const code = scrollGate(M.body, M.draft);
+  if (code !== null) scrollLine({ status: 409, code });
+  return code === null;
+}
+
+/** The wheel over the terminal (design 6.1, 6.2): vertical travel only, the mirror's own overflow first, then Claude's view. A pinch zoom or an app gesture (Ctrl, Meta) and sideways travel (Shift, deltaX) stay with the browser; focus never moves. */
+function scrollWheel(e) {
+  if (e.ctrlKey || e.metaKey || e.shiftKey || !(Math.abs(e.deltaY) > Math.abs(e.deltaX || 0))) return;
+  const term = $('term');
+  const rows = wheelRows(e, { cellH: $('fit-probe').getBoundingClientRect().height * FIT.scale, viewRows: viewRowsOf(M.body, M.draft) });
+  if (rows === 0 || routeFor({ dir: rows, top: term.scrollTop, height: term.scrollHeight, client: term.clientHeight }) === 'native') return;
+  e.preventDefault(); // no overscroll bounce
+  if (scrollOpen()) SC.planner.wheel(rows, pageRowsOf(M.body, M.draft));
+}
+
+/** PgUp, PgDn, Home, End and Ctrl+Home, Ctrl+End while the terminal has focus and Type into pane is off (the message box keeps its own editing keys; with Type into pane on the keys route sends the user's own keys). */
+function scrollKey(e) {
+  if (P.on || e.defaultPrevented || e.isComposing || e.altKey || e.metaKey || e.shiftKey || !SCROLL_KEYS.has(e.key)) return;
+  const [kind, what, dir] = SCROLL_KEYS.get(e.key);
+  if (e.ctrlKey && kind === 'page') return; // Ctrl+PgUp and Ctrl+PgDn belong to the app (tabs)
+  const term = $('term');
+  if (routeFor({ dir, top: term.scrollTop, height: term.scrollHeight, client: term.clientHeight }) === 'native') return;
+  e.preventDefault();
+  if (what === 'bottom') term.scrollLeft = 0; // End returns to column 0 like the button (it never moves focus: keys act where focus already is)
+  if (!scrollOpen()) return;
+  if (kind === 'page') SC.planner.page(what);
+  else SC.planner.jump(what);
+}
+
+function wireScroll() {
+  SC.planner = createScrollPlanner({
+    send: scrollCall,
+    after: (fn, ms) => setTimeout(fn, ms),
+    cancel: (timer) => clearTimeout(timer),
+    now: () => Date.now(),
+    done: scrollDone,
+  });
+  GL.arm = createGlideArm({ now: () => Date.now() }); // F17
+  const term = $('term');
+  term.addEventListener('wheel', scrollWheel, { passive: false }); // not passive: preventDefault must work
+  term.addEventListener('keydown', scrollKey);
+  window.addEventListener('pagehide', () => SC.planner.close());
 }
 
 // ---- sending ------------------------------------------------------------------------------------------------------
@@ -1178,21 +2103,35 @@ function jumpToLive() {
 const RATE_MSG = 'Too fast: nika sends up to 20 requests a second. Your text is kept.';
 let chain = Promise.resolve(); // sends go out in the order they were made, one at a time
 
-async function deliver(payload) {
-  if (M.gone || !paneId) return { ok: false, message: 'The pane is gone.' };
+/** One POST to a pane route (`keys` or `submit`); a 429 waits a moment and sends again (nothing was sent). */
+async function postRetry(tail, payload) {
+  GL.arm?.disarm(); // F17: a typed key or Send is not a scroll (Claude jumps to the bottom on submit); the next frame never glides
   let r;
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/keys`, { method: 'POST', json: payload });
+    r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, { method: 'POST', json: payload });
     if (r.status !== 429) break;
     showProblem(RATE_MSG, 'warn'); // busy: wait a moment and send again (nothing was sent)
     await sleep(700 * (attempt + 1));
   }
+  return r;
+}
+
+/** Send's own typing (`send: true`, T54) refused for a prompt, a dialog, the survey or an unclear screen: the fixed lines of the submit route (draft-sync.js submitMessage). Nothing more is sent and the text stays. null for everything else. */
+function sendRefusal(payload, r) {
+  const code = r.body?.error;
+  return payload.send === true && r.status === 409 && (code === 'prompt-open' || code === 'screen-unclear') ? submitMessage({ status: 409, code }) : null;
+}
+
+async function deliver(payload) {
+  if (M.gone || !paneId) return { ok: false, message: 'The pane is gone.' };
+  const r = await postRetry('keys', payload);
   if (r.status === 200) {
     clearProblem();
     return { ok: true };
   }
   if (r.status === 404) setGone();
-  const message = keysRefusal({ status: r.status, code: r.body?.error })
+  const message = sendRefusal(payload, r)
+    ?? keysRefusal({ status: r.status, code: r.body?.error })
     ?? (r.status === 429 ? `${RATE_MSG} Try again in a moment.`
       : r.status === 0 ? 'nika did not answer. Your text is kept.'
         : serverMessage(r, `The pane did not accept this (${r.status}).`));
@@ -1201,16 +2140,20 @@ async function deliver(payload) {
 }
 
 /** Sends the bodies in order as one job; the first failure stops the rest (an Enter must not follow a text that never arrived). */
-function enqueueSeq(payloads) {
-  const job = chain.then(async () => {
-    for (const payload of payloads) {
-      const r = await deliver(payload);
-      if (!r.ok) return r;
-    }
-    return { ok: true };
-  });
+function enqueueJob(run) {
+  const job = chain.then(run);
   chain = job.catch(() => {});
   return job;
+}
+async function deliverAll(payloads) {
+  for (const payload of payloads) {
+    const r = await deliver(payload);
+    if (!r.ok) return r;
+  }
+  return { ok: true };
+}
+function enqueueSeq(payloads) {
+  return enqueueJob(() => deliverAll(payloads));
 }
 const enqueue = (payload) => enqueueSeq([payload]);
 
@@ -1260,6 +2203,7 @@ function grow() {
 function updateChip() {
   renderCmdBtn();
   renderArgHint();
+  renderSuggestion(); // the suggestion shows only while the box is empty
   syncPalette(); // the text may have become (or stopped being) a command query; also closes the list after a send, a clear or an insert
   const v = composer().value;
   const lines = v.split('\n').length;
@@ -1271,38 +2215,217 @@ function updateChip() {
 let sending = false;
 async function sendComposer() {
   const ta = composer();
-  if (sending || ta.disabled) return;
-  const gate = sendGate({ promptOpen: W.promptOpen, status: A.kind, buttons: W.pane === 'ok' && hasAnswerButtons(W.prompt), bypass: W.prompt?.bypass === true }); // Enter would confirm the prompt's highlighted option: answer with the buttons
+  if (ta.disabled) return; // an off box stays silent
+  if (sending) { // the last Send is still in flight (Enter, the Send button): say so, send and queue nothing; the text stays in the box
+    showProblem(STILL_SENDING, 'warn', STILL_SENDING_MS);
+    return;
+  }
+  const note = SV?.sendNote();
+  if (note) {
+    // a feedback question is open above the box (0.5, F14): nothing is sent and the text stays in the box
+    showProblem(note, 'error');
+    return;
+  }
+  const gate = sendGate({ promptOpen: W.promptOpen, status: A.kind, buttons: (W.pane === 'ok' && hasAnswerButtons(W.prompt)) || DF?.live() === true, bypass: W.prompt?.bypass === true }); // Enter would confirm the prompt's highlighted option: answer with the buttons
   if (!gate.ok) {
     showProblem(gate.message, 'error'); // nothing is sent and the text stays in the box
     return;
   }
+  if (ATT.pending()) return ATT.send(composer().value); // chips under the box: the text and the files go together (attach.js)
   const value = ta.value;
-  const plan = S.on ? planShell(value) : planSend(value);
+  // the box is mirrored in Claude's input box: when the screen already holds this text only Enter goes out, else the text is copied over first (design W5, section 4)
+  const route = draftSendPlan({ value, shell: S.on, screen: DS.screen(), cols: M.cols, footerKnown: W.confirmed === true && W.mode !== 'unknown' }); // an unknown footer (a menu, Claude's agent list) and no readable box: refused before any key is typed
+  if (route.act === 'refuse') {
+    showProblem(route.message, 'error'); // nothing is sent and the text stays in the box
+    return;
+  }
+  if (route.act === 'none') return; // an empty box over an empty Claude input: no request (an Enter there could only take Claude's suggestion)
+  const plan = route.act !== 'legacy' ? route : S.on ? planShell(value) : planSend(value);
   if (plan.empty) return; // Shell on and nothing to run: no lone "!"
   if (!plan.ok) {
     showProblem(plan.message, 'error');
     return;
   }
   sending = true;
+  DS.beginSend(); // the background sync holds still until this send is over
   $('send').setAttribute('aria-busy', 'true');
-  const r = await enqueueSeq(plan.payloads ?? [plan.payload]);
-  sending = false;
-  $('send').removeAttribute('aria-busy');
-  if (!r.ok) return; // the text stays in the box, and Shell stays on so a retry still goes as a command
-  say(`Sent ${plan.summary} to ${paneId}`);
-  if (S.on) setShell(false); // like Claude's own ! mode: the next message is a message
-  if (ta.value === value) {
-    ta.value = '';
-    grow();
-    updateChip();
+  try { // the end of a Send is in the finally (as attach.js send): a job that throws must not leave `sending` set and the sync held until a reload
+    // every Send ends in the one guarded Enter (submitEnter); the text before it is pushed into Claude's input (a synced box) or typed by the keys route (no readable box)
+    const r = await enqueueJob(route.act === 'push' ? () => pushThenSubmit(route) : route.act === 'enter' ? () => submitEnter(route.submit.base) : () => typeThenSubmit(plan.payloads));
+    if (r.ok) { // else the text stays in the box, and Shell stays on so a retry still goes as a command
+      say(r.taken === true && A.kind === 'busy' && value.trim() !== '' ? `Queued for Claude: ${route.textSummary ?? plan.summary}` : `Sent ${plan.summary} to ${paneId}`); // Claude takes a message sent while it works at its next step; the echo names the text, not the Enter (a lone Enter queues nothing of ours)
+      if (S.on) setShell(false); // like Claude's own ! mode: the next message is a message
+      clearBox(value);
+    }
+  } catch {
+    // a code error in the job or after it (the network errors are caught in call()): whether Enter went out is not known, the text stays in the box; the line of the submit route for "no answer" says so
+    showProblem(submitMessage({ status: 0 }), 'error');
+  } finally {
+    sending = false;
+    $('send').removeAttribute('aria-busy');
+    DS.endSend();
   }
 }
+
+/** The message box after its text went to Claude: emptied only when it still holds what was sent (the user may have typed on); the sync forgets the unsent text. */
+function clearBox(value) {
+  const ta = composer();
+  if (ta.value !== value) return;
+  ta.value = '';
+  grow();
+  updateChip();
+  DS.sent(); // nothing of it is unsent any more
+}
+
+/** A synced Send: the text is copied into Claude's input (a non-200 sends no Enter), then the guarded Enter against the sig of that write. One job in the keys chain, so arrows queued before it go first. */
+async function pushThenSubmit(route) {
+  const p = await DS.send(route.text);
+  if (!p.ok) {
+    showProblem(p.message, 'error');
+    return p;
+  }
+  return submitEnter(p.sig);
+}
+
+/** A Send without a readable box: the text goes through the keys route (Shell: Ctrl-U and "!" + the command; no Enter), then the guarded Enter with no base. */
+async function typeThenSubmit(payloads) {
+  if (HOLD.active) await HOLD.wait(); // F10: no key is typed on the strength of a held frame
+  const r = await deliverAll(payloads);
+  return r.ok ? submitEnter() : r;
+}
+
+/**
+ * Send's one Enter, through the submit route and never the keys route (W13; docs/contracts/api-app.md): the server presses it only on a fresh
+ * screen with no prompt or dialog and, with `base` (the draft sig the page last saw), only while Claude's input still reads so. Claude queues
+ * it while it works. Returns { ok, taken, message }: not ok keeps the text in the box. The fixed copy is draft-sync.js (submitResult).
+ */
+async function submitEnter(base) {
+  if (HOLD.active) await HOLD.wait(); // F10: the server decides on its own fresh capture; the page only waits for nika's own redraw
+  if (M.gone || !paneId) return { ok: false, message: 'The pane is gone.' };
+  const r = await postRetry('submit', base ? { base } : {});
+  DS.submitted(r); // the answer's draft is the screen after the Enter
+  const out = submitResult(r);
+  if (out.ok) {
+    clearProblem();
+    return out;
+  }
+  if (r.status === 404) setGone();
+  showProblem(out.message, r.status === 429 ? 'warn' : 'error', r.status === 429 ? 3000 : 0);
+  return out;
+}
+
+// ---- draft sync (W5): the message box and Claude's input box mirror each other; the rules and the copy: draft-sync.js ----------
+
+/** A pull: the terminal's draft becomes the box's text. No `input` event fires, so it is not taken for an edit; focus never moves. */
+function pullIntoBox(value, shell) {
+  const ta = composer();
+  const before = ta.value;
+  const caret = ta.selectionStart;
+  ta.value = value;
+  if (document.activeElement === ta) {
+    const at = caretAfter(before, value, caret);
+    ta.setSelectionRange(at, at);
+  }
+  setShell(shell);
+  grow();
+  updateChip();
+  if (document.activeElement !== ta) closePalette(); // the list belongs to a box that has focus
+}
+
+/** The one note under the box: a paused sync, a long text, a refused replace. Colour from data-k, icon and word in the line. */
+function renderDraftNote(view) {
+  const el = $('draft-note');
+  el.hidden = view === null;
+  if (view === null) {
+    el.removeAttribute('data-k');
+    el.replaceChildren();
+    return;
+  }
+  el.setAttribute('data-k', view.kind);
+  el.replaceChildren(icon(view.icon), h('b', { text: view.label }), h('span', { text: ` ${view.text}` }));
+}
+
+/** The sync's write into Claude's input (F10: it waits for nika's own redraw hold; the server decides on its own fresh capture). */
+async function putDraft(body) {
+  if (HOLD.active) await HOLD.wait();
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/draft`, { method: 'PUT', json: body });
+}
+
+/** Tab or the right arrow on Claude's suggestion (F10, R2 #3: it waits for nika's own redraw hold like the sync's write; the server decides on its own fresh capture). */
+async function suggestDraft(body) {
+  if (HOLD.active) await HOLD.wait();
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/suggestion`, { method: 'POST', json: body });
+}
+
+/** Resolves at once with no redraw hold, else when it ends (F10, R2 #3): the attachment tray's request goes after it. */
+async function waitHold() {
+  if (HOLD.active) await HOLD.wait();
+}
+
+const DS = createDraftSync({
+  now: () => Date.now(),
+  after: (fn, ms) => setTimeout(fn, ms),
+  cancel: (timer) => clearTimeout(timer),
+  box: () => ({ value: composer().value, shell: S.on }),
+  setBox: pullIntoBox,
+  put: putDraft,
+  suggest: suggestDraft,
+  note: renderDraftNote,
+  problem: (message) => showProblem(message, 'warn', 6000),
+  gone: setGone,
+});
+
+// ---- attachments (0.5, design W2): chips under the message box; the logic and the copy: attach.js ----------------------------
+
+const ATT = createAttachTray({
+  paneId,
+  path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`,
+  call,
+  appFetch,
+  ds: DS,
+  enqueueJob,
+  waitHold,
+  say,
+  announce,
+  showProblem,
+  clearProblem,
+  showNotice,
+  setGone,
+  box: () => ({ value: composer().value, shell: S.on }),
+  cols: () => M.cols,
+  clearBox,
+  focusBox: () => composer().focus(),
+});
 
 // ---- Shell mode (spec 9.6): Enter sends Ctrl-U, "!" + the text, Enter; it turns itself off after a successful send -------------
 
 const RSAQUO = String.fromCharCode(0x203a);
-const idlePlaceholder = () => (S.on ? `Shell command for Claude's ! mode${DOTS}` : `Message ${A.name}${DOTS}`);
+const idlePlaceholder = () => (S.on ? `Shell command for Claude's ! mode${DOTS}` : suggestionNow() ?? `Message ${A.name}${DOTS}`);
+
+/** Claude's prompt suggestion while the box is empty, Shell is off and the sync can read the screen's draft (draft-sync.js suggestionFor), else null. */
+function suggestionNow() {
+  return suggestionFor(DS.screen(), { value: composer().value, shell: S.on });
+}
+
+/** The box's placeholder and its "suggest" look: the suggestion in its own colour and italic, with the note under the box saying what accepts it. A disabled box keeps its own text. */
+function renderSuggestion() {
+  const usable = !composer().disabled;
+  const on = usable && suggestionNow() !== null;
+  document.querySelector('.inbox').classList.toggle('suggest', on);
+  if (usable) composer().placeholder = idlePlaceholder();
+}
+
+/** Tab or the right arrow on the suggestion: the guarded route (DS.accept), in the keys chain so arrows typed just before go first. Never a key of its own. */
+async function acceptSuggestion(text) {
+  const r = await enqueueJob(() => DS.accept(text));
+  renderSuggestion();
+  if (r.ok) {
+    clearProblem();
+    say(`Accepted Claude's suggestion: ${text}`);
+  } else {
+    showProblem(r.message, problemKind(r.status), 6000);
+  }
+}
 
 function setShell(on) {
   if (on === S.on) return;
@@ -1312,7 +2435,7 @@ function setShell(on) {
   toggle.querySelector('.onoff').textContent = on ? 'on' : 'off';
   document.querySelector('.inbox').classList.toggle('shell-on', on);
   document.querySelector('.inbox .prompt').textContent = on ? '!' : RSAQUO;
-  if (!composer().disabled) composer().placeholder = idlePlaceholder();
+  renderSuggestion(); // Shell has its own placeholder and no suggestion
   $('shell-hint').hidden = !on;
   if (on) closePalette(); // a "/" in Shell mode is shell text
   renderCmdBtn();
@@ -1444,6 +2567,7 @@ function insertActive() {
   ta.focus();
   grow();
   updateChip();
+  DS.edited();
   announce(ins.hint ? `Inserted ${ins.text.trim()}. ${ins.hint}` : `Inserted ${ins.text.trim()}`);
 }
 
@@ -1461,6 +2585,7 @@ function wirePalette() {
     ta.value = '/';
     grow();
     updateChip(); // "/" is a query: this opens the list
+    DS.edited();
     ta.focus();
   });
   $('pal').addEventListener('mousedown', (e) => e.preventDefault()); // a click in the list does not blur the box
@@ -1498,6 +2623,7 @@ function setPass(on, keepFocus = false) {
     : `Live terminal of ${A.name}, pane ${paneId}`);
   $('pass-toggle').setAttribute('aria-pressed', String(on));
   $('pass-onoff').textContent = on ? 'on' : 'off';
+  drawMirror(); // the strip stands in for Claude's input box only while Type into pane is off
   if (on) {
     term.focus();
     announce(`Passthrough on: every key goes to pane ${paneId}. Press Control and ] to leave.`);
@@ -1574,12 +2700,15 @@ function wirePassthrough() {
 
 function wireComposer() {
   const ta = composer();
-  ta.addEventListener('input', () => { grow(); updateChip(); });
+  ta.addEventListener('input', () => { grow(); updateChip(); DS.edited(); });
+  ta.addEventListener('compositionstart', () => DS.composition(true));
+  ta.addEventListener('compositionend', () => DS.composition(false));
   ta.addEventListener('keydown', (e) => {
+    const sug = suggestionNow(); // what the placeholder shows: the text Tab or the right arrow would accept
     const a = composerKey(e, {
       empty: ta.value === '', selection: ta.selectionStart !== ta.selectionEnd, choosing: PL.active >= 0, paletteOpen: PL.open,
-      pop: Q.pop, pane: W.pane, status: A.kind, promptOpen: W.promptOpen,
-      buttons: W.pane === 'ok' && hasAnswerButtons(W.prompt), bypass: W.prompt?.bypass === true, switching: SW.busy !== null,
+      pop: Q.pop, pane: W.pane, status: A.kind, promptOpen: W.promptOpen, dialog: W.dialog !== null,
+      buttons: (W.pane === 'ok' && hasAnswerButtons(W.prompt)) || DF?.live() === true, bypass: W.prompt?.bypass === true, switching: SW.busy !== null, suggestion: sug,
     });
     if (a.act === 'none') return;
     e.preventDefault();
@@ -1595,6 +2724,7 @@ function wireComposer() {
     else if (a.act === 'palette-insert') insertActive();
     else if (a.act === 'send') sendComposer();
     else if (a.act === 'key') sendKey(a.key);
+    else if (a.act === 'accept') acceptSuggestion(sug);
     else if (a.act === 'stop') arrows ? chain.then(stop) : stop(); // Stop is not queued, but it never overtakes arrows typed just before
     else if (a.act === 'refuse') showProblem(a.message, a.kind, a.ms);
     else if (a.act === 'focus-back') $('shell-toggle').focus();
@@ -1604,10 +2734,11 @@ function wireComposer() {
     ta.value = '';
     grow();
     updateChip();
+    DS.edited();
     ta.focus();
   });
   $('send').addEventListener('click', () => { endArrows(); sendComposer(); ta.focus(); });
-  $('shell-toggle').addEventListener('click', () => setShell(!S.on)); // focus stays on the toggle; the text stays in the box
+  $('shell-toggle').addEventListener('click', () => { setShell(!S.on); DS.edited(); }); // focus stays on the toggle; the text stays in the box; Shell on or off is another form of the draft
   wirePalette();
 }
 
@@ -1615,12 +2746,14 @@ function wireTerminal() {
   const term = $('term');
   term.addEventListener('scroll', () => setFrozen(term.scrollHeight - term.scrollTop - term.clientHeight >= 8));
   $('jump-live').addEventListener('click', jumpToLive);
+  wireScroll();
   $('over-retry').addEventListener('click', () => {
     M.gone = false;
     M.fatal = false;
     M.inputOff = false;
     M.etag = null;
     W.got = false;
+    DS.reset();
     setPaneState('connecting');
     setInputEnabled(true);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');
@@ -1752,7 +2885,7 @@ function syncPassKeys() {
 }
 
 function openKbd(opener) {
-  openShortcuts({ window: 'session', tier: 'app', mac: MAC, singleKey: UI.singleKey, opener });
+  openShortcuts({ window: SUB ? 'subagent' : 'session', tier: 'app', mac: MAC, singleKey: UI.singleKey, opener });
 }
 
 /** Document-level, so it also runs for the message box and the buttons; the mirror in passthrough stops its own keys first. */
@@ -1787,14 +2920,23 @@ function showEmpty(text) {
 
 function boot() {
   const appMode = typeof isApp === 'function' ? isApp() : Boolean(isApp);
-  $('back').href = projectKey ? `/#project/${projectKey}` : '/#dashboard';
+  setBackHref(projectKey ? `/#project/${projectKey}` : '/#dashboard');
   setBack('Dashboard');
   syncKbdHint();
   syncHistHint();
   syncPassKeys();
+  watchNotes();
   if (!appMode) {
     $('kbd-open').hidden = true;
     showEmpty('The session window is part of the nika app. This page was opened in a browser, which only shows the read-only dashboard.');
+    return;
+  }
+  if (BAD_AGENT) {
+    showEmpty('This link has no valid subagent id. Open the subagent again from its session.');
+    return;
+  }
+  if (SUB && !sessionId) {
+    showEmpty('This link has no valid session id. Open the subagent again from its session.');
     return;
   }
   if (!sessionId && !paneId) {
@@ -1804,25 +2946,32 @@ function boot() {
   const bad = [];
   const q = new URLSearchParams(location.search);
   if (q.has('session') && !sessionId) bad.push('session id');
-  if (q.has('pane') && !paneId) bad.push('pane id');
+  if (q.has('pane') && !paneId && !SUB) bad.push('pane id'); // a subagent window has no pane: the parameter is ignored, nothing said
   if (bad.length) showNotice(`The link had an invalid ${bad.join(' and ')}; it was ignored.`);
   showUrlNotice();
 
-  wireTabs();
+  if (SUB) readOnlyView();
+  else wireTabs();
   wireHistory();
-  wireHist();
-  wireTerminal();
-  wireComposer();
+  if (!SUB) {
+    wireHist();
+    wireTerminal();
+    wireComposer();
+    ATT.wire();
+    wireSubs();
+  }
   document.addEventListener('keydown', onPageKey);
   wireWindowKeys({ mac: MAC, passthrough: () => P.on, send: windowCommand }); // Ctrl+Q, Ctrl+W (not while typing into the pane) and zoom off macOS
   $('kbd-open').addEventListener('click', () => openKbd($('kbd-open')));
   loadSettings();
   startAgentPoll();
   document.addEventListener('visibilitychange', () => {
+    FIT.planner?.focusChanged(document.hidden); // F9, both ways: hidden gives the size back at once, shown settles (the beat below adopts it)
     if (document.hidden) return;
     kickMirror(0);
     refreshHistory();
     refreshAgent();
+    FIT.planner?.beat(); // timers may have been suspended while the window was hidden: one request now, the lease may have lapsed
   });
 
   const split = $('split');
@@ -1837,6 +2986,9 @@ function boot() {
   if (paneId) {
     wireSwitcher();
     wireQuick();
+    wireFit();
+    DF = createDialogForm({ root: $('dialog-form'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, showProblem, clearProblem, setGone, composer, refresh: renderAttn });
+    SV = createSurveyPanel({ root: $('survey-panel'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, clearProblem, setGone, composer });
     $('pb-pane').textContent = paneId;
     $('term').setAttribute('aria-label', `Live terminal of ${A.name}, pane ${paneId}`);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');
@@ -1846,7 +2998,7 @@ function boot() {
     split.classList.add('no-term');
     split.dataset.tab = 'hist';
     $('pane-tabs').hidden = true;
-    showNotice('This session is not in tmux, so nika can show its transcript but cannot mirror or type into it.');
+    showNotice(SUB ? 'Read-only. A subagent runs inside its parent session: nika shows its transcript, with no pane to mirror and no input.' : 'This session is not in tmux, so nika can show its transcript but cannot mirror or type into it.');
   }
 }
 

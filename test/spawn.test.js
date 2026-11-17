@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnAgent, runAgent, deniedTools } from '../src/spawn.js';
+import { spawnAgent, runAgent, deniedTools, agentSettings } from '../src/spawn.js';
 import { startOrchestrator, sessionNameFor } from '../src/orchestrate.js';
 import { TMUX_SESSION, AGENT_NAME } from '../src/ids.js';
 import { NO_TMUX_SERVER } from '../src/tmuxerr.js';
@@ -14,6 +14,7 @@ import { reportsDir } from '../src/paths.js';
 import { addProject, updateProjectConfig } from '../src/store.js';
 import { ensureDir, writeAtomic } from '../src/fwrite.js';
 import { collect } from '../src/model.js';
+import { listPanes } from '../src/collect/tmux.js';
 import { indexReports } from '../src/collect/reports.js';
 import { fakeTmux, makeWorld, TMUX, CLAUDE, NIKA_ARGV } from './tmux-fake.js';
 import { makeFixture, cleanup, fakeExec, SID, NOW } from './helpers.js';
@@ -27,11 +28,12 @@ const world = async (settings) => {
 after(() => worlds.forEach((w) => w.cleanup()));
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const LIST_ALL = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}'];
+const LIST_ALL = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{session_name}\t#{window_index}\t#{pane_title}\t#{pane_current_command}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}\t#{@nika-kind}'];
 const LIST_AGENTS = [TMUX, '-u', 'list-panes', '-a', '-F', '#{pane_id}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}'];
 const OTHER_KEY = '0123456789abcdef'; // the key of some other project
 const CHECK = (pane) => [TMUX, '-u', 'display-message', '-p', '-t', pane, '#{pane_dead}']; // the early-exit check (F4), made once the pane is created and tagged
-const DENY_SETTINGS = '{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"]}}';
+// Written out by hand (not built with agentSettings), so a change of the JSON shape fails here.
+const SETTINGS = (dir) => `{"permissions":{"deny":["Read(**/.env*)","Edit(**/.env*)","Read(**/*.key)","Edit(**/*.key)"],"additionalDirectories":[${JSON.stringify(dir)}]}}`;
 const DENIED = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)'];
 const COMPACT_1M = { window: 400000, pct: '84.2106' }; // the default setting on a 1M model such as `sonnet`: W = 400k, 80 %
 const BASE_PANES = () => [{ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude' }];
@@ -54,7 +56,7 @@ describe('spawnAgent: placement and files', () => {
     const r = await spawnAgent(req(w), ctx);
     assert.deepEqual(r, {
       status: 200,
-      body: { pane: '%20', session: 'My-App', sessionId: null, reports: { dir: rd(w), session: 'builder-1.session', report: 'builder-1.md', rc: 'builder-1.rc', remote: 'builder-1.remote' } },
+      body: { pane: '%20', session: 'My-App', sessionId: null, kind: 'agent', reports: { dir: rd(w), session: 'builder-1.session', report: 'builder-1.md', rc: 'builder-1.rc', remote: 'builder-1.remote' } },
     });
     assert.deepEqual(exec.calls, [
       LIST_ALL,
@@ -63,6 +65,7 @@ describe('spawnAgent: placement and files', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-kind', 'agent'],
       CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
@@ -601,7 +604,7 @@ describe('spawnAgent: no tmux server or no project session (F4)', () => {
     const r = await spawnAgent(req(w), ctx);
     assert.deepEqual(r, {
       status: 200,
-      body: { pane: '%20', session: 'My-App', sessionId: null, reports: { dir: rd(w), session: 'builder-1.session', report: 'builder-1.md', rc: 'builder-1.rc', remote: 'builder-1.remote' } },
+      body: { pane: '%20', session: 'My-App', sessionId: null, kind: 'agent', reports: { dir: rd(w), session: 'builder-1.session', report: 'builder-1.md', rc: 'builder-1.rc', remote: 'builder-1.remote' } },
     });
     assert.deepEqual(exec.calls, [
       LIST_ALL, // no server: both listings fail, which is "no panes", not an error
@@ -610,6 +613,7 @@ describe('spawnAgent: no tmux server or no project session (F4)', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '1'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-kind', 'agent'],
       CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
@@ -880,6 +884,45 @@ describe('spawnAgent: a broken tmux listing, dead panes and a lost race (F4, fix
     assert.equal(live[2], '2', 'control: a live main orchestrator makes depth 2');
   });
 
+  // R1 F6 (final review, owner ruling): one parse of pane_dead (paneDead in src/collect/tmux.js). 1 = dead: not live. 0 = running. Anything
+  // else is unknown: it still counts toward the caps and the duplicate-name check (the cautious direction) but is never accepted as a parent.
+  const ODD = ['x', '2', '', 'true', '01'];
+
+  test('(+) a pane_dead that is neither 0 nor 1 still counts: per-parent cap, project cap and the duplicate-name check (a known-dead pane counts for none)', async () => {
+    const w = await world({ limits: { maxAgents: 1 } });
+    const spawnWith = (panes, over = {}) => spawnAgent(req(w, { name: 'fresh', ...over }), w.ctx(fakeTmux({ panes })));
+    for (const dead of ODD) {
+      const one = [...BASE_PANES(), agent(w, '%31', 'old', { dead })]; // maxAgents 1: one counted agent of "you" is the cap
+      const parent = await spawnWith(one);
+      assert.deepEqual([parent.status, parent.body.error, parent.body.scope], [409, 'limit', 'parent'], JSON.stringify(dead));
+      const three = [...BASE_PANES(), ...['x', 'y', 'z'].map((n, i) => agent(w, `%${41 + i}`, n, { parent: `%9${i}`, depth: '2', dead }))]; // min(3 × 1, 24) = 3 for the project
+      const project = await spawnWith(three);
+      assert.deepEqual([project.status, project.body.error, project.body.scope], [409, 'limit', 'project'], JSON.stringify(dead));
+      const same = await spawnWith([...BASE_PANES(), agent(w, '%31', 'old', { dead })], { name: 'old' });
+      assert.deepEqual([same.status, same.body.error], [409, 'conflict'], JSON.stringify(dead));
+    }
+    assert.equal((await spawnWith([...BASE_PANES(), agent(w, '%31', 'old', { dead: '1' })])).status, 200, 'control: known dead counts for none');
+    assert.equal((await spawnWith([...BASE_PANES(), agent(w, '%31', 'old', { dead: '1' })], { name: 'old' })).status, 200);
+  });
+
+  test('(−) a main or sub-orchestrator pane whose pane_dead is neither 0 nor 1 is never accepted as a parent: 409 depth for the page and for the CLI, nothing split', async () => {
+    const w = await world();
+    const SUB = (over = {}) => ({ id: '%2', session: 'My-App', window: 1, windowName: 'zsh', command: 'claude', role: 'sub-orchestrator', agent: `${w.project.key}/lead`, depth: '2', parent: '%1', ...over });
+    const outcome = async (panes, parent, extra = {}) => {
+      const exec = fakeTmux({ panes });
+      const r = await spawnAgent(req(w, { parent }), w.ctx(exec, extra));
+      return [r.status, r.body.error, r.status === 200 ? exec.panes.find((p) => p.id === r.body.pane).depth : null, exec.of('split-window').length];
+    };
+    for (const dead of ODD) {
+      for (const extra of [{}, { lenientParent: true }]) {
+        assert.deepEqual(await outcome([MAIN(w, { dead })], '%1', extra), [409, 'depth', null, 0], `main ${JSON.stringify(dead)} ${JSON.stringify(extra)}`);
+        assert.deepEqual(await outcome([MAIN(w), SUB({ dead })], '%2', extra), [409, 'depth', null, 0], `sub ${JSON.stringify(dead)} ${JSON.stringify(extra)}`);
+      }
+    }
+    assert.deepEqual(await outcome([MAIN(w)], '%1'), [200, undefined, '2', 1], 'control: running (0) is the parent');
+    assert.deepEqual(await outcome([MAIN(w), SUB()], '%2'), [200, undefined, '3', 1], 'control: a running sub-orchestrator is the parent');
+  });
+
   test('(−) new-session losing a race ("duplicate session"): 502 tmux_failed, nothing recorded, no .last-pane, no check, no title', async () => {
     const w = await world();
     const base = fakeTmux({ panes: [{ id: '%1', session: 'My-App', window: 0, windowName: 'zsh', command: 'zsh' }] }); // another process created the session meanwhile
@@ -958,7 +1001,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
     assert.deepEqual(JSON.parse(read(w, 'under-sub.agent.json')), { model: 'sonnet', permissionMode: 'default', rc: '', role: 'agent', parent: '%2', depth: 3, compact: COMPACT_1M });
     assert.deepEqual(exec.of('set-option').filter((c) => c[3] === '%21'), [
       ['set-option', '-p', '-t', '%21', '@nika-role', 'agent'], ['set-option', '-p', '-t', '%21', '@nika-agent', `${w.project.key}/under-sub`],
-      ['set-option', '-p', '-t', '%21', '@nika-depth', '3'], ['set-option', '-p', '-t', '%21', '@nika-parent', '%2'],
+      ['set-option', '-p', '-t', '%21', '@nika-depth', '3'], ['set-option', '-p', '-t', '%21', '@nika-parent', '%2'], ['set-option', '-p', '-t', '%21', '@nika-kind', 'agent'],
     ]);
   });
 
@@ -1004,6 +1047,7 @@ describe('spawnAgent: nesting and limits (0.4)', () => {
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '2'],
       [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-kind', 'agent'],
       CHECK('%20'),
       [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
     ]);
@@ -1418,8 +1462,8 @@ describe('runAgent', () => {
     assert.match(guard, /never run nika, tmux or claude/i);
     assert.match(guard, /git add, git commit or git push/);
     assert.deepEqual(args, [
-      '--session-id', sid, '--model', 'sonnet', '-n', 'builder-1', '--add-dir', rd(w), '--append-system-prompt', guard,
-      '--settings', DENY_SETTINGS, '--disallowedTools', ...DENIED, '--', 'Do the thing.',
+      '--session-id', sid, '--model', 'sonnet', '-n', 'builder-1', '--append-system-prompt', guard,
+      '--settings', SETTINGS(rd(w)), '--disallowedTools', ...DENIED, '--', 'Do the thing.',
     ]);
   });
 
@@ -1429,7 +1473,7 @@ describe('runAgent', () => {
     const sid = read(w, 'builder-1.session').trim();
     const args = spawn.calls[0].args;
     assert.deepEqual(args.slice(0, 9), ['--session-id', sid, '--model', 'sonnet', '--permission-mode', 'plan', '-n', 'builder-1', '--remote-control=my-app-builder-1']);
-    assert.equal(args[9], '--add-dir');
+    assert.equal(args[9], '--append-system-prompt');
     assert.equal(read(w, 'builder-1.remote'), 'my-app-builder-1\n');
   });
 
@@ -1660,8 +1704,8 @@ describe('runAgent: a sub-orchestrator (0.4)', () => {
     const args = spawn.calls[0].args;
     const guard = args[args.indexOf('--append-system-prompt') + 1];
     assert.deepEqual(args, [
-      '--session-id', sid, '--model', 'sonnet', '-n', 'planner', '--add-dir', rd(w), '--append-system-prompt', guard,
-      '--settings', DENY_SETTINGS, '--disallowedTools', ...SUB_DENIED, '--', 'Do the thing.',
+      '--session-id', sid, '--model', 'sonnet', '-n', 'planner', '--append-system-prompt', guard,
+      '--settings', SETTINGS(rd(w)), '--disallowedTools', ...SUB_DENIED, '--', 'Do the thing.',
     ]);
     assert.ok(!SUB_DENIED.includes('Bash(nika:*)') && !SUB_DENIED.includes('Bash(nika spawn:*)') && !SUB_DENIED.includes('Bash(nika status:*)'));
   });
@@ -1749,7 +1793,7 @@ describe('collect() with nika report dirs', () => {
       const without = await run(fx);
       const withOwn = await run(fx, w.env);
       assert.equal(agent(without, SID.idle).report, null);
-      assert.deepEqual(agent(withOwn, SID.idle).report, { name: 'scout-1', status: 'STATUS: DONE nika-spawned report', rc: 3, hasFile: true });
+      assert.deepEqual(agent(withOwn, SID.idle).report, { name: 'scout-1', status: 'STATUS: DONE nika-spawned report', rc: 3, hasFile: true, sessionId: SID.idle });
       assert.equal(agent(withOwn, SID.idle).name, 'scout-1');
       assert.ok(withOwn.reportPaths.get(SID.idle).endsWith(path.join('reports', 'scout-1.md')));
       // nothing else changed: same agents, no phantom entries from the new file kinds
@@ -1919,5 +1963,318 @@ describe('runAgent: the compaction variables in the env of the claude it starts 
     const spawn = fakeSpawn();
     assert.equal((await run({ spawn, env: withEnv(w) })).code, 0);
     assert.deepEqual(spawn.calls[0].opts.env, { ...withEnv(w), [WINDOW_ENV]: '400000', [PCT_ENV]: '100' });
+  });
+});
+
+// --- a window the fit holds is given back before a split lands in it (W7, owner answer Q3) -------------------------------------
+
+describe('spawnAgent: the fit', () => {
+  /**
+   * A fakeTmux that also answers `display-message -p -t <target> -F #{window_id}` (the window the split will land in) and records the
+   * order of window lookups, fit releases and splits in `log`. `fit.held` is what `size()` reports; `fit.releaseWindow` is replaceable.
+   */
+  function fitRig({ panes = BASE_PANES(), window = '@3', held = 1, lookup, release } = {}) {
+    const log = [];
+    const base = fakeTmux({ panes });
+    const exec = async (cmd, args) => {
+      if (args[1] === 'display-message' && args.at(-1) === '#{window_id}') {
+        log.push(['lookup', args.slice(2)]);
+        if (lookup) return lookup(args);
+        return { stdout: `${window}\n`, stderr: '' };
+      }
+      if (args[1] === 'split-window') log.push(['split']);
+      return base(cmd, args);
+    };
+    exec.of = base.of;
+    exec.calls = base.calls;
+    exec.panes = base.panes;
+    const fit = {
+      size: () => held,
+      releaseWindow: async (win) => {
+        log.push(['release', win]);
+        return release ? release(win) : true;
+      },
+    };
+    const stderr = [];
+    return { exec, fit, log, stderr, errOut: { write: (m) => stderr.push(m) } };
+  }
+  const SPLIT_BESIDE = (w) => [TMUX, '-u', 'split-window', '-h', '-t', '=My-App:', '-c', w.project.dir, '-P', '-F', '#{pane_id}', '--', ...NIKA_ARGV, '_run-agent', w.project.key, 'builder-1'];
+
+  test('(+) beside, into a fitted window: the window id is read for the target, released first, then the split with its argv unchanged', async () => {
+    const w = await world();
+    const rig = fitRig();
+    const ctx = w.ctx(rig.exec, { fit: rig.fit });
+    const r = await spawnAgent(req(w), ctx);
+    assert.equal(r.status, 200);
+    assert.deepEqual(rig.log, [['lookup', ['-p', '-t', '=My-App:', '-F', '#{window_id}']], ['release', '@3'], ['split']]);
+    assert.deepEqual(rig.exec.of('split-window').map((a) => [TMUX, '-u', ...a]), [SPLIT_BESIDE(w)], 'the split is the one an unfitted window gets');
+    assert.deepEqual(ctx.started.get('%20').role, 'agent');
+  });
+
+  test('(+) under another pane or under the last agent: the lookup names that pane', async () => {
+    const w = await world({ panePlacement: 'under-last' });
+    const rig = fitRig({ panes: [...BASE_PANES(), { id: '%7', session: 'other', window: 0, windowName: 'x', command: 'zsh' }] });
+    const ctx = w.ctx(rig.exec, { fit: rig.fit });
+    assert.equal((await spawnAgent(req(w, { name: 'one', under: '%7' }), ctx)).status, 200);
+    assert.deepEqual(rig.log.at(-3), ['lookup', ['-p', '-t', '%7', '-F', '#{window_id}']]);
+    const second = fitRig();
+    const ctx2 = w.ctx(second.exec, { fit: second.fit });
+    assert.equal((await spawnAgent(req(w, { name: 'two' }), ctx2)).status, 200); // first: beside (no .last-pane for this exec's panes yet)
+    assert.equal((await spawnAgent(req(w, { name: 'three' }), ctx2)).status, 200);
+    const last = second.log.filter((l) => l[0] === 'lookup').at(-1);
+    assert.deepEqual(last, ['lookup', ['-p', '-t', '%20', '-F', '#{window_id}']]);
+    assert.deepEqual(second.log.slice(-3).map((l) => l[0]), ['lookup', 'release', 'split']);
+  });
+
+  test('(−) nothing is fitted (size 0): no lookup, no release, and the tmux calls are exactly those of a spawn without the fit', async () => {
+    const w = await world();
+    const rig = fitRig({ held: 0 });
+    const plain = fakeTmux({ panes: BASE_PANES() });
+    await spawnAgent(req(w), w.ctx(plain));
+    const w2 = await world();
+    await spawnAgent(req(w2), w2.ctx(rig.exec, { fit: rig.fit }));
+    assert.deepEqual(rig.log, [['split']]);
+    assert.deepEqual(rig.exec.calls.map((c) => c.map((x) => String(x).replace(w2.project.key, 'KEY').replace(w2.project.dir, 'DIR'))), plain.calls.map((c) => c.map((x) => String(x).replace(w.project.key, 'KEY').replace(w.project.dir, 'DIR'))));
+  });
+
+  test('(−) the CLI has no fit on its ctx: nothing is looked up or released', async () => {
+    const w = await world();
+    const rig = fitRig();
+    assert.equal((await spawnAgent(req(w), w.ctx(rig.exec))).status, 200);
+    assert.deepEqual(rig.log, [['split']]);
+  });
+
+  test('(−) the fit holds other windows: the release is asked for the target\'s window only, answers false, and the spawn goes on', async () => {
+    const w = await world();
+    const rig = fitRig({ window: '@9', release: () => false });
+    const r = await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit }));
+    assert.equal(r.status, 200);
+    assert.deepEqual(rig.log.map((l) => l[0]), ['lookup', 'release', 'split']);
+    assert.deepEqual(rig.log[1], ['release', '@9']);
+    assert.deepEqual(rig.stderr, []);
+  });
+
+  test('(−) a release that throws does not stop the spawn; one line is logged, with the step and the code only', async () => {
+    const w = await world();
+    const rig = fitRig({ release: () => { throw Object.assign(new Error('Command failed: tmux -u select-layout -t @3 -- {"w":200,"secret":"zq-layout"}'), { code: 1, stderr: 'zq-stderr\n' }); } });
+    const r = await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit, stderr: rig.errOut }));
+    assert.equal(r.status, 200);
+    assert.deepEqual(rig.log.map((l) => l[0]), ['lookup', 'release', 'split']);
+    assert.deepEqual(rig.stderr, ['nika: fit release before spawn failed (release 1)\n']);
+    assert.equal(rig.stderr.join('').includes('zq-'), false);
+  });
+
+  test('(−) a window lookup that fails (or answers something that is not a window id) releases nothing and does not stop the spawn', async () => {
+    for (const lookup of [() => { throw Object.assign(new Error("can't find pane"), { code: 1, stderr: "can't find pane\n" }); }, () => ({ stdout: '%1; ls\n', stderr: '' }), () => ({ stdout: '', stderr: '' }), () => ({ stdout: '@1\n@2\n', stderr: '' })]) {
+      const w = await world();
+      const rig = fitRig({ lookup });
+      const r = await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit, stderr: rig.errOut }));
+      assert.equal(r.status, 200, String(lookup));
+      assert.deepEqual(rig.log.map((l) => l[0]), ['lookup', 'split'], String(lookup));
+    }
+  });
+
+  test('(−) the project session does not exist yet (a new-session, no split): nothing is looked up or released', async () => {
+    const w = await world();
+    const rig = fitRig({ panes: [] }); // no tmux session at all: rig.exec records every window lookup, release and split
+    assert.equal((await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit }))).status, 200);
+    assert.equal(rig.exec.of('new-session').length, 1);
+    assert.equal(rig.exec.of('split-window').length, 0);
+    assert.deepEqual(rig.log, [], 'neither a lookup nor a release');
+  });
+
+  test('(−) a refused spawn (the name is already running, a bad parent, the cap) releases nothing', async () => {
+    const w = await world();
+    const rig = fitRig({ panes: [...BASE_PANES(), { id: '%30', session: 'My-App', window: 0, windowName: 'x', command: 'node', role: 'agent', agent: `${w.project.key}/builder-1`, depth: '1' }] });
+    const r = await spawnAgent(req(w), w.ctx(rig.exec, { fit: rig.fit }));
+    assert.deepEqual([r.status, r.body.error], [409, 'conflict']);
+    assert.deepEqual(rig.log, []);
+  });
+});
+
+describe('spawnAgent: the kind label (0.5, W9)', () => {
+  const MAIN = (w) => ({ id: '%1', session: 'My-App', window: 0, windowName: 'orchestrator', command: 'claude', role: 'orchestrator', agent: `${w.project.key}/orchestrator`, depth: '1' });
+  const KIND_CALL = (pane, kind) => [TMUX, '-u', 'set-option', '-p', '-t', pane, '@nika-kind', kind];
+  const kindCalls = (exec) => exec.of('set-option').filter((c) => c[4] === '@nika-kind').map((c) => c[5]);
+  const MSG_KIND = 'invalid kind: use coder, reviewer, tester, designer, scout, writer or agent';
+  const MSG_ORCH = 'kind is for agents: a sub-orchestrator always shows sub-orchestrator';
+  const paneOf = (exec, id) => exec.panes.find((p) => p.id === id);
+  /** Spawns once in a fresh world (Settings `settings`, then `after(w)`), returns { r, exec, w }. */
+  async function spawnOnce(over = {}, { settings, after: setup, panes } = {}) {
+    const w = await world(settings);
+    await setup?.(w);
+    const exec = fakeTmux({ panes: panes?.(w) ?? BASE_PANES() });
+    const r = await spawnAgent(req(w, over), w.ctx(exec));
+    return { r, exec, w };
+  }
+
+  test('(+) kind reviewer under the main orchestrator: @nika-kind reviewer is the last tag call, after @nika-parent; the body carries it; the listing reads it back', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [MAIN(w)] });
+    const r = await spawnAgent(req(w, { kind: 'reviewer', parent: '%1' }), w.ctx(exec));
+    assert.equal(r.status, 200);
+    assert.equal(r.body.kind, 'reviewer');
+    assert.deepEqual(exec.calls, [
+      LIST_ALL,
+      LIST_AGENTS,
+      [TMUX, '-u', 'split-window', '-h', '-t', '=My-App:', '-c', w.project.dir, '-P', '-F', '#{pane_id}', '--', ...NIKA_ARGV, '_run-agent', w.project.key, 'builder-1'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-role', 'agent'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-agent', `${w.project.key}/builder-1`],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-depth', '2'],
+      [TMUX, '-u', 'set-option', '-p', '-t', '%20', '@nika-parent', '%1'],
+      KIND_CALL('%20', 'reviewer'),
+      CHECK('%20'),
+      [TMUX, '-u', 'select-pane', '-t', '%20', '-T', '[%20] builder-1'],
+    ]);
+    const { panes } = await listPanes(exec, TMUX);
+    assert.deepEqual([panes.get('%20').role, panes.get('%20').kind], ['agent', 'reviewer']);
+    assert.equal(panes.get('%1').kind, null, 'the orchestrator pane has none');
+  });
+
+  test('(+) each of the seven words can be asked for', async () => {
+    for (const kind of ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent']) {
+      const { r, exec } = await spawnOnce({ kind });
+      assert.equal(r.status, 200, kind);
+      assert.equal(r.body.kind, kind);
+      assert.deepEqual(kindCalls(exec), [kind]);
+      assert.equal(paneOf(exec, '%20').kind, kind);
+    }
+  });
+
+  test('(+) a kind asked for beats the model: the Builder model with kind writer is writer; kind agent on the Builder model is agent', async () => {
+    assert.equal((await spawnOnce({ model: 'claude-sonnet-5-5', kind: 'writer' })).r.body.kind, 'writer');
+    const { r, exec } = await spawnOnce({ model: 'claude-sonnet-5-5', kind: 'agent' });
+    assert.equal(r.body.kind, 'agent');
+    assert.deepEqual(kindCalls(exec), ['agent']);
+  });
+
+  test('(+) without kind the model decides at spawn: the Builder model is coder, the Reasoner designer, the Scout scout, anything else agent', async () => {
+    const table = [['claude-sonnet-5-5', 'coder'], ['claude-opus-5-5', 'designer'], ['claude-haiku-5-5', 'scout'], ['claude-fable-5-1', 'agent'], ['claude-sonnet-4-1', 'agent']];
+    for (const [model, kind] of table) {
+      const { r, exec } = await spawnOnce({ model });
+      assert.equal(r.status, 200, model);
+      assert.equal(r.body.kind, kind, model);
+      assert.deepEqual(kindCalls(exec), [kind], model);
+      assert.equal(paneOf(exec, '%20').kind, kind, model);
+    }
+  });
+
+  test('(−) without kind an alias or a 1M id is not a role\'s model (exact match, no alias resolution): agent', async () => {
+    for (const model of ['sonnet', 'opus', 'haiku', 'claude-sonnet-5-5[1m]', 'sonnet[1m]']) {
+      const { r, exec } = await spawnOnce({ model });
+      assert.deepEqual([r.status, r.body.kind, kindCalls(exec)], [200, 'agent', ['agent']], model);
+    }
+  });
+
+  test('(+) the project\'s own role models beat Settings\': its Builder id is coder and Settings\' is no longer', async () => {
+    const own = (w) => updateProjectConfig(w.project.key, { models: { orchestrator: null, reasoner: null, builder: 'claude-sonnet-4-1', scout: null } }, w.env);
+    assert.equal((await spawnOnce({ model: 'claude-sonnet-4-1' }, { after: own })).r.body.kind, 'coder');
+    assert.equal((await spawnOnce({ model: 'claude-sonnet-5-5' }, { after: own })).r.body.kind, 'agent', 'Settings\' builder id is overridden for this project');
+    assert.equal((await spawnOnce({ model: 'claude-haiku-5-5' }, { after: own })).r.body.kind, 'scout', 'a role the project leaves alone still follows Settings');
+  });
+
+  test('(+) Settings\' role models decide when the project sets none', async () => {
+    assert.equal((await spawnOnce({ model: 'claude-opus-4-1' }, { settings: { models: { builder: 'claude-opus-4-1' } } })).r.body.kind, 'coder');
+  });
+
+  test('(−) two roles on one id that name different kinds: agent', async () => {
+    const { r, exec } = await spawnOnce({ model: 'claude-sonnet-5-5' }, { settings: { models: { scout: 'claude-sonnet-5-5' } } });
+    assert.deepEqual([r.body.kind, kindCalls(exec)], ['agent', ['agent']]);
+  });
+
+  test('(+) a sub-orchestrator gets no @nika-kind call at all, and its body kind is null', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [MAIN(w)] });
+    const r = await spawnAgent(req(w, { name: 'planner', role: 'orchestrator', parent: '%1', model: 'claude-sonnet-5-5' }), w.ctx(exec));
+    assert.equal(r.status, 200);
+    assert.equal(r.body.kind, null);
+    assert.deepEqual(kindCalls(exec), []);
+    assert.deepEqual(exec.of('set-option').map((c) => c[4]), ['@nika-role', '@nika-agent', '@nika-depth', '@nika-parent']);
+    assert.equal(paneOf(exec, '%20').kind ?? '', '');
+  });
+
+  test('(−) a kind that is not a word of the list is 400 invalid with the exact message; nothing is written and tmux is never called', async () => {
+    for (const kind of ['Coder', 'CODER', 'boss', '', null, 5, ['coder'], 'coder ', ' coder', 'sub-orchestrator', 'orchestrator', {}, true, 'coder\n']) {
+      const w = await world();
+      const exec = fakeTmux({ panes: BASE_PANES() });
+      const r = await spawnAgent(req(w, { kind }), w.ctx(exec));
+      assert.deepEqual(r, { status: 400, body: { error: 'invalid', message: MSG_KIND } }, JSON.stringify(kind));
+      assert.deepEqual(exec.calls, [], JSON.stringify(kind));
+      assert.equal(fs.existsSync(rd(w)), false, `${JSON.stringify(kind)}: no report folder, brief or agent.json`);
+    }
+  });
+
+  test('(−) a kind with role orchestrator is 400 with its own message; nothing is created', async () => {
+    for (const kind of ['coder', 'agent', 'reviewer']) {
+      const w = await world();
+      const exec = fakeTmux({ panes: [MAIN(w)] });
+      const r = await spawnAgent(req(w, { name: 'planner', role: 'orchestrator', parent: '%1', kind }), w.ctx(exec));
+      assert.deepEqual(r, { status: 400, body: { error: 'invalid', message: MSG_ORCH } }, kind);
+      assert.deepEqual(exec.calls, []);
+      assert.equal(fs.existsSync(rd(w)), false);
+    }
+  });
+
+  test('(−) the kind check runs before anything else of the request: an invalid kind beside an invalid project key still reads as the first failing check in parse order', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    const bad = await spawnAgent({ ...req(w, { kind: 'boss' }), project: 'nope' }, w.ctx(exec));
+    assert.equal(bad.body.message, 'invalid project key', 'project is checked first, as before');
+    const unregistered = await spawnAgent(req(w, { kind: 'boss', project: '0123456789abcdef' }), w.ctx(exec));
+    assert.equal(unregistered.status, 400, 'a bad kind is refused before the project is looked up');
+    assert.equal(unregistered.body.message, MSG_KIND);
+    assert.deepEqual(exec.calls, []);
+  });
+
+  test('(−) the kind never reaches claude: agent.json keeps its seven keys, no file holds it, claude\'s argv and env do not carry it', async () => {
+    const { w, run } = await prepared({ kind: 'reviewer' });
+    assert.deepEqual(Object.keys(JSON.parse(read(w, 'builder-1.agent.json'))).sort(), ['compact', 'depth', 'model', 'parent', 'permissionMode', 'rc', 'role']);
+    assert.deepEqual(fs.readdirSync(rd(w)).sort(), ['.last-pane', 'builder-1.agent.json', 'builder-1.brief.md']);
+    for (const f of fs.readdirSync(rd(w))) assert.equal(read(w, f).includes('reviewer'), false, f);
+    const { spawn } = await run();
+    assert.equal(JSON.stringify(spawn.calls[0].args).includes('reviewer'), false);
+    assert.equal(Object.keys(spawn.calls[0].opts.env).some((k) => /kind/i.test(k)), false);
+  });
+
+  test('(−) an agent.json with a kind key is refused by _run-agent (exit 3): the file nika wrote has none', async () => {
+    const { w, run } = await prepared();
+    const good = JSON.parse(read(w, 'builder-1.agent.json'));
+    await put(w, 'builder-1.agent.json', `${JSON.stringify({ ...good, kind: 'coder' })}\n`);
+    const { code, spawn, stderr } = await run();
+    assert.equal(code, 3);
+    assert.equal(spawn.calls.length, 0);
+    assert.match(stderr.lines.join(''), /unexpected fields/);
+  });
+
+  test('(−) the started record of the process is unchanged by the kind (the snapshot reads the tag)', async () => {
+    const w = await world();
+    const ctx = w.ctx(fakeTmux({ panes: BASE_PANES() }));
+    await spawnAgent(req(w, { kind: 'tester' }), ctx);
+    assert.deepEqual(ctx.started.get('%20'), { key: w.project.key, name: 'builder-1', sessionId: null, role: 'agent', parent: null, depth: 1, mode: 'manual' });
+  });
+});
+
+describe("agentSettings: the agent's --settings JSON (0.5, F18; spike S-ADD)", () => {
+  test('(+) the deny list as before, and the reports dir as the one additional directory, nothing else', () => {
+    const dir = path.join(path.sep, 'state', 'nika', 'projects', 'abcdef0123456789', 'reports');
+    const s = JSON.parse(agentSettings(dir));
+    assert.deepEqual(Object.keys(s), ['permissions']);
+    assert.deepEqual(Object.keys(s.permissions), ['deny', 'additionalDirectories']);
+    assert.deepEqual(s.permissions.deny, ['Read(**/.env*)', 'Edit(**/.env*)', 'Read(**/*.key)', 'Edit(**/*.key)']);
+    assert.deepEqual(s.permissions.additionalDirectories, [dir]);
+    assert.equal(agentSettings(dir), SETTINGS(dir));
+  });
+
+  test('(−) a dir with quotes, spaces or a backslash stays one JSON string: it never adds a key or a second directory', () => {
+    const dir = path.join(path.sep, 'state', 'a "b" c\\d', '"],"allow":["Bash(*)');
+    const s = JSON.parse(agentSettings(dir));
+    assert.deepEqual(s.permissions.additionalDirectories, [dir]);
+    assert.deepEqual(Object.keys(s.permissions), ['deny', 'additionalDirectories']);
+    assert.equal(s.permissions.allow, undefined);
+  });
+
+  test('(−) spawn never passes --add-dir: Claude Code 2.1.326 asks to trust such a folder at every start', () => {
+    const src = fs.readFileSync(new URL('../src/spawn.js', import.meta.url), 'utf8');
+    assert.ok(!/'--add-dir'/.test(src));
   });
 });

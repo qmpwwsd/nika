@@ -15,9 +15,10 @@ export const isApp = APP !== null;
 
 /**
  * Request to /api/app/*. Resolves with { status, body, headers } for every HTTP status (the caller decides what a
- * 409 means); rejects only when the network fails or the page is not the app tier.
+ * 409 means); rejects only when the network fails or the page is not the app tier. `keepalive: true` lets the request outlive the
+ * page (the fit's DELETE on pagehide); the header goes as always, which `sendBeacon` could not do.
  */
-export async function appFetch(path, { method = 'GET', json, signal, headers } = {}) {
+export async function appFetch(path, { method = 'GET', json, signal, headers, keepalive } = {}) {
   if (!APP) throw new Error('app tier only');
   if (typeof path !== 'string' || !path.startsWith('/api/app/')) throw new Error('not an app route');
   const head = { ...headers, 'X-Nika-App': APP.secret };
@@ -26,7 +27,7 @@ export async function appFetch(path, { method = 'GET', json, signal, headers } =
     body = JSON.stringify(json);
     head['Content-Type'] = 'application/json';
   }
-  const res = await fetch(path, { method, headers: head, body, signal, cache: 'no-store' });
+  const res = await fetch(path, { method, headers: head, body, signal, cache: 'no-store', keepalive: keepalive === true });
   const text = await res.text();
   let parsed = null;
   try {

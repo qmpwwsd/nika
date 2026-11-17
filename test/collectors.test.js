@@ -8,8 +8,9 @@ import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, jsonl } from './helpers.js';
 import { readRegistry, processTable, isAlive, parseStarttime, procStarts } from '../src/collect/registry.js';
 import { indexTranscripts, readTranscript, createTranscriptCache } from '../src/collect/transcripts.js';
-import { readSubagents } from '../src/collect/subagents.js';
-import { listPanes, parsePaneLines } from '../src/collect/tmux.js';
+import { readSubagents, subagentDir, subagentTranscripts } from '../src/collect/subagents.js';
+import { SUBAGENT_ID, TOOL_USE_ID, KINDS } from '../src/ids.js';
+import { listPanes, parsePaneLines, paneDead } from '../src/collect/tmux.js';
 import { discoverReportDirs, indexReports } from '../src/collect/reports.js';
 import { resolveProject } from '../src/collect/projects.js';
 import { defaultConfig } from '../src/config.js';
@@ -271,6 +272,37 @@ describe('registry: procStart as an instant, skipped files, session id case (F1b
   });
 });
 
+describe('registry: background job ids (0.5, W12)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-reg-job-'));
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const sessions = path.join(dir, 'sessions');
+  fs.mkdirSync(sessions);
+  const ID = (n) => `${String(n).repeat(8)}-${String(n).repeat(4)}-4${String(n).repeat(3)}-8${String(n).repeat(3)}-${String(n).repeat(12)}`;
+  const put = (pid, extra) => fs.writeFileSync(path.join(sessions, `${pid}.json`), JSON.stringify({ pid, sessionId: ID(pid % 10), cwd: '/x', ...extra }));
+  const entry = async (pid) => (await readRegistry(dir)).entries.find((e) => e.pid === pid);
+
+  test('(+) jobId and parkedJobId are kept when they are 1 to 64 letters, digits, "_" or "-"; kind stays', async () => {
+    put(501, { kind: 'bg', jobId: 'a1b2c3d4' });
+    put(502, { kind: 'interactive', parkedJobId: 'Job_7-x' });
+    put(503, { kind: 'bg', jobId: 'j'.repeat(64) });
+    assert.deepEqual([(await entry(501)).kind, (await entry(501)).jobId, (await entry(501)).parkedJobId], ['bg', 'a1b2c3d4', null]);
+    assert.deepEqual([(await entry(502)).kind, (await entry(502)).jobId, (await entry(502)).parkedJobId], ['interactive', null, 'Job_7-x']);
+    assert.equal((await entry(503)).jobId.length, 64);
+  });
+
+  test('(−) a job id with a slash, a space, a dot, a control, no characters, 65 characters or a type that is no string is null (the file is still read)', async () => {
+    const bad = ['a/b', 'a b', '..', 'a.b', 'a\nb', '', 'j'.repeat(65), 7, true, ['abc'], { id: 'abc' }, null];
+    for (const [i, v] of bad.entries()) {
+      put(600 + i, { kind: 'bg', jobId: v, parkedJobId: v });
+      const e = await entry(600 + i);
+      assert.ok(e, `entry ${i} is read`);
+      assert.deepEqual([e.jobId, e.parkedJobId], [null, null], JSON.stringify(v));
+    }
+    put(620, { kind: 'bg' });
+    assert.deepEqual([(await entry(620)).jobId, (await entry(620)).parkedJobId], [null, null], 'absent fields are null');
+  });
+});
+
 describe('transcripts', () => {
   test('(+) indexes top-level <uuid>.jsonl files by session id with mtime', async () => {
     const idx = await indexTranscripts(fx.claudeDir);
@@ -464,6 +496,131 @@ describe('subagents', () => {
   });
 });
 
+// 0.5, W8: the subagent index (design W8 2.2, 2.3). Test-local folders: the shared fixture keeps its two subagents.
+describe('subagents: ids, the index and the real-directory rule', () => {
+  const SESSION = '11111111-1111-4111-8111-111111111111';
+  const mk = () => {
+    const dir = fs.mkdtempSync(path.join(fx.root, 'subs-'));
+    const transcript = { path: path.join(dir, `${SESSION}.jsonl`), dir };
+    const sub = path.join(dir, SESSION, 'subagents');
+    fs.mkdirSync(sub, { recursive: true });
+    return { dir, transcript, sub };
+  };
+  const meta = (sub, id, over = {}) => fs.writeFileSync(path.join(sub, `agent-${id}.meta.json`), JSON.stringify({ agentType: 'Explore', description: 'List files', finished: false, ...over }));
+  const touch = (sub, name, text = '{}\n') => fs.writeFileSync(path.join(sub, name), text);
+
+  test('(+) SUBAGENT_ID and TOOL_USE_ID have exactly the shapes of the design', () => {
+    assert.equal(SUBAGENT_ID.source, '^[A-Za-z0-9_-]{1,64}$');
+    assert.equal(TOOL_USE_ID.source, '^[A-Za-z0-9_-]{1,128}$');
+    for (const ok of ['a', 'a0000000000000001', 'A_b-9', 'x'.repeat(64)]) assert.ok(SUBAGENT_ID.test(ok), ok);
+    for (const bad of ['', 'a.b', 'a/b', '../x', 'a b', 'a\n', 'x'.repeat(65)]) assert.equal(SUBAGENT_ID.test(bad), false, JSON.stringify(bad));
+    assert.ok(TOOL_USE_ID.test('toolu_01111111') && TOOL_USE_ID.test('t'.repeat(128)));
+    for (const bad of ['', 'a.b', 'a b', 't'.repeat(129)]) assert.equal(TOOL_USE_ID.test(bad), false, JSON.stringify(bad));
+  });
+
+  test('(+) readSubagents returns toolUseId when it has the shape (128 characters still do)', async () => {
+    const { transcript, sub } = mk();
+    meta(sub, 'aaa111', { toolUseId: 'toolu_01111111' });
+    meta(sub, 'bbb222', { toolUseId: 't'.repeat(128) });
+    const subs = await readSubagents(transcript);
+    assert.equal(subs.find((s) => s.id === 'aaa111').toolUseId, 'toolu_01111111');
+    assert.equal(subs.find((s) => s.id === 'bbb222').toolUseId, 't'.repeat(128));
+  });
+
+  test('(−) toolUseId that is not a string, has the wrong shape, is empty or has 129 characters is null', async () => {
+    const { transcript, sub } = mk();
+    const bad = [5, null, true, {}, ['toolu_01111111'], '', 'has space', 'a.b', '../x', 'toolu_0\n', 't'.repeat(129)];
+    bad.forEach((v, i) => meta(sub, `bad${i}`, { toolUseId: v }));
+    meta(sub, 'none'); // no key at all
+    const subs = await readSubagents(transcript);
+    assert.equal(subs.length, bad.length + 1);
+    for (const s of subs) assert.equal(s.toolUseId, null, s.id);
+  });
+
+  test('(+) model falls back to pickedEffortModel; model wins when both are there; neither → null', async () => {
+    const { transcript, sub } = mk();
+    meta(sub, 'only', { pickedEffortModel: 'claude-haiku-5-5' });
+    meta(sub, 'both', { model: 'sonnet', pickedEffortModel: 'claude-haiku-5-5' });
+    meta(sub, 'nope');
+    meta(sub, 'empty', { model: '', pickedEffortModel: 'claude-haiku-5-5' }); // an empty model is no model
+    meta(sub, 'wrongtype', { model: 5, pickedEffortModel: 7 });
+    const by = Object.fromEntries((await readSubagents(transcript)).map((s) => [s.id, s.model]));
+    assert.deepEqual(by, { only: 'claude-haiku-5-5', both: 'sonnet', nope: null, empty: 'claude-haiku-5-5', wrongtype: null });
+  });
+
+  test('(+) subagentDir is <session folder>/subagents for real folders; null when the folder is missing', async () => {
+    const { dir, transcript, sub } = mk();
+    assert.equal(await subagentDir(transcript), sub);
+    const bare = { path: path.join(dir, `${'2'.repeat(8)}-2222-4222-8222-${'2'.repeat(12)}.jsonl`), dir };
+    assert.equal(await subagentDir(bare), null);
+    assert.equal(await subagentDir({ path: path.join(dir, 'nowhere', `${SESSION}.jsonl`), dir: path.join(dir, 'nowhere') }), null);
+  });
+
+  test('(+) subagentTranscripts maps every agent-<id>.jsonl to a path inside the folder, built from the listing', async () => {
+    const { transcript, sub } = mk();
+    const ids = ['a0000000000000001', 'aaa111', 'A_b-9', 'x'.repeat(64)];
+    for (const id of ids) touch(sub, `agent-${id}.jsonl`);
+    meta(sub, 'aaa111'); // a meta next to it is not a transcript
+    const m = await subagentTranscripts(transcript);
+    assert.deepEqual([...m.keys()].sort(), [...ids].sort());
+    for (const [id, p] of m) assert.equal(p, path.join(sub, `agent-${id}.jsonl`));
+    for (const p of m.values()) assert.equal(path.dirname(p), sub);
+  });
+
+  test('(−) names that are not exactly agent-<id>.jsonl are left out', async () => {
+    const { transcript, sub } = mk();
+    const left = ['agent-.jsonl', 'agent-a b.jsonl', `agent-${'x'.repeat(65)}.jsonl`, 'agent-x.jsonl.bak', 'agent-x.meta.json', 'Agent-x.jsonl', 'xagent-x.jsonl',
+      'agent-a.b.jsonl', 'agent-x.jsonl~', 'agent-x.JSONL', 'agent-a\nb.jsonl'];
+    for (const n of left) touch(sub, n);
+    touch(sub, 'agent-kept.jsonl');
+    const m = await subagentTranscripts(transcript);
+    assert.deepEqual([...m.keys()], ['kept']);
+  });
+
+  test('(−) a symlinked <session> folder or subagents folder: readSubagents [], subagentTranscripts empty, subagentDir null', async () => {
+    // the real folder lives outside the project dir, with a perfectly good subagent in it
+    const outside = fs.mkdtempSync(path.join(fx.root, 'outside-'));
+    meta(outside, 'aaa111', { toolUseId: 'toolu_01111111' });
+    touch(outside, 'agent-aaa111.jsonl');
+
+    const a = mk(); // symlinked subagents folder
+    fs.rmSync(a.sub, { recursive: true });
+    fs.symlinkSync(outside, a.sub);
+    const b = mk(); // symlinked session folder (holding a real subagents folder)
+    const realSession = fs.mkdtempSync(path.join(fx.root, 'realsession-'));
+    fs.mkdirSync(path.join(realSession, 'subagents'));
+    meta(path.join(realSession, 'subagents'), 'aaa111');
+    touch(path.join(realSession, 'subagents'), 'agent-aaa111.jsonl');
+    fs.rmSync(path.join(b.dir, SESSION), { recursive: true });
+    fs.symlinkSync(realSession, path.join(b.dir, SESSION));
+
+    for (const t of [a, b]) {
+      assert.equal(await subagentDir(t.transcript), null);
+      assert.deepEqual(await readSubagents(t.transcript), []);
+      assert.equal((await subagentTranscripts(t.transcript)).size, 0);
+    }
+  });
+
+  test('(+) a meta without a transcript is still listed (no mtime); a transcript without a meta is only in the index', async () => {
+    const { transcript, sub } = mk();
+    meta(sub, 'onlymeta', { finished: true });
+    touch(sub, 'agent-onlyjsonl.jsonl');
+    const subs = await readSubagents(transcript);
+    assert.deepEqual(subs.map((s) => [s.id, s.finished, s.lastActivity]), [['onlymeta', true, null]]);
+    assert.deepEqual([...(await subagentTranscripts(transcript)).keys()], ['onlyjsonl']);
+  });
+
+  test('(+) the meta is read again on every call: finished goes away when the agent wakes up (live check L1)', async () => {
+    const { transcript, sub } = mk();
+    meta(sub, 'aaa111', { finished: true });
+    assert.equal((await readSubagents(transcript))[0].finished, true);
+    meta(sub, 'aaa111'); // finished: false again
+    assert.equal((await readSubagents(transcript))[0].finished, false);
+    fs.writeFileSync(path.join(sub, 'agent-aaa111.meta.json'), JSON.stringify({ agentType: 'Explore', description: 'List files' })); // key removed
+    assert.equal((await readSubagents(transcript))[0].finished, false);
+  });
+});
+
 describe('tmux', () => {
   test('(+) parses panes; name only from the "[%id] name" title convention', () => {
     const panes = parsePaneLines('%5\twork\t1\t[%5] build-7-1\tzsh\n%6\twork\t2\tMacBook.local\tclaude\n');
@@ -489,12 +646,12 @@ describe('tmux', () => {
     assert.equal(panes.get('%4').command, 'zsh');
   });
 
-  test('(+) listPanes asks tmux for the nika tags after the title and command: role, agent, depth, parent', async () => {
+  test('(+) listPanes asks tmux for the nika tags after the title and command (role, agent, depth, parent), then pane_dead, and the kind (0.5, W9) last', async () => {
     const exec = fakeExec();
     await listPanes(exec);
     const format = exec.calls[0].at(-1);
-    assert.ok(format.endsWith('\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}'));
-    assert.equal(format.split('\t').length, 9);
+    assert.ok(format.endsWith('\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{pane_dead}\t#{@nika-kind}'));
+    assert.equal(format.split('\t').length, 11);
   });
 
   const KEY = '0123456789abcdef';
@@ -522,6 +679,78 @@ describe('tmux', () => {
     assert.deepEqual([p.role, p.agent, p.depth, p.parent], [null, null, null, null]);
     const q = parsePaneLines(TAGS('admin', `${KEY}/a`, '2', '%3')).get('%5');
     assert.deepEqual([q.role, q.agent, q.depth, q.parent], [null, null, null, null]);
+  });
+
+  // 0.5 (W11): a pane whose process ended stays listed under tmux's remain-on-exit, keeps its tags, and tmux still names its command after the
+  // pane's argv (so it "looks like claude"). #{pane_dead} is the only thing that tells it apart; the eligibility check of the app tier reads it.
+  const DEAD = (value) => `%5\twork\t1\t[%5] x\tclaude\torchestrator\t${KEY}/orchestrator\t1\t\t${value}\n`;
+
+  test('(+) pane_dead: 0 is a running pane, 1 a dead one; a dead pane stays in the map with its command, name and tags', () => {
+    const live = parsePaneLines(DEAD('0')).get('%5');
+    assert.equal(live.dead, false);
+    const dead = parsePaneLines(DEAD('1')).get('%5');
+    assert.equal(dead.dead, true);
+    assert.deepEqual([dead.command, dead.name, dead.role, dead.agent, dead.depth], ['claude', 'x', 'orchestrator', `${KEY}/orchestrator`, 1], 'spawn and the dashboard still see the pane');
+  });
+
+  test('(+) a line that stops before the pane_dead field (an older line shape) still parses, as running', () => {
+    const p = parsePaneLines('%5\twork\t1\t[%5] x\tclaude\tagent\n%6\twork\t2\tt\tzsh\n').get('%5');
+    assert.equal(p.dead, false);
+    assert.equal(parsePaneLines('%6\twork\t2\tt\tzsh\n').get('%6').dead, false);
+  });
+
+  test('(−) a pane_dead that is not exactly 0 or 1 drops the row (never read as running); its neighbours stay', () => {
+    for (const value of ['', '2', '-1', 'x', '01', '0 ', ' 1', '1\r', 'true', 'dead', '\uff11', '#{pane_dead}']) {
+      const panes = parsePaneLines(`${DEAD(value)}%6\twork\t2\tt\tclaude\tagent\t\t\t\t0\n`);
+      assert.equal(panes.has('%5'), false, JSON.stringify(value));
+      assert.equal(panes.get('%6').dead, false, `${JSON.stringify(value)}: the next row`);
+    }
+  });
+
+  test('(+) paneDead is the one parse rule (Start\'s orchestrator listing uses it too): "0" false, "1" true, anything else null', () => {
+    assert.deepEqual(['0', '1'].map(paneDead), [false, true]);
+    for (const value of ['', '2', ' 0', '1 ', 'x', undefined, null, 0, 1, true]) assert.equal(paneDead(value), null, String(JSON.stringify(value)));
+  });
+
+  // 0.5 (W9): `@nika-kind` is the last field (free text, so a tab in a forged value cannot shift another field) and is read only beside role agent
+  const KINDLINE = (role, kind, dead = '0') => `%5\twork\t1\t[%5] x\tnode\t${role}\t${KEY}/a\t1\t\t${dead}\t${kind}\n`;
+
+  test('(+) @nika-kind is read for a pane tagged agent, for each of the seven words', () => {
+    for (const kind of KINDS) assert.equal(parsePaneLines(KINDLINE('agent', kind)).get('%5').kind, kind, kind);
+  });
+
+  test('(+) a tagged agent pane without a kind has kind null; the kind does not disturb the other fields', () => {
+    const p = parsePaneLines(KINDLINE('agent', 'reviewer')).get('%5');
+    assert.deepEqual([p.role, p.agent, p.depth, p.parent, p.dead, p.name, p.command, p.kind], ['agent', `${KEY}/a`, 1, null, false, 'x', 'node', 'reviewer']);
+    assert.equal(parsePaneLines(KINDLINE('agent', '')).get('%5').kind, null);
+  });
+
+  test('(−) kind is null beside a role other than agent: an orchestrator, a sub-orchestrator, no role, an unknown role', () => {
+    for (const role of ['orchestrator', 'sub-orchestrator', '', 'admin', 'Agent']) assert.equal(parsePaneLines(KINDLINE(role, 'coder')).get('%5').kind, null, JSON.stringify(role));
+  });
+
+  test('(−) kind is null for anything but an exact word of the list: case, padding, other labels, an empty value', () => {
+    for (const kind of ['Coder', 'CODER', 'coder ', ' coder', '\tcoder', 'boss', 'sub-orchestrator', 'orchestrator', '', 'coder,tester', 'coder\r', '#{@nika-kind}', 'codеr']) {
+      assert.equal(parsePaneLines(KINDLINE('agent', kind)).get('%5').kind, null, JSON.stringify(kind));
+    }
+  });
+
+  test('(−) a line without the kind field (an older shape) has kind null and still parses', () => {
+    const p = parsePaneLines(`%5\twork\t1\t[%5] x\tnode\tagent\t${KEY}/a\t1\t\t0\n`).get('%5');
+    assert.deepEqual([p.role, p.agent, p.kind, p.dead], ['agent', `${KEY}/a`, null, false]);
+    assert.equal(parsePaneLines('%5\twork\t1\tt\tzsh\tagent\n').get('%5').kind, null);
+  });
+
+  test('(−) a kind value with a tab is not a word; the other fields still parse and pane_dead is still read', () => {
+    for (const kind of ['coder\tx', 'coder\t', '\t', 'coder\t0', 'x\tcoder']) {
+      const p = parsePaneLines(KINDLINE('agent', kind, '1')).get('%5');
+      assert.equal(p.kind, null, JSON.stringify(kind));
+      assert.deepEqual([p.role, p.agent, p.depth, p.dead], ['agent', `${KEY}/a`, 1, true], JSON.stringify(kind));
+    }
+  });
+
+  test('(−) a row with a valid kind but a pane_dead that is not 0 or 1 is still dropped: the kind never rescues it', () => {
+    for (const value of ['2', '', 'x', ' 1']) assert.equal(parsePaneLines(KINDLINE('agent', 'coder', value)).has('%5'), false, JSON.stringify(value));
   });
 
   test('(+) listPanes calls tmux -u list-panes -a with a fixed format', async () => {

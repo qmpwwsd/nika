@@ -1033,3 +1033,70 @@ describe('compaction (0.4, auto-compact for the sessions nika starts)', () => {
     assert.deepEqual((await loadConfig(env)).config.compaction, { enabled: true, pct: 65, window: 1000000 });
   });
 });
+
+describe('attachments (0.5, W2: how long the session window keeps uploaded files)', () => {
+  const fileOf = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
+
+  test('(+) keepDays defaults to 7, also for a config.json written before 0.5, with no warning', async () => {
+    const env = fresh('at1');
+    assert.deepEqual(defaults().attachments, { keepDays: 7 });
+    assert.deepEqual((await loadConfig(env)).config.attachments, { keepDays: 7 });
+    fs.writeFileSync(fileOf(env), JSON.stringify({ ui: { theme: 'dark' } }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.attachments, { keepDays: 7 });
+    assert.deepEqual(r.warnings, []);
+  });
+
+  test('(+) 1 and 30 and a value between are kept; they round-trip through updateSettings and survive an unrelated patch', async () => {
+    const env = fresh('at2');
+    for (const keepDays of [1, 30, 14, 7]) {
+      fs.writeFileSync(fileOf(env), JSON.stringify({ attachments: { keepDays } }));
+      const r = await loadConfig(env);
+      assert.equal(r.config.attachments.keepDays, keepDays);
+      assert.deepEqual(r.warnings, []);
+    }
+    for (const keepDays of [1, 30, 12]) {
+      assert.deepEqual((await updateSettings({ attachments: { keepDays } }, env)).attachments, { keepDays });
+      assert.equal((await loadConfig(env)).config.attachments.keepDays, keepDays);
+    }
+    assert.equal((await updateSettings({ permissionMode: 'plan' }, env)).attachments.keepDays, 12);
+    assert.deepEqual(JSON.parse(fs.readFileSync(fileOf(env), 'utf8')).attachments, { keepDays: 12 });
+  });
+
+  test('(−) 0, 31, a string, a fraction, null, NaN, a list or a negative in config.json is the default with a warning naming the field', async () => {
+    const env = fresh('at3');
+    for (const bad of [0, 31, 100, -1, '7', 7.5, null, [7], {}, true]) {
+      fs.writeFileSync(fileOf(env), JSON.stringify({ attachments: { keepDays: bad } }));
+      const r = await loadConfig(env);
+      assert.equal(r.config.attachments.keepDays, 7, JSON.stringify(bad));
+      assert.ok(r.warnings.some((w) => w.includes('attachments.keepDays')), JSON.stringify(bad));
+    }
+    fs.writeFileSync(fileOf(env), '{"attachments":{"keepDays":NaN}}'); // not JSON at all: the whole file falls back
+    assert.equal((await loadConfig(env)).config.attachments.keepDays, 7);
+  });
+
+  test('(−) an unknown key in the group is dropped with a warning; a group that is not an object is the default', async () => {
+    const env = fresh('at4');
+    fs.writeFileSync(fileOf(env), JSON.stringify({ attachments: { keepDays: 3, dir: '/elsewhere' } }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.attachments, { keepDays: 3 });
+    assert.ok(r.warnings.some((w) => w.includes('unknown key attachments.dir')));
+    for (const raw of ['7', 7, null, [7]]) {
+      fs.writeFileSync(fileOf(env), JSON.stringify({ attachments: raw }));
+      const s = await loadConfig(env);
+      assert.deepEqual(s.config.attachments, { keepDays: 7 }, JSON.stringify(raw));
+      assert.ok(s.warnings.some((w) => w.includes('attachments invalid')), JSON.stringify(raw));
+    }
+  });
+
+  test('(−) updateSettings and saveConfig refuse 0, 31, a string, a fraction, null and an unknown key; the saved value stays', async () => {
+    const env = fresh('at5');
+    await updateSettings({ attachments: { keepDays: 20 } }, env);
+    for (const patch of [
+      { attachments: { keepDays: 0 } }, { attachments: { keepDays: 31 } }, { attachments: { keepDays: '7' } }, { attachments: { keepDays: 7.5 } },
+      { attachments: { keepDays: null } }, { attachments: { keepDays: NaN } }, { attachments: { dir: '/x' } }, { attachments: 'on' }, { attachments: null }, { attachments: [] },
+    ]) await assert.rejects(updateSettings(patch, env), { code: 'EINVAL' }, JSON.stringify(patch));
+    await assert.rejects(saveConfig({ ...defaults(), attachments: { keepDays: 99 } }, env), { code: 'EINVAL' });
+    assert.deepEqual((await loadConfig(env)).config.attachments, { keepDays: 20 });
+  });
+});

@@ -16,7 +16,9 @@ a { color: var(--accent); }
 code, kbd, pre, .mono { font-family: var(--mono); }
 kbd { font-size: var(--fs-cap); padding: 0 4px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+/* .notes.quiet (W11): the notes row while none of its four visible parts shows. Absolute, so it takes no grid cell and no composer gap; 1px and clipped,
+   but still rendered (never display:none), so the echo (a live region) and the attachment help in it stay in the accessibility tree. session.js toggles it. */
+.notes.quiet, .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 .skip { position: absolute; left: 8px; top: -80px; z-index: 50; padding: 8px 12px; background: var(--surface); color: var(--accent); border-radius: var(--r-md); }
 .skip:focus { top: 8px; }
@@ -88,7 +90,7 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .hist { background: var(--surface); border-right: 1px solid var(--line); }
 .hist-head, .term-head { flex: none; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 8px 4px 14px; border-bottom: 1px solid var(--line); }
 .hist-head h2 { margin: 0; font-size: var(--fs-h3); }
-.term-head { background: var(--surface); }
+.term-head { background: var(--surface); flex-wrap: wrap; }   /* the fit chip (W7) can make the head wider than a narrow window: it wraps, the window does not scroll sideways */
 
 /* transcript */
 .hist-scroll { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 8px 0 16px; scroll-padding-bottom: 64px; }
@@ -119,6 +121,19 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--busy); }
 .term-head[data-s="paused"] .live-dot::before { background: var(--idle); border-radius: 1px; }
 .term-head[data-s="wait"] .live-dot::before, .term-head[data-s="off"] .live-dot::before { background: var(--ended); border-radius: 1px; }
+/* the fit chip (W7, spec 9.6 rule): each of the five states has its own colour, icon and words; the reason is the title and the announcement */
+.fit { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 0 8px 0 6px; border: 1px solid transparent; border-radius: var(--r-sm); font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
+.fit[data-k="fitted"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+.fit[data-k="zoomed"] { color: var(--idle); background: var(--idle-soft); border-color: var(--idle-line); }
+.fit[data-k="blocked"] { color: var(--text-muted); border: 1px dashed var(--line-strong); }
+.fit[data-k="other"] { color: var(--fit-other); background: var(--fit-other-soft); border-color: var(--fit-other-line); }
+.fit[data-k="terminal"] { color: var(--fit-term); background: var(--fit-term-soft); border-color: var(--fit-term-line); }
+/* F1: the chip is a button that opens a panel (the panel's own rules follow .pop, which they override); a button resets its font and has a background of its own */
+.fit-wrap { position: relative; display: inline-flex; }
+button.fit { min-height: 24px; cursor: pointer; font: inherit; font-size: var(--fs-small); font-weight: 600; background: transparent; }
+button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor; }
+.fit .chev { width: 12px; height: 12px; margin-left: 2px; }
+.fit[aria-expanded="true"] .chev { transform: rotate(180deg); }
 .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r-md); overflow: hidden; }
 .seg button { min-height: 24px; padding: 0 8px; border: 0; background: var(--surface); font-size: var(--fs-small); }
 .seg button[aria-pressed="true"] { background: var(--text); color: var(--surface); }
@@ -139,8 +154,22 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 }
 .term:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .term.pass { box-shadow: inset 0 0 0 2px var(--accent); }
-.term-rows { width: max-content; min-width: 100%; font: var(--fs-term)/1.35 var(--mono); white-space: pre; tab-size: 8; }
+/* F17 (design F17): the rows box clips, so a gliding row never widens the mirror's scroll area (no Paused flash, the pin to the bottom holds); hidden is the fallback for a web view without clip */
+.term-rows { width: max-content; min-width: 100%; font: var(--fs-term)/1.35 var(--mono); font-size: calc(var(--fs-term) * var(--fit-scale, 1)); white-space: pre; tab-size: 8; overflow: hidden; overflow: clip; }   /* --fit-scale (W7): set by session.js through CSSOM when the pane is larger than the panel; ch and the row height are em-based, so the pane's grid stays exact */
+/* F10 (design F10 6.2): a new frame after nika's own resize fades in over 120 ms and, when the text grows, zooms in from the old size (--refit-from, set by session.js through CSSOM), anchored bottom-left where the input box and footer are; transform does not change layout. No animation under reduced motion (session.js removes the class after a timer then). */
+@keyframes nika-refit { from { opacity: 0.4; transform: scale(var(--refit-from, 1)); } to { opacity: 1; transform: none; } }
+.term-rows.refit { animation: nika-refit 120ms ease-out; transform-origin: 0 100%; }
+@media (prefers-reduced-motion: reduce) { .term-rows.refit { animation: none; } }
+/* F17 (design F17): after a scroll request the conversation rows slide from where they were (--glide-from, px, set by session.js through CSSOM) over 150 ms; the rows below them (Claude's input box, footer and task list, shown with Type into pane on) stay and paint over them. Transform only: no layout. */
+@keyframes nika-glide { from { transform: translateY(var(--glide-from, 0px)); } to { transform: none; } }
+.term-rows.glide > .tl.gl { animation: nika-glide 150ms ease-out; }
+.term-rows.glide > .tl:not(.gl) { position: relative; z-index: 1; background: var(--term-bg); }
+@media (prefers-reduced-motion: reduce) { .term-rows.glide > .tl.gl { animation: none; } }
+/* the fit probe (W7): 100 glyphs in the unscaled terminal font, measured for the size of one cell; hidden, and at the top so it adds nothing to the scroll area */
+.fit-probe { position: absolute; top: 0; left: -9999px; visibility: hidden; pointer-events: none; font: var(--fs-term)/1.35 var(--mono); white-space: pre; }
 .tl { display: block; min-height: 1.35em; }
+/* the strip that stands in for Claude's input box while the message box mirrors it (W6): muted terminal ink, one row, below the output */
+.tl.cut { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding-top: 4px; border-top: 1px dashed var(--a8); color: var(--a8); font: var(--fs-small)/1.35 var(--font); }
 .f0{color:var(--a0)}.f1{color:var(--a1)}.f2{color:var(--a2)}.f3{color:var(--a3)}.f4{color:var(--a4)}.f5{color:var(--a5)}.f6{color:var(--a6)}.f7{color:var(--a7)}
 .f8{color:var(--a8)}.f9{color:var(--a9)}.f10{color:var(--a10)}.f11{color:var(--a11)}.f12{color:var(--a12)}.f13{color:var(--a13)}.f14{color:var(--a14)}.f15{color:var(--a15)}
 .b0{background:var(--a0)}.b1{background:var(--a1)}.b2{background:var(--a2)}.b3{background:var(--a3)}.b4{background:var(--a4)}.b5{background:var(--a5)}.b6{background:var(--a6)}.b7{background:var(--a7)}
@@ -184,15 +213,27 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .inbox.shell-on .prompt { color: var(--shell); }
 .inbox textarea { flex: 1; min-width: 0; border: 0; padding: 4px 0; min-height: 28px; height: 28px; max-height: 168px; resize: none; background: transparent; font: var(--fs-term)/20px var(--mono); outline: none; }
 .inbox textarea:disabled { color: var(--text-muted); }
+/* Claude's prompt suggestion (W4): the placeholder shows it in the accent colour and italic, and the note under the box (.dnote suggest) says Tab or the right arrow accepts it */
+.inbox.suggest textarea::placeholder { color: var(--accent); font-style: italic; opacity: 1; }
 .paste-chip { flex: none; display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-small); padding: 2px 4px 2px 8px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); font-weight: 600; align-self: center; }
 .paste-chip button { min-height: 20px; border: 0; background: none; color: inherit; text-decoration: underline; }
 .mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }   /* the mode switcher under the message box (spec 9.3) */
 .mode-row .msw-why { flex: 1 1 14em; min-width: 0; }
-.notes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }   /* argument hint, shell hint, problem line; the echo in here is screen-reader-only */
+.notes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }   /* argument hint, shell hint, draft note, problem line; the echo in here is screen-reader-only; .notes.quiet (top of this file) collapses the row */
 .problem { color: var(--idle); font-weight: 600; overflow-wrap: anywhere; }
 .problem.error { color: var(--danger); }
 .problem:empty { display: none; }
 .shell-hint, .arg-hint { color: var(--text); font-weight: 600; }
+/* the draft sync note (W5, W13): one line under the box. Each state has its own colour, icon and word: paused (amber), not mirrored (ink), on hold (attention pink), cursor (blue), queued (green), suggestion (accent) */
+.dnote { display: inline-flex; align-items: flex-start; gap: 6px; padding: 1px 8px 1px 6px; border-radius: var(--r-sm); color: var(--text); background: var(--surface-3); overflow-wrap: anywhere; }
+.dnote .ic { margin-top: 3px; }
+.dnote b { font-weight: 600; }
+.dnote[data-k="paused"] { color: var(--idle); background: var(--idle-soft); }
+.dnote[data-k="long"] { color: var(--text); background: var(--surface-3); }
+.dnote[data-k="hold"] { color: var(--attn); background: var(--attn-soft); }
+.dnote[data-k="cursor"] { color: var(--fit-other); background: var(--fit-other-soft); }
+.dnote[data-k="queued"] { color: var(--busy); background: var(--busy-soft); }
+.dnote[data-k="suggest"] { color: var(--accent); background: var(--accent-soft); }
 
 /* command palette (spec 9.7): opens upward from the message box, anchored to its left and right edges; focus never leaves the textarea */
 .btn.ghost { border-color: transparent; background: transparent; }
@@ -234,6 +275,13 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .pop-input[aria-invalid="true"] { border-color: var(--danger); }
 .pop-h { margin: 0; font-size: var(--fs-small); color: var(--text-muted); }
 .pop-f { display: flex; justify-content: flex-end; gap: 8px; }
+/* the fit chip's panel (F1): under the chip and out of the flow, so opening it never changes the terminal box (a new box would be a fit request); dom.js placeMenuX sets data-x */
+.fit-pop { position: absolute; top: calc(100% + 4px); right: 0; z-index: 30; width: 320px; max-width: calc(100vw - 16px); justify-self: auto; }
+.fit-pop[data-x="start"] { left: 0; right: auto; }
+.fit-pop-why { margin: 0; font-size: var(--fs-small); color: var(--text); }
+.fit-pop-note { display: flex; align-items: flex-start; gap: 6px; color: var(--text); }
+.fit-pop-note .ic { margin-top: 1px; color: var(--idle); }
+.fit-pop code { display: block; margin-top: 4px; font: var(--fs-small) var(--mono); overflow-wrap: anywhere; }
 .field-err { margin: 4px 0 0; display: flex; align-items: flex-start; gap: 6px; color: var(--danger); font-size: var(--fs-small); font-weight: 600; }
 .field-err .ic { margin-top: 1px; }
 
@@ -288,3 +336,127 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
   .st[data-s="busy"] .st-g::after { animation: none; }
   * { scroll-behavior: auto !important; }
 }
+
+/* scrolling Claude's own view (W3): the corner note draws an icon and words, so it lays them out in a row; Claude's view scrolled up has its own colour (accent), nika's own Paused keeps the idle pair */
+.paused-note { display: inline-flex; align-items: center; gap: 5px; }
+.paused-note[data-k="scrolled"] { color: var(--accent); background: var(--accent-soft); }
+
+/* attachments (0.5, W2): a tray of chips above the message box. Every state has its own icon and words as well as its colour; tokens only, so light and dark come along. */
+.att-tray { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.att { display: inline-flex; align-items: center; gap: 6px; max-width: min(320px, 100%); min-height: 28px; padding: 2px 2px 2px 8px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); font-size: var(--fs-small); }
+.att-i { display: inline-flex; flex: none; }
+.att-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+.att-m { color: var(--text-muted); white-space: nowrap; }
+.att[data-s="failed"] { border-color: var(--danger-line); background: none; }
+.att[data-s="failed"] .att-m, .att[data-s="failed"] .ic { color: var(--danger); }
+.att-x { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; padding: 0; border: 0; background: none; color: var(--text-muted); border-radius: var(--r-sm); }
+.att-x:hover { background: var(--surface-3); color: var(--text); }
+.att-x:disabled, .att-x[aria-disabled="true"] { opacity: 0.45; }
+.att-x:disabled:hover, .att-x[aria-disabled="true"]:hover { background: none; color: var(--text-muted); }
+#composer-box.dropping .inbox { border: 2px dashed var(--accent); padding: 5px 5px 5px 9px; }   /* the border grows by 1 px, the padding gives it back (as Shell mode does) */
+.att-drop { position: absolute; inset: 0; display: grid; place-items: center; border-radius: inherit; background: var(--accent-soft); color: var(--accent); font-weight: 600; pointer-events: none; }
+/* the paperclip while the shell's file dialog is open (W2-T6): its own busy colour, a dashed edge, the spinner for the clip and the word beside the tray.
+   It never takes the dimmed look of "input off" (.btn:disabled, opacity 0.5); the ID selector beats the disabled and hover rules. */
+#att-btn[aria-busy="true"] { opacity: 1; cursor: progress; border-style: dashed; border-color: var(--busy); background: var(--busy-soft); color: var(--busy); }
+.att-pick { margin: 0; font-size: var(--fs-small); font-weight: 600; color: var(--busy); overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) {
+  #att-btn .spin, .att .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
+}
+
+/* question dialogs (0.5, W1): the form for Claude's question dialogs and plan approvals, in the permission panel's look (.ask). Every state has its own colour, icon and word
+   (reading ended, terminal only muted and dashed, answering accent, answered busy, failed danger); tokens only, so light and dark come along. */
+.ask.dlg { position: relative; max-height: min(45vh, 420px); overflow-y: auto; overscroll-behavior: contain; }   /* the form scrolls inside itself, so the mirror keeps its height */
+.dlg[data-s="answering"] { box-shadow: inset 3px 0 0 var(--accent); }
+.dlg[data-s="answered"] { box-shadow: inset 3px 0 0 var(--busy); }
+.dlg[data-s="failed"] { box-shadow: inset 3px 0 0 var(--danger); }
+.dlg[data-s="terminal"] { box-shadow: inset 3px 0 0 var(--line-strong); }
+.dlg-chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px 2px 8px; border-radius: 999px; color: var(--ended); background: var(--ended-soft); font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
+.dlg-chip[data-s="terminal"] { color: var(--text-muted); background: transparent; border: 1px dashed var(--line-strong); padding: 1px 9px 1px 7px; }
+.dlg-chip[data-s="answering"] { color: var(--accent); background: var(--accent-soft); }
+.dlg-chip[data-s="answered"] { color: var(--busy); background: var(--busy-soft); }
+.dlg-chip[data-s="failed"] { color: var(--danger); background: var(--danger-soft); }
+.dlg-kind { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: var(--fs-small); font-weight: 700; }
+.dlg-kind[data-k="ask"] { color: var(--accent); }
+.dlg-kind[data-k="plan"] { color: var(--m-plan); }
+.dlg-kind[data-k="perm"] { color: var(--attn); }
+.dlg .ask-q { margin: 0; padding: 0; font-size: var(--fs-body); line-height: inherit; }
+.dlg-fs { display: grid; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.dlg-fs > legend { float: left; width: 100%; padding: 0; margin: 0 0 4px; }   /* a floated legend lays out like any block, so the rows below it keep the grid's gap */
+.dlg-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.dlg-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 2px 8px; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--text-muted); font-size: var(--fs-small); }
+.dlg-tab[data-answered="true"] { color: var(--busy); }
+.dlg-tab[aria-current="step"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.dlg-ring { flex: none; width: 10px; height: 10px; border: 1.5px solid currentColor; border-radius: 50%; }
+.dlg-step { display: none; margin: 0; color: var(--text-muted); font-size: var(--fs-small); font-weight: 600; }
+.ch { display: flex; align-items: flex-start; gap: 10px; min-height: 32px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); color: var(--text); overflow-wrap: anywhere; cursor: pointer; }
+.ch:hover { background: var(--surface-2); }
+.ch[data-on="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.ch:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+.ch input[type="radio"], .ch input[type="checkbox"] { flex: none; margin: 2px 0 0; accent-color: var(--accent); }
+.ch kbd { flex: none; min-width: 22px; text-align: center; font-weight: 700; border-bottom-width: 2px; }
+.ch-b { display: grid; gap: 2px; min-width: 0; }
+.ch-t { font-weight: 500; }
+.dlg-desc { color: var(--text-muted); font-size: var(--fs-small); }
+.dlg-desc.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.dlg-opt { display: grid; gap: 2px; }
+.dlg-more { justify-self: start; min-height: 24px; padding: 0 4px; border-width: 0; font-size: var(--fs-small); }   /* the link look (colour, underline, hover) is .btn.link in tokens.css */
+.dlg-other { flex-wrap: wrap; align-items: center; gap: 6px 10px; cursor: default; }
+.dlg-ol { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.dlg-text { flex: 1 1 180px; min-width: 0; min-height: 28px; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text); font: inherit; }
+.dlg-text[readonly] { color: var(--text-muted); }
+.dlg-count { flex: none; color: var(--text-muted); font-size: var(--fs-cap); }
+.dlg[data-inert="true"] .ch { opacity: 0.6; cursor: not-allowed; }   /* paint() sets data-inert whenever the form cannot take an answer: answering, answered, terminal only, kept, locked */
+.dlg[data-inert="true"] .ch:not([data-on="true"]):hover { background: var(--surface); }
+.dlg-review { display: grid; grid-template-columns: fit-content(60%) minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--fs-body); }   /* fit-content: a long question wraps at 60% of the row and its answer keeps the rest (max-content gave a long question the whole row and its answer one character, LC20) */
+.dlg-review dt { color: var(--text-muted); overflow-wrap: anywhere; }
+.dlg-review dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.dlg-warn { display: flex; align-items: center; gap: 6px; margin: 0; padding: 4px 8px; border-radius: var(--r-sm); background: var(--idle-soft); color: var(--idle); font-size: var(--fs-small); font-weight: 600; }
+.dlg-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--text-muted); font-size: var(--fs-small); }
+.dlg-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+@container composer (max-width: 560px) {
+  .dlg-tabs { display: none; }
+  .dlg-step { display: block; }
+  .dlg-review { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dlg-chip .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
+}
+
+/* feedback survey (0.5, F14): Claude's rating question and its transcript question as buttons, in the permission panel's look (.ask) with a calmer edge: the accent on the accent-soft fill
+   (a question for you, not a block). Every state has its own colour, icon and word: ready accent with the info icon, sending the spinner on the pressed button, sent and answered the idle colour with
+   the check icon, a problem the idle or danger colour with the warn icon, terminal muted and dashed with the terminal icon. Tokens only, so light and dark come along. */
+.ask.svy { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.svy[data-s="sent"], .svy[data-s="answered"] { box-shadow: inset 3px 0 0 var(--idle); }
+.svy[data-s="error"] { box-shadow: inset 3px 0 0 var(--danger); }
+.svy[data-s="terminal"] { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--text-muted); }   /* --line-strong is 2.98:1 on --surface-2 in light: the muted text colour keeps the edge at 3:1 and more */
+.dlg-kind[data-k="survey"] { color: var(--accent); }
+.svy .ask-reason { color: var(--accent); }
+.svy .ask-q { margin: 0; padding: 0; font-size: var(--fs-body); line-height: inherit; }
+.svy-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.svy-btns .pbtn { align-items: center; }
+.svy-btns .pbtn.esc { margin-left: auto; }
+.svy .pbtn[aria-busy="true"] { opacity: 1; border-color: var(--accent); color: var(--accent); }
+.svy-line { margin: 0; color: var(--text); font-size: var(--fs-small); font-weight: 600; }
+.svy-st, .svy-problem { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--idle); font-size: var(--fs-small); font-weight: 600; overflow-wrap: anywhere; }
+.svy-problem[data-k="error"] { color: var(--danger); }
+.svy-st[hidden], .svy-problem[hidden] { display: none; }
+.svy-reason { margin: 0; color: var(--text-muted); font-size: var(--fs-small); }
+@container composer (max-width: 560px) {
+  .svy-btns { display: grid; grid-template-columns: 1fr 1fr; }
+  .svy-btns .pbtn.esc { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .svy .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
+}
+
+/* 0.5 (W8): the list of Claude's own subagents above the transcript, and the link from a tool call to a subagent's transcript. The badge and line rules are in tokens.css. */
+#sess-subs { flex: none; border-bottom: 1px solid var(--line); padding: 4px 8px 4px 14px; }
+#sess-subs > summary { cursor: pointer; display: flex; align-items: center; gap: 6px; min-height: 32px; color: var(--text-muted); }
+#sess-subs > summary:hover { color: var(--text); }
+#sess-subs .sub-hid { font-size: var(--fs-small); }
+.subs-body { display: grid; gap: 4px; padding: 0 0 4px 4px; }
+.subs-ended { display: inline-flex; align-items: center; gap: 6px; width: fit-content; min-height: 24px; color: var(--text-muted); font-size: var(--fs-small); cursor: pointer; }
+.subs-list { position: relative; max-height: 40vh; overflow: auto; }
+.subs-list .model { font-size: var(--fs-small); }
+.hx-sub { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; min-height: 24px; display: inline-flex; align-items: center; justify-self: start; margin-top: 4px; font-size: var(--fs-small); }

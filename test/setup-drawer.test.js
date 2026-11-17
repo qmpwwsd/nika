@@ -228,7 +228,7 @@ let savedCSS;
 before(() => {
   savedCSS = globalThis.CSS;
   globalThis.CSS = { escape: (s) => String(s) };
-  globalThis.window = { innerHeight: 800 }; // ui.js menus ask for the window height
+  globalThis.window = { innerHeight: 800, addEventListener() {} }; // ui.js menus ask for the window height (and listen for a resize; the width is left out: no left/right placement here)
   restore = installDom({
     createElement: (tag) => new PEl(tag),
     createElementNS: (ns, tag) => new PEl(tag),
@@ -329,7 +329,7 @@ function rig({ narrow = false, matchMedia = true, rules = 'nika', sub = true } =
     q, drawer: q('dlg-setup'), column: q('proj-setup'), body: q('su-body'), actions: q('proj-actions'),
     host: q('proj-settings'),
     setupBtn: () => r.host.byFk(`setup:${KEY}`),
-    titles: (host) => host.all((n) => n.tag === 'h2').map((n) => n.textContent),
+    titles: (host) => host.all((n) => n.className === 'card').map((c) => c.kids[0].textContent), // the card titles: h2 in the column, h3 in the drawer
     ids: () => page.body.all((n) => 'id' in n.attrs).map((n) => n.attrs.id),
     /** A click as the page sees it: the element's own handlers, then the document-level ones (initDialogs, initMenus). */
     press(el) {

@@ -12,7 +12,9 @@ import {
   CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
 } from './models-ui.js';
 import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
-import { DETECTED_MAX, sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, effectiveAgents, resetEndedState } from './dash-model.js';
+import {
+  DETECTED_MAX, sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, effectiveAgents, resetEndedState, KINDS, KIND_TEXT, ROLE_KIND, kindFromModel,
+} from './dash-model.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from './plugin-view.js';
 
 const PERM_LABEL = {
@@ -425,7 +427,7 @@ function rowItems(a, g, scope) {
 function pickItems(a, g, fk) {
   const project = g.project;
   const pick = savedPick(project);
-  const isPick = pick?.id === a.id;
+  const isPick = Boolean(pick) && (pick.id === a.id || pick.id === a.hostId); // hostId: the pick is the session this background session continues (after /compact)
   const other = otherRunning(g, pick?.id, a.id); // R1
   const r1 = other ? runningText(other) : null;
   const items = [];
@@ -568,7 +570,7 @@ function placeSetup(p, g) {
   const from = $(narrow ? '#proj-setup' : '#su-body'); // the home that is emptied
   const fk = focusKey(from); // not null: the window crossed 1030 px under a focused card control (in any other render the focus is in the new home, which swap keeps)
   $('#su-d').textContent = p.name;
-  swap($(narrow ? '#su-body' : '#proj-setup'), setupCards(p, g));
+  swap($(narrow ? '#su-body' : '#proj-setup'), setupCards(p, g, narrow));
   swap(from, []);
   if (fk !== null) landFocus(fk, g.key);
 }
@@ -701,7 +703,15 @@ async function saveAgentItem(p, field, value) {
   toast(saved === null ? `${it.label} for ${name} now follows Settings: ${it.word(settingsValue(state.settings ?? {}, field))}.${tail}` : `${it.label} saved for ${name}: ${it.word(saved)}.${tail}`);
 }
 
-function setupCards(p, g) {
+/**
+ * The three cards. `inDrawer` is true when they are put in the Settings drawer, whose own title is an h2: the card titles are then h3 and
+ * the Plugins and Models headings inside the Project setup card h4, so the heading list reads Settings > Rules / Project setup / New
+ * agents. In the column they are h2 and h3 as always. They are real heading elements (ARIA in HTML advises against aria-level on an h2);
+ * app.css gives the drawer's h3 / h4 the look the column's h2 / h3 have (`#su-body .card h3`, `#su-body .card h4`).
+ */
+function setupCards(p, g, inDrawer = false) {
+  const title = inDrawer ? 'h3' : 'h2'; // a card's title
+  const part = inDrawer ? 'h4' : 'h3'; // a heading inside the Project setup card
   const rs = p.rules?.state ?? 'none';
   const picked = sortIds(state.settings?.perProject?.[p.key]?.plugins ?? []);
   const lim = limitsOf(g, null);
@@ -719,7 +729,7 @@ function setupCards(p, g) {
   };
   return [
     h('div', { class: 'card' },
-      h('h2', { text: 'Rules' }), rulesEl(rs), h('p', { text: RULE_TEXT[rs] ?? RULE_TEXT.none }),
+      h(title, { text: 'Rules' }), rulesEl(rs), h('p', { text: RULE_TEXT[rs] ?? RULE_TEXT.none }),
       p.rules && !p.rules.settingsIgnored ? h('p', { class: 'muted', text: '.claude/settings.local.json is not in .gitignore.' }) : null,
       p.rules?.git === false ? h('p', { class: 'muted', text: 'No .git folder here: this is not a git repository.' }) : null,
       h('div', null, h('button', {
@@ -727,23 +737,23 @@ function setupCards(p, g) {
         onclick: focusing(() => openRules(p)), text: rs === 'nika' ? 'Preview rules' : rs === 'none' ? 'Set up rules…' : 'Update rules…',
       }))),
     h('div', { class: 'card' },
-      h('h2', { text: 'Project setup' }),
+      h(title, { text: 'Project setup' }),
       h('p', { class: 'help' }, 'Applies to this project only. Defaults are in ', h('a', { href: '#settings', text: 'Settings' }), '.'),
-      h('h3', null, picked.length ? ['Plugins ', h('span', { class: 'help', text: `${picked.length} on` })] : 'Plugins'),
+      h(part, null, picked.length ? ['Plugins ', h('span', { class: 'help', text: `${picked.length} on` })] : 'Plugins'),
       picked.length
         ? h('ul', { class: 'chips', 'data-fk': 'setup-chips', 'aria-label': 'Plugins turned on' }, picked.slice(0, CHIPS_MAX).map(chip))
         : h('p', { class: 'muted', text: 'No plugins chosen. Agents use only what the project already enables.' }),
       picked.length > CHIPS_MAX ? h('p', { class: 'help', 'data-fk': 'setup-more', text: `+${picked.length - CHIPS_MAX} more` }) : null,
       h('p', { class: 'muted', text: 'Written into .claude/settings.local.json when you apply rules.' }),
       h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-plugins', onclick: focusing(() => openPlugins(p)), text: 'Choose plugins…' })),
-      h('h3', null, set.length ? ['Models ', h('span', { class: 'help', text: `${set.length} set here` })] : 'Models'),
+      h(part, null, set.length ? ['Models ', h('span', { class: 'help', text: `${set.length} set here` })] : 'Models'),
       !s ? h('p', { class: 'muted', text: 'Not loaded yet.' })
         : set.length ? h('dl', { class: 'kv', 'data-fk': 'setup-models' }, set.flatMap((r) => modelRow(r, own[r])))
           : h('p', { class: 'muted', text: 'All roles use the defaults from Settings.' }),
       h('p', { class: 'muted', text: "Used when nika starts this project's orchestrator or spawns its agents." }),
       h('div', null, h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-fk': 'choose-models', onclick: focusing(() => openModels(p)), text: 'Choose models…' }))),
     h('div', { class: 'card' },
-      h('h2', { text: 'New agents' }),
+      h(title, { text: 'New agents' }),
       h('dl', { class: 'kv' },
         h('dt', { text: 'Permission mode' }), h('dd', null, s ? agentItemEl(p, 'permissionMode', s, mine) : '–'),
         h('dt', { text: 'Pane' }), h('dd', null, s ? agentItemEl(p, 'panePlacement', s, mine) : '–'),
@@ -1179,12 +1189,47 @@ function fillSpawnModel(role, remembered) {
   fieldError($('#sp-model-custom'), '');
 }
 
-/** What the role changes in the sheet's words: the title, the button, the brief help and the selected card. */
+/* The Kind field (0.5, W9; design W9 4.6). Automatic sends no kind: the server derives the same word from the model's role. The page
+   only previews it, with its own copy of kindFromModel (a test runs both over one table of cases). */
+const KIND_HELP = "Shown as a label on its row. Automatic picks it from the model's role.";
+const KIND_HELP_SUB = 'A sub-orchestrator always shows sub-orchestrator.';
+let kindAuto = null; // the Automatic option of #sp-kind: a model change rewrites its text and nothing else
+
+/** The Automatic option's text: the kind the sheet's model would get and the role that names it. Before Settings has loaded it promises nothing. */
+function kindAutoText() {
+  if (!state.settings?.models) return "Automatic (from the model's role)";
+  const kind = kindFromModel(spawnModel(), effectiveRoleModels(state.settings, sp.group.project.key));
+  const role = Object.keys(ROLE_KIND).find((r) => ROLE_KIND[r] === kind);
+  return role ? `Automatic · ${kind} (${ROLE_LABEL[role]}'s model)` : 'Automatic · agent (no matching role)';
+}
+
+/** Fill the Kind select: Automatic, then the seven kinds in KINDS order. `remembered` (this window's last pick for the project's agents) is selected when it is one of the seven. */
+function fillSpawnKind(remembered) {
+  kindAuto = h('option', { value: '', text: kindAutoText() });
+  $('#sp-kind').replaceChildren(kindAuto, ...KINDS.map((k) => h('option', { value: k, text: `${k} · ${KIND_TEXT[k]}` })));
+  $('#sp-kind').value = KINDS.includes(remembered) ? remembered : '';
+}
+
+/** The model changed (or the role did): the Automatic text follows. Only the text moves; the options and the picked value stay. */
+function paintKindAuto() {
+  if (sp.group && kindAuto) kindAuto.textContent = kindAutoText();
+}
+
+/** A sub-orchestrator has no Kind (its row always shows sub-orchestrator): the select is off, with the reason as visible help. The value is kept for the switch back. */
+function paintKindRole(role) {
+  const sub = role === 'orchestrator';
+  $('#sp-kind').disabled = sub;
+  $('#sp-kind-help').textContent = sub ? KIND_HELP_SUB : KIND_HELP;
+}
+
+/** What the role changes in the sheet's words: the title, the button, the brief help, the selected card and the Kind field. */
 function paintRole(role) {
   $('#sp-h').textContent = SP_TITLE[role];
   $('#sp-go').textContent = SP_TITLE[role];
   $('#sp-brief-help').textContent = SP_BRIEF[role];
   syncRadioCards($('#sp-role'));
+  paintKindRole(role);
+  paintKindAuto();
 }
 
 /** The role the radios say. */
@@ -1236,6 +1281,7 @@ function openSpawn(g, { parent = null, role = 'agent' } = {}) {
   $('#sp-name').value = sp.autoName;
   $('#sp-brief').value = '';
   fillSpawnModel(start, pref.model);
+  fillSpawnKind(spawnPrefs.get(`${g.project.key}:agent`)?.kind); // the agents' pick, kept while the sheet is a sub-orchestrator's
   paintRole(start);
   $('#sp-perm').replaceChildren(
     h('option', { value: '', text: `Use this project's setting: ${s ? PERM_LABEL[eff.permissionMode] ?? eff.permissionMode : 'default'}` }),
@@ -1318,6 +1364,8 @@ async function submitSpawn(e) {
   const parent = sp.parent;
   const req = { project: g.project.key, name, model, brief: $('#sp-brief').value, role };
   if (parent) req.parent = parent.pane.id;
+  const kind = role === 'agent' && KINDS.includes($('#sp-kind').value) ? $('#sp-kind').value : ''; // Automatic and a sub-orchestrator send none
+  if (kind) req.kind = kind;
   if ($('#sp-perm').value) req.permissionMode = $('#sp-perm').value;
   if (place === 'under' && sp.under) req.under = sp.under;
   const dlg = $('#dlg-spawn');
@@ -1326,6 +1374,7 @@ async function submitSpawn(e) {
   dlg.dataset.busy = '1';
   $('#sp-cancel').disabled = true;
   $('#sp-role').disabled = true;
+  $('#sp-kind').disabled = true;
   setBusy(go, true, `Starting ${name}…`);
   let r = null;
   try {
@@ -1337,9 +1386,10 @@ async function submitSpawn(e) {
   delete dlg.dataset.busy;
   $('#sp-cancel').disabled = false;
   $('#sp-role').disabled = false;
+  $('#sp-kind').disabled = role === 'orchestrator';
   setBusy(go, false);
   if (r?.status === 200) {
-    spawnPrefs.set(`${g.project.key}:${role}`, { model: req.model, perm: $('#sp-perm').value, place });
+    spawnPrefs.set(`${g.project.key}:${role}`, { model: req.model, perm: $('#sp-perm').value, place, ...(role === 'agent' ? { kind } : {}) });
     dlg.close();
     const href = sessionHref({ session: r.body.sessionId, pane: r.body.pane, project: g.project.key });
     const who = parent ? ` under ${trunc(parent.name, 40)}` : '';
@@ -1662,8 +1712,9 @@ export async function initApp() {
     sp.touched = true;
     $('#sp-model-custom').hidden = $('#sp-model').value !== CUSTOM;
     fieldError($('#sp-model-custom'), '');
+    paintKindAuto();
   });
-  $('#sp-model-custom').addEventListener('input', () => { sp.touched = true; });
+  $('#sp-model-custom').addEventListener('input', () => { sp.touched = true; paintKindAuto(); });
   for (const id of ['#sp-role-agent', '#sp-role-orch']) $(id).addEventListener('change', changeRole);
   for (const [id, key] of [['sp-name', 'agent']]) {
     $(`#${id}`).addEventListener('blur', () => fieldError($(`#${id}`), RX[key][0].test($(`#${id}`).value) ? '' : RX[key][1]));
