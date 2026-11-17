@@ -436,6 +436,7 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .dlg[data-inert="true"] .dlg-rv-row { opacity: 0.6; }   /* a locked or busy review dims like a locked question */
 .dlg-warn { display: flex; align-items: center; gap: 6px; margin: 0; padding: 4px 8px; border-radius: var(--r-sm); background: var(--idle-soft); color: var(--idle); font-size: var(--fs-small); font-weight: 600; }
 .dlg-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--text-muted); font-size: var(--fs-small); }
+.dlg-retry { align-items: center; flex-wrap: wrap; } /* 0.5.2 R4: the Try again button sits after the text and wraps under it when the form is narrow */
 .dlg-btns { display: flex; flex-wrap: wrap; gap: 6px; }
 @container composer (max-width: 360px) {
   .dlg-rv-row { grid-template-columns: minmax(0, 1fr); }

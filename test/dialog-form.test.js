@@ -276,8 +276,8 @@ describe('dialogOutcome: every route answer is a fixed line (design W1 section 6
   const ROWS = [
     [409, 'no-dialog', 'The question is gone.', false],
     [409, 'dialog-changed', 'The question changed; check the session.', true],
-    [409, 'dialog-touched', 'This question was changed in the terminal. Finish it there.', true],
-    [409, 'dialog-focus', "Claude's selection was moved in the terminal. Finish it there.", true],
+    [409, 'dialog-touched', 'This question was changed in the terminal. Change it back there and press Try again, or finish it there.', true],
+    [409, 'dialog-focus', "Claude's selection was moved in the terminal. Move it back there and press Try again, or finish it there.", true],
     [409, 'text-mode', "nika can't type your answer: Claude's text field isn't ready for typing. Type it in the terminal.", true],
     [409, 'text-mismatch', "Your answer didn't arrive exactly as typed, so nika stopped before sending it. Fix it in the terminal.", true],
     [409, 'not-taken', "Claude didn't take the key. Check the session, then try again.", false],
@@ -561,6 +561,8 @@ const one = (root, cls) => q(root, cls)[0] ?? null;
 const hrefs = (node) => node.all((n) => n.tag === 'use').map((n) => n.attrs.href);
 const chip = (root) => root.all((n) => withClass('dlg-chip')(n) || withClass('pill')(n))[0];
 const buttons = (root) => root.all((n) => n.tag === 'button');
+const hiddenUp = (n) => { for (let e = n; e; e = e.parent) if (e.hidden === true) return true; return false; }; // inside a hidden element (the Try again row before a refusal): not reachable
+const reachable = (root) => buttons(root).filter((b) => !hiddenUp(b));
 const byText = (root, text) => buttons(root).find((b) => b.textContent === text) ?? null;
 const inputs = (root, type) => root.all((n) => n.tag === 'input' && n.attrs.type === type);
 const off = (el) => el.getAttribute('aria-disabled') === 'true';
@@ -742,7 +744,7 @@ describe('the six states (design W1 section 6.2): each has its own chip word and
     assert.ok(one(chip(r.root), 'spin'), 'the spinner');
     assert.equal(r.root.attrs['data-s'], 'answering');
     assert.equal(byText(r.root, 'Send answer').getAttribute('aria-busy'), 'true');
-    for (const b of buttons(r.root).filter((x) => x.textContent !== 'More')) assert.equal(off(b), true, b.textContent);
+    for (const b of reachable(r.root).filter((x) => x.textContent !== 'More')) assert.equal(off(b), true, b.textContent);
     for (const i of inputs(r.root, 'radio')) assert.equal(off(i), true);
     assert.deepEqual(sentBodies(r), [{ sig: SIG, picks: [1] }]);
     assert.deepEqual(r.log.calls.map((c) => [c.path, c.method]), [['/pane/%2512/dialog', 'POST']]);
@@ -1899,7 +1901,7 @@ describe('the review as cards: one per question, with Change (0.5.2 R3)', () => 
   test('(+) the focus order is the DOM order: the steps, then Change or Answer row by row, then Submit answers, then Decline', () => {
     const r = rig();
     r.render(review3([true, false, true]));
-    const order = buttons(r.root).map((b) => b.className.split(' ').find((c) => ['dlg-tab', 'dlg-rv-chg', 'dlg-send', 'dlg-decline'].includes(c)));
+    const order = reachable(r.root).map((b) => b.className.split(' ').find((c) => ['dlg-tab', 'dlg-rv-chg', 'dlg-send', 'dlg-decline'].includes(c)));
     assert.deepEqual(order, ['dlg-tab', 'dlg-tab', 'dlg-tab', 'dlg-tab', 'dlg-rv-chg', 'dlg-rv-chg', 'dlg-rv-chg', 'dlg-send', 'dlg-decline']);
     assert.ok(withClass('dlg-rv-btns')(byText(r.root, 'Submit answers').parent), 'Submit and Decline sit in the sticky footer');
     assert.equal(byText(r.root, 'Decline').parent, byText(r.root, 'Submit answers').parent);
@@ -2082,7 +2084,7 @@ describe('the plan approval', () => {
     await settle();
     assert.deepEqual(sentBodies(r), [{ sig: SIG3, choice: 2 }]);
     assert.equal(chip(r.root).textContent, 'Answered');
-    for (const b of buttons(r.root)) assert.equal(off(b), true, 'locked after the answer');
+    for (const b of reachable(r.root)) assert.equal(off(b), true, 'locked after the answer');
   });
 
   test('(+) Reject (Esc) is Decline: { sig, cancel: true }', async () => {
@@ -2833,5 +2835,325 @@ describe('a long option is one card, and More sits inside its border (0.5.1)', (
     test('(−) no :has() anywhere in the stylesheet (WebKitGTK support is uncertain); the card is styled from its own data-on', () => {
       assert.equal(CSS.includes(':has('), false);
     });
+  });
+});
+
+
+// ---- Try again after dialog-focus and dialog-touched (0.5.2 R4) ----------------------------------------------------------------------
+
+describe('dialogOutcome: retry says which locks end when the user presses Try again (0.5.2 R4)', () => {
+  const o = (status, code, extra = {}) => dialogOutcome({ status, code, name: 'builder-1', ...extra });
+
+  test('(+) 409 dialog-focus and 409 dialog-touched: locked and retry', () => {
+    for (const code of ['dialog-focus', 'dialog-touched']) {
+      const r = o(409, code);
+      assert.deepEqual([r.ok, r.phase, r.lock, r.retry], [false, 'failed', true, true], code);
+    }
+  });
+
+  test('(+) the keys-pressed sentence does not change the flag', () => {
+    assert.equal(o(409, 'dialog-focus', { sent: 2 }).retry, true);
+    assert.match(o(409, 'dialog-focus', { sent: 2 }).message, /nika had pressed 2 keys in the pane before it stopped\.$/);
+  });
+
+  test('(−) every other answer has retry false: the other locks, the re-enabled lines, the 400s, 404, 429, 5xx, network, and every 200', () => {
+    const others = [
+      [409, 'no-dialog'], [409, 'dialog-changed'], [409, 'text-mode'], [409, 'text-mismatch'], [409, 'not-taken'], [409, 'already-answered'], [409, 'busy-switching'],
+      [409, 'not-idle'], [409, 'text-focus'], [409, 'survey-undo'], [409, 'something-new'], [400, 'terminal-only'], [400, 'invalid'], [400, 'dialog-focus'], [400, 'dialog-touched'],
+      [429, undefined], [404, 'not_found'], [500, undefined], [502, 'tmux'], [0, undefined],
+    ];
+    for (const [status, code] of others) assert.equal(o(status, code).retry, false, `${status} ${code}`);
+    for (const done of ['next', 'review', 'submitted', 'chosen', 'declined', 'moved', 'nonsense', undefined]) assert.equal(o(200, undefined, { done }).retry, false, `200 ${done}`);
+  });
+
+  test('(−) no other lock gained the flag: exactly two codes retry, and the locks of the others stay', () => {
+    const codes = ['no-dialog', 'dialog-changed', 'dialog-touched', 'dialog-focus', 'text-mode', 'text-mismatch', 'not-taken', 'already-answered', 'busy-switching', 'not-idle', 'text-focus', 'survey-undo'];
+    assert.deepEqual(codes.filter((c) => o(409, c).retry), ['dialog-touched', 'dialog-focus']);
+    assert.deepEqual(codes.filter((c) => o(409, c).lock), ['dialog-changed', 'dialog-touched', 'dialog-focus', 'text-mode', 'text-mismatch', 'already-answered']);
+  });
+});
+
+describe('Try again: the form takes answers again after nika refused one because Claude\'s dialog was touched in the terminal (0.5.2 R4)', () => {
+  const RETRY_NOTE = 'Once the terminal is back as it was, nika can try again.';
+  const LINE = {
+    'dialog-focus': "Claude's selection was moved in the terminal. Move it back there and press Try again, or finish it there.",
+    'dialog-touched': 'This question was changed in the terminal. Change it back there and press Try again, or finish it there.',
+  };
+  const refuse = (code, sent) => () => ({ status: 409, body: { error: code, sent } });
+  const rowOf = (root) => one(root, 'dlg-retry');
+  const againOf = (root) => buttons(rowOf(root)).find((b) => b.textContent === 'Try again') ?? null;
+  const shown = (root) => rowOf(root).hidden === false;
+  const inert = (root) => root.attrs['data-inert'];
+  const stepBtn = (root, i) => q(root, 'dlg-tab').find((b) => b.attrs['data-tab'] === String(i));
+  const pick = (r, i = 0) => { const radio = inputs(r.root, 'radio')[i]; radio.checked = true; radio.fire('change'); };
+  const heading = (root) => root.all((n) => n.attrs.id === 'dlg-q')[0];
+  const AGAIN = 'The form takes answers again.';
+
+  /** A two-step question refused with `code` after a pick. */
+  async function refused(code, opts = {}) {
+    const r = rig({ reply: refuse(code, opts.sent) });
+    r.render(ask2());
+    pick(r);
+    byText(r.root, 'Answer').click();
+    await settle();
+    return r;
+  }
+
+  test('(+) the row is built hidden: a note with the info icon, the fixed sentence and a Try again button, right after the other notes', () => {
+    const r = rig();
+    r.render(ask2());
+    const row = rowOf(r.root);
+    assert.equal(row.tag, 'p');
+    assert.ok(withClass('dlg-note')(row), 'a note like the others');
+    assert.equal(row.hidden, true, 'hidden until a refusal');
+    assert.deepEqual(hrefs(row), ['#i-info']);
+    assert.equal(row.kids[1].textContent, RETRY_NOTE);
+    const b = againOf(r.root);
+    assert.equal(b.attrs.type, 'button');
+    assert.ok(withClass('btn')(b));
+    const kids = r.root.kids;
+    assert.equal(kids[3], row, 'ask-h, the terminal note, the kept note, then this one');
+    assert.equal(kids[2].hidden, true);
+    assert.equal(kids[1].hidden, true);
+  });
+
+  for (const code of ['dialog-focus', 'dialog-touched']) {
+    test(`(+) a pick refused with 409 ${code}: the form is locked, the row is shown and the line names Try again; Try again sends nothing, takes the lock off and puts the focus on the heading`, async () => {
+      const r = await refused(code);
+      assert.deepEqual(r.log.problem.at(-1), [LINE[code], 'warn']);
+      assert.equal(shown(r.root), true);
+      assert.equal(inert(r.root), 'true');
+      assert.equal(off(byText(r.root, 'Answer')), true);
+      assert.equal(off(stepBtn(r.root, 1)), true);
+      assert.ok(inputs(r.root, 'radio').every((x) => off(x)));
+      assert.equal(chip(r.root).textContent, 'Not answered');
+      const calls = r.log.calls.length;
+      againOf(r.root).click();
+      await settle();
+      assert.equal(r.log.calls.length, calls, 'nothing is sent');
+      assert.equal(shown(r.root), false);
+      assert.equal(inert(r.root), 'false');
+      assert.ok(inputs(r.root, 'radio').every((x) => !off(x)), 'options are live');
+      assert.equal(off(stepBtn(r.root, 1)), false, 'a step is live (the current one never is)');
+      assert.equal(off(stepBtn(r.root, 0)), true);
+      assert.equal(off(byText(r.root, 'Decline')), false);
+      assert.equal(r.log.problem.at(-1)[0], '', 'the problem line is cleared');
+      assert.equal(chip(r.root).textContent, 'Needs you');
+      assert.equal(r.root.attrs['data-s'], 'ready');
+      assert.equal(focus.el, heading(r.root));
+      assert.equal(r.log.announce.at(-1), AGAIN);
+    });
+  }
+
+  test('(+) the keys nika had pressed before it stopped are still named in the line, and Try again still unlocks', async () => {
+    const r = await refused('dialog-focus', { sent: 1 });
+    assert.equal(r.log.problem.at(-1)[0], `${LINE['dialog-focus']} nika had pressed 1 key in the pane before it stopped.`);
+    assert.equal(shown(r.root), true);
+    againOf(r.root).click();
+    assert.equal(inert(r.root), 'false');
+  });
+
+  test('(+) after Try again a new pick sends one normal request (the same body as a first try), and a 200 ends it as always', async () => {
+    const r = await refused('dialog-focus');
+    againOf(r.root).click();
+    r.state.reply = () => ({ status: 200, body: { done: 'next', sent: 1 } });
+    pick(r, 0);
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(r.log.calls.length, 2);
+    assert.deepEqual(r.log.calls[1].json, r.log.calls[0].json, 'the same body: Try again changed nothing about the request');
+    assert.equal(r.log.calls[1].method, 'POST');
+    assert.equal(r.root.attrs['data-s'], 'answered');
+    assert.equal(shown(r.root), false);
+    assert.equal(inert(r.root), 'true');
+  });
+
+  test('(+) the same for a review Submit and for a plan choice refused with dialog-focus', async () => {
+    const rv = rig({ reply: refuse('dialog-focus') });
+    rv.render(review());
+    byText(rv.root, 'Submit answers').click();
+    await settle();
+    assert.equal(shown(rv.root), true);
+    assert.equal(rv.log.problem.at(-1)[0], LINE['dialog-focus']);
+    assert.equal(off(byText(rv.root, 'Submit answers')), true);
+    againOf(rv.root).click();
+    assert.equal(rv.log.calls.length, 1, 'nothing sent');
+    assert.equal(off(byText(rv.root, 'Submit answers')), false);
+    assert.equal(focus.el, heading(rv.root));
+    rv.state.reply = () => ({ status: 200, body: { done: 'submitted', sent: 1 } });
+    byText(rv.root, 'Submit answers').click();
+    await settle();
+    assert.equal(rv.log.calls.length, 2);
+    assert.equal(rv.root.attrs['data-s'], 'answered');
+
+    const pl = rig({ reply: refuse('dialog-focus') });
+    pl.render(plan());
+    q(pl.root, 'pbtn')[0].click();
+    await settle();
+    assert.equal(shown(pl.root), true);
+    assert.equal(off(q(pl.root, 'pbtn')[0]), true);
+    againOf(pl.root).click();
+    assert.equal(pl.log.calls.length, 1, 'nothing sent');
+    assert.equal(off(q(pl.root, 'pbtn')[0]), false);
+    assert.equal(focus.el.textContent, 'Read the plan in the terminal view.', 'the plan has no heading but its note, which takes the focus');
+    pl.state.reply = () => ({ status: 200, body: { done: 'chosen', sent: 1 } });
+    q(pl.root, 'pbtn')[0].click();
+    await settle();
+    assert.equal(pl.log.calls.length, 2);
+  });
+
+  test('(+) the same for a review Change (a step move) refused with dialog-touched', async () => {
+    const r = rig({ reply: refuse('dialog-touched') });
+    r.render(review());
+    q(r.root, 'dlg-rv-chg')[0].click();
+    await settle();
+    assert.equal(r.log.calls.length, 1);
+    assert.equal(shown(r.root), true);
+    assert.equal(off(q(r.root, 'dlg-rv-chg')[0]), true);
+    againOf(r.root).click();
+    assert.equal(off(q(r.root, 'dlg-rv-chg')[0]), false);
+    assert.equal(r.log.calls.length, 1);
+  });
+
+  test('(+) a capture of the same step keeps the row while the lock holds (the nodes stay)', async () => {
+    const r = await refused('dialog-focus');
+    r.render(ask2());
+    assert.equal(shown(r.root), true);
+    assert.equal(inert(r.root), 'true');
+  });
+
+  const NOT = [
+    [409, 'dialog-changed', true], [409, 'text-mode', true], [409, 'text-mismatch', true], [409, 'already-answered', true], [400, 'terminal-only', true],
+    [409, 'no-dialog', false], [409, 'not-taken', false], [409, 'busy-switching', false], [409, 'not-idle', false], [409, 'survey-undo', false],
+    [400, 'invalid', false], [429, undefined, false], [500, undefined, false], [0, undefined, false],
+  ];
+  for (const [status, code, locked] of NOT) {
+    test(`(−) ${status} ${code ?? '(no code)'}: no Try again row; ${locked ? 'the form stays locked and a click on the hidden button does nothing' : 'the form is live as before'}`, async () => {
+      const r = rig({ reply: () => ({ status, body: { error: code } }) });
+      r.render(ask2());
+      pick(r);
+      byText(r.root, 'Answer').click();
+      await settle();
+      assert.equal(shown(r.root), false);
+      assert.equal(inert(r.root), String(locked));
+      const calls = r.log.calls.length;
+      const said = r.log.announce.length;
+      againOf(r.root).click();
+      await settle();
+      assert.equal(r.log.calls.length, calls);
+      assert.equal(r.log.announce.length, said, 'nothing is announced');
+      assert.equal(inert(r.root), String(locked), 'the click changed nothing');
+      assert.notEqual(focus.el, heading(r.root));
+    });
+  }
+
+  test('(−) a second dialog-focus after Try again shows the row again; nothing is retried by itself', async () => {
+    const r = await refused('dialog-focus');
+    againOf(r.root).click();
+    assert.equal(shown(r.root), false);
+    pick(r, 1);
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(r.log.calls.length, 2, 'one request for the second answer, none by itself');
+    assert.equal(shown(r.root), true);
+    assert.equal(inert(r.root), 'true');
+    assert.equal(r.log.problem.at(-1)[0], LINE['dialog-focus']);
+    r.advance(60000);
+    await settle();
+    assert.equal(r.log.calls.length, 2, 'no timer retries it');
+  });
+
+  test('(−) a refusal that is not a retry after Try again takes the row away and keeps the lock (no stale row)', async () => {
+    const r = await refused('dialog-focus');
+    againOf(r.root).click();
+    r.state.reply = refuse('text-mode');
+    pick(r, 1);
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(shown(r.root), false);
+    assert.equal(inert(r.root), 'true');
+  });
+
+  test('(−) a new sig while the row shows: the form is rebuilt live and the row is hidden', async () => {
+    const r = await refused('dialog-touched');
+    assert.equal(shown(r.root), true);
+    r.render(ask2({ sig: SIG2, question: 'Which mode?' }));
+    assert.equal(shown(r.root), false);
+    assert.equal(inert(r.root), 'false');
+    assert.equal(chip(r.root).textContent, 'Needs you');
+    assert.equal(off(byText(r.root, 'Answer')), true, 'nothing picked yet, so Send waits as for any new question');
+  });
+
+  test('(−) no dialog while the row shows: the form goes away with it', async () => {
+    const r = await refused('dialog-focus');
+    r.render(null);
+    assert.equal(r.root.hidden, true);
+    assert.equal(r.df.shown(), false);
+  });
+
+  test('(−) text-focus on a step move: the form is re-enabled and there is no row (unchanged)', async () => {
+    const r = rig({ reply: () => ({ status: 409, body: { error: 'text-focus' } }) });
+    r.render(ask2());
+    stepBtn(r.root, 1).click();
+    await settle();
+    assert.equal(r.log.calls.length, 1);
+    assert.equal(shown(r.root), false);
+    assert.equal(inert(r.root), 'false');
+    assert.equal(off(stepBtn(r.root, 1)), false);
+  });
+
+  test('(−) Try again is single-use: a second click, and a click after a later answer, do nothing', async () => {
+    const r = await refused('dialog-focus');
+    const b = againOf(r.root);
+    b.click();
+    b.click();
+    assert.equal(r.log.announce.filter((m) => m === AGAIN).length, 1, 'said once');
+    r.state.reply = () => ({ status: 200, body: { done: 'next', sent: 1 } });
+    pick(r, 1);
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(r.root.attrs['data-s'], 'answered');
+    b.click();
+    await settle();
+    assert.equal(r.root.attrs['data-s'], 'answered', 'an answered form stays answered');
+    assert.equal(inert(r.root), 'true');
+    assert.equal(r.log.announce.filter((m) => m === AGAIN).length, 1);
+  });
+
+  test('(−) Try again is gone from a stale form: after a new sig the old button does nothing to the new form', async () => {
+    const r = await refused('dialog-focus');
+    const old = againOf(r.root);
+    r.render(ask2({ sig: SIG2, question: 'Which mode?' }));
+    old.click();
+    assert.equal(r.log.announce.filter((m) => m === AGAIN).length, 0);
+    assert.equal(inert(r.root), 'false');
+  });
+
+  test('(−) a bypass dialog is terminal only: there is no refusal to retry, and Try again would not open it', async () => {
+    const r = rig();
+    r.render(ask2({ bypass: true }));
+    assert.equal(shown(r.root), false);
+    againOf(r.root).click();
+    assert.equal(r.log.calls.length, 0);
+    assert.equal(inert(r.root), 'true', 'the options stay off whatever is pressed');
+    assert.equal(r.log.announce.filter((m) => m === AGAIN).length, 0);
+  });
+
+  test('(−) the page code sends nothing from retry(): it makes no call of its own and presses no key', () => {
+    const c = code(SRC);
+    const at = c.indexOf('function retry(');
+    assert.notEqual(at, -1, 'the function exists');
+    const body = c.slice(at, c.indexOf('\n  }\n', at));
+    assert.doesNotMatch(body, /io\.call|act\(|io\.path|fetch/);
+    assert.match(body, /clearProblem/);
+  });
+
+  test('(+) the stylesheet: the retry row centers its button and lets it wrap under the text, after the .dlg-note rule it adjusts', () => {
+    const CSS = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'session.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const m = /(?:^|[}\s])\.dlg-retry\s*\{([^}]*)\}/.exec(CSS);
+    assert.ok(m, '.dlg-retry has a rule');
+    assert.match(m[1], /align-items:\s*center/);
+    assert.match(m[1], /flex-wrap:\s*wrap/);
+    assert.ok(CSS.indexOf('.dlg-retry') > CSS.indexOf('.dlg-note {'), 'same specificity: it must come after .dlg-note');
   });
 });

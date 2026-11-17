@@ -44,14 +44,16 @@ const NOISE = new RegExp(`[${range([...CONTROLS, [0x200e, 0x200f], [0x202a, 0x20
 
 const TERMINAL_NOTE = 'This mentions bypass, so nika leaves it to you: answer it in the terminal.';
 const KEPT_NOTE = "nika can't read Claude's dialog right now. Wait a moment, or answer in the terminal.";
+const RETRY_NOTE = 'Once the terminal is back as it was, nika can try again.';
 const DECLINE_TITLE = 'Presses Esc in the pane: Claude stops and waits for you';
 const LEAD_NOTE = 'Start with a word: Claude can read a first digit as an option.';
 const GENERIC = "nika couldn't send this answer. Check it and try again.";
+// [line, lock, retry]: `lock` keeps the form off until the sig changes; `retry` (0.5.2 R4) lets the user end the lock with Try again, which sends nothing
 const L409 = {
   'no-dialog': ['The question is gone.', false],
   'dialog-changed': ['The question changed; check the session.', true],
-  'dialog-touched': ['This question was changed in the terminal. Finish it there.', true],
-  'dialog-focus': ["Claude's selection was moved in the terminal. Finish it there.", true],
+  'dialog-touched': ['This question was changed in the terminal. Change it back there and press Try again, or finish it there.', true, true],
+  'dialog-focus': ["Claude's selection was moved in the terminal. Move it back there and press Try again, or finish it there.", true, true],
   'text-mode': ["nika can't type your answer: Claude's text field isn't ready for typing. Type it in the terminal.", true],
   'text-mismatch': ["Your answer didn't arrive exactly as typed, so nika stopped before sending it. Fix it in the terminal.", true],
   'not-taken': ["Claude didn't take the key. Check the session, then try again.", false],
@@ -75,17 +77,18 @@ const DONE = {
 
 /**
  * What a route answer means for the form: { ok, phase ('answered' | 'failed'), lock (stay off until the sig changes), message (the problem line,
- * '' = none), kind ('warn' | 'error'), gone (the pane is gone), word (the chip word of an answered step), announce (null for a move), sent }. Only the status, the
+ * '' = none), kind ('warn' | 'error'), gone (the pane is gone), word (the chip word of an answered step), announce (null for a move), sent, retry (the lock
+ * ends when the user presses Try again: 409 dialog-focus and dialog-touched only) }. Only the status, the
  * `error` code, `done` and `sent` are read; no text of the response is ever shown (design W1 6.4).
  */
 export function dialogOutcome({ status, code, done, sent, name = 'the agent' } = {}) {
   const keys = Number.isInteger(sent) && sent > 0 && sent <= 99 ? sent : 0;
   if (status === 200 && done === 'moved') { // a step move (0.5.1): nothing is answered and nothing is announced; the next capture draws the new step and says it
-    return { ok: true, phase: 'moving', lock: true, message: '', kind: '', gone: false, word: '', announce: null, sent: keys };
+    return { ok: true, phase: 'moving', lock: true, retry: false, message: '', kind: '', gone: false, word: '', announce: null, sent: keys };
   }
   if (status === 200) {
     const d = Object.hasOwn(DONE, done) ? DONE[done] : DONE.next;
-    return { ok: true, phase: 'answered', lock: true, message: '', kind: '', gone: false, word: d.word, announce: d.say(name), sent: keys };
+    return { ok: true, phase: 'answered', lock: true, retry: false, message: '', kind: '', gone: false, word: d.word, announce: d.say(name), sent: keys };
   }
   let row = [GENERIC, false];
   if (status === 409 && Object.hasOwn(L409, code)) row = L409[code];
@@ -93,10 +96,10 @@ export function dialogOutcome({ status, code, done, sent, name = 'the agent' } =
   else if (status === 429) row = ['Too many keys at once; try again.', false];
   else if (status === 404) row = ['The session is gone.', false];
   else if (status === 0 || status >= 500) row = ["nika couldn't reach tmux.", false];
-  const [line, lock] = row;
+  const [line, lock, retry = false] = row;
   const message = line && keys ? `${line} nika had pressed ${keys} ${keys === 1 ? 'key' : 'keys'} in the pane before it stopped.` : line;
   const already = status === 409 && code === 'already-answered'; // someone answered it (a second window): it is answered, not failed
-  return { ok: false, phase: already ? 'answered' : 'failed', lock, message, kind: message ? problemKind(status) : '', gone: status === 404, word: already ? 'Answered' : '', announce: '', sent: keys };
+  return { ok: false, phase: already ? 'answered' : 'failed', lock, retry: retry === true && status === 409, message, kind: message ? problemKind(status) : '', gone: status === 404, word: already ? 'Answered' : '', announce: '', sent: keys };
 }
 
 // ---- the capture's `dialog`, cleaned ---------------------------------------------------------------------------------------------
@@ -337,7 +340,7 @@ export function createDialogForm(io) {
   const now = io.now ?? (() => Date.now());
   const after = io.after ?? ((fn, ms) => setTimeout(fn, ms));
   const cancel = io.cancel ?? ((t) => clearTimeout(t));
-  let F = null; // the form on screen: { dialog, sig, phase, word, busy, busyEl, locked, kept, terminal, chipSig, reason, notes, parts }
+  let F = null; // the form on screen: { dialog, sig, phase, word, busy, busyEl, locked, retry, kept, terminal, chipSig, reason, notes, parts }
   let last = null; // the arguments of the last render: the replay after a request and the timer use them
   let reading = null; // { since, timer, expired, drawn }: a dialog nika cannot read yet, with no form shown before it
   let visible = false;
@@ -376,6 +379,7 @@ export function createDialogForm(io) {
     root.setAttribute('data-inert', String(!live)); // the option rows dim whenever the form cannot take an answer, not only while one is on its way
     f.terminalNote.hidden = !f.terminal;
     f.keptNote.hidden = !f.kept;
+    f.retryNote.hidden = !(f.retry && f.locked && !f.busy);
     const p = f.parts;
     for (const el of p.inputs) {
       el.disabled = f.terminal; // read-only: the options are shown, not offered
@@ -420,10 +424,24 @@ export function createDialogForm(io) {
       f.phase = out.phase;
       f.word = out.word;
       f.locked = out.lock;
+      f.retry = out.retry === true;
       paint();
     }
     if (out.gone) io.setGone();
     if (last !== null) render(last); // a step that arrived while the request ran is drawn now
+  }
+
+  /** R4 (0.5.2): the user put Claude's dialog back in the terminal: the form takes answers again. Nothing is sent; the route checks the dialog before every key. */
+  function retry(f) {
+    if (F !== f || f.busy || !f.retry) return;
+    f.retry = false;
+    f.locked = false;
+    f.phase = 'live';
+    f.word = '';
+    io.clearProblem();
+    paint();
+    f.parts.heading?.focus({ preventScroll: true });
+    io.announce('The form takes answers again.');
   }
 
   const declineEl = (f, cls, label, extra = {}) => h('button', { type: 'button', class: cls, title: DECLINE_TITLE, ...extra, onclick: (e) => act(f, answerBody(f.dialog, { cancel: true }), e.currentTarget) }, label);
@@ -638,14 +656,15 @@ export function createDialogForm(io) {
       keep.clear();
       keepFor = headers;
     }
-    const f = { dialog, sig: dialog.sig, phase: 'live', word: '', busy: false, busyEl: null, moving: false, locked: false, kept: false, terminal: dialog.bypass, chipSig: '' };
+    const f = { dialog, sig: dialog.sig, phase: 'live', word: '', busy: false, busyEl: null, moving: false, locked: false, retry: false, kept: false, terminal: dialog.bypass, chipSig: '' };
     f.chipHolder = h('span', { class: 'dlg-chiph' });
     f.reason = h('span', { class: 'ask-reason' });
     f.terminalNote = h('p', { class: 'dlg-note', hidden: true }, icon('info'), h('span', { text: TERMINAL_NOTE }));
     f.keptNote = h('p', { class: 'dlg-note', hidden: true }, icon('info'), h('span', { text: KEPT_NOTE }));
+    f.retryNote = h('p', { class: 'dlg-note dlg-retry', hidden: true }, icon('info'), h('span', { text: RETRY_NOTE }), h('button', { type: 'button', class: 'btn', onclick: () => retry(f) }, 'Try again'));
     f.parts = dialog.kind === 'plan' ? planBody(f) : dialog.at === 'review' ? reviewBody(f) : questionBody(f);
     F = f;
-    root.replaceChildren(h('div', { class: 'ask-h' }, f.chipHolder, kindTag(dialog.kind), f.reason), f.terminalNote, f.keptNote, ...f.parts.nodes);
+    root.replaceChildren(h('div', { class: 'ask-h' }, f.chipHolder, kindTag(dialog.kind), f.reason), f.terminalNote, f.keptNote, f.retryNote, ...f.parts.nodes);
     root.setAttribute('aria-labelledby', dialog.kind === 'plan' ? 'dlg-kind' : 'dlg-q');
     root.removeAttribute('aria-label');
     show(true);
