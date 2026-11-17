@@ -1578,6 +1578,24 @@ function fitPanelClosed() {
 }
 
 /**
+ * FX3 (live check LC18 R4b): the size the grow goes back to is checked once more when the grow asks for it. A commit (a focus while a question was open) that
+ * measured a box shorter than the resting layout, with none of the panels of boxShortened shown, left FIT.base too small for good: LC18 ended at 10 rows where
+ * a fresh fit in the same layout gave 12, and the next grow counted from the 10. The panel is probed now and a bigger answer replaces the base and the held
+ * frame (the text scale follows with the capture of the new pane size). Only while the window has focus and the fit is on, with no panel shown and the same
+ * columns (a change of the columns is a commit's work, F10). A base that is as large as the probe or larger stays: a box that is shorter now is a layout of
+ * this moment, not a new commit.
+ */
+function fitBaseFresh() {
+  if (!FIT.base || !FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitFocused() || boxShortened()) return;
+  const next = fitProbe();
+  if (!next) return;
+  const ask = fillSize(next, FIT.room, FIT.d, FIT.hide, FIT.strip);
+  if (ask.cols !== FIT.base.cols || ask.rows <= FIT.base.rows) return;
+  fitMeasure();
+  FIT.base = ask;
+}
+
+/**
  * The box changed size, or the font arrived. Only a change of the window, the font or the panel's width is a commit; a box that only got taller or shorter (a
  * line, a chip or a panel came or went) asks nothing, scales nothing, and keeps the mirror pinned to the bottom (F10).
  */
@@ -1621,6 +1639,7 @@ function growTick() {
   const { G, ask } = growStep(GR, { now: Date.now(), dialog: W.dialog, fitted: FIT.state === 'fitted', paneRows: M.rows, baseRows: FIT.base.rows, baseCols: FIT.base.cols });
   GR = G;
   if (ask) {
+    if (ask.back === true) fitBaseFresh(); // FX3: the way back is counted from a base that is looked at now
     const want = growAsk(FIT.base, GR); // the grown rows, or the base size after a give-up or a close
     FIT.planner.size(want.cols, want.rows, { now: true });
   }

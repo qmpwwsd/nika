@@ -25,7 +25,7 @@ import { createGlideArm as createGlideArmReal, frameOf as frameOfReal, glideFrom
 import { h as hReal, icon as iconReal, roleTagEl as roleTagElReal, subStateEl as subStateElReal, subagentItemEl as subagentItemElReal, labelEl as labelElReal } from '../public/dom.js';
 import { subagentView as subagentViewReal, subagentHref as subagentHrefReal, SUBAGENT_ID as SUBAGENT_ID_REAL, agentLabelView as agentLabelViewReal, subLabelView as subLabelViewReal } from '../public/dash-model.js';
 import { SESSION_ID as SESSION_ID_REAL, PANE_ID as PANE_ID_REAL } from '../public/quick-actions.js';
-import { cleanDialog as cleanDialogReal } from '../public/dialog-form.js';
+import { cleanDialog as cleanDialogReal, createDialogForm as createDialogFormReal } from '../public/dialog-form.js';
 import { cleanSurvey as cleanSurveyReal } from '../public/survey-panel.js';
 import { installDom, El, withClass, focus as focusState } from './fake-dom.js';
 
@@ -4509,6 +4509,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     'function growing()', 'function growTick()',
     // FX2 (RV16 M3): a commit measured under a panel, and the one fresh commit when the panel closes
     'function boxShortened()', 'function fitPanelClosed()',
+    // FX3 (LC18 R4b): the size back is counted from a base that is looked at when the grow asks for it
+    'function fitBaseFresh()',
   ];
   /** An element that also answers contains() (the fake El has no tree search): the panel's focus and dismissal rules ask it. */
   class Box extends El {
@@ -4596,7 +4598,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     let fns = null;
     ctx.HOLD = createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout, timeout: (pending, c) => fns.holdTimeout(pending, c), ended: () => fns.holdEnded() });
     // F11: `realDraw` runs the page's own drawMirror (it sets M.cut and shows the strip) instead of the spy
-    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed${realDraw ? ', drawMirror' : ''} })`, ctx);
+    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed, fitBaseFresh${realDraw ? ', drawMirror' : ''} })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
       ...fns, ctx, log, clk, page, term, rows, cutEl, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
@@ -7705,6 +7707,209 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       assert.match(HTML, new RegExp(`id="${id}"[^>]* hidden`), `${id} is in session.html and starts hidden`);
     }
     assert.equal([...code(JS['session.js']).matchAll(/window\.addEventListener\('focus'/g)].length, 1, 'no second focus listener');
+  });
+
+  // ---- FX3 (live check LC18 R4b): the size back at the end of a grow is counted from a base measured fresh ---------------------------------------
+  // LC18: a question grown to 48 rows, a focus taken while it was open, the answer: the window ended at 10 rows while a fresh fit in the same layout gave 12.
+  // The focus commit measured a box that no panel of FX2 explains (FIT.short stays false), so FIT.base stayed short for good. Here that box is the one with
+  // `term.clientHeight = SHORT_H` and none of the four panels shown.
+  /** A grown, held question in a focused page; then the focus commit under a short box with no panel shown (the question is on screen). */
+  const grownThenShort = async (more = []) => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 30 }), answerAt('fitted', { cols: 100, rows: 30 }), ...more] });
+    r.page.focus = true;
+    await firstStep(r);
+    await r.clk.advance(0);
+    paneAt(r, 60);
+    showDialog(r, WHOLE);
+    r.fitCaptured();
+    assert.equal(r.ctx.GR.phase, 'held');
+    r.term.clientHeight = SHORT_H; // a layout element the page does not know about
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    return r;
+  };
+  /** The question closes: the drawn capture has none, 1 s on the grow asks the size back. */
+  const closeQuestion = async (r) => {
+    showDialog(r, null);
+    r.fitCaptured();
+    await r.clk.advance(1000);
+    r.handleCapture({ status: 304, body: null });
+    await r.clk.advance(300);
+  };
+
+  test('(+) FX3 (LC18 R4b): a focus taken while the grown question is open measures a short box no panel explains; when the question closes the pane goes back to the panel\'s 30 rows, not to the short 16', async () => {
+    const r = await grownThenShort();
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 16 }, 'the premise (LC18): the commit measured the short box');
+    assert.equal(r.ctx.FIT.short, false, 'and no panel of FX2 is shown, so nothing re-measures it');
+    assert.equal(rowsOfPuts(r).at(-1), 60, 'the grown question stays grown');
+    r.term.clientHeight = FULL_H; // the thing is gone; a height change alone is no commit (F10)
+    await closeQuestion(r);
+    const puts = rowsOfPuts(r);
+    assert.equal(puts.at(-1), 30, 'the pane ends at the panel\'s rows: ' + JSON.stringify(puts));
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 });
+    assert.deepEqual(norm(r.ctx.FIT.panel), { cols: 100, rows: 30 }, 'the held frame follows the base');
+  });
+
+  test('(−) FX3: no fresh base when the window is blurred, the fit is off or has no chip, a panel is shown, nothing can be measured, the columns differ or the box is not taller than the base', async () => {
+    const cases = [
+      ['blurred', (r) => { r.page.focus = false; }],
+      ['hidden tab', (r) => { r.page.visible = false; }],
+      ['blocked', (r) => { r.ctx.FIT.state = 'blocked'; }],
+      ['no chip', (r) => { r.ctx.FIT.state = null; }],
+      ['a panel is shown', (r) => { r.ctx.$('prompt-btns').hidden = false; }],
+      ['nothing measured', (r) => { r.term.clientWidth = 0; r.term.clientHeight = 0; }],
+      ['other columns', (r) => { r.term.clientWidth = 24 + 8 * 110 + 1; }],
+      ['not taller', (r) => { r.term.clientHeight = SHORT_H; }],
+    ];
+    for (const [id, set] of cases) {
+      const r = await grownThenShort();
+      r.term.clientHeight = FULL_H;
+      set(r);
+      const frame = r.ctx.FIT.frame;
+      await closeQuestion(r);
+      assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 16 }, id);
+      assert.equal(r.ctx.FIT.frame, frame, `${id}: the held frame is not measured again`);
+    }
+  });
+
+  test('(−) FX3: fitBaseFresh alone, with no base, no planner or nothing to measure (a hidden tab), throws nothing and changes nothing (growTick\'s caller swallows a throw, so it is looked at here)', async () => {
+    for (const lose of [(r) => { r.ctx.FIT.base = null; }, (r) => { r.ctx.FIT.planner = null; }, (r) => { r.term.clientWidth = 0; r.term.clientHeight = 0; }]) {
+      const r = await grownThenShort();
+      r.term.clientHeight = FULL_H;
+      lose(r);
+      const [base, frame] = [r.ctx.FIT.base, r.ctx.FIT.frame];
+      assert.doesNotThrow(() => r.fitBaseFresh());
+      assert.equal(r.ctx.FIT.base, base);
+      assert.equal(r.ctx.FIT.frame, frame);
+    }
+  });
+
+  test('(−) FX3: a step of the grow asks from the base as it is and does not look at the box (only the way back looks)', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 16 }), answerAt('fitted', { cols: 100, rows: 32 }), answerAt('fitted', { cols: 100, rows: 32 })] });
+    r.page.focus = true;
+    r.term.clientHeight = SHORT_H;
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    r.term.clientHeight = FULL_H;
+    await firstStep(r);
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 16 }, 'the base the step counted from');
+    assert.equal(rowsOfPuts(r).at(-1), 32);
+  });
+
+  test('(−) FX3: a base that is as tall as the box or taller stays: a box that is short at the way back (a line, a panel the page does not know) is no new commit (F10)', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 30 }), answerAt('fitted', { cols: 100, rows: 30 })] });
+    r.page.focus = true;
+    await firstStep(r);
+    await r.clk.advance(0);
+    paneAt(r, 60);
+    showDialog(r, WHOLE);
+    r.fitCaptured();
+    r.term.clientHeight = SHORT_H;
+    await closeQuestion(r);
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 });
+    assert.equal(rowsOfPuts(r).at(-1), 30);
+    assert.deepEqual(norm(r.ctx.FIT.panel), { cols: 100, rows: 30 }, 'the held frame is the one of the commit');
+  });
+
+  test('(−) FX3: the base is not looked at while the grow runs or is held (no commit point of its own, F10); only the way back looks', async () => {
+    const r = await grownThenShort();
+    r.term.clientHeight = FULL_H;
+    for (let i = 0; i < 6; i += 1) await poll(r, 500);
+    assert.equal(r.ctx.GR.phase, 'held');
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 16 }, 'untouched while the question is open');
+    assert.equal(rowsOfPuts(r).at(-1), 60);
+  });
+
+  test('(−) FX3: the code is where the design puts it: one look, at the way back in growTick, with no timer, listener, request or markup of its own', () => {
+    assert.equal([...SRC.matchAll(/\bfitBaseFresh\(/g)].length, 2, 'the declaration and the one call');
+    assert.match(fnOf('function growTick()'), /if \(ask\) \{\s*if \(ask\.back === true\) fitBaseFresh\(\);\s*const want = growAsk\(FIT\.base, GR\);/);
+    const body = code(fnOf('function fitBaseFresh()'));
+    assert.doesNotMatch(body, /setTimeout|addEventListener|ResizeObserver|call\(|fetch\(|document\.|innerHTML|\.size\(/);
+    assert.deepEqual(findSinks(body), []);
+  });
+
+  // ---- FX3 (LC18 Finding 3): a cut question that the grow turns into `wide` (or `layout`) gets the banner, and the pane stays grown while it is open --------------
+  // The page with the real question form (dialog-form.js) and the real attention note (renderAttn), the registry saying `attn` (a question is open: Claude waits for the
+  // owner). The LC18 harness kept the registry at `busy` by hand, and renderAttn shows the note only for `attn`.
+  const READYQ = cleanDialogReal({ state: 'ready', kind: 'ask', sig: 'a1b2c3d4e5f60718', bypass: false, at: 'question', tabs: [{ header: 'Tools', answered: false }], current: 0, final: true, question: 'Which database should I use?', multi: false, other: true, options: [{ n: 1, label: 'sqlite', description: 'Embedded, one file.' }, { n: 2, label: 'postgres', description: null }] });
+  const bannerRig = async ({ kind = 'attn' } = {}) => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 30 }), answerAt('fitted', { cols: 100, rows: 30 })] });
+    r.page.focus = true;
+    const root = box('div', true);
+    const note = { hidden: true };
+    const text = { textContent: '' };
+    const base = r.ctx.$;
+    r.ctx.$ = (id) => (id === 'dialog-form' ? root : id === 'attn-note' ? note : id === 'attn-text' ? text : base(id));
+    Object.assign(r.ctx, { A: { kind, name: 'builder-1', attention: 'Claude has a question' }, attnNote: attnNoteReal, passKeyLabel, MAC: false });
+    r.ctx.W.prompt = null;
+    vm.runInNewContext(`${fnOf('function renderAttn()')}; ({ renderAttn })`, r.ctx);
+    r.ctx.DF = createDialogFormReal({ root, paneId: '%1', path: (t) => `/x/${t}`, call: async () => ({ status: 200, body: {} }), announce() {}, say() {}, showProblem() {}, clearProblem() {}, setGone() {}, composer: () => ({ focus() {} }), refresh: () => r.ctx.renderAttn(), now: () => r.clk.now, after: r.ctx.setTimeout, cancel: r.ctx.clearTimeout });
+    r.ctx.renderMode = () => r.ctx.DF.render({ pane: r.ctx.W.pane, dialog: r.ctx.W.dialog, name: r.ctx.A.name, attention: r.ctx.A.attention, growing: r.growing() });
+    return { r, root, note, text };
+  };
+  /** A drawn capture, in the page's order: the mode/form render (noteScreen) first, then the fit's look (fitCaptured). */
+  const seen = (r, dialog) => { showDialog(r, dialog); r.ctx.renderMode(); r.fitCaptured(); };
+  const poll = async (r, ms) => { await r.clk.advance(ms); r.handleCapture({ status: 304, body: null }); };
+
+  test('(+) FX3 (LC18 F3): cut, the grow, then the question reads `wide` or `layout`: the form shows nothing, the banner is on once Reading is over, the pane stays at the grown size until the question closes, and goes back 1 s after', async () => {
+    for (const reason of ['wide', 'layout']) {
+      for (const early of [false, true]) { // the unreadable look comes after Reading's 2 s, or before them
+        const id = `${reason}${early ? ' early' : ''}`;
+        const { r, root, note, text } = await bannerRig();
+        seen(r, CUTD);
+        assert.equal(root.hidden, false, `${id}: Reading while the first look is made`);
+        await poll(r, 250);
+        await r.clk.advance(0);
+        assert.equal(r.ctx.GR.phase, 'stepping', id);
+        assert.equal(r.growing(), true, id);
+        assert.equal(note.hidden, true, `${id}: the banner waits while the step runs`);
+        if (!early) await poll(r, 2500);
+        paneAt(r, 60);
+        seen(r, { state: 'unreadable', kind: 'ask', reason });
+        assert.equal(r.ctx.GR.phase, 'held', `${id}: the reason is no longer cut: the grow stops`);
+        assert.equal(r.growing(), false, id);
+        if (early) await r.clk.advance(2100); // Reading runs out: the form's timer draws the page again
+        assert.equal(root.hidden, true, `${id}: no form and no Reading`);
+        assert.equal(note.hidden, false, `${id}: the banner`);
+        assert.match(text.textContent, /Answer it in the terminal/, id);
+        for (let i = 0; i < 12; i += 1) await poll(r, 500);
+        assert.deepEqual([...new Set(rowsOfPuts(r))], [30, 60], `${id}: the pane stays grown while the question is open (the planner's keep-alive repeats the size, nothing else is asked)`);
+        assert.equal(rowsOfPuts(r).at(-1), 60, id);
+        assert.equal(note.hidden, false, id);
+        seen(r, null);
+        await poll(r, 1000);
+        await r.clk.advance(300);
+        assert.equal(rowsOfPuts(r).at(-1), 30, `${id}: it goes back after the question closes`);
+        assert.deepEqual([...new Set(rowsOfPuts(r))], [30, 60], id);
+        assert.equal(r.ctx.GR.phase, 'idle', id);
+      }
+    }
+  });
+
+  test('(−) FX3 (LC18 F3): cut, the grow, then the question reads whole: the form shows and the banner never comes; and the banner waits for the registry (busy: no note)', async () => {
+    const { r, root, note } = await bannerRig();
+    seen(r, CUTD);
+    await poll(r, 250);
+    await r.clk.advance(0);
+    await poll(r, 2500);
+    paneAt(r, 60);
+    seen(r, READYQ);
+    assert.equal(r.ctx.GR.phase, 'held');
+    assert.equal(root.hidden, false, 'the form');
+    assert.equal(r.ctx.DF.live(), true);
+    assert.equal(note.hidden, true, 'no banner beside the form');
+    for (let i = 0; i < 6; i += 1) await poll(r, 500);
+    assert.equal(note.hidden, true);
+    assert.deepEqual([...new Set(rowsOfPuts(r))], [30, 60]);
+    const busy = await bannerRig({ kind: 'busy' });
+    seen(busy.r, CUTD);
+    await poll(busy.r, 250);
+    await busy.r.clk.advance(0);
+    await poll(busy.r, 2500);
+    paneAt(busy.r, 60);
+    seen(busy.r, { state: 'unreadable', kind: 'ask', reason: 'wide' });
+    assert.equal(busy.root.hidden, true, 'no form');
+    assert.equal(busy.note.hidden, true, 'the note is the registry\'s word `attn` (LC18 kept it at busy by hand)');
   });
 });
 
