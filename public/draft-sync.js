@@ -291,6 +291,10 @@ function acceptMessage({ status, code, reason }) {
     if (code === 'draft-mismatch') return "Claude's input did not take the suggestion. nika shows what it holds now.";
     if (code === 'draft-changed') return STALE_SUGGESTION;
     if (code === 'draft-unreadable') return pausedLine(reason);
+    // 0.5.1 (item K): a turn that runs in main is `busy`; background agents or a shell do not stop the accept. `not-idle` from this route now means a
+    // prompt or dialog is open, or Stop/End is running. The text keeps "Claude is working" for a server older than 0.5.1, which sent `not-idle` whenever
+    // Claude's registry was not idle (also during background work).
+    if (code === 'busy') return "Claude is answering right now, so nika can't accept the suggestion. Nothing was sent.";
     if (code === 'not-idle') return "Claude is working or a prompt is open, so nika can't accept the suggestion now. Nothing was sent.";
     if (code === 'input-unreadable' || code === 'mode-unknown') return "nika can't read Claude's input box right now (a menu may be open). Nothing was sent.";
     if (code === 'busy-switching') return 'Another action is running on this session. Try again in a moment.';

@@ -362,7 +362,7 @@ function readAsk(shape, rows, cols) {
       const done = tabs.filter((t) => t.answered).length; // the review lists the answered questions only, and warns while a tab is still open
       if (body.pairs.length !== done || body.warn !== (done < tabs.length)) bad.add('layout');
     }
-    if (body !== null) S = { kind: 'ask', at: 'review', tabs, warn: body.warn, pairs: body.pairs, focus: body.focus, insert: false, bypass };
+    if (body !== null) S = { kind: 'ask', at: 'review', tabs, warn: body.warn, pairs: body.pairs, focus: body.focus, insert: false, bypass, top: s - 1 };
   } else {
     if (marked.length !== 1 || strip.submit?.marked === true) bad.add('tab');
     body = readQuestion(ctx);
@@ -371,7 +371,7 @@ function readAsk(shape, rows, cols) {
       if (shape.nav === '\u2191/\u2193' ? several : !several && strip.submit === null) bad.add('layout'); // the footer agrees with the strip
       S = {
         kind: 'ask', at: 'question', tabs, i: marked.length === 1 ? marked[0] : 0, single: !several, question: body.question, multi: body.multi,
-        options: body.options, textRow: body.textRow, chat: body.chat, button: body.button, focus: body.focus, insert, bypass,
+        options: body.options, textRow: body.textRow, chat: body.chat, button: body.button, focus: body.focus, insert, bypass, top: s - 1,
       };
     }
   }
@@ -401,6 +401,7 @@ function readPlan(shape, rows, cols) {
   if (to >= stop || p >= stop) { bad.add('cut'); return { bad, S: null }; }
   const between = texts.slice(to + 1, p).filter((t) => t.trim());
   if (between.length !== 1 || !PLAIN_RULE.test(between[0])) bad.add('layout');
+  const top = to + 1 + texts.slice(to + 1, p).findIndex((t) => t.trim()); // 0.5.1 E: the screen row of that plain rule (used only when the step is read, i.e. when it is the single row)
   const prose = texts.slice(from, to).map((t) => clean(t, 500) ?? '');
   while (prose.length > 0 && prose[0] === '') prose.shift();
   while (prose.length > 0 && prose.at(-1) === '') prose.pop();
@@ -430,7 +431,7 @@ function readPlan(shape, rows, cols) {
   if (marks.length > 1) bad.add('layout');
   if (reachesCols(texts, p, last, cols, new Set())) bad.add('wide');
   const S = {
-    kind: 'plan', at: 'plan', options, textRow, planRows: prose, focus: marks.length === 1 ? marks[0] : null,
+    kind: 'plan', at: 'plan', options, textRow, planRows: prose, focus: marks.length === 1 ? marks[0] : null, top,
     insert: /^-- INSERT --/.test(texts[stop].trim()), bypass: mentionsBypass(texts.slice(p, last + 1).join(' ')) || bypassWindow(rows),
   };
   return { bad, S };
@@ -448,6 +449,8 @@ function readPlan(shape, rows, cols) {
  *               button 'Next' | 'Submit' | null
  *     review:   tabs, warn, pairs [{ question, answer }]
  *     plan:     options [{ n, label, text }], textRow { n, value|null } | null, planRows (the visible plan, only for the identity)
+ *   `top` (0.5.1, E; display only, in no identity or sig): the screen row a crop of the terminal view starts at. Question and review: the rule row
+ *   directly above the tab strip. Plan: the single plain rule row under the plan's closing dashed rule (the plan text stays above it).
  * Strings are clean()ed and bounded. A dialog is unreadable when it is cut off at the top (`cut`), has a text Claude shortened with an
  * ellipsis (`clipped`), may be cut at the pane's edge or is wrapped in a way
  * that cannot be told from a description (`wide`), is numbered above 9 or with gaps (`numbers`), has no single current tab (`tab`), or
@@ -462,6 +465,50 @@ export function readDialogScreen(rows, cols) {
   if (surveyOrFollowUpShown(rows)) bad.add('survey'); // also Claude's post-rating row (M1): a digit typed for an option could reach its `1`
   const reason = REASONS.find((r) => bad.has(r));
   return reason === undefined && S !== null ? S : { unreadable: reason ?? 'layout', kind: plan ? 'plan' : 'ask' };
+}
+
+/**
+ * The strip of tabs and where Claude's question dialog stands in it (0.5.1, D): null, or `{ at, n, headers, answered, input, insert, bypass }`.
+ * It reads the strip row and the footer only, never the options, so a step whose options are clipped, wide or cut still gives its strip
+ * (moving between steps needs the place, not the content). `at` is the current step: the marked question tab's index, or `n` (the number of
+ * questions) on the Review step; `headers` and `answered` are the strip's tokens; `input` is true while the focus is on an input row of the
+ * step (its text row, `Chat about this`, a multi question's Next button): Claude adds `ctrl+g to edit in <editor>` to the footer there, and
+ * Right and Left do nothing on those rows; `insert` is true when the footer starts with the vim INSERT marker; `bypass` is the dialog's
+ * bypass mention (same rule as readDialogScreen).
+ * Null for: no dialog, a plan, a permission prompt, a nudge or exit shape, a wrapped footer or a pane narrower than MIN_COLS, no strip row, a
+ * strip that does not parse, fewer than two steps (a one-question form has no strip to move on), no single marked token (none, two, a half-marked
+ * one, or a marked token that is not the Review's Submit on the review), a footer that disagrees with the strip, or a header that is empty, too
+ * long or holds a checkbox glyph.
+ */
+export function stripOf(rows, cols) {
+  const shape = shapeOf(rows);
+  if (shape === null || (shape.kind !== 'ask' && shape.kind !== 'review')) return null;
+  const { texts, foot } = shape;
+  if (!Number.isInteger(cols) || cols < MIN_COLS || foot.length > 1) return null;
+  const s = findStrip(texts, foot[0]);
+  if (s < 0) return null;
+  const strip = parseStrip(rows[s]);
+  if (strip === null || strip.tabs.length < 2 || strip.tabs.length > TABS_MAX) return null;
+  if (strip.tabs.some((t) => t.mixed) || strip.submit?.mixed) return null;
+  const bad = new Set();
+  const headers = strip.tabs.map((t) => take(bad, t.header, HEADER_MAX));
+  if (bad.has('layout') || headers.some((h) => GLYPH.test(h))) return null;
+  const marked = strip.tabs.flatMap((t, n) => (t.marked ? [n] : []));
+  const n = strip.tabs.length;
+  let at;
+  if (shape.kind === 'review') {
+    if (marked.length > 0 || strip.submit === null || !strip.submit.marked) return null;
+    at = n;
+  } else {
+    if (marked.length !== 1 || strip.submit?.marked === true || shape.nav === '\u2191/\u2193') return null; // up/down arrows in the footer: a one-question form
+    at = marked[0];
+  }
+  const footer = foot.map((x) => texts[x].trim()).join(' ');
+  const bypass = mentionsBypass(texts.slice(s, foot.at(-1) + 1).join(' ')) || bypassWindow(rows);
+  return {
+    at, n, headers, answered: strip.tabs.map((t) => t.answered),
+    input: /\bctrl\+g to edit in /.test(footer), insert: /^-- INSERT --/.test(footer), bypass,
+  };
 }
 
 /**
@@ -493,11 +540,14 @@ export function dialogCapture(rows, cols) {
   const S = readDialogScreen(rows, cols);
   if (S === null) return null;
   if (S.unreadable !== undefined) return { state: 'unreadable', kind: S.kind, reason: S.unreadable };
-  const head = { state: 'ready', kind: S.kind, at: S.at, sig: sigOf(S), bypass: S.bypass };
+  const head = { state: 'ready', kind: S.kind, at: S.at, sig: sigOf(S), bypass: S.bypass, top: S.top };
   if (S.at === 'review') return { ...head, tabs: S.tabs, warn: S.warn, pairs: S.pairs };
   if (S.at === 'plan') return { ...head, options: S.options };
   return {
     ...head, tabs: S.tabs, current: S.i, final: S.single && !S.multi, question: S.question, multi: S.multi, other: otherAllowed(S),
-    options: S.options.map((o) => ({ n: o.n, label: o.label, description: o.description, ...(S.multi ? { checked: o.checked } : {}) })),
+    // `checked` is Claude's tick on every option (multi: its checkbox; single: the answered tick after the label) and `typed` the text in Claude's own text
+    // row (null when it is empty): both are display only and neither is in identityOf, so the sig does not move when they change (0.5.1, D).
+    options: S.options.map((o) => ({ n: o.n, label: o.label, description: o.description, checked: S.multi ? o.checked : o.ticked === true })),
+    typed: S.textRow.value === null ? null : { text: S.textRow.value.slice(0, ANSWER_MAX), answered: S.multi ? S.textRow.checked === true : S.textRow.ticked === true },
   };
 }

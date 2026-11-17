@@ -1,7 +1,8 @@
 // The attachment store (0.5, W2, design-W2 section 3 and 4; rules constraints 5, 9, 10, 11): checks the bytes of an upload, writes them to
 // `<state>/attachments/<key>/<id>.<ext>`, looks them up for a send, removes them and prunes old ones. The user's file name never reaches
-// the disk (only an extension from a fixed list), the stored name is a random id nika made, nothing serves a file back, and nothing about
-// a file (name, bytes, path, id) is ever logged. Writes go through src/fwrite.js, reads through src/fsafe.js. Keep this file ASCII.
+// the disk (only an extension from a fixed list), the stored name is a random id nika made, nothing about a file (name, bytes, path, id) is
+// ever logged, and the only read-back is readImage (0.5.1, T61): the bytes of an unsent image attachment to the pane that owns it.
+// Writes go through src/fwrite.js, reads through src/fsafe.js. Keep this file ASCII.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -10,6 +11,8 @@ import { ensureDir, writeAtomic, removeOwnFile, removeOwnDir } from './fwrite.js
 import { openRegular } from './fsafe.js';
 import { loadConfig } from './store.js';
 import { PANE_ID, PROJECT_KEY } from './ids.js';
+import { imageTypeOf } from './image.js';
+import { createLimiter } from './collect/history.js';
 
 export const UPLOAD_CAP = 12 * 1024 * 1024; // request body: base64 of 8 MiB is 11 184 812 chars plus the JSON frame
 export const MAX_BYTES = 8 * 1024 * 1024; // decoded, per file
@@ -36,7 +39,9 @@ const TMP_NAME = /^\.[0-9a-f]{16}\.[a-z0-9]{1,10}\.[0-9a-f]{12}\.tmp$/;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 // tab, LF and CR are text; the other C0 controls, DEL and the C1 range are not
 const CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
-const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const IMAGE_EXT = { png: 'png', jpeg: 'jpg', gif: 'gif', webp: 'webp' }; // the stored extension of each image type imageTypeOf names
+const IMAGE_TYPES = ['png', 'jpeg', 'gif', 'webp'];
+const imageLimited = createLimiter(2); // module-level: at most two read-backs at once, across every store
 const UID = typeof process.getuid === 'function' ? process.getuid() : null;
 
 /** `{ status, body: { error, message } }`; the message is the code in words and is never shown by the page. */
@@ -53,12 +58,9 @@ const codeOf = (err) => (/^[A-Z0-9_]{1,20}$/.test(err?.code) ? err.code : 'ERR')
  */
 export function sniff(buf, name) {
   if (!buf?.length) return { error: 'empty' };
-  const head = buf.toString('latin1', 0, 12);
-  if (buf.subarray(0, 8).equals(PNG)) return { type: 'png', ext: 'png' };
-  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return { type: 'jpeg', ext: 'jpg' };
-  if (/^GIF8[79]a/.test(head)) return { type: 'gif', ext: 'gif' };
-  if (head.length === 12 && head.startsWith('RIFF') && head.slice(8) === 'WEBP') return { type: 'webp', ext: 'webp' };
-  if (head.startsWith('%PDF-')) return { type: 'pdf', ext: 'pdf' };
+  const image = imageTypeOf(buf); // PNG, JPEG, GIF or WebP: the one list of signatures lives in src/image.js
+  if (image) return { type: image, ext: IMAGE_EXT[image] };
+  if (buf.toString('latin1', 0, 5) === '%PDF-') return { type: 'pdf', ext: 'pdf' };
   let text;
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
@@ -277,6 +279,47 @@ export function createAttachments({
         note(err);
         return null;
       }
+    },
+
+    /**
+     * The one read-back (0.5.1, C; T61): the bytes of an own, unsent IMAGE of this pane as `{ type, data }` (base64), for the page's viewer; null for
+     * every miss, so the route is no oracle (unknown or malformed id, another pane's, sent, not an image type, file gone, swapped, linked, resized, moved
+     * or no longer the type it was). Two reads at a time; the record is checked again once a slot is free. A failure is logged as its code only.
+     */
+    async readImage(pane, id) {
+      const open = () => {
+        const r = records.get(id);
+        return r && r.pane === pane && !r.sent && IMAGE_TYPES.includes(r.type) ? r : null;
+      };
+      if (!open()) return null;
+      return imageLimited(async () => {
+        const r = open(); // sent or removed while it waited
+        if (!r) return null;
+        let opened;
+        try {
+          opened = await openRegular(r.path); // O_NOFOLLOW, regular, owned by the user, one link
+        } catch (err) {
+          note(err);
+          return null;
+        }
+        try {
+          if (opened.st.size !== r.size || r.size > MAX_BYTES) return null;
+          const buf = Buffer.alloc(r.size);
+          let got = 0;
+          while (got < buf.length) {
+            const { bytesRead } = await opened.handle.read(buf, got, buf.length - got, got);
+            if (bytesRead === 0) break;
+            got += bytesRead;
+          }
+          if (got !== buf.length || !(await unmoved(r.path)) || imageTypeOf(buf) !== r.type) return null;
+          return { type: r.type, data: buf.toString('base64') };
+        } catch (err) {
+          note(err);
+          return null;
+        } finally {
+          await opened.handle.close();
+        }
+      });
     },
 
     /** Deletes an unsent file of this pane now. false for unknown, another pane's, sent, already gone or refused (no oracle). */

@@ -8,7 +8,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installDom, withClass } from './fake-dom.js';
-import { roleTagEl, subStateEl, subagentItemEl, labelEl } from '../public/dom.js';
+import { roleTagEl, subStateEl, subagentItemEl, labelEl, ago as domAgo, timeEl as domTimeEl } from '../public/dom.js';
+import { ago as uiAgo, timeEl as uiTimeEl } from '../public/ui.js';
+import { subagentGroups } from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const css = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -274,5 +276,137 @@ describe('tokens.css: each subagent state has its own colour, glyph and word (de
   test('(−) the three states do not share a colour token (colour is never the only difference, but it differs too)', () => {
     const colours = ['running', 'finished', 'stopped'].map((s) => /--sst-c:\s*var\((--[a-z]+)\)/.exec(rule(`.sst[data-ss="${s}"] {`))[1]);
     assert.equal(new Set(colours).size, 3);
+  });
+});
+
+// ---- 0.5.1 H (design DES-A 4.3 and 7.3): the Subagents button's grouping, and ago/timeEl now living in dom.js -----------------------------
+describe('subagentGroups: running first, the ended ones under "+N ended" (0.5.1 H)', () => {
+  const s = (id, state, lastActivity, over = {}) => ({ id, state, lastActivity, description: `task ${id}`, ...over });
+
+  test('(+) running ones come first, newest activity first; every other state is ended, newest first; label, summary and hint say the counts', () => {
+    const g = subagentGroups([
+      s('a1', 'finished', 10), s('b2', 'running', 5), s('c3', 'stopped', 30), s('d4', 'running', 50), s('e5', 'finished', 20),
+    ]);
+    assert.deepEqual(g.running.map((x) => x.id), ['d4', 'b2']);
+    assert.deepEqual(g.ended.map((x) => x.id), ['c3', 'e5', 'a1']);
+    assert.equal(g.label, 'Subagents (2 running)');
+    assert.equal(g.summary, '2 running · 3 ended');
+    assert.equal(g.hint, '+3 ended');
+    assert.deepEqual(Object.keys(g).sort(), ['ended', 'hint', 'label', 'running', 'summary']);
+  });
+
+  test('(+) ended only: no running rows, "(0 running)" in the name, the hint still shows', () => {
+    const g = subagentGroups([s('a1', 'finished', 10), s('b2', 'stopped', 20)]);
+    assert.deepEqual(g.running, []);
+    assert.deepEqual(g.ended.map((x) => x.id), ['b2', 'a1']);
+    assert.equal(g.label, 'Subagents (0 running)');
+    assert.equal(g.summary, '0 running · 2 ended');
+    assert.equal(g.hint, '+2 ended');
+  });
+
+  test('(+) running only: no ended rows and no hint (null, so no empty "+0 ended")', () => {
+    const g = subagentGroups([s('a1', 'running', 10)]);
+    assert.deepEqual(g.running.map((x) => x.id), ['a1']);
+    assert.deepEqual(g.ended, []);
+    assert.equal(g.label, 'Subagents (1 running)');
+    assert.equal(g.summary, '1 running · 0 ended');
+    assert.equal(g.hint, null);
+  });
+
+  test('(+) a lastActivity that is not finite sorts last in its group; equal times keep the order they came in', () => {
+    const g = subagentGroups([
+      s('a1', 'running', undefined), s('b2', 'running', 7), s('c3', 'running', NaN), s('d4', 'running', 7), s('e5', 'running', 9), s('f6', 'running', '12'),
+    ]);
+    assert.deepEqual(g.running.map((x) => x.id), ['e5', 'b2', 'd4', 'a1', 'c3', 'f6']);
+    const e = subagentGroups([s('a1', 'finished', null), s('b2', 'stopped', 3), s('c3', 'finished', Infinity)]);
+    assert.deepEqual(e.ended.map((x) => x.id), ['b2', 'a1', 'c3']);
+  });
+
+  test('(−) an unknown state goes to ended, never running; so does a missing or non-text state and a prototype name', () => {
+    const g = subagentGroups([s('a1', 'running', 1), s('b2', 'paused', 9), s('c3', undefined, 8), s('d4', 'RUNNING', 7), s('e5', 'constructor', 6), s('f6', 5, 5)]);
+    assert.deepEqual(g.running.map((x) => x.id), ['a1']);
+    assert.deepEqual(g.ended.map((x) => x.id), ['b2', 'c3', 'd4', 'e5', 'f6']);
+    assert.equal(g.label, 'Subagents (1 running)');
+  });
+
+  test('(−) nothing to list gives null: an empty list, a non-array, and a list of only junk', () => {
+    for (const subs of [[], undefined, null, 'abc', 5, {}, { length: 1, 0: s('a1', 'running', 1) }, [null], [undefined, 5, 'x', [], [s('a1', 'running', 1)], true]]) {
+      assert.equal(subagentGroups(subs), null, JSON.stringify(subs));
+    }
+  });
+
+  test('(−) junk next to real entries is dropped, not counted', () => {
+    const g = subagentGroups([null, s('a1', 'running', 1), 7, 'x', [], s('b2', 'finished', 2), undefined]);
+    assert.deepEqual(g.running.map((x) => x.id), ['a1']);
+    assert.deepEqual(g.ended.map((x) => x.id), ['b2']);
+    assert.equal(g.summary, '1 running · 1 ended');
+  });
+
+  test('(−) the input list and its entries are not changed (sorting works on copies)', () => {
+    const list = [s('a1', 'finished', 1), s('b2', 'running', 2), s('c3', 'running', 9)];
+    const before = JSON.stringify(list);
+    const g = subagentGroups(list);
+    assert.equal(JSON.stringify(list), before);
+    assert.notEqual(g.running, list);
+    assert.equal(g.running[0], list[2], 'the entries themselves are handed through, not cloned');
+  });
+
+  test('(+) the function and its comment stay ASCII: the middle dot is an escape', () => {
+    const src = fs.readFileSync(path.join(PUBLIC, 'dash-model.js'), 'utf8');
+    const from = src.lastIndexOf('/**\n * What the session window\'s Subagents button');
+    const to = src.indexOf('\n}\n', src.indexOf('export function subagentGroups'));
+    assert.ok(from > 0 && to > from, 'the function and its comment are found');
+    assert.doesNotMatch(src.slice(from, to), /[^\x00-\x7f]/);
+  });
+});
+
+describe('ago and timeEl moved into dom.js; ui.js re-exports the same functions (0.5.1 H)', () => {
+  test('(+) dom.js and ui.js export the very same function objects', () => {
+    assert.equal(typeof domAgo, 'function');
+    assert.equal(typeof domTimeEl, 'function');
+    assert.equal(uiAgo, domAgo);
+    assert.equal(uiTimeEl, domTimeEl);
+  });
+
+  test('(+) ui.js keeps one re-export line and no longer defines either function', () => {
+    const ui = fs.readFileSync(path.join(PUBLIC, 'ui.js'), 'utf8');
+    assert.match(ui, /^export \{ ago, timeEl \} from '\.\/dom\.js';$/m);
+    assert.doesNotMatch(ui, /export function (ago|timeEl)\b/);
+    const dom = fs.readFileSync(path.join(PUBLIC, 'dom.js'), 'utf8');
+    assert.match(dom, /export function ago\(ms, now = Date\.now\(\)\)/);
+    assert.match(dom, /export function timeEl\(ms\)/);
+  });
+
+  test('(+) ago: "now" under a minute, then min, h and d; the clock is the second argument', () => {
+    const now = 10_000_000_000;
+    assert.equal(domAgo(now - 30_000, now), 'now');
+    assert.equal(domAgo(now - 60_000, now), '1 min');
+    assert.equal(domAgo(now - 59 * 60_000, now), '59 min');
+    assert.equal(domAgo(now - 60 * 60_000, now), '1 h');
+    assert.equal(domAgo(now - 23 * 3_600_000, now), '23 h');
+    assert.equal(domAgo(now - 24 * 3_600_000, now), '1 d');
+    assert.equal(domAgo(now + 5 * 60_000, now), 'now', 'a time in the future is "now"');
+  });
+
+  test('(−) ago: a value that is not a finite number gives an en dash, never "NaN min"', () => {
+    for (const ms of [undefined, null, NaN, Infinity, '5', {}]) assert.equal(domAgo(ms, 1000), '–', String(ms));
+  });
+
+  test('(+) timeEl: time[data-ts][datetime][title] with the "ago" text', () => {
+    const el = domTimeEl(Date.now() - 5 * 60_000);
+    assert.equal(el.tag, 'time');
+    assert.match(el.attrs['data-ts'], /^\d+$/);
+    assert.match(el.attrs.datetime, /^\d{4}-\d{2}-\d{2}T/);
+    assert.ok(el.attrs.title.length > 0);
+    assert.match(el.textContent, /^[45] min$/);
+  });
+
+  test('(−) timeEl: an out-of-range or non-finite number draws an en dash with no attribute (toISOString would throw)', () => {
+    for (const ms of [undefined, NaN, Infinity, 8.64e15 + 1, 'x']) {
+      const el = domTimeEl(ms);
+      assert.equal(el.textContent, '–', String(ms));
+      assert.equal(el.attrs['data-ts'], undefined);
+      assert.equal(el.attrs.datetime, undefined);
+    }
   });
 });

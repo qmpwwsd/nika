@@ -1,7 +1,8 @@
 // Claude's question dialogs (AskUserQuestion) and plan approvals (ExitPlanMode) as a form in the session window (nika 0.5, design W1 section 6).
 // The server reads the dialog off the pane's screen and puts it in the capture's `dialog` field; this file draws ONE step of it (the current
-// question, the review, or the plan's choices), follows Claude's own tabs (it never moves between them), and answers through one route,
-// one step per request: { sig, picks, text? }, { sig, submit: true }, { sig, choice } or { sig, cancel: true }.
+// question, the review, or the plan's choices), follows Claude's own tabs, and answers through one route, one step per request:
+// { sig, picks, text? }, { sig, submit: true }, { sig, choice }, { sig, cancel: true } or (0.5.1) { sig, tab }. The last one is a click on a
+// step of the strip: the server moves Claude's dialog there with arrow keys and answers nothing on the way; the form then follows the capture.
 // Rules: every string is text (h() and textContent, never markup); no inline style (classes and data attributes only); the server's own words
 // never show (every answer maps to a fixed line below); the page presses no key and types no digit itself, and has no Esc handler (Decline
 // and Reject are the explicit ways). The pure rules come first and are tested alone; createDialogForm is the DOM side and does nothing at import.
@@ -22,6 +23,11 @@ const QUESTION_MAX = 500;
 const LABEL_MAX = 200;
 const DESC_MAX = 500;
 const ANSWER_MAX = 500;
+const TYPED_MAX = 500;
+const KEEP_MAX = 8; // questions whose unsent input is kept while you look at other steps
+const STEPS_NOTE = "Opens this step in Claude's dialog. Nothing is answered.";
+const AGAIN_NOTE = 'Already answered. Answer again to change it, or choose another step.';
+const TYPED_NOTE = 'To change typed text, use the terminal.';
 const REASONS = new Set(['cut', 'clipped', 'wide', 'numbers', 'tab', 'layout', 'survey']);
 
 const range = (list) => list.map(([a, b]) => `${String.fromCharCode(a)}-${String.fromCharCode(b)}`).join('');
@@ -52,6 +58,7 @@ const L409 = {
   'already-answered': ['', true],
   'busy-switching': ['Another action is running on this session.', false],
   'not-idle': ["nika is stopping Claude's turn; try again in a moment.", false],
+  'text-focus': ["Claude's text field has the focus. Move off it in the terminal, then try again.", false], // a step move needs the focus off the text row (0.5.1)
   'survey-undo': [SURVEY_UNDO_LINE, false], // Decline is an Escape; the rating's undo row is still up. Nothing is retried; the buttons come back
 };
 const L400 = {
@@ -68,11 +75,14 @@ const DONE = {
 
 /**
  * What a route answer means for the form: { ok, phase ('answered' | 'failed'), lock (stay off until the sig changes), message (the problem line,
- * '' = none), kind ('warn' | 'error'), gone (the pane is gone), word (the chip word of an answered step), announce, sent }. Only the status, the
+ * '' = none), kind ('warn' | 'error'), gone (the pane is gone), word (the chip word of an answered step), announce (null for a move), sent }. Only the status, the
  * `error` code, `done` and `sent` are read; no text of the response is ever shown (design W1 6.4).
  */
 export function dialogOutcome({ status, code, done, sent, name = 'the agent' } = {}) {
   const keys = Number.isInteger(sent) && sent > 0 && sent <= 99 ? sent : 0;
+  if (status === 200 && done === 'moved') { // a step move (0.5.1): nothing is answered and nothing is announced; the next capture draws the new step and says it
+    return { ok: true, phase: 'moving', lock: true, message: '', kind: '', gone: false, word: '', announce: null, sent: keys };
+  }
   if (status === 200) {
     const d = Object.hasOwn(DONE, done) ? DONE[done] : DONE.next;
     return { ok: true, phase: 'answered', lock: true, message: '', kind: '', gone: false, word: d.word, announce: d.say(name), sent: keys };
@@ -101,6 +111,13 @@ function cleanTabs(list) {
   if (!Array.isArray(list) || list.length < 1 || list.length > TABS_MAX) return null;
   const tabs = list.map((t) => ({ header: isObject(t) ? text(t.header, HEADER_MAX) : null, answered: isObject(t) && t.answered === true }));
   return tabs.every((t) => t.header) ? tabs : null;
+}
+
+/** The text Claude's own text row holds: null, or { text (1 to 500 characters), answered }. Anything else is no typed text. */
+function cleanTyped(v) {
+  if (!isObject(v) || typeof v.text !== 'string' || v.text.length > TYPED_MAX || typeof v.answered !== 'boolean') return null;
+  const t = text(v.text, TYPED_MAX);
+  return t ? { text: t, answered: v.answered } : null;
 }
 
 function cleanOptions(list, extra, max) {
@@ -149,7 +166,7 @@ export function cleanDialog(raw) {
     return o.description !== null && o.description !== undefined && description === null ? null : { description, checked: o.checked === true };
   }, PICK_MAX);
   if (!question || options === null || !Number.isInteger(raw.current) || raw.current < 0 || raw.current >= tabs.length) return unreadableOf(kind);
-  return { ...head, tabs, current: raw.current, final: raw.final === true, question, multi: raw.multi === true, other: raw.other === true, options };
+  return { ...head, tabs, current: raw.current, final: raw.final === true, question, multi: raw.multi === true, other: raw.other === true, options, typed: cleanTyped(raw.typed) };
 }
 
 // ---- the request body -----------------------------------------------------------------------------------------------------------
@@ -193,12 +210,21 @@ const validText = (t) => t.length >= 1 && t.length <= TEXT_MAX && !CTRL.test(t) 
 export function answerBody(d, a) {
   if (!d || d.state !== 'ready' || !isObject(a)) return null;
   if (a.cancel === true) return { sig: d.sig, cancel: true };
+  if (a.tab !== undefined) { // a step move (0.5.1): any step but this one, Review being the tab count; it carries nothing else
+    const here = d.at === 'review' ? d.tabs?.length : d.at === 'question' ? d.current : -1;
+    return Object.keys(a).length === 1 && Number.isInteger(a.tab) && a.tab >= 0 && d.tabs?.length >= 2 && a.tab <= d.tabs.length && a.tab !== here ? { sig: d.sig, tab: a.tab } : null;
+  }
   if (d.at === 'review') return a.submit === true ? { sig: d.sig, submit: true } : null;
   if (d.at === 'plan') return Number.isInteger(a.choice) && d.options.some((o) => o.n === a.choice && !o.text) ? { sig: d.sig, choice: a.choice } : null;
   if (d.at !== 'question' || !Array.isArray(a.picks)) return null;
   const picks = [...new Set(a.picks)].sort((x, y) => x - y);
   if (!picks.every((n) => d.options.some((o) => o.n === n))) return null;
-  const t = typeof a.text === 'string' ? edges(a.text) : '';
+  const typed = d.other && d.typed ? edges(d.typed.text) : ''; // Claude's own text row: nika never edits it, so a request carries it as it is
+  let t = typeof a.text === 'string' ? edges(a.text) : '';
+  if (typed !== '') {
+    if (d.multi) t = typed; // the route refuses a multi-select answer that leaves the typed text out (dialog-touched)
+    else if (t !== '' && t !== typed) return null;
+  }
   if (t !== '' && (!d.other || !validText(t))) return null;
   if (d.multi) return picks.length || t ? { sig: d.sig, picks, ...(t ? { text: t } : {}) } : null;
   if (picks.length === 1 && t === '') return { sig: d.sig, picks };
@@ -229,6 +255,7 @@ const CHIP = {
   reading: { icon: 'clock', word: 'Reading' },
   terminal: { icon: 'off', word: 'Terminal only' },
   answering: { spin: true, word: 'Answering' },
+  moving: { spin: true, word: 'Moving' },
   answered: { icon: 'check', word: 'Answered' },
   failed: { icon: 'warn', word: 'Not answered' },
 };
@@ -247,15 +274,38 @@ function setOff(el, on) {
   else el.removeAttribute('aria-disabled');
 }
 
-/** The tabs of Claude's strip, as a list that only shows where it is (not buttons: nika follows Claude's tabs and never moves them). */
-function tabsEl(d) {
-  const review = d.at === 'review';
-  const items = d.tabs.map((t, i) => h('li', { class: 'dlg-tab', 'aria-current': !review && i === d.current ? 'step' : null, 'data-answered': String(t.answered) },
+/** Where the form is in Claude's strip: the question's tab, or the tab count for the review. */
+const hereOf = (d) => (d.at === 'review' ? d.tabs.length : d.current);
+
+/** What a question's unsent input is kept under while you look at other steps. */
+const keyOf = (d) => `${d.current}\u0000${d.question}`;
+
+/** What tells one dialog's strip from another's: the tab headers. A new set drops every kept draft. */
+const headersOf = (d) => (Array.isArray(d.tabs) ? d.tabs.map((t) => t.header).join('\u0000') : '');
+
+/**
+ * The strip of Claude's tabs, as an ordered list of buttons (0.5.1): one per question and one for Review. A button asks the server to move
+ * Claude's dialog to that step; it answers nothing. They are plain buttons, not an ARIA tablist: each is one Tab stop. A step that cannot be
+ * used now (the current one, or any while the form is busy, locked or terminal-only) is aria-disabled, never `disabled`, so it keeps its name
+ * and its focus; `paint` sets that. Returns the nodes (list, its hidden description, the narrow text) and the buttons by step index.
+ */
+function stripEls(d, onStep) {
+  const steps = [];
+  const item = (i, kids, extra = {}) => {
+    const b = h('button', { type: 'button', class: 'dlg-tab', 'data-tab': String(i), 'aria-current': i === hereOf(d) ? 'step' : null, 'aria-describedby': 'dlg-steps-desc', ...extra, onclick: () => onStep(i) }, ...kids);
+    steps.push([i, b]);
+    return h('li', null, b);
+  };
+  const items = d.tabs.map((t, i) => item(i, [
     t.answered ? icon('check') : h('span', { class: 'dlg-ring', 'aria-hidden': 'true' }),
     h('span', { text: t.header }),
-    h('span', { class: 'sr-only', text: t.answered ? ' answered' : ' not answered' })));
-  items.push(h('li', { class: 'dlg-tab', 'aria-current': review ? 'step' : null }, 'Review'));
-  return h('ol', { class: 'dlg-tabs', 'aria-label': 'Questions' }, ...items);
+    h('span', { class: 'sr-only', text: t.answered ? ', answered' : ', not answered' }),
+  ], { 'data-answered': String(t.answered) }));
+  items.push(item(d.tabs.length, ['Review']));
+  return {
+    nodes: [h('ol', { class: 'dlg-tabs', 'aria-label': 'Steps' }, ...items), h('p', { class: 'sr-only', id: 'dlg-steps-desc', text: STEPS_NOTE }), h('p', { class: 'dlg-step', text: stepText(d) })],
+    steps,
+  };
 }
 
 export function createDialogForm(io) {
@@ -267,6 +317,8 @@ export function createDialogForm(io) {
   let last = null; // the arguments of the last render: the replay after a request and the timer use them
   let reading = null; // { since, timer, expired, drawn }: a dialog nika cannot read yet, with no form shown before it
   let visible = false;
+  const keep = new Map(); // unsent input per question while you look at other steps (0.5.1): { picks, other }; memory only, KEEP_MAX questions, oldest out first
+  let keepFor = null; // the tab headers the drafts belong to
   const name = () => last?.name ?? 'the agent';
 
   const show = (on) => {
@@ -286,7 +338,7 @@ export function createDialogForm(io) {
   function paint() {
     const f = F;
     if (f === null) return;
-    const key = f.busy ? 'answering' : f.phase === 'answered' ? 'answered' : f.phase === 'failed' ? 'failed' : f.terminal ? 'terminal' : 'ready';
+    const key = f.busy ? (f.moving ? 'moving' : 'answering') : f.phase === 'answered' ? 'answered' : f.phase === 'moving' ? 'moving' : f.phase === 'failed' ? 'failed' : f.terminal ? 'terminal' : 'ready';
     const word = key === 'answered' ? f.word : '';
     if (`${key}|${word}` !== f.chipSig) {
       f.chipSig = `${key}|${word}`;
@@ -303,8 +355,9 @@ export function createDialogForm(io) {
     const p = f.parts;
     for (const el of p.inputs) {
       el.disabled = f.terminal; // read-only: the options are shown, not offered
-      setOff(el, !live);
+      setOff(el, !live || p.pinned.includes(el));
     }
+    for (const [i, el] of p.steps) setOff(el, !live || i === hereOf(f.dialog)); // the current step is never a target; none is while the form is busy, locked or terminal-only
     for (const el of p.choices) setOff(el, !live);
     for (const el of p.texts) {
       if (live) el.removeAttribute('readonly');
@@ -324,15 +377,18 @@ export function createDialogForm(io) {
     if (!body || !interactive(f, body)) return;
     f.busy = true;
     f.busyEl = el;
+    f.moving = body.tab !== undefined;
     paint();
     const r = await io.call(io.path('dialog'), { method: 'POST', json: body });
     f.busy = false;
     f.busyEl = null;
+    f.moving = false;
     const out = dialogOutcome({ status: r.status, code: r.body?.error, done: r.body?.done, sent: r.body?.sent, name: name() });
     if (out.ok) {
       io.clearProblem();
       if (out.sent > 0) io.say(`Sent ${out.sent} ${out.sent === 1 ? 'key' : 'keys'} to ${io.paneId}`);
-      io.announce(out.announce);
+      if (out.announce) io.announce(out.announce); // a move says nothing; the step it lands on is announced when it is drawn
+      if (body.tab === undefined && f.dialog.at === 'question') keep.delete(keyOf(f.dialog)); // sent: Claude holds it now, an older draft would only be stale
     } else if (out.message) {
       io.showProblem(out.message, out.kind);
     }
@@ -353,8 +409,12 @@ export function createDialogForm(io) {
     const boxes = []; // { n, input, row }
     let other = null; // { input, txt, row, count }
     let lead = null; // the warn line under the text field (only with Other)
+    const typed = d.other ? d.typed : null; // Claude's own text row: shown, never edited (0.5.1)
+    const draft = typed === null ? keep.get(keyOf(d)) : undefined; // unsent input from an earlier visit; Claude's typed text wins over it
+    const pinned = []; // inputs that stay aria-disabled whatever the state (the Other box of a multi-select with typed text)
+    const picked = (o) => (draft ? draft.picks.includes(o.n) : o.checked);
     const read = () => ({ picks: boxes.filter((b) => b.input.checked).map((b) => b.n), text: other?.input.checked ? other.txt.value : '' });
-    const leading = () => other?.input.checked === true && DIGIT_LEAD.test(edges(other.txt.value)); // text that would be sent starts with a digit
+    const leading = () => typed === null && other?.input.checked === true && DIGIT_LEAD.test(edges(other.txt.value)); // text that would be sent starts with a digit
     const sync = () => {
       for (const b of boxes) b.row.setAttribute('data-on', String(b.input.checked));
       other?.row.setAttribute('data-on', String(other.input.checked));
@@ -375,24 +435,41 @@ export function createDialogForm(io) {
       if (other && other.input !== except) other.input.checked = false;
     };
     const rows = d.options.map((o) => {
-      const input = h('input', { type: d.multi ? 'checkbox' : 'radio', name: d.multi ? null : 'dlg-pick', value: String(o.n), checked: d.multi && o.checked, onclick: guard, onchange: () => { if (input.checked) clearPicks(input); sync(); } });
+      const input = h('input', { type: d.multi ? 'checkbox' : 'radio', name: d.multi ? null : 'dlg-pick', value: String(o.n), checked: picked(o), onclick: guard, onchange: () => { if (input.checked) clearPicks(input); sync(); } });
       const long = typeof o.description === 'string' && o.description.length > CLAMP_FROM;
       const desc = o.description ? h('span', { class: long ? 'dlg-desc clamp' : 'dlg-desc', id: `dlg-d-${o.n}`, text: o.description }) : null;
-      const label = h('label', { class: 'ch', 'data-on': String(d.multi && o.checked) }, input, h('kbd', { text: String(o.n) }), h('span', { class: 'ch-b' }, h('span', { class: 'ch-t', text: o.label }), desc));
-      boxes.push({ n: o.n, input, row: label });
-      if (!long) return label;
+      const on = String(picked(o));
+      // A short option is one label and that label is the card. A long one is a card (div.dlg-opt: border, hover, picked look) that holds the
+      // label and, under it, More: the button stays outside the label (a button in a label is nested interactive content), so the card, not
+      // the label, carries data-on.
+      const label = h('label', { class: 'ch', 'data-on': long ? null : on }, input, h('kbd', { text: String(o.n) }), h('span', { class: 'ch-b' }, h('span', { class: 'ch-t', text: o.label }), desc));
+      if (!long) {
+        boxes.push({ n: o.n, input, row: label });
+        return label;
+      }
       const more = h('button', { type: 'button', class: 'btn link dlg-more', 'aria-expanded': 'false', 'aria-controls': `dlg-d-${o.n}`, onclick: () => {
         const open = more.getAttribute('aria-expanded') !== 'true';
         more.setAttribute('aria-expanded', String(open));
         desc.className = open ? 'dlg-desc' : 'dlg-desc clamp';
         more.textContent = open ? 'Less' : 'More';
       } }, 'More');
-      return h('div', { class: 'dlg-opt' }, label, more);
+      const card = h('div', { class: 'dlg-opt', 'data-on': on }, label, more);
+      boxes.push({ n: o.n, input, row: card });
+      return card;
     });
     const texts = [];
     let otherRow;
     if (d.other) {
-      const input = h('input', { type: d.multi ? 'checkbox' : 'radio', name: d.multi ? null : 'dlg-pick', value: 'other', onclick: guard, onchange: () => { if (input.checked) clearPicks(input); sync(); } });
+      const lockedBox = typed !== null && d.multi; // the route needs the typed text in every multi-select answer, so its box stays ticked
+      const input = h('input', {
+        type: d.multi ? 'checkbox' : 'radio', name: d.multi ? null : 'dlg-pick', value: 'other',
+        checked: typed !== null ? lockedBox || typed.answered : draft?.other?.on === true,
+        onclick: lockedBox ? (e) => e.preventDefault() : guard, onchange: () => { if (input.checked) clearPicks(input); sync(); },
+      });
+      if (lockedBox) {
+        input.setAttribute('aria-disabled', 'true');
+        pinned.push(input);
+      }
       const count = h('span', { class: 'dlg-count', hidden: true });
       const txt = h('input', {
         type: 'text', class: 'dlg-text', maxlength: String(TEXT_MAX), placeholder: 'Type your answer', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Other answer',
@@ -414,10 +491,17 @@ export function createDialogForm(io) {
           send();
         },
       });
-      const row = h('div', { class: 'ch dlg-other', 'data-on': 'false' }, h('label', { class: 'dlg-ol' }, input, h('span', { class: 'ch-t', text: 'Other' })), txt, count);
+      if (typed !== null) {
+        txt.value = typed.text;
+        txt.setAttribute('readonly', '');
+        txt.setAttribute('aria-describedby', 'dlg-typed-note');
+      } else if (draft?.other) {
+        txt.value = draft.other.text;
+      }
+      const row = h('div', { class: 'ch dlg-other', 'data-on': String(input.checked) }, h('label', { class: 'dlg-ol' }, input, h('span', { class: 'ch-t', text: 'Other' })), txt, count);
       other = { input, txt, row, count };
       lead = h('p', { class: 'dlg-warn', id: 'dlg-lead', hidden: true }, icon('warn'), h('span', { text: LEAD_NOTE }));
-      texts.push(txt);
+      if (typed === null) texts.push(txt); // the typed text is Claude's: it stays read-only whatever the state
       otherRow = row;
     } else {
       otherRow = h('div', { class: 'pbtn-off' }, h('span', { text: 'Other answers: use the terminal' }));
@@ -431,11 +515,16 @@ export function createDialogForm(io) {
       else act(f, answerBody(f.dialog, read()), primary);
     }
     const nodes = [];
-    if (d.tabs.length >= 2) nodes.push(tabsEl(d), h('p', { class: 'dlg-step', text: stepText(d) }));
-    nodes.push(h('fieldset', { class: 'dlg-fs' }, legend, ...rows, otherRow, lead), h('div', { class: 'dlg-btns' }, primary, decline));
+    const strip = d.tabs.length >= 2 ? stripEls(d, (j) => onStep(f, j)) : null;
+    if (strip !== null) nodes.push(...strip.nodes);
+    const again = d.tabs[d.current].answered ? h('p', { class: 'dlg-note' }, icon('info'), h('span', { text: AGAIN_NOTE })) : null; // Claude shows its answer ticked; a new one replaces it
+    const typedNote = typed !== null ? h('p', { class: 'dlg-note', id: 'dlg-typed-note' }, icon('info'), h('span', { text: TYPED_NOTE })) : null;
+    nodes.push(h('fieldset', { class: 'dlg-fs' }, legend, again, ...rows, otherRow, typedNote, lead), h('div', { class: 'dlg-btns' }, primary, decline));
     return {
       nodes, heading: legend, inputs: [...boxes.map((b) => b.input), ...(other ? [other.input, other.txt] : [])], texts, choices: [], primary, decline,
+      steps: strip?.steps ?? [], pinned,
       canSend: () => answerBody(f.dialog, read()) !== null,
+      snapshot: () => (typed !== null ? null : { picks: read().picks, other: other ? { on: other.input.checked, text: other.txt.value } : null }), // null: Claude's text row decides
     };
   }
 
@@ -446,11 +535,12 @@ export function createDialogForm(io) {
     const primary = h('button', { type: 'button', class: 'btn primary dlg-send', onclick: () => act(f, answerBody(f.dialog, { submit: true }), primary) }, 'Submit answers');
     const decline = declineEl(f, 'btn ghost dlg-decline', 'Decline');
     const nodes = [];
-    if (d.tabs.length >= 2) nodes.push(tabsEl(d), h('p', { class: 'dlg-step', text: stepText(d) }));
+    const strip = d.tabs.length >= 2 ? stripEls(d, (j) => onStep(f, j)) : null;
+    if (strip !== null) nodes.push(...strip.nodes);
     nodes.push(heading);
     if (d.warn) nodes.push(h('p', { class: 'dlg-warn' }, icon('warn'), h('span', { text: 'You have not answered all questions' })));
     nodes.push(list, h('div', { class: 'dlg-btns' }, primary, decline));
-    return { nodes, heading, inputs: [], texts: [], choices: [], primary, decline, canSend: () => true };
+    return { nodes, heading, inputs: [], texts: [], choices: [], steps: strip?.steps ?? [], pinned: [], primary, decline, canSend: () => true };
   }
 
   function planBody(f) {
@@ -465,13 +555,34 @@ export function createDialogForm(io) {
       return b;
     });
     const decline = declineEl(f, 'pbtn esc', h('span', { text: 'Reject (Esc)' }));
-    return { nodes: [note, h('div', { class: 'ask-opts dlg-choices' }, ...rows, decline)], heading: note, inputs: [], texts: [], choices, primary: null, decline, canSend: () => false };
+    return { nodes: [note, h('div', { class: 'ask-opts dlg-choices' }, ...rows, decline)], heading: note, inputs: [], texts: [], choices, steps: [], pinned: [], primary: null, decline, canSend: () => false };
+  }
+
+  /** A click on a step: remember the unsent input of this question, then ask the server to move Claude's dialog there. Nothing is answered. */
+  function onStep(f, j) {
+    if (F !== f || !interactive(f)) return;
+    const body = answerBody(f.dialog, { tab: j });
+    if (body === null) return;
+    if (f.dialog.at === 'question') {
+      const key = keyOf(f.dialog);
+      const mine = f.parts.snapshot();
+      keep.delete(key); // a fresh place at the end of the order
+      if (mine !== null) keep.set(key, mine);
+      while (keep.size > KEEP_MAX) keep.delete(keep.keys().next().value);
+    }
+    act(f, body, null);
   }
 
   function build(dialog) {
     const prev = F;
     const focused = prev !== null && root.contains(document.activeElement);
-    const f = { dialog, sig: dialog.sig, phase: 'live', word: '', busy: false, busyEl: null, locked: false, kept: false, terminal: dialog.bypass, chipSig: '' };
+    const onStepTab = focused ? document.activeElement.getAttribute?.('data-tab') ?? null : null; // a step button had the focus: the same step's button gets it back
+    const headers = headersOf(dialog);
+    if (keepFor !== headers) { // another dialog (other tab headers): the drafts belong to the old one
+      keep.clear();
+      keepFor = headers;
+    }
+    const f = { dialog, sig: dialog.sig, phase: 'live', word: '', busy: false, busyEl: null, moving: false, locked: false, kept: false, terminal: dialog.bypass, chipSig: '' };
     f.chipHolder = h('span', { class: 'dlg-chiph' });
     f.reason = h('span', { class: 'ask-reason' });
     f.terminalNote = h('p', { class: 'dlg-note', hidden: true }, icon('info'), h('span', { text: TERMINAL_NOTE }));
@@ -484,7 +595,10 @@ export function createDialogForm(io) {
     show(true);
     paint();
     io.announce(announcement(dialog, { name: name(), first: prev === null }));
-    if (focused) f.parts.heading.focus({ preventScroll: true }); // the control that had focus was replaced; the new question, so a held key answers nothing unseen
+    if (focused) { // the control that had focus was replaced: the same step's button if it was one (it is still in the strip); the form root when that button is gone; else the new question, so a held key answers nothing unseen
+      const same = onStepTab === null ? null : f.parts.steps.find(([i]) => String(i) === onStepTab)?.[1];
+      (same ?? (onStepTab === null ? f.parts.heading : root)).focus({ preventScroll: true });
+    }
   }
 
   function drawReading(kind) {
@@ -500,6 +614,8 @@ export function createDialogForm(io) {
 
   function leave() {
     stopReading();
+    keep.clear(); // the dialog is closed: its drafts go with it
+    keepFor = null;
     if (F === null && !visible) return;
     if (visible && root.contains(document.activeElement)) io.composer().focus({ preventScroll: true }); // the control that had focus is gone
     F = null;

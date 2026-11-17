@@ -8,9 +8,9 @@
 // the subagent's transcript only (no pane, no input; the pane parameter is ignored) and a session window lists its subagents (renderSubs).
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
-import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl, labelEl, placeMenuX, clearMenuPlacement } from './dom.js';
+import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl, labelEl, placeMenuX, clearMenuPlacement, timeEl } from './dom.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
-import { roleTag, savedPick, subagentView, subagentHref, SUBAGENT_ID, agentLabelView, subLabelView } from './dash-model.js';
+import { roleTag, savedPick, subagentView, subagentGroups, subagentHref, SUBAGENT_ID, agentLabelView, subLabelView } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
 import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage, STILL_SENDING, STILL_SENDING_MS } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
@@ -25,7 +25,9 @@ import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, he
 import { panelSize, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS, GROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 import { createGlideArm, frameOf, glideFrom, matrixY, paneWriteDisarms, GLIDE_MS } from './glide.js';
+import { panelOf, cropOf, INPUT_TEXT, CROP_TEXT } from './crop.js';
 import { createAttachTray } from './attach.js';
+import { createImageViewer, dataUrlOf, sizeLabel, MAX_THUMBS, IMAGE_MIME } from './image-viewer.js';
 import { createDialogForm, cleanDialog } from './dialog-form.js';
 import { createSurveyPanel, cleanSurvey } from './survey-panel.js';
 
@@ -33,7 +35,9 @@ const PROJECT_KEY = /^[a-z0-9]{16}$/;
 const CLAUDE_SESSION = /^session_[A-Za-z0-9]{1,64}$/;
 const ENTRY_ID = /^\d{1,15}:\d{1,5}$/;
 const ETAG = /^[0-9a-f]{1,64}$/;
-const KINDS = new Set(['text', 'thinking', 'tool_use', 'tool_result']);
+const KINDS = new Set(['text', 'thinking', 'tool_use', 'tool_result', 'image']);
+const IMG_REF = /^\d{1,15}:\d{1,5}\.\d{1,3}$/; // a tool result's image: "<entry id>.<part>" (the entry id itself is the ref of an image entry)
+const IMG_MAX = 8 * 1024 * 1024; // the largest image nika shows (decoded bytes; the server's own limit)
 
 const DOTS = String.fromCharCode(0x2026);
 const TIMES = String.fromCharCode(0xd7);
@@ -241,6 +245,8 @@ const SUBS = { show: storeGet('showEndedSession') === 'true', sig: '', last: nul
 function renderSubs(agent) {
   SUBS.last = agent;
   A.subs = Array.isArray(agent.subagents) ? agent.subagents : [];
+  renderSubsBtn(); // 0.5.1 H: the terminal toolbar's button and its dialog follow the same list, also when the Transcript list has nothing to show
+  renderSubsDlg();
   const v = subagentView(agent.subagents, SUBS.show);
   $('sess-subs').hidden = !v;
   if (!v) {
@@ -259,6 +265,73 @@ function renderSubs(agent) {
 }
 
 /** At boot: the box starts from the stored choice, and a change is remembered and drawn at once. */
+// SD (0.5.1 H, spec 9.20): the Subagents dialog. sig: what is drawn (the list's ids, states, descriptions, labels and models, and the minute, so the times tick);
+// an open dialog is redrawn only when it changes. Its ended list is a <details> that stays in the page, so it keeps the state the reader left it in.
+const SD = { sig: '' };
+
+/** The button in the terminal toolbar: shown when the session has subagents (not in the read-only subagent view), badge N while any runs, "(0 running)" and a muted icon otherwise. */
+function renderSubsBtn() {
+  const g = SUB ? null : subagentGroups(A.subs);
+  const btn = $('subs-btn');
+  btn.hidden = g === null;
+  if (g === null) return;
+  const n = g.running.length;
+  btn.setAttribute('aria-label', g.label);
+  btn.title = g.label;
+  btn.classList.toggle('on', n > 0);
+  const badge = $('subs-n');
+  badge.hidden = n === 0;
+  badge.textContent = String(n);
+}
+
+/** The project page's rows (badge, link, kind chip, model) with the time; the link is the same read-only view the Transcript list opens. */
+function subRows(list) {
+  return list.map((s) => subagentItemEl(s, { href: subagentHref({ session: SUBS.last?.id, agent: s.id, project: projectKey }), fk: `dlg:${s.id}`, time: timeEl(s.lastActivity) }));
+}
+
+function renderSubsDlg() {
+  const dlg = $('subs-dlg');
+  if (!dlg.open) return;
+  const g = subagentGroups(A.subs);
+  if (g === null) { // every subagent is gone (/clear): the close handler moves focus on
+    dlg.close();
+    return;
+  }
+  const key = (s) => [s.id, s.state, s.description, s.type, s.label, s.modelLabel];
+  const sig = JSON.stringify([SUBS.last?.id, A.name, Math.floor(Date.now() / 60000), g.summary, g.running.map(key), g.ended.map(key)]);
+  if (sig === SD.sig) return;
+  SD.sig = sig;
+  const active = document.activeElement;
+  const fk = dlg.contains(active) ? active.getAttribute('data-fk') : null;
+  const inEnded = $('subs-dlg-ended').contains(active);
+  $('subs-dlg-h').textContent = `Subagents of ${A.name}`;
+  $('subs-dlg-sum').textContent = g.summary;
+  $('subs-dlg-run').replaceChildren(...subRows(g.running));
+  $('subs-dlg-run').hidden = g.running.length === 0;
+  $('subs-dlg-none').hidden = g.running.length > 0;
+  $('subs-dlg-ended').hidden = g.ended.length === 0;
+  $('subs-dlg-hint').textContent = g.hint ?? '';
+  $('subs-dlg-end').replaceChildren(...subRows(g.ended));
+  if (fk !== null) ([...dlg.querySelectorAll('a')].find((a) => a.getAttribute('data-fk') === fk) ?? $('subs-dlg-close')).focus({ preventScroll: true }); // the same link, else Close
+  else if (inEnded && g.ended.length === 0) $('subs-dlg-close').focus({ preventScroll: true });
+}
+
+function wireSubsDlg() {
+  const dlg = $('subs-dlg');
+  const btn = $('subs-btn');
+  btn.addEventListener('click', () => {
+    dlg.showModal();
+    renderSubsDlg();
+    ([...dlg.querySelectorAll('a')][0] ?? $('subs-dlg-close')).focus({ preventScroll: true });
+  });
+  for (const id of ['subs-dlg-x', 'subs-dlg-close']) $(id).addEventListener('click', () => dlg.close());
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); }); // the backdrop is the dialog element itself
+  dlg.addEventListener('close', () => { // the button when it shows, else the message box (the list went empty)
+    if (!btn.hidden) btn.focus({ preventScroll: true });
+    else composer().focus({ preventScroll: true });
+  });
+}
+
 function wireSubs() {
   const box = $('subs-ended');
   box.checked = SUBS.show;
@@ -526,6 +599,7 @@ function renderMode() {
   renderPrompt();
   DF?.render({ pane: W.pane, dialog: W.dialog, name: A.name, attention: A.attention, growing: growing() });
   SV?.render({ pane: W.pane, survey: W.survey, blocked: W.promptOpen || A.kind === 'attn', name: A.name }); // never beside a prompt, a dialog or the attention note
+  panelsChanged(); // last: it reads what the three panels just decided to show: the bar, then the mirror (the crop follows the panel)
 }
 
 /** What a capture says about the mode and the prompt. The tag follows every capture; only a change is announced. */
@@ -685,7 +759,7 @@ function renderQuick() {
   if (st.reason !== Q.whySig) { // not rebuilt at every capture
     Q.whySig = st.reason;
     const why = $('qa-why');
-    why.hidden = !st.reason;
+    why.hidden = !st.reason || BAR.up; // the bar is hidden under a panel (0.5.1 I): its note goes with it
     why.replaceChildren(...(st.reason ? [icon('info'), h('span', { text: st.reason })] : []));
   }
   // the popover has nothing to send once Claude is busy or asks something; focus inside it moves to the Model button, not to the page
@@ -797,6 +871,51 @@ function closeModelPop(refocus) {
   $('model-pop').hidden = true;
   Q.b.model.setAttribute('aria-expanded', 'false');
   if (refocus) Q.b.model.focus();
+}
+
+// BAR (0.5.1 I, spec 9.21): the quick-actions bar hides while one of nika's own answerable panels shows (the permission prompt, a live
+// question / review / plan form, a ready survey). up: is it hidden now. Where nika's panel cannot answer (the attention banner, "Reading",
+// the terminal-mode form, "Terminal only") the bar stays, so End is always reachable.
+const BAR = { up: false };
+
+/** The answerable panel on screen now: null, or { kind, bypass } (crop.js panelOf, fed with what the three panels report as shown). */
+function panelNow() {
+  return panelOf({
+    promptShown: !$('prompt-btns').hidden, prompt: W.prompt,
+    formShown: DF?.shown() === true, formLive: DF?.live() === true, dialog: W.dialog,
+    surveyShown: SV?.shown() === true, survey: W.survey,
+  });
+}
+
+/** Focus goes to a panel's root, never to a button, so a held Enter answers nothing unseen. */
+function focusPanel() {
+  const kind = panelNow()?.kind;
+  const root = kind === 'prompt' ? $('ask-q') : kind === 'survey' ? $('survey-panel') : $('dialog-form');
+  root.focus({ preventScroll: true });
+}
+
+function renderBar() {
+  const up = W.pane === 'ok' && panelNow() !== null;
+  if (up === BAR.up) return; // a capture every 250 ms redraws nothing here
+  const hadFocus = $('qa').contains(document.activeElement) || $('model-pop').contains(document.activeElement);
+  BAR.up = up;
+  if (up && Q.pop) closeModelPop(false); // the popover goes with the bar and takes no focus
+  $('qa').hidden = up;
+  $('qa-why').hidden = up || !Q.whySig;
+  if (up && hadFocus) focusPanel();
+}
+
+/** A panel's `hidden` changed (its own module did it, between two captures): the bar follows in the same task, before the next paint. */
+function panelsChanged() {
+  renderBar();
+  if (!M.body) return;
+  const next = cropFor(M.body, M.cut);
+  if (next?.top !== M.crop?.top || next?.kind !== M.crop?.kind) drawMirror(); // a panel came or went between two captures (the form's "Reading" timer, a 304): the mirror follows now
+}
+
+function watchPanels() {
+  const watcher = new MutationObserver(panelsChanged);
+  for (const id of ['prompt-btns', 'dialog-form', 'survey-panel']) watcher.observe($(id), { attributes: true, attributeFilter: ['hidden'] });
 }
 
 async function openModelPop() {
@@ -976,6 +1095,20 @@ const keyOf = (id) => {
 const offsetOf = (id) => Number(id.slice(0, id.indexOf(':')));
 const nextBefore = (v) => (Number.isInteger(v) && v >= 0 ? v : null);
 
+const cleanMedia = (v) => (typeof v === 'string' && Object.hasOwn(IMAGE_MIME, v) ? v : null);
+const cleanSize = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
+
+/** A tool result's images (design 2.5): at most 8, each ref "<this entry's id>.<part>"; anything else is dropped. */
+function cleanImages(e) {
+  if (e.kind !== 'tool_result' || !Array.isArray(e.images)) return [];
+  const out = [];
+  for (const m of e.images) {
+    if (out.length === 8) break;
+    if (m && typeof m === 'object' && typeof m.ref === 'string' && IMG_REF.test(m.ref) && m.ref.startsWith(`${e.id}.`)) out.push({ ref: m.ref, media: cleanMedia(m.media), size: cleanSize(m.size) });
+  }
+  return out;
+}
+
 function cleanEntries(list) {
   if (!Array.isArray(list)) return [];
   return list
@@ -990,6 +1123,10 @@ function cleanEntries(list) {
       tool: typeof e.tool === 'string' ? e.tool.slice(0, 100) : '',
       truncated: e.truncated === true,
       subagent: e.kind === 'tool_use' && typeof e.subagent === 'string' && SUBAGENT_ID.test(e.subagent) ? e.subagent : '', // the subagent a call started, when the server linked it
+      media: e.kind === 'image' ? cleanMedia(e.media) : null,
+      size: e.kind === 'image' ? cleanSize(e.size) : null,
+      images: cleanImages(e),
+      imagesMore: e.kind === 'tool_result' && Number.isInteger(e.imagesMore) && e.imagesMore >= 0 && e.imagesMore <= 999 ? e.imagesMore : 0,
     }));
 }
 
@@ -1044,14 +1181,114 @@ function linkLate(entries) {
   }
 }
 
+// ---- images in the transcript (0.5.1 item C, design 2.5): a tile per image, a thumbnail fetched when the tile nears the screen, the viewer on click ----
+
+const IMG = { watcher: null, held: 0, tiles: new Map(), of: new WeakMap(), viewer: null }; // held: thumbnails being fetched or kept (at most MAX_THUMBS); tiles: button -> tile; of: entry -> its tiles
+const whoLong = (e) => (e.kind === 'tool_result' ? 'a tool result' : e.role === 'user' ? (SUB ? 'the parent' : 'your message') : 'Claude');
+const imagePath = (ref) => (SUB ? `/api/app/session/${sessionId}/subagents/${agentId}/image/${encodeURIComponent(ref)}` : `/api/app/session/${sessionId}/image/${encodeURIComponent(ref)}`);
+
+/** The window's one viewer, made on the first click (the page has #img-dlg by then). */
+function imageViewer() {
+  IMG.viewer ??= createImageViewer({ dialog: $('img-dlg') });
+  return IMG.viewer;
+}
+
+function openTile(t) {
+  imageViewer().open({ name: t.heading, meta: t.meta, src: t.url, load: () => call(imagePath(t.ref)), opener: t.btn });
+}
+
+/** A thumbnail that did not come: the placeholder says so (the tile still opens the viewer, which tries again). */
+function failThumb(t, line) {
+  if (t.state === 'loading' || t.state === 'loaded') IMG.held -= 1;
+  t.state = 'failed';
+  t.url = null;
+  t.img.removeAttribute('src');
+  t.img.hidden = true;
+  t.ph.hidden = false;
+  t.phText.textContent = line;
+}
+
+async function loadThumb(t) {
+  t.state = 'loading';
+  IMG.held += 1;
+  const r = await call(imagePath(t.ref));
+  if (t.state !== 'loading') return; // the entry left the page while the answer was on its way
+  const url = r.status === 200 ? dataUrlOf(r.body) : null;
+  if (url === null) {
+    failThumb(t, 'Image not available');
+    return;
+  }
+  t.state = 'loaded';
+  t.url = url;
+  t.img.setAttribute('src', url);
+}
+
+/** The observer's callback: a tile that reaches the screen starts its fetch while fewer than MAX_THUMBS are held; one that finds no room stays watched. */
+function seenTiles(list) {
+  for (const en of list) {
+    const t = en.isIntersecting ? IMG.tiles.get(en.target) : undefined;
+    if (!t || t.state !== 'idle' || IMG.held >= MAX_THUMBS) continue;
+    IMG.watcher.unobserve(en.target);
+    loadThumb(t);
+  }
+}
+
+function watchTile(t) {
+  if (typeof IntersectionObserver !== 'function') return; // no thumbnails then; the tile still opens the viewer
+  IMG.tiles.set(t.btn, t);
+  IMG.watcher ??= new IntersectionObserver(seenTiles, { root: scroller(), rootMargin: '200px' });
+  IMG.watcher.observe(t.btn);
+}
+
+/** An entry leaves the page (trim, reset): its tiles stop being watched and give back their place. */
+function forgetTiles(li) {
+  for (const t of IMG.of.get(li) ?? []) {
+    IMG.watcher?.unobserve(t.btn);
+    IMG.tiles.delete(t.btn);
+    if (t.state === 'loading' || t.state === 'loaded') IMG.held -= 1;
+    t.state = 'gone';
+  }
+  IMG.of.delete(li);
+}
+
+/** One image: a button with a lazy thumbnail, or a line that says why there is none. `mine` collects the tile for forgetTiles. */
+function imageTile(ref, media, size, who, at, mine) {
+  const off = (text) => h('p', { class: 'hx-img-off' }, icon('image'), h('span', { text }));
+  if (media === null) return off(`Image${MID}nika shows PNG, JPEG, GIF and WebP only`);
+  if (size !== null && size > IMG_MAX) return off(`Image${MID}too large to show here (over 8 MB)`);
+  const kind = media.toUpperCase();
+  const sized = size ? sizeLabel(size) : '';
+  const t = { ref, state: 'idle', url: null, heading: `Image from ${who}`, meta: sized ? `${kind}${MID}${sized}` : kind };
+  t.img = h('img', { class: 'hx-thumb', alt: '', decoding: 'async', hidden: true });
+  t.phText = h('span', { text: t.meta });
+  t.ph = h('span', { class: 'hx-img-ph' }, icon('image'), t.phText);
+  t.btn = h('button', { type: 'button', class: 'hx-img', 'data-ref': ref, 'aria-label': `View image from ${who}${at ? `, ${at}` : ''} (${kind}${sized ? `, ${sized}` : ''})`, onclick: () => openTile(t) }, t.img, t.ph);
+  t.img.addEventListener('load', () => {
+    if (t.state !== 'loaded') return;
+    t.img.hidden = false;
+    t.ph.hidden = true;
+  });
+  t.img.addEventListener('error', () => {
+    if (t.state === 'loaded') failThumb(t, 'Image could not be shown');
+  });
+  watchTile(t);
+  mine.push(t);
+  return t.btn;
+}
+
 function entryEl(e) {
   const when = Date.parse(e.at);
-  const time = Number.isFinite(when)
-    ? h('time', { class: 'hx-at', datetime: new Date(when).toISOString(), title: new Date(when).toLocaleString(), text: new Date(when).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })
-    : null;
+  const stamp = Number.isFinite(when) ? new Date(when).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const time = Number.isFinite(when) ? h('time', { class: 'hx-at', datetime: new Date(when).toISOString(), title: new Date(when).toLocaleString(), text: stamp }) : null;
   const who = e.kind === 'tool_result' ? 'Tool' : e.role === 'user' ? (SUB ? 'Parent' : 'You') : 'Claude';
   const li = h('li', { class: 'hx', 'data-role': e.role, 'data-kind': e.kind }, h('div', { class: 'hx-meta' }, h('span', { class: 'hx-who', text: who }), time));
-  li.append(...(e.kind === 'text' ? textBlock(e) : [foldBlock(e)]));
+  const mine = [];
+  if (e.kind === 'image') li.append(imageTile(e.id, e.media, e.size, whoLong(e), stamp, mine));
+  else li.append(...(e.kind === 'text' ? textBlock(e) : [foldBlock(e)]));
+  const pics = e.images ?? []; // cleanEntries gives images and imagesMore to tool results only
+  if (pics.length) li.append(h('div', { class: 'hx-imgs' }, ...pics.map((m) => imageTile(m.ref, m.media, m.size, whoLong(e), stamp, mine))));
+  if (e.imagesMore > 0) li.append(h('p', { class: 'hx-img-off' }, icon('image'), h('span', { text: `+${e.imagesMore} more ${e.imagesMore === 1 ? 'image' : 'images'} in this result (not shown)` })));
+  if (mine.length) IMG.of.set(li, mine);
   const link = subLinkEl(e);
   if (link) li.append(link);
   if (e.truncated) li.append(h('p', { class: 'hx-trunc', text: 'This entry is over 32 KB; nika shows the first part only.' }));
@@ -1092,6 +1329,7 @@ function trim(side) {
   const removed = side === 'start' ? H.items.splice(0, k) : H.items.splice(k);
   for (const it of removed) {
     it.el.remove();
+    forgetTiles(it.el);
     H.ids.delete(it.e.id);
   }
   if (side === 'start') H.older = offsetOf(H.items[0].e.id);
@@ -1124,7 +1362,10 @@ const fetchHistory = (before) => {
 };
 
 function resetHistory(entries, before) {
-  for (const it of H.items) it.el.remove();
+  for (const it of H.items) {
+    it.el.remove();
+    forgetTiles(it.el);
+  }
   H.items = [];
   H.ids.clear();
   mount(entries, 'end');
@@ -1221,7 +1462,7 @@ function startHistoryPoll() {
 
 // ---- terminal mirror ---------------------------------------------------------------------------------------------
 
-const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [], body: null, draft: null, cut: null };
+const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [], body: null, draft: null, cut: null, crop: null, stripKind: null };
 
 function setLive(state, text) {
   $('term-head').dataset.s = state;
@@ -1300,6 +1541,8 @@ function recovered() {
  * Draws the last capture: every row, or, while the message box carries Claude's input box (a readable draft, Type into pane off), the rows above it and the one-row strip in its place.
  * F11: the cut drawn is kept in M.cut (null with no strip) for the commit points, and an unpaused mirror is pinned to the bottom at once (a Type into pane toggle shows
  * Claude's box and footer, or the strip, without waiting for the next capture).
+ * 0.5.1 E: while nika's own panel answers what Claude asks (crop.js), the mirror also ends above Claude's version of it, at the smaller of that row and the cut. M.crop is
+ * the crop drawn ({ top, kind } or null). It never feeds M.cut, so the fit (F11, F16) sees exactly the input-box cut it saw before.
  */
 function drawMirror() {
   const body = M.body;
@@ -1307,10 +1550,38 @@ function drawMirror() {
   const cut = cutAt(M.draft, P.on);
   const on = cut !== null && cut < body.rows.length;
   M.cut = on ? cut : null;
-  applyMirror($('term-rows'), toRenderModel(body, { cutAt: on ? cut : null }), cutCursor(body.cursor, on ? cut : null));
-  $('term-cut').hidden = !on;
+  M.crop = cropFor(body, M.cut);
+  const end = M.crop?.top ?? M.cut;
+  applyMirror($('term-rows'), toRenderModel(body, { cutAt: end }), cutCursor(body.cursor, end));
+  paintStrip(M.crop?.kind ?? (M.cut !== null ? 'input' : null));
   const term = $('term');
   if (!M.frozen) term.scrollTop = term.scrollHeight;
+}
+
+/**
+ * The dialog crop of `body` now: crop.js cropOf with what the page shows (the panel up, Type into pane, the dialog sig the form was drawn for), or null; null too while the
+ * pane is not ok. Where the input-box row `cut` is above it the cut stays (a prompt, dialog or survey has no plain input box, so in practice they do not meet).
+ */
+function cropFor(body, cut) {
+  const crop = W.pane === 'ok' ? cropOf(body, panelNow(), { passOn: P.on, dialogSig: W.dialog?.sig ?? null }) : null;
+  return crop !== null && (cut === null || crop.top < cut) ? crop : null;
+}
+
+/**
+ * The strip under the rows: nothing, the input look (dashed, the keyboard icon: Claude's input box is mirrored in the message box) or the panel look (solid yellow, the dialog
+ * icon, the words of the kind). It is written only when the kind changes (a draw every 250 ms rewrites nothing), and the markup's own look is the input look, so the switches
+ * between none and input write `hidden` alone.
+ */
+function paintStrip(kind) {
+  if (kind === M.stripKind) return;
+  const before = M.stripKind;
+  M.stripKind = kind;
+  $('term-cut').hidden = kind === null;
+  const panel = kind !== null && kind !== 'input';
+  if (!panel && !(before !== null && before !== 'input')) return; // none or input, and the strip never left the input look
+  $('term-cut').setAttribute('data-kind', panel ? 'panel' : 'input');
+  $('term-cut-ic').setAttribute('href', panel ? '#i-dialog' : '#i-kbd');
+  $('term-cut-t').textContent = panel ? CROP_TEXT[kind] : INPUT_TEXT;
 }
 
 function handleCapture(r) {
@@ -1335,7 +1606,7 @@ function handleCapture(r) {
     const draft = cleanDraft(r.body.draft);
     let glide = null; // F17: the first changed frame after a scroll request, matched with the one drawn (null: nothing to slide)
     try {
-      if (GL.arm?.armed()) glide = GL.arm.offer(frameOf(r.body, draft)) ?? null; // a frame is built only inside the window of a scroll request
+      if (GL.arm?.armed()) glide = GL.arm.offer(frameOf(r.body, draft, cropFor(r.body, null)?.top ?? null)) ?? null; // a frame is built only inside the window of a scroll request
     } catch {
       glide = null; // the mirror keeps working without the glide
     }
@@ -1513,7 +1784,7 @@ function fitMeasure() {
 function fitStrip() {
   const cut = $('term-cut');
   const rows = $('term-rows');
-  if (!cut || !rows || cut.hidden) return 0;
+  if (!cut || !rows || cut.hidden || M.cut === null) return 0; // 0.5.1: a strip that only stands for a dialog crop is not part of the fit
   const px = cut.offsetTop + cut.offsetHeight - (rows.offsetTop + rows.offsetHeight);
   return px > 0 ? px : 0; // NaN (no offsets) fails the comparison too
 }
@@ -1959,7 +2230,7 @@ function scrollCall(body) {
   const ctl = new AbortController(); // AbortSignal.timeout() is missing in older macOS web views (project.js does the same)
   const timer = setTimeout(() => ctl.abort(), 10000);
   try {
-    if (!lessMotion() && M.body) GL.arm?.arm(body, { scrolled: SC.scrolled, before: frameOf(M.body, M.draft) }); // F17: the frame drawn as the keys go is the base
+    if (!lessMotion() && M.body) GL.arm?.arm(body, { scrolled: SC.scrolled, before: frameOf(M.body, M.draft, M.crop?.top ?? null) }); // F17: the frame drawn as the keys go is the base
   } catch {
     // scrolling works without the glide
   }
@@ -2063,10 +2334,10 @@ function scrollOpen() {
 function scrollWheel(e) {
   if (e.ctrlKey || e.metaKey || e.shiftKey || !(Math.abs(e.deltaY) > Math.abs(e.deltaX || 0))) return;
   const term = $('term');
-  const rows = wheelRows(e, { cellH: $('fit-probe').getBoundingClientRect().height * FIT.scale, viewRows: viewRowsOf(M.body, M.draft) });
+  const rows = wheelRows(e, { cellH: $('fit-probe').getBoundingClientRect().height * FIT.scale, viewRows: viewRowsOf(M.body, M.draft, M.crop?.top ?? null) });
   if (rows === 0 || routeFor({ dir: rows, top: term.scrollTop, height: term.scrollHeight, client: term.clientHeight }) === 'native') return;
   e.preventDefault(); // no overscroll bounce
-  if (scrollOpen()) SC.planner.wheel(rows, pageRowsOf(M.body, M.draft));
+  if (scrollOpen()) SC.planner.wheel(rows, pageRowsOf(M.body, M.draft, M.crop?.top ?? null));
 }
 
 /** PgUp, PgDn, Home, End and Ctrl+Home, Ctrl+End while the terminal has focus and Type into pane is off (the message box keeps its own editing keys; with Type into pane on the keys route sends the user's own keys). */
@@ -2395,6 +2666,8 @@ const ATT = createAttachTray({
   cols: () => M.cols,
   clearBox,
   focusBox: () => composer().focus(),
+  view: (o) => imageViewer().open(o), // a ready image chip opens the viewer (0.5.1 C)
+  get: call,
 });
 
 // ---- Shell mode (spec 9.6): Enter sends Ctrl-U, "!" + the text, Enter; it turns itself off after a successful send -------------
@@ -2959,6 +3232,7 @@ function boot() {
     wireComposer();
     ATT.wire();
     wireSubs();
+    wireSubsDlg();
   }
   document.addEventListener('keydown', onPageKey);
   wireWindowKeys({ mac: MAC, passthrough: () => P.on, send: windowCommand }); // Ctrl+Q, Ctrl+W (not while typing into the pane) and zoom off macOS
@@ -2989,6 +3263,7 @@ function boot() {
     wireFit();
     DF = createDialogForm({ root: $('dialog-form'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, showProblem, clearProblem, setGone, composer, refresh: renderAttn });
     SV = createSurveyPanel({ root: $('survey-panel'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, clearProblem, setGone, composer });
+    watchPanels();
     $('pb-pane').textContent = paneId;
     $('term').setAttribute('aria-label', `Live terminal of ${A.name}, pane ${paneId}`);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');

@@ -13,6 +13,8 @@ export const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const SUBAGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** A tool-use id (a `tool_use` block's `id`, a subagent meta's `toolUseId`). Compared for equality inside the server only; never shown, never sent. */
 export const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+/** A transcript image: `<byte offset of the line>:<content block>` or `<offset>:<block>.<part>` (a part of a tool result), as the history entries name it (0.5.1, C). 15 digits keep the offset a safe integer. */
+export const IMAGE_REF = /^(\d{1,15}):(\d{1,5})(?:\.(\d{1,3}))?$/;
 /** nika's pane tag `@nika-agent` = `<project key>/<name>` → [key, name], or null for anything else: the tag is agent-writable and never trusted unparsed. */
 export function parseAgentTag(tag) {
   const parts = String(tag).split('/');

@@ -1,17 +1,28 @@
-// acceptSuggestion (nika 0.5, W4): Claude shows a prompt suggestion as dim text in an empty input box; the page's Tab or right arrow
-// asks the server to press Tab in Claude. The controller presses it only when a fresh screen still shows that exact suggestion, the
-// registry says idle and no prompt is open, and it presses nothing else. A fake pane models the box and records every key.
-// Synthetic text only.
+// acceptSuggestion (nika 0.5, W4; 0.5.1, item K): Claude shows a prompt suggestion as dim text in an empty input box; the page's Tab or
+// right arrow asks the server to press Tab in Claude. The controller presses it only when a fresh screen still shows that exact
+// suggestion, no prompt is open and no turn runs in main (the screen decides, not the registry: Claude's registry reads busy / shell
+// while background work runs, with the suggestion on screen), and it presses nothing else. A fake pane models the box and records every
+// key. Synthetic text only.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSessionControl, checkSuggestionBody, readDraft } from '../src/session-control.js';
 import { createKeys } from '../src/keys.js';
-import { boxRows, span } from './helpers.js';
+import { boxRows, span, subagentRows } from './helpers.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
 
 const COLS = 120;
 const SUG = 'run the tests in acme-api';
 const PROMPT = ['Bash command', '  run the thing', '', 'Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel'];
+// What Claude draws while a turn runs in main (docs/contracts/claude-tui.md section 8): a spinner row above the box and the footer's
+// interrupt hint. And what it draws when the turn is over but background work runs: neither (the registry still reads busy / shell).
+const SPIN = '✻ Thinking… (12s · esc to interrupt)';
+const SPIN_TOKENS = '✢ Drizzling… (14s · ↓ 1.2k tokens · esc to interrupt)';
+const HINT = '⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt';
+const MANUAL_HINT = '⏸ manual mode on · esc to interrupt · ↓ to manage';
+const BG_FOOTER = '⏸ manual mode on · 1 shell · ↓ to manage';
+const BG_DONE = ['⏺ Started sleep in the background', '✻ Crunched for 3s · done 4:43 PM · 1 shell still running'];
+const BG_WAIT = ['⏺ Backgrounded agent', '✻ Waiting for 1 background agent to finish'];
+const BG_AGENTS = () => subagentRows({ cols: COLS, agents: [{ type: 'general-purpose', label: 'Sleep 100 seconds', elapsed: '5s', tokens: null }] });
 const tick = () => new Promise((r) => setImmediate(r));
 const code = (r) => [r.status, r.body.error];
 
@@ -19,17 +30,20 @@ const code = (r) => [r.status, r.body.error];
  * A pane with Claude's input box. Fields: text, suggestion (dim text shown while the box is empty), insert (vim `-- INSERT --` shown),
  * glyph ('prompt' | 'bash'), state / freshState (registry state; the fresh read answers freshState when set), prompt (a permission
  * prompt on screen), tabAccepts (Tab puts the suggestion into the box), lag (captures that still show the empty box after Tab),
- * override(w) (a screen to show instead), failSend(body, n), before(n, w) (runs before the n-th capture).
+ * override(w) (a screen to show instead), failSend(body, n), before(n, w) (runs before the n-th capture), above (transcript / spinner
+ * rows drawn above the box), footer (the mode line text), below (rows under the footer: Claude's background-agent list).
  */
 function pane(opts = {}) {
   const w = {
     text: '', suggestion: SUG, insert: true, glyph: 'prompt', state: 'idle', freshState: null, prompt: false, tabAccepts: true, lag: 0,
-    override: null, failSend: null, before: null, n: 0, t: 1_000_000, sent: [], stateArgs: [], tabbed: false, ...opts,
+    override: null, failSend: null, before: null, above: [], footer: undefined, below: [], n: 0, t: 1_000_000, sent: [], stateArgs: [], tabbed: false, ...opts,
   };
   w.screen = () => {
     if (w.override) return w.override(w);
     if (w.prompt) return { rows: PROMPT.map((t) => (t ? [span(t)] : [])), cursor: { x: 0, y: 0, visible: true }, cols: COLS };
-    return boxRows({ cols: COLS, lines: [w.text], ghost: w.text === '' && w.suggestion !== null ? w.suggestion : null, insert: w.insert, mode: w.glyph });
+    const s = boxRows({ cols: COLS, lines: [w.text], ghost: w.text === '' && w.suggestion !== null ? w.suggestion : null, insert: w.insert, mode: w.glyph, footer: w.footer });
+    const above = w.above.map((t) => (t ? [span(t)] : []));
+    return { ...s, rows: [...above, ...s.rows, ...w.below], cursor: s.cursor && { ...s.cursor, y: s.cursor.y + above.length } };
   };
   w.mirror = {
     async capture(id, inm, o) {
@@ -108,11 +122,94 @@ describe('acceptSuggestion', () => {
     onlyTab(late);
   });
 
-  test('(+) the registry is read fresh: a state that went from idle to busy since the cached read sends nothing', async () => {
-    const w = pane({ state: 'idle', freshState: 'busy' });
-    assert.deepEqual(code(await w.accept()), [409, 'not-idle']);
-    assert.ok(w.stateArgs.some((o) => o?.fresh === true), 'stateOf was asked with { fresh: true }');
+  // Item K (0.5.1, owner bug): Claude's registry reads `busy` while background agents run and `shell` while a background shell runs, also
+  // after the turn ended, and Claude itself shows the suggestion then and takes Tab. So the registry is not asked at all: the screen decides.
+  test('(+) K: the registry is never asked: busy (background agents), shell (a background shell), waiting, no state, an unknown one and a failing lookup all accept', async () => {
+    for (const state of ['idle', 'busy', 'shell', 'waiting', null, 'weird']) {
+      const w = pane({ state, freshState: state === 'idle' ? 'busy' : null });
+      const r = await w.accept();
+      assert.equal(r.status, 200, `${state}: ${JSON.stringify(r.body)}`);
+      assert.deepEqual(w.sent.map((s) => s.body), [{ keys: ['Tab'] }], String(state));
+      assert.deepEqual(w.stateArgs, [], `${state}: stateOf was not called`);
+    }
+    const throws = pane();
+    throws.stateOf = async () => { throw new Error('registry down'); };
+    assert.equal((await throws.accept()).status, 200, 'a registry that fails does not matter either');
+    assert.deepEqual(throws.sent.map((s) => s.body), [{ keys: ['Tab'] }]);
+  });
+
+  test('(+) K: a background shell (the turn is over): `1 shell still running` above, `· 1 shell · ↓ to manage` in the footer, registry busy or shell: one Tab, 200', async () => {
+    for (const state of ['busy', 'shell', null]) {
+      const w = pane({ state, above: BG_DONE, footer: BG_FOOTER });
+      const r = await w.accept();
+      assert.equal(r.status, 200, `${state}: ${JSON.stringify(r.body)}`);
+      assert.deepEqual([r.body.draft.text, r.body.draft.suggestion], [SUG, null]);
+      assert.deepEqual(w.sent.map((s) => s.body), [{ keys: ['Tab'] }], String(state));
+      onlyTab(w);
+    }
+  });
+
+  test('(+) K: a background agent (the turn is over): `Waiting for 1 background agent to finish` above, its list under the footer, registry busy: one Tab, 200', async () => {
+    for (const state of ['busy', 'shell', null]) {
+      const w = pane({ state, above: BG_WAIT, footer: BG_FOOTER, below: BG_AGENTS() });
+      const r = await w.accept();
+      assert.equal(r.status, 200, `${state}: ${JSON.stringify(r.body)}`);
+      assert.deepEqual(w.sent.map((s) => s.body), [{ keys: ['Tab'] }], String(state));
+      onlyTab(w);
+    }
+  });
+
+  test('(+) K: the vim `-- INSERT --` and plain inputs both accept with background work under the box', async () => {
+    for (const insert of [true, false]) {
+      const w = pane({ state: 'shell', insert, above: BG_DONE, footer: BG_FOOTER, below: BG_AGENTS() });
+      assert.equal((await w.accept()).status, 200, `insert ${insert}`);
+      onlyTab(w);
+    }
+  });
+
+  test('(−) K: a turn runs in main (the spinner row above the box and/or the footer\'s `esc to interrupt`): 409 busy with the screen\'s draft, nothing sent, in any registry state', async () => {
+    const shapes = {
+      'spinner row and footer hint': { above: ['⏺ Working on it', '', SPIN, ''], footer: HINT },
+      'spinner row with a token count': { above: ['⏺ Working on it', SPIN_TOKENS, ''], footer: HINT },
+      'footer hint alone': { above: ['⏺ Working on it', ''], footer: HINT },
+      'manual footer hint with the manage pill': { above: ['⏺ Working on it', ''], footer: MANUAL_HINT },
+      'spinner row alone (vim INSERT draws no hint in the footer)': { above: ['⏺ Working on it', SPIN, ''], footer: '⏸ manual mode on' },
+      'spinner row with a queued message and tip above the box': { above: ['❯ queued earlier', '  ctrl+x ctrl+s to send now', SPIN, '  Send messages to Claude while it works to steer Claude in real-time', ''], footer: '⏸ manual mode on' },
+      'the turn runs and background agents are listed too': { above: [SPIN, ''], footer: HINT, below: BG_AGENTS() },
+    };
+    for (const [name, opts] of Object.entries(shapes)) {
+      for (const state of ['idle', 'busy', 'shell', null]) {
+        const w = pane({ state, ...opts });
+        const r = await w.accept();
+        assert.deepEqual(code(r), [409, 'busy'], `${name} / ${state}`);
+        assert.equal(r.body.draft.suggestion, SUG, `${name}: the page still gets the screen's draft`);
+        assert.deepEqual(w.sent, [], `${name} / ${state}`);
+        assert.deepEqual(w.stateArgs, [], `${name}: the answer comes from the screen, not the registry`);
+      }
+    }
+  });
+
+  test('(−) K: the screen checks come first: while a turn runs, a different suggestion or typed text is still 409 draft-changed (the page learns the screen), not busy', async () => {
+    const running = { above: ['⏺ Working on it', SPIN, ''], footer: HINT };
+    const other = pane({ ...running, suggestion: 'something else' });
+    const r = await other.accept();
+    assert.deepEqual(code(r), [409, 'draft-changed']);
+    assert.equal(r.body.draft.suggestion, 'something else');
+    const typed = pane({ ...running, text: 'hello' });
+    assert.deepEqual(code(await typed.accept()), [409, 'draft-changed']);
+    assert.deepEqual([other.sent, typed.sent], [[], []]);
+  });
+
+  test('(−) K: the capture right before the key decides: a turn that started since the page\'s copy blocks the Tab, and the next accept after it ended goes', async () => {
+    const w = pane({ state: 'busy', above: BG_DONE, footer: BG_FOOTER });
+    w.before = (n, world) => { if (n === 1) { world.above = ['⏺ Working on it', SPIN, '']; world.footer = HINT; } };
+    assert.deepEqual(code(await w.accept()), [409, 'busy']);
     assert.deepEqual(w.sent, []);
+    w.before = null;
+    w.above = BG_DONE;
+    w.footer = BG_FOOTER;
+    assert.equal((await w.accept()).status, 200);
+    onlyTab(w);
   });
 
   test('(−) the suggestion differs from the one the page shows: 409 draft-changed with the screen\'s draft, nothing sent', async () => {
@@ -172,16 +269,17 @@ describe('acceptSuggestion', () => {
     }
   });
 
-  test('(−) a busy turn, a waiting state, and no registry state at all: 409 not-idle, nothing sent', async () => {
-    for (const state of ['busy', 'waiting', null, 'weird']) {
-      const w = pane({ state });
-      assert.deepEqual(code(await w.accept()), [409, 'not-idle'], String(state));
-      assert.deepEqual(w.sent, []);
-    }
-    const throws = pane();
-    throws.stateOf = async () => { throw new Error('registry down'); };
-    assert.deepEqual(code(await throws.accept()), [409, 'not-idle'], 'a failing lookup is never idle');
-    assert.deepEqual(throws.sent, []);
+  test('(−) K: the other screen refusals hold with background work on screen: wrong text, typed text, a prompt, a dialog; nothing sent', async () => {
+    const bg = { state: 'shell', above: BG_DONE, footer: BG_FOOTER, below: BG_AGENTS() };
+    const wrong = pane({ ...bg, suggestion: 'something else' });
+    assert.deepEqual(code(await wrong.accept()), [409, 'draft-changed']);
+    const typed = pane({ ...bg, text: 'hello' });
+    assert.deepEqual(code(await typed.accept()), [409, 'draft-changed']);
+    const prompt = pane({ ...bg, prompt: true });
+    assert.deepEqual(code(await prompt.accept()), [409, 'not-idle']);
+    const dialog = pane({ ...bg, override: () => dialogWorld({ phase: 'ask' }).screen() });
+    assert.deepEqual(code(await dialog.accept()), [409, 'not-idle']);
+    for (const w of [wrong, typed, prompt, dialog]) assert.deepEqual(w.sent, []);
   });
 
   test('(−) Stop is interrupting the pane: 409 not-idle even if the registry already reads idle, and no key follows the Escape', async () => {
@@ -321,7 +419,8 @@ describe('acceptSuggestion', () => {
   test('(−) over every case above the keys sent are only ever Tab: Enter, Escape, Right, text and paste never go out', async () => {
     const cases = [
       pane(), pane({ insert: false }), pane({ tabAccepts: false }), pane({ suggestion: 'x' }), pane({ text: 'hi' }), pane({ prompt: true }),
-      pane({ state: 'busy' }), pane({ glyph: 'bash' }), pane({ suggestion: null }),
+      pane({ state: 'busy' }), pane({ glyph: 'bash' }), pane({ suggestion: null }), pane({ above: [SPIN, ''], footer: HINT }),
+      pane({ state: 'shell', above: BG_DONE, footer: BG_FOOTER, below: BG_AGENTS() }),
     ];
     for (const w of cases) {
       await w.accept();

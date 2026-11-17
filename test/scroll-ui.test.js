@@ -116,6 +116,44 @@ describe('viewRowsOf and pageRowsOf: a page is half of the transcript area', () 
   });
 });
 
+// 0.5.1 E (design DES-A 1.5): with nika's own panel on screen the mirror ends at the crop (the dialog's top row), so a page is half of that.
+describe('viewRowsOf and pageRowsOf with a crop (0.5.1 E)', () => {
+  const draft = (top) => ({ state: 'empty', box: { top, bottom: top + 2 } });
+  const body = (n) => ({ rows: Array.from({ length: n }, () => []) });
+
+  test('(+) a crop above the input box\'s top is the transcript area: the smaller of the two wins; pageRowsOf follows', () => {
+    assert.equal(viewRowsOf(body(40), draft(20), 7), 7);
+    assert.equal(pageRowsOf(body(40), draft(20), 7), PAGE_MIN, 'half of 7 is 3, never fewer than PAGE_MIN');
+    assert.equal(viewRowsOf(body(60), draft(50), 30), 30);
+    assert.equal(pageRowsOf(body(60), draft(50), 30), 15);
+    assert.equal(viewRowsOf(body(40), null, 12), 12, 'with no readable box the crop still shortens the row count');
+    assert.equal(pageRowsOf(body(40), null, 12), 6);
+  });
+
+  test('(+) a crop below the area changes nothing; a crop of 0 is an integer and leaves no rows', () => {
+    assert.equal(viewRowsOf(body(40), draft(20), 33), 20);
+    assert.equal(pageRowsOf(body(40), draft(20), 33), 10);
+    assert.equal(viewRowsOf(body(40), draft(20), 20), 20);
+    assert.equal(viewRowsOf(body(40), draft(20), 0), 0);
+    assert.equal(pageRowsOf(body(40), draft(20), 0), PAGE_MIN);
+  });
+
+  test('(−) a crop that is null, undefined, negative, fractional or not a number changes nothing', () => {
+    for (const crop of [null, undefined, -1, -0.5, 7.5, '7', '0', NaN, Infinity, -Infinity, true, false, [], [7], {}, 2 ** 53]) {
+      assert.equal(viewRowsOf(body(40), draft(20), crop), 20, String(crop));
+      assert.equal(pageRowsOf(body(40), draft(20), crop), 10, String(crop));
+      assert.equal(viewRowsOf(body(40), null, crop), 40, `no box, ${String(crop)}`);
+    }
+  });
+
+  test('(−) leaving the crop out is the same as null, with or without a box', () => {
+    assert.equal(viewRowsOf(body(40), draft(20)), viewRowsOf(body(40), draft(20), null));
+    assert.equal(viewRowsOf(body(40), null), viewRowsOf(body(40), null, null));
+    assert.equal(pageRowsOf(null, null, 7), PAGE_MIN, 'no body at all is still PAGE_MIN');
+    assert.equal(viewRowsOf(null, null, 7), 0, 'no rows and no box: nothing to crop');
+  });
+});
+
 // ---- the planner -----------------------------------------------------------------------------------------------------------
 
 /**

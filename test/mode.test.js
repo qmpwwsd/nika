@@ -1,5 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import * as mode from '../src/mode.js';
 import {
   MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows, mentionsBypass, bypassWindow,
@@ -501,9 +502,8 @@ describe('subagent list below the footer', () => {
       'agent glyph changed': [...block.slice(0, 2), rowsOf('  ● Explore  A  5s')[0]],
       'agent indent changed': [...block.slice(0, 2), rowsOf(' ◯ Explore  A  5s')[0]],
       'agent without the two spaces after the type': [...block.slice(0, 2), rowsOf('  ◯ Explore A  5s')[0]],
-      'agent without an elapsed time': [...block.slice(0, 2), rowsOf('  ◯ Explore  A  tokens')[0]],
-      'elapsed time not at the end': [...block.slice(0, 2), rowsOf('  ◯ Explore  A  5s and more')[0]],
-      'tokens without the arrow': [...block.slice(0, 2), rowsOf('  ◯ Explore  A  5s · 23 tokens')[0]],
+      // K2 note 1: 'agent without an elapsed time', 'elapsed time not at the end' and 'tokens without the arrow' were (−) rows here; the end of
+      // an agent row is no longer read (a live row had none), so they are text now and pinned as such in the K2 note 1 describe below.
       'wrapped label': [...block.slice(0, 2), rowsOf('  ◯ Explore  A very long label that wrapped')[0], rowsOf('  onto a second row  5s')[0]],
     };
     for (const [name, extra] of Object.entries(bad)) {
@@ -523,6 +523,265 @@ describe('subagent list below the footer', () => {
     assert.equal(modeFromRows(subagentRows({ agents: 1 })), 'unknown');
     assert.equal(modeFromRows([[], ...subagentRows({ agents: 1 })]), 'unknown');
     assert.deepEqual(lastNonBlank(subagentRows({ agents: 1 }), 1).length, 1);
+  });
+});
+
+// ---- K2 (0.5.1): background-work rows under the input box (live, Claude Code 2.1.326) ------------------------------------------
+// An agent whose turn ended but whose own background shell runs is drawn `  <U+25EF> <type>  waiting on <n> shell(s) <U+00B7> <label> <U+00B7> since
+// <h:mm AM|PM>`: the label moved into the status and no elapsed time ends the row. AGENT_ROW required that time, so the list was not cut, the
+// footer read `unknown` and the capture had `draft: null`. Every text below is made up; only the row shapes follow the live captures.
+describe('subagent list: waiting and stopped rows (K2)', () => {
+  const head = (footer = PHRASE.manual) => rowsOf('transcript line', ...BOX, '  Haiku 5.5  acme-api  master', footer);
+  const pill = (n = 1) => `${PHRASE.manual} · ${n} shell${n === 1 ? '' : 's'} · ↓ to manage`;
+  /** The blank row and `  <U+23FA> main`, then the given agent rows (strings). */
+  const list = (...agentRows) => [...subagentRows({ agents: 0 }), ...rowsOf(...agentRows)];
+  const waiting = (label = 'Tidy the notes', { n = 1, at = '4:48 PM', type = 'general-purpose' } = {}) =>
+    `  ◯ ${type}  waiting on ${n} shell${n === 1 ? '' : 's'} · ${label} · since ${at}`;
+  const running = '  ◯ Explore  Count the lines                                       3s · ↓ 36.0k tokens';
+  const stopped = '  ◯ Explore  Read the log                                          stopped · 1m 52s · ↓ 36.3k tokens';
+
+  const readsThrough = (rows, mode, label) => {
+    assert.equal(modeFromRows(rows), mode, label);
+    assert.equal(lastNonBlank(rows, 1)[0], rowText(rows.find((r) => /mode on/.test(rowText(r)))), `${label}: the footer is the last row`);
+  };
+
+  test('(+) one waiting row, with the shells pill on the footer: the mode is read through the block', () => {
+    readsThrough([...head(pill(1)), ...list(waiting())], 'manual', 'one shell');
+    readsThrough([...head(pill(2)), ...list(waiting('Tidy the notes', { n: 2 }))], 'manual', 'two shells');
+    readsThrough([...head(`-- INSERT -- ${pill(1)}`), ...list(waiting())], 'manual', 'vim insert prefix');
+    readsThrough([...head(pill(12)), ...list(waiting('Tidy the notes', { n: 12 }))], 'manual', 'twelve shells');
+  });
+
+  test('(+) waiting, running and stopped rows mixed, with the overflow row: one block', () => {
+    const rows = [...head(pill(2)), ...list(waiting('Sort the files', { type: 'Explore' }), running, stopped, '  ◯ Explore  Sum the rows  stopped · 57s'), ...rowsOf('  ↓ 2 more')];
+    readsThrough(rows, 'manual', 'mixed block');
+    assert.equal(footerEnd(rows.map(rowText)), 4, 'footerEnd is the mode line');
+  });
+
+  test('(+) the hover pointer on a waiting row, on one row at most; hours and minutes of 1 to 12 and 00 to 59', () => {
+    for (const at of ['1:05 AM', '9:59 AM', '12:00 PM', '11:30 PM']) readsThrough([...head(pill(1)), ...list(waiting('Tidy the notes', { at }))], 'manual', at);
+    readsThrough([...head(pill(1)), ...list(waiting().replace(/^ {2}/, '❯ '))], 'manual', 'pointer on the waiting row');
+    const two = [...head(pill(1)), ...list(waiting().replace(/^ {2}/, '❯ '), waiting('Other').replace(/^ {2}/, '❯ '))];
+    assert.equal(modeFromRows(two), 'unknown', 'two pointer rows: not cut');
+  });
+
+  test('(+) a label cut with an ellipsis, or shaped like a footer, a main row or a time, is only a label', () => {
+    for (const label of ['Grep the demo project o…', '⏵⏵ auto mode on', '⏸ manual mode on', '─'.repeat(30), '  ⏺ main', 'Esc to cancel', 'x · since 1:00 AM', 'sleeps 5s', '-- INSERT --']) {
+      const rows = [...head(pill(1)), ...list(waiting(label), waiting(label, { n: 2 }))];
+      assert.equal(modeFromRows(rows), 'manual', label);
+      assert.equal(lastNonBlank(rows, 1)[0], pill(1), label);
+    }
+  });
+
+  test('(+) pinned, already read before K2: the elapsed, tokens and stopped rows and the shells pill on every footer', () => {
+    for (const [name, rows] of [['elapsed only', list('  ◯ Explore  Count the lines                    0s')], ['elapsed and tokens', list(running)], ['stopped with tokens', list(stopped)],
+      ['stopped, time only', list('  ◯ Explore  Sum the rows  stopped · 57s')], ['stopped, pointer', list(stopped.replace(/^ {2}/, '❯ '))]]) {
+      readsThrough([...head(pill(1)), ...rows], 'manual', name);
+    }
+    for (const footer of [pill(1), pill(3), `${PHRASE.manual} · 2 shells · enter to view tasks`, `${PHRASE.manual} · esc to interrupt · ↓ to manage`, `-- INSERT -- ${PHRASE.manual} · 1 shell`]) {
+      readsThrough([...head(footer), ...list(running)], 'manual', footer);
+    }
+  });
+
+  // K2 note 1 superseded the exact reading of the waiting row's ending (since clause, hour and minute ranges, the shell count and its word, the wording):
+  // those rows are free text now (see 'the stricter forms of K2\'s first row are only text now' in the K2 note 1 describe). What stays a (−) is the prefix.
+  test('(−) a row that only looks like an agent row is no row: the block stays, the footer reads unknown', () => {
+    const w = waiting();
+    const bad = {
+      'one space after the type': '  ◯ general-purpose waiting on 1 shell · Tidy the notes · since 4:48 PM',
+      'a type with a space': '  ◯ general purpose  waiting on 1 shell · Tidy the notes · since 4:48 PM',
+      'agent glyph changed': w.replace('◯', '●'),
+      'agent indent of one': w.slice(1),
+      'agent indent of four': `  ${w}`,
+      'the text of the row on a second row': ['  ◯ general-purpose  waiting on 1 shell · Tidy the notes', '  · since 4:48 PM'],
+    };
+    for (const [name, extra] of Object.entries(bad)) {
+      const rows = [...head(pill(1)), ...list(...[].concat(extra))];
+      assert.equal(modeFromRows(rows), 'unknown', name);
+      assert.notEqual(lastNonBlank(rows, 1)[0], pill(1), name);
+    }
+  });
+
+  test('(−) a waiting row does not weaken the other gates: no blank row, no main row, junk beside it, no mode line above', () => {
+    const w = waiting();
+    const block = list(w);
+    const bad = {
+      'no blank row': subagentRows({ agents: 0, blank: false }).concat(rowsOf(w)),
+      'no main row': subagentRows({ agents: 0, main: false }).concat(rowsOf(w)),
+      'junk instead of the blank row': [rowsOf('junk')[0], ...block.slice(1)],
+      'junk after the waiting row': [...block, rowsOf('junk')[0]],
+      'junk between main and the waiting row': [block[0], block[1], rowsOf('junk')[0], block[2]],
+      'a blank row inside': [block[0], block[1], [], block[2]],
+      'a waiting row before main': [block[0], rowsOf(w)[0], block[1]],
+    };
+    for (const [name, extra] of Object.entries(bad)) {
+      const rows = [...head(pill(1)), ...extra];
+      assert.equal(modeFromRows(rows), 'unknown', name);
+      assert.notEqual(lastNonBlank(rows, 1)[0], pill(1), name);
+    }
+    for (const above of ['Esc to cancel', '? for shortcuts', '  some dialog row', `2 shells ${'·'} ↓ to manage`]) {
+      const rows = [...rowsOf('Do you want to proceed?', above), ...block];
+      assert.equal(modeFromRows(rows), 'unknown', above);
+      assert.equal(lastNonBlank(rows, 1)[0].includes('◯'), true, `${above}: the block stays`);
+    }
+  });
+
+  test('(−) the cut hides nothing from the bypass guard: bypassWindow still reads the literal bottom of the screen', () => {
+    const rows = [...head(pill(1)), ...list(waiting('bypass the checks'))];
+    assert.equal(modeFromRows(rows), 'manual');
+    assert.equal(bypassWindow(rows), true, 'a label that mentions bypass is inside the guard window although the block is cut');
+    assert.equal(bypassWindow([...head(pill(1)), ...list(waiting())]), false, 'and a label without it is not');
+    const real = [...rowsOf('transcript line', ...BOX, '  Haiku 5.5  acme-api  master', 'bypass permissions on · 1 shell'), ...list(waiting())];
+    assert.equal(modeFromRows(real), 'bypassPermissions');
+  });
+});
+
+// ---- K2, note 1 (0.5.1): the activity row, seen live in Claude Code 2.1.326 in a pane 64 columns wide ----------------------------
+// Under the mode line `-- INSERT -- <auto mode> · PR #17 · 3 shells` Claude drew `  <U+23FA> main` and `  <U+25EF> general-purpose  <text the agent wrote>`, then
+// trailing spaces, and NO elapsed time or status at the end (a narrow pane cuts the suffix, or the row shows the agent's current activity). The row was no
+// agent row, so the list was not cut, the footer read `unknown` and the message box said "nika can't read Claude's input box". The row is read by its
+// prefix (glyph, indent, type, two spaces, some text) and only inside the block; the text and any suffix are not read. Every text below is made up.
+describe('subagent list: the activity row, no suffix (K2, note 1)', () => {
+  const NBSP = String.fromCharCode(0xa0);
+  const LIVE = '-- INSERT -- ⏵⏵ auto mode on · PR #17 · 3 shells';
+  const head = (footer = LIVE) => rowsOf('transcript line', ...BOX, '  Haiku 5.5  acme-api  master', footer);
+  /** The blank row and `  <U+23FA> main`, then the given agent rows (strings, kept as given: trailing spaces too). */
+  const list = (...agentRows) => [...subagentRows({ agents: 0 }), ...rowsOf(...agentRows)];
+  const activity = (text = 'Closing a browser session', type = 'general-purpose') => `  ◯ ${type}  ${text}`;
+  const live = (cols = 64, text) => activity(text).padEnd(cols);
+  const readsThrough = (rows, mode, footer, label) => {
+    assert.equal(modeFromRows(rows), mode, label);
+    assert.equal(lastNonBlank(rows, 1)[0], footer, `${label}: the footer is the last row`);
+  };
+
+  test('(+) the live shape: the mode line with PR and shells, main, one activity row padded with spaces; the footer is the last row', () => {
+    for (const cols of [64, 80, 120]) readsThrough([...head(), ...list(live(cols))], 'auto', LIVE, `${cols} columns`);
+    readsThrough([...head(), ...list(activity())], 'auto', LIVE, 'no padding');
+    const rows = [...head(), ...list(live())];
+    assert.equal(footerEnd(rows.map(rowText)), 4, 'footerEnd is the mode line');
+    assert.deepEqual(lastNonBlank(rows, 2), ['  Haiku 5.5  acme-api  master', LIVE]);
+  });
+
+  test('(+) the mode line alone reads through "· PR #n · N shells" for every mode, with or without the vim prefix, and through the block', () => {
+    const tails = [' · PR #17 · 3 shells', ' · 1 shell', ' · PR #17 · 12 shells', ' · PR #17', ' · 2 shells · ↓ to manage'];
+    const modes = [[PHRASE.auto, 'auto'], [PHRASE.manual, 'manual'], [PHRASE.acceptEdits, 'acceptEdits'], [PHRASE.plan, 'plan'], [PHRASE.dontAsk, 'dontAsk'], ['⏵⏵ bypass permissions on', 'bypassPermissions']];
+    for (const [phrase, want] of modes) {
+      for (const prefix of ['', '-- INSERT -- ', '-- NORMAL -- ']) {
+        for (const tail of tails) {
+          const footer = `${prefix}${phrase}${tail}`;
+          assert.equal(modeFromRows(head(footer)), want, `${footer}: alone`);
+          readsThrough([...head(footer), ...list(live())], want, footer, `${footer}: through the block`);
+        }
+      }
+    }
+  });
+
+  test('(+) several activity rows, the pointer on one, the other row forms mixed in, and the overflow row: one block', () => {
+    const waiting = '  ◯ general-purpose  waiting on 1 shell · Tidy the notes · since 4:48 PM';
+    const running = '  ◯ Explore  Count the lines                                       3s · ↓ 36.0k tokens';
+    const stopped = '  ◯ Explore  Read the log                                          stopped · 1m 52s · ↓ 36.3k tokens';
+    readsThrough([...head(), ...list(live(), live(64, 'Sorting the notes'), live(64, 'Opening a page'))], 'auto', LIVE, 'three rows');
+    readsThrough([...head(), ...list(live(), waiting, running, stopped, activity('Reading', 'Explore'))], 'auto', LIVE, 'mixed');
+    readsThrough([...head(), ...list(live(), live()), ...rowsOf('  ↓ 4 more')], 'auto', LIVE, 'overflow row');
+    readsThrough([...head(), ...list(live().replace(/^ {2}/, '❯ '), live())], 'auto', LIVE, 'pointer on the first row');
+    readsThrough([...head(), ...list(live(), live().replace(/^ {2}/, '❯ '))], 'auto', LIVE, 'pointer on the last row');
+  });
+
+  test('(+) the text is only a label: a footer, a rule, a main row, a dialog footer, a bypass phrase or an old suffix in it fakes nothing', () => {
+    const texts = ['⏵⏵ auto mode on', '⏸ manual mode on', '─'.repeat(30), '⏺ main', 'Esc to cancel', 'Enter to select · ↑/↓ to navigate', 'x · since 1:00 AM', 'waiting on 1 agent', 'stopped',
+      '3s', '1. Yes', '-- INSERT --', 'bypass permissions on', 'ends with a dot.', 'a  b  c', 'Closing a browser session   ', 'Grep the demo project o…', 'x'.repeat(200), 'ÄÖ 日本語 🙂'];
+    const real = `${PHRASE.plan} · PR #17 · 3 shells`;
+    for (const text of texts) {
+      readsThrough([...head(real), ...list(live(64, text), live(64, text))], 'plan', real, text);
+    }
+  });
+
+  test('(+) the stricter forms of K2\'s first row are only text now: the suffix is not read at all', () => {
+    const forms = ['waiting on 1 shell · Tidy the notes', 'waiting on 1 shell · Tidy the notes · since 4:48', 'waiting on 1 shell · Tidy the notes · since 16:48',
+      'waiting on 0 shells · Tidy the notes · since 4:48 PM', 'waiting on 1 agent · Tidy the notes · since 4:48 PM', 'waiting on 1 shell ·  · since 4:48 PM',
+      'Count the lines  tokens', 'Count the lines  5s and more', 'Count the lines  5s · 23 tokens', 'Tidy  waiting on 1 shell · Tidy the notes · since 4:48 PM · x'];
+    for (const text of forms) readsThrough([...head(), ...list(live(64, text))], 'auto', LIVE, text);
+  });
+
+  test('(−) a row of this shape outside the block is no row: no main row, no blank row above main, junk or a plain row beside it, a row before main', () => {
+    const row = live();
+    const block = list(row);
+    const bad = {
+      'no main row': subagentRows({ agents: 0, main: false }).concat(rowsOf(row)),
+      'no blank row above main': subagentRows({ agents: 0, blank: false }).concat(rowsOf(row)),
+      'no blank row and no main row': rowsOf(row),
+      'junk instead of the blank row': [rowsOf('junk')[0], ...block.slice(1)],
+      'two blank rows': [[], ...block],
+      'a blank row inside': [block[0], block[1], [], block[2]],
+      'junk after the row': [...block, rowsOf('junk')[0]],
+      'junk between main and the row': [block[0], block[1], rowsOf('junk')[0], block[2]],
+      'the row before main': [block[0], rowsOf(row)[0], block[1]],
+      'a second screen row of the same text, without the glyph': [...block, rowsOf('  browser session')[0]],
+      'the text on two screen rows': [block[0], block[1], ...rowsOf('  ◯ general-purpose  Closing a', '  browser session')],
+      'main with a suffix': [block[0], rowsOf('  ⏺ main (selected)')[0], block[2]],
+      'main with other indent': [block[0], rowsOf('    ⏺ main')[0], block[2]],
+      'two pointer rows': list(row.replace(/^ {2}/, '❯ '), row.replace(/^ {2}/, '❯ ')),
+      'a pointer on main and on the row': [block[0], rowsOf('❯ ⏺ main')[0], rowsOf(row.replace(/^ {2}/, '❯ '))[0]],
+    };
+    for (const [name, extra] of Object.entries(bad)) {
+      const rows = [...head(), ...extra];
+      assert.equal(modeFromRows(rows), 'unknown', name);
+      assert.notEqual(lastNonBlank(rows, 1)[0], LIVE, name);
+    }
+  });
+
+  test('(−) a block under a row that is not a mode line or a dialog end stays: nothing above it is hidden, the mode is unknown', () => {
+    for (const above of ['Esc to cancel', '? for shortcuts', '  some dialog row', '1. Yes', '  Haiku 5.5  acme-api  master', '2 shells · ↓ to manage', '']) {
+      const rows = [...rowsOf('Do you want to proceed?', above), ...list(live())];
+      assert.equal(modeFromRows(rows), 'unknown', above);
+      assert.equal(lastNonBlank(rows, 1)[0].includes('◯'), true, `${above}: the block stays`);
+    }
+    const twoUp = [...rowsOf(PHRASE.auto, 'status line'), ...list(live())];
+    assert.equal(modeFromRows(twoUp), 'unknown', 'a mode line two rows up does not count');
+  });
+
+  test('(−) a row in the transcript above the box is only text: nothing is cut and the mode line is still the last row', () => {
+    const rows = [...rowsOf(live(), '', '  ⏺ main', live()), ...head()];
+    readsThrough(rows, 'auto', LIVE, 'transcript');
+  });
+
+  test('(−) the row stays structural: glyph, indent, a type of one word, two spaces, then some text', () => {
+    const row = live();
+    const bad = {
+      'glyph changed': row.replace('◯', '●'),
+      'glyph is a letter': row.replace('◯', 'o'),
+      'main glyph': row.replace('◯', '⏺'),
+      'indent of one': row.slice(1),
+      'indent of three': ` ${row}`,
+      'indent of four': `  ${row}`,
+      'a tab indent': `\t${row.slice(2)}`,
+      'a pointer and a no-break space': row.replace(/^ {2}/, `❯${NBSP}`),
+      'a pointer and two spaces': row.replace(/^ {2}/, '❯  '),
+      'no-break space after the glyph': row.replace('◯ ', `◯${NBSP}`),
+      'no type': '  ◯  Closing a browser session',
+      'no type, three spaces': '  ◯   Closing a browser session',
+      'two spaces and then only a no-break space': `  ◯ general-purpose  ${NBSP}`,
+      'a line separator inside the text': `  ◯ general-purpose  Closing${String.fromCharCode(0x2028)} a browser session`,
+      'a carriage return inside the text': '  ◯ general-purpose  Closing\r a browser session',
+      'type only': '  ◯ general-purpose',
+      'type only, padded': '  ◯ general-purpose'.padEnd(64),
+      'type and two spaces': '  ◯ general-purpose  ',
+      'type and no-break spaces': `  ◯ general-purpose${NBSP}${NBSP}`,
+      'one space after the type': '  ◯ general-purpose Closing a browser session',
+      'no-break spaces instead of the two spaces': `  ◯ general-purpose${NBSP}${NBSP}Closing a browser session`,
+      'a type with a space': '  ◯ general purpose  Closing a browser session',
+    };
+    for (const [name, one] of Object.entries(bad)) {
+      const rows = [...head(), ...list(one)];
+      assert.equal(modeFromRows(rows), 'unknown', name);
+      assert.notEqual(lastNonBlank(rows, 1)[0], LIVE, name);
+    }
+  });
+
+  test('(−) the cut hides nothing from the bypass guard: bypassWindow still reads the literal bottom of the screen', () => {
+    assert.equal(bypassWindow([...head(), ...list(live(64, 'bypass the checks'))]), true);
+    assert.equal(bypassWindow([...head(), ...list(live())]), false);
+    assert.equal(modeFromRows([...head('-- INSERT -- ⏵⏵ bypass permissions on · PR #17 · 3 shells'), ...list(live())]), 'bypassPermissions');
   });
 });
 
@@ -1742,5 +2001,93 @@ describe('taskBlockAbove: the task list pinned above the input box (LC18)', () =
     assert.equal(typeof taskBlockAbove, 'function');
     assert.equal('blockHead' in mode, false);
     assert.equal('taskEnd' in mode, false);
+  });
+});
+
+// ---- 0.5.1 E: promptTopRow, the screen row of the permission prompt's question (display only; the page crops the terminal view there) ---------------
+describe('promptTopRow (0.5.1 E)', () => {
+  const HINT = 'Esc to cancel · Tab to amend';
+  const top = (rows) => mode.promptTopRow(rows);
+  const BASH = ['Bash command', 'Run the build script', '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌', 'npm run build', '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌', 'Do you want to proceed?',
+    '❯ 1. Yes', '  2. Yes, and always allow access to demo from this', '     project', '  3. No', HINT];
+  const QUESTION = 5;
+  const questionAt = (rows) => rows.findIndex((r) => rowText(r).trim() === 'Do you want to proceed?');
+
+  test('(+) the row of the question: the row directly above option 1, as promptFromRows reads it', () => {
+    const rows = rowsOf(...BASH);
+    assert.equal(top(rows), QUESTION);
+    assert.equal(rowText(rows[top(rows)]).trim(), promptFromRows(rows).question);
+    assert.equal(top(rowsOf('Proceed?', '❯ 1. Yes', '  2. No', HINT)), 0, 'a prompt that starts the screen: row 0 (the page treats 0 as no crop)');
+  });
+
+  test('(+) rows above shift it; blank rows between the prompt\'s rows are skipped, so non-blank rows map back to screen rows', () => {
+    const above = Array.from({ length: 30 }, (_, i) => `transcript line ${i}`);
+    assert.equal(top(rowsOf(...above, ...BASH)), 30 + QUESTION);
+    const spread = rowsOf('x', 'Bash command', '', '  npm run build', '', 'Do you want to proceed?', '', '❯ 1. Yes', '', '  2. No', '', HINT);
+    assert.equal(top(spread), 5, 'blank rows between the question and option 1 do not move it');
+    assert.equal(rowText(spread[top(spread)]).trim(), 'Do you want to proceed?');
+    assert.equal(top([...rowsOf(...BASH), [], [span('  ')], []]), QUESTION, 'blank rows under the hint');
+  });
+
+  test('(+) the task list or the lone rule row Claude draws under a prompt (F13) does not move it', () => {
+    for (const named of [true, false]) {
+      for (const blank of [named ? 0 : 1, 3, 11]) {
+        const rows = [...rowsOf(...BASH), ...taskRows({ named, blank })];
+        assert.equal(top(rows), QUESTION, `named ${named} / ${blank} blank rows`);
+      }
+    }
+    const rule = taskRows({ doing: 0, open: 0, shownDone: 0, hiddenDone: 0 }).slice(0, 1);
+    assert.equal(top([...rowsOf(...BASH), [], ...rule]), QUESTION, 'a lone rule row');
+    const screen = taskScreen(rowsOf(...BASH), { rows: 45, named: true });
+    assert.equal(top(screen), 12 + QUESTION, 'a whole 45-row screen, the prompt 12 rows down');
+    assert.equal(rowText(screen[top(screen)]).trim(), 'Do you want to proceed?');
+  });
+
+  test('(+) a prompt whose question row is the oldest row of the window is still found (PROMPT_ROWS non-blank rows)', () => {
+    const block = (k) => ['Proceed?', '1. Yes', ...Array.from({ length: k }, (_, i) => `     wrapped ${i}`), '2. No', HINT];
+    const rows = rowsOf('older row', '', ...block(PROMPT_ROWS - 4));
+    assert.equal(top(rows), 2);
+    assert.equal(rowText(rows[top(rows)]).trim(), 'Proceed?');
+  });
+
+  test('(+) promptFromRows and lastNonBlank keep their exact output: no new key, same rows (the refactor behind promptTopRow)', () => {
+    const rows = rowsOf(...BASH);
+    assert.deepEqual(Object.keys(promptFromRows(rows)), ['question', 'options']);
+    assert.deepEqual(promptFromRows(rows), {
+      question: 'Do you want to proceed?',
+      options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, and always allow access to demo from this project' }, { n: 3, label: 'No' }],
+    });
+    const withBlocks = [...rowsOf('transcript', ...BOX, PHRASE.auto), ...subagentRows({ agents: 2, more: 1 }), [], []];
+    assert.deepEqual(lastNonBlank(withBlocks, 3), ['│ > │', '╰──────╯', PHRASE.auto].slice(0, 3));
+    assert.deepEqual(lastNonBlank(rows, 99), BASH);
+    for (const bad of [0, -1, 1.5, '2', null, undefined]) assert.deepEqual(lastNonBlank(rows, bad), [], String(bad));
+  });
+
+  test('(−) null when no prompt parses: nothing there, no question, no hint, a gap in the numbers, fewer than two options', () => {
+    for (const rows of [rowsOf('Steps:', '1. Install', '2. Build', HINT), rowsOf('Proceed?', '1. Yes', '3. No', HINT), rowsOf('Proceed?', '1. Yes', HINT),
+      rowsOf('Proceed', '1. Yes', '2. No', HINT), rowsOf('Proceed?', '❯ 1. Yes', '  2. No'), rowsOf('1. Yes', '2. No', HINT), rowsOf('transcript', ...BOX, PHRASE.auto)]) {
+      assert.equal(top(rows), null);
+      assert.equal(promptFromRows(rows), null);
+    }
+  });
+
+  test('(−) null for a stale prompt, a folder-trust dialog and a prompt that fell out of the window', () => {
+    const prompt = ['Proceed?', '1. Yes', '2. No', HINT];
+    assert.notEqual(top(rowsOf(...prompt)), null, 'control');
+    assert.equal(top(rowsOf(...prompt, ...BOX, PHRASE.manual)), null, 'the box and footer were drawn after it');
+    assert.equal(top(rowsOf(...prompt, 'x')), null, 'one row below the hint');
+    assert.equal(top(rowsOf('Do you trust the files in this folder?', '❯ Yes, I trust this folder', '  No, exit', 'Enter to confirm · Esc to cancel')), null);
+    const old = rowsOf(...prompt, ...Array.from({ length: PROMPT_ROWS }, (_, i) => `line ${i}`), HINT);
+    assert.equal(top(old), null, 'the question is more than PROMPT_ROWS non-blank rows above the hint');
+  });
+
+  test('(−) not rows at all: null, never throws', () => {
+    for (const bad of [null, undefined, 'Esc to cancel', 7, {}, [], [null], [[{}]], rowsOf('', '')]) assert.equal(top(bad), null, String(bad));
+  });
+
+  test('(−) it is one more export and nothing else changed: the exports of src/mode.js are the old ones plus promptTopRow', () => {
+    assert.equal(typeof mode.promptTopRow, 'function');
+    assert.equal(mode.promptTopRow.length, 1);
+    assert.equal(/[^\x00-\x7f]/.test(fs.readFileSync(new URL('../src/mode.js', import.meta.url), 'utf8')), false, 'src/mode.js stays ASCII');
   });
 });

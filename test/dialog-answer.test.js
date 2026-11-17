@@ -68,6 +68,21 @@ describe('checkDialogBody', () => {
   });
 });
 
+describe('checkDialogBody: the step move (0.5.1, D)', () => {
+  test('(+) { sig, tab } with a whole number from 0 to 8', () => {
+    for (const tab of [0, 1, 3, 8]) assert.equal(checkDialogBody({ sig: SIG, tab }), null, String(tab));
+  });
+
+  test('(−) a tab that is not a whole number from 0 to 8, or any extra or missing key: 400 invalid', () => {
+    const bad = [
+      { sig: SIG, tab: -1 }, { sig: SIG, tab: 9 }, { sig: SIG, tab: 1.5 }, { sig: SIG, tab: '1' }, { sig: SIG, tab: null }, { sig: SIG, tab: NaN }, { sig: SIG, tab: [1] },
+      { sig: SIG, tab: 1, picks: [1] }, { sig: SIG, tab: 1, submit: true }, { sig: SIG, tab: 1, choice: 1 }, { sig: SIG, tab: 1, cancel: true }, { sig: SIG, tab: 1, text: 'x' },
+      { tab: 1 }, { sig: 'ABCDEF0123456789', tab: 1 }, { sig: 5, tab: 1 }, { sig: SIG },
+    ];
+    for (const b of bad) assert.deepEqual([checkDialogBody(b)?.status, checkDialogBody(b)?.body.error], [400, 'invalid'], JSON.stringify(b));
+  });
+});
+
 describe('answerDialog: a single-select question', () => {
   test('(+) a one-question form: the digit submits it (done submitted, one key)', async () => {
     const w = dialogWorld();
@@ -624,20 +639,30 @@ describe('answerDialog: refusals before the first key (nothing is sent)', () => 
     assert.deepEqual(w.log, []);
   });
 
-  test('(−) a single tab that is already answered (someone went back to it in the terminal): 409 dialog-touched', async () => {
+  // 0.5.1, D: an answered single tab is answered again like any other (it was 409 dialog-touched in 0.5.0); see 'answering a step again' below.
+  test('(+) 0.5.1: a single tab that is already answered (the user went back to it) takes a new pick: the digit goes and the dialog moves on', async () => {
     const w = dialogWorld({ tabs: [TAB.project, TAB.mode] });
     w.tabs[0].answered = true;
     w.tabs[0].picked = 2;
-    assert.deepEqual(code(await w.answer({ picks: [1] })), [409, 'dialog-touched']);
+    ok(await w.answer({ picks: [1] }), 'next', 1);
+    assert.deepEqual(w.keysLog(), ['text:1']);
+    assert.equal(w.tabs[0].picked, 1);
+    safe(w);
+  });
+
+  test('(−) the text row holds text of its own: a request for other text than that is 409 dialog-touched, nothing sent (a pick no longer is: see the next test)', async () => {
+    const w = dialogWorld({ focus: 2 });
+    w.tabs[0].text = 'typed in the terminal';
+    assert.deepEqual(code(await w.answer({ picks: [], text: 'something else' })), [409, 'dialog-touched']);
     assert.deepEqual(w.log, []);
   });
 
-  test('(−) the text row holds text when a pick is wanted, or other text than the wanted one: 409 dialog-touched', async () => {
+  test('(+) 0.5.1: a single-select pick is sent although the text row holds text (a digit on an option never touches the text row)', async () => {
     const w = dialogWorld({ focus: 2 });
     w.tabs[0].text = 'typed in the terminal';
-    assert.deepEqual(code(await w.answer({ picks: [1] })), [409, 'dialog-touched']);
-    assert.deepEqual(code(await w.answer({ picks: [], text: 'something else' })), [409, 'dialog-touched']);
-    assert.deepEqual(w.log, []);
+    ok(await w.answer({ picks: [1] }), 'submitted', 1);
+    assert.deepEqual(w.keysLog(), ['text:1']);
+    safe(w);
   });
 
   test('(−) vim NORMAL on the text row (no INSERT, vim known): 409 text-mode, no text typed; a pane known to be plain does type', async () => {
@@ -988,5 +1013,378 @@ describe('answerDialog: the key log holds only the allowed keys, in every scenar
       assert.equal(r.status, 200, JSON.stringify(body));
       safe(w, { escape: body.cancel === true });
     }
+  });
+});
+
+describe('answerDialog: answering a step again (0.5.1, D)', () => {
+  test('(+) an answered single tab that is not the last: the new pick goes as its digit and the dialog moves to the next tab (done next)', async () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.mode, TAB.name], i: 0 });
+    w.tabs[0].answered = true;
+    w.tabs[0].picked = 1;
+    ok(await w.answer({ picks: [3] }), 'next', 1);
+    assert.deepEqual([w.i, w.tabs[0].picked, w.keysLog()], [1, 3, ['text:3']]);
+    safe(w);
+  });
+
+  test('(+) the same on the last tab opens the review (done review)', async () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.mode], i: 1 });
+    w.tabs[0].answered = true;
+    w.tabs[1].answered = true;
+    w.tabs[1].picked = 1;
+    ok(await w.answer({ picks: [2] }), 'review', 1);
+    assert.deepEqual([w.phase, w.tabs[1].picked, w.keysLog()], ['review', 2, ['text:2']]);
+    safe(w);
+  });
+
+  test('(+) the same typed text again from an option row: Down to the text row k times, then Enter (it re-confirms the text, nothing is typed)', async () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.mode] });
+    w.tabs[0].text = 'beta';
+    w.tabs[0].answered = true;
+    w.focus = 1;
+    ok(await w.answer({ picks: [], text: 'beta' }), 'next', 4);
+    assert.deepEqual(w.keysLog(), ['Down', 'Down', 'Down', 'Enter']);
+    assert.equal(w.tabs[0].picked, null);
+    safe(w);
+  });
+
+  test('(+) a pick over an answered typed text: the option replaces the answer, the typed text stays in the row (Claude keeps it)', async () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.mode] });
+    w.tabs[0].text = 'beta';
+    w.tabs[0].answered = true;
+    ok(await w.answer({ picks: [2] }), 'next', 1);
+    assert.deepEqual([w.tabs[0].picked, w.tabs[0].text], [2, 'beta']);
+    const gone = dialogWorld({ tabs: [TAB.project, TAB.mode], typedKept: false });
+    gone.tabs[0].text = 'beta';
+    ok(await gone.answer({ picks: [2] }), 'next', 1);
+    assert.equal(gone.tabs[0].text, null, 'the fake can also model a Claude that drops the text');
+  });
+
+  test('(−) other text than the one in the row is still 409 dialog-touched; a multi tab with text in its Other row and a request without it too (unchanged)', async () => {
+    const single = dialogWorld({ focus: 2 });
+    single.tabs[0].text = 'typed in the terminal';
+    assert.deepEqual(code(await single.answer({ picks: [], text: 'other words' })), [409, 'dialog-touched']);
+    const multi = dialogWorld({ tabs: [TAB.tools] });
+    multi.tabs[0].text = 'kept';
+    multi.tabs[0].answered = true;
+    assert.deepEqual(code(await multi.answer({ picks: [1] })), [409, 'dialog-touched']);
+    assert.deepEqual(code(await multi.answer({ picks: [1], text: 'different' })), [409, 'dialog-touched']);
+    assert.deepEqual([...single.log, ...multi.log], []);
+  });
+
+  test('(+) a multi tab with typed text and a request that carries the same text goes on (the page sends it with every request)', async () => {
+    const w = dialogWorld({ tabs: [TAB.tools] });
+    w.tabs[0].text = 'kept';
+    w.tabs[0].answered = true;
+    ok(await w.answer({ picks: [1], text: 'kept' }), 'review', 6);
+    assert.deepEqual(w.keysLog(), ['text:1', 'Down', 'Down', 'Down', 'Down', 'Enter']); // the toggle, Down to the text row and on to Submit, Enter
+    assert.deepEqual([w.tabs[0].checked, w.tabs[0].text], [[1], 'kept']);
+  });
+});
+
+/** What a step move may send, asserted on the key log (design 5.1 safeMove): Right, Left and Up only; Up only to leave an input row; Left and Right only from an option row (or the review). */
+function safeMove(w) {
+  assert.deepEqual(w.leaks(), [], 'no key after the dialog closed, none toward an input box or a permission prompt');
+  for (const e of w.log.filter((x) => !x.failed)) {
+    assert.equal(e.text, undefined, 'no text, no digit');
+    assert.equal(e.paste, undefined, 'no paste');
+    assert.ok(Array.isArray(e.keys) && e.keys.length === 1, 'one key per request');
+    const [k] = e.keys;
+    assert.ok(['Right', 'Left', 'Up'].includes(k), `never ${k}`);
+    if (k === 'Up') assert.ok(['text', 'chat', 'button'].includes(e.slot), `Up never on ${e.slot}`);
+    else assert.ok(['option', 'review1'].includes(e.slot), `${k} never on ${e.slot}`);
+  }
+}
+
+describe('answerDialog: moving to another step (0.5.1, D)', () => {
+  const three = (opts = {}) => dialogWorld({ tabs: [TAB.project, TAB.mode, TAB.name], ...opts });
+  const moved = (r, sent) => assert.deepEqual(r, { status: 200, body: sent === 0 ? { done: 'moved' } : { done: 'moved', sent } });
+  /** Runs `change(world)` right before the capture that follows the first key's proof: the screen changes between two rounds, not during one. */
+  const racing = (w, change) => {
+    let c0 = null;
+    w.onKey = (n, world) => { if (n === 1) c0 = world.captures; };
+    w.before = (n, world) => { if (c0 !== null && n === c0 + 2 && world.log.length === 1) change(world); };
+  };
+
+  test('(+) tab 0 to 2: Right, Right', async () => {
+    const w = three();
+    moved(await w.answer({ tab: 2 }), 2);
+    assert.deepEqual([w.keysLog(), w.i, w.phase], [['Right', 'Right'], 2, 'ask']);
+    safeMove(w);
+  });
+
+  test('(+) tab 2 to 0: Left, Left', async () => {
+    const w = three({ i: 2 });
+    moved(await w.answer({ tab: 0 }), 2);
+    assert.deepEqual([w.keysLog(), w.i], [['Left', 'Left'], 0]);
+    safeMove(w);
+  });
+
+  test('(+) tab 1 to Review (tab = the number of questions): Right, Right; Review to tab 0: Left, Left, Left', async () => {
+    const w = three({ i: 1 });
+    moved(await w.answer({ tab: 3 }), 2);
+    assert.deepEqual([w.keysLog(), w.phase], [['Right', 'Right'], 'review']);
+    moved(await w.answer({ tab: 0 }), 3);
+    assert.deepEqual([w.log.slice(2).map((e) => e.keys[0]), w.phase, w.i], [['Left', 'Left', 'Left'], 'ask', 0]);
+    safeMove(w);
+  });
+
+  test('(+) a move answers nothing: no tab is answered by it, the answers stay, the review lists them as before', async () => {
+    const w = three();
+    w.tabs[0].answered = true;
+    w.tabs[0].picked = 2;
+    moved(await w.answer({ tab: 2 }), 2);
+    assert.deepEqual(w.tabs.map((t) => [t.answered, t.picked]), [[true, 2], [false, null], [false, null]]);
+    safeMove(w);
+  });
+
+  test('(+) the focus on the text row (plain pane): Up first, then Right; on Chat: Up, Up, Right', async () => {
+    const text = three({ focus: 4 });
+    moved(await text.answer({ tab: 1 }), 2);
+    assert.deepEqual([text.keysLog(), text.i], [['Up', 'Right'], 1]);
+    safeMove(text);
+    const chat = three({ focus: 5 });
+    moved(await chat.answer({ tab: 1 }), 3);
+    assert.deepEqual([chat.keysLog(), chat.i], [['Up', 'Up', 'Right'], 1]);
+    safeMove(chat);
+  });
+
+  test('(+) a multi question on its Next button: Up, Up, then Right; on Chat: three Ups, then Right', async () => {
+    const next = dialogWorld({ tabs: [TAB.tools, TAB.project], focus: 'button' });
+    moved(await next.answer({ tab: 1 }), 3);
+    assert.deepEqual(next.keysLog(), ['Up', 'Up', 'Right']);
+    safeMove(next);
+    const chat = dialogWorld({ tabs: [TAB.tools, TAB.project], focus: 5 });
+    moved(await chat.answer({ tab: 1 }), 4);
+    assert.deepEqual(chat.keysLog(), ['Up', 'Up', 'Up', 'Right']);
+    safeMove(chat);
+  });
+
+  test('(+) a move to the step it is already on (the user got there in the terminal) answers moved with no key', async () => {
+    const w = three();
+    w.before = (n, world) => { if (n === 2) world.i = 1; }; // read 1 is the request\'s first look, read 2 the round\'s
+    moved(await w.answer({ tab: 1 }), 0);
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(+) a move clears the answer hold: the step answered a second ago takes its new answer, not 409 already-answered', async () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.mode] });
+    const first = w.sig();
+    ok(await w.answer({ picks: [1] }), 'next', 1);
+    moved(await w.answer({ tab: 0 }), 1);
+    assert.equal(w.sig(), first, 'the same step, the same sig');
+    ok(await w.answer({ picks: [2] }), 'next', 1);
+    assert.deepEqual(w.keysLog(), ['text:1', 'Left', 'text:2']);
+    assert.deepEqual(w.leaks(), []);
+  });
+
+  test('(−) the hold is not cleared by a refused move: the same answer a moment later is still already-answered', async () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.mode] });
+    const first = w.sig();
+    ok(await w.answer({ picks: [1] }), 'next', 1);
+    assert.deepEqual(code(await w.answer({ tab: 0, sig: 'ffffffffffffffff' })), [409, 'dialog-changed']);
+    w.i = 0;
+    assert.deepEqual(code(await w.answer({ picks: [1], sig: first })), [409, 'already-answered']);
+  });
+
+  test('(−) a one-question form: 400 invalid, nothing sent (the single-select form has no strip; the multi one has only itself and the review)', async () => {
+    for (const w of [dialogWorld(), dialogWorld({ tabs: [TAB.tools] })]) {
+      assert.deepEqual(code(await w.answer({ tab: 0 })), [400, 'invalid']);
+      assert.deepEqual(code(await w.answer({ tab: 1 })), [400, 'invalid']);
+      assert.deepEqual(w.log, []);
+    }
+  });
+
+  test('(−) the step it is on, or a step that does not exist: 400 invalid, nothing sent', async () => {
+    const w = three({ i: 1 });
+    assert.deepEqual(code(await w.answer({ tab: 1 })), [400, 'invalid']);
+    assert.deepEqual(code(await w.answer({ tab: 4 })), [400, 'invalid']);
+    assert.deepEqual(code(await w.answer({ tab: 8 })), [400, 'invalid']);
+    const review = three({ phase: 'review' });
+    assert.deepEqual(code(await review.answer({ tab: 3 })), [400, 'invalid'], 'the review is tab = n');
+    assert.deepEqual([...w.log, ...review.log], []);
+  });
+
+  test('(−) a sig that is not the screen\'s, a closed dialog, a plan and a permission prompt: 409 dialog-changed or no-dialog, nothing sent', async () => {
+    const stale = three();
+    assert.deepEqual(code(await stale.answer({ tab: 2, sig: SIG })), [409, 'dialog-changed']);
+    const closed = three({ phase: 'idle' });
+    assert.deepEqual(code(await closed.answer({ tab: 2, sig: SIG })), [409, 'no-dialog']);
+    const plan = dialogWorld({ phase: 'plan' });
+    assert.deepEqual(code(await plan.answer({ tab: 1, sig: plan.sig() })), [409, 'dialog-changed']);
+    const prompt = three({ phase: 'prompt' });
+    assert.deepEqual(code(await prompt.answer({ tab: 1, sig: SIG })), [409, 'no-dialog']);
+    assert.deepEqual([...stale.log, ...closed.log, ...plan.log, ...prompt.log], []);
+  });
+
+  test('(−) bypass in the dialog: 400 terminal-only, nothing sent (a move is not a Decline)', async () => {
+    const w = dialogWorld({ tabs: [{ ...TAB.mode, options: [['bypass permissions', 'x'], ['safe', 'y']] }, TAB.project] });
+    assert.deepEqual(code(await w.answer({ tab: 1 })), [400, 'terminal-only']);
+    assert.deepEqual(code(await w.answer({ tab: 0 })), [400, 'terminal-only'], 'before the request is checked against the steps');
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(−) bypass shows up on a later step: 400 terminal-only with sent 1, no second key', async () => {
+    const w = three();
+    w.onKey = (n, world) => { if (n === 1) world.tabs[1].options = [{ label: 'bypass permissions', desc: 'x' }, { label: 'safe', desc: 'y' }]; };
+    const r = await w.answer({ tab: 2 });
+    assert.deepEqual([r.status, r.body.error, r.body.sent], [400, 'terminal-only', 1]);
+    assert.deepEqual(w.keysLog(), ['Right']);
+    safeMove(w);
+  });
+
+  test('(−) the dialog closes, or a permission prompt appears, between two rounds: 409 dialog-changed with sent 1, no second key', async () => {
+    const closed = three();
+    racing(closed, (world) => { world.phase = 'idle'; world.result = 'closed in the terminal'; });
+    assert.deepEqual(await closed.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-changed', sent: 1 } });
+    assert.deepEqual(closed.keysLog(), ['Right']);
+    const prompt = three();
+    racing(prompt, (world) => { world.phase = 'prompt'; });
+    assert.deepEqual(await prompt.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-changed', sent: 1 } });
+    assert.deepEqual([prompt.keysLog(), prompt.leaks()], [['Right'], []]);
+  });
+
+  test('(−) the step becomes unreadable (a clipped option) between two Ups: 409 dialog-changed with sent 1, not a second Up', async () => {
+    const w = three({ focus: 5 });
+    racing(w, (world) => { world.tabs[0].options[0].label = 'acme-api\u2026'; });
+    assert.deepEqual(await w.answer({ tab: 1 }), { status: 409, body: { error: 'dialog-changed', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Up']);
+  });
+
+  test('(−) an Up after which Claude stands on another step (the person pressed Right too): 409 not-taken with sent 1, no Right', async () => {
+    const w = three({ focus: 4 });
+    w.onKey = (n, world) => { if (n === 1) { world.i = 1; world.focus = 2; } };
+    assert.deepEqual(await w.answer({ tab: 2 }), { status: 409, body: { error: 'not-taken', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Up']);
+  });
+
+  test('(+) vim (round 3, SVIM rows 24 and 27): Up leaves the text row in INSERT and in NORMAL alike, and on Chat; then Right moves the tab', async () => {
+    const insert = three({ vim: true, focus: 4 });
+    assert.equal(insert.read().insert, true, 'premise: INSERT shows on the text row');
+    moved(await insert.answer({ tab: 1 }), 2);
+    assert.deepEqual(insert.keysLog(), ['Up', 'Right']);
+    const normal = three({ vim: true, vimMode: 'normal', focus: 4, mem: { vim: true, plain: false } });
+    assert.equal(normal.read().insert, false, 'premise: NORMAL shows no marker');
+    moved(await normal.answer({ tab: 1 }), 2);
+    assert.deepEqual(normal.keysLog(), ['Up', 'Right']);
+    const chat = three({ focus: 5, mem: { vim: true, plain: false } });
+    moved(await chat.answer({ tab: 1 }), 3);
+    assert.deepEqual(chat.keysLog(), ['Up', 'Up', 'Right']);
+    for (const w of [insert, normal, chat]) safeMove(w);
+  });
+
+  test('(−) vim: no key but Up and Right/Left goes out for a move: not a letter (i, j, k, h, l), not Escape, not text', async () => {
+    for (const w of [three({ vim: true, focus: 4 }), three({ vim: true, vimMode: 'normal', focus: 4, mem: { vim: true, plain: false } })]) {
+      await w.answer({ tab: 2 });
+      assert.deepEqual(w.keysLog().filter((k) => !['Up', 'Right', 'Left'].includes(k)), []);
+      assert.deepEqual(w.log.filter((e) => e.text !== undefined), []);
+      assert.deepEqual(w.leaks(), []);
+    }
+  });
+
+  test('(−) three Ups that all took but still left the focus on an input row: 409 text-focus with sent 3, never a fourth Up and never a Right', async () => {
+    const w = three({ focus: 5 });
+    w.onKey = (n, world) => { world.focus = n % 2 === 1 ? 4 : 5; }; // the focus keeps hopping between the text row and Chat: every Up shows a change, none gets out
+    assert.deepEqual(await w.answer({ tab: 1 }), { status: 409, body: { error: 'text-focus', sent: 3 } });
+    assert.deepEqual(w.keysLog(), ['Up', 'Up', 'Up']);
+    safeMove(w);
+  });
+
+  test('(−) an Up that is lost: 409 not-taken with sent 1, the key is not repeated and no Right follows', async () => {
+    const w = three({ focus: 4, drop: (b) => b.keys?.[0] === 'Up' });
+    assert.deepEqual(await w.answer({ tab: 1 }), { status: 409, body: { error: 'not-taken', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Up']);
+    safeMove(w);
+  });
+
+  test('(−) the focus is on the text row of a later step (the user moved it in the terminal): 409 dialog-focus, no Up, no Right', async () => {
+    const w = three();
+    w.onKey = (n, world) => { if (n === 1) world.focus = 3; }; // the first Right took (the mode tab has two options); the person then moved to its text row
+    const r = await w.answer({ tab: 2 });
+    assert.deepEqual(r, { status: 409, body: { error: 'dialog-focus', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Right']);
+    safeMove(w);
+  });
+
+  test('(−) a pane locked by another action: 409 busy-switching, nothing sent', async () => {
+    const w = three();
+    let release;
+    w.hold = new Promise((r) => { release = r; });
+    const first = w.answer({ tab: 1 });
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(code(await w.answer({ tab: 2 })), [409, 'busy-switching']);
+    release();
+    moved(await first, 1);
+    assert.deepEqual(w.keysLog(), ['Right']);
+  });
+
+  test('(−) a Stop/End Escape went out just now: 409 not-idle and no key; from 40 ms on it goes', async () => {
+    const w = dialogWorld({ phase: 'idle', state: 'busy', tabs: [TAB.project, TAB.mode] });
+    assert.deepEqual(await w.ctl.stop('%2'), { status: 200, body: { stopped: true, presses: 1 } });
+    w.phase = 'ask';
+    assert.deepEqual(code(await w.answer({ tab: 1 })), [409, 'not-idle']);
+    assert.equal(w.log.length, 1, 'only the interrupt\'s own Escape');
+    w.t += 40;
+    moved(await w.answer({ tab: 1 }), 1);
+  });
+
+  test('(−) the headers change after the first key: 409 dialog-changed with sent 1, no second key', async () => {
+    const w = three();
+    w.onKey = (n, world) => { if (n === 1) world.tabs[2].header = 'Renamed'; };
+    assert.deepEqual(await w.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-changed', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Right']);
+  });
+
+  test('(−) an answered mark flips after the first key (someone answered in the terminal): 409 dialog-touched with sent 1', async () => {
+    const w = three();
+    w.onKey = (n, world) => { if (n === 1) world.tabs[2].answered = true; };
+    assert.deepEqual(await w.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-touched', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Right']);
+  });
+
+  test('(−) the key is lost: 409 not-taken with sent 1, the key is not repeated', async () => {
+    const w = three({ drop: () => true });
+    assert.deepEqual(await w.answer({ tab: 2 }), { status: 409, body: { error: 'not-taken', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Right']);
+  });
+
+  test('(−) the dialog closes after the first key: 409 dialog-changed with sent 1, and no key after the close', async () => {
+    const w = three();
+    w.onKey = (n, world) => { if (n === 1) { world.phase = 'idle'; world.result = 'closed in the terminal'; } };
+    assert.deepEqual(await w.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-changed', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Right']);
+    safeMove(w);
+  });
+
+  test('(−) Claude lands two steps away after one key (the person pressed Right too): 409 dialog-changed on the next read, no further key', async () => {
+    const w = three({ tabs: [TAB.project, TAB.mode, TAB.name, TAB.mode] });
+    w.onKey = (n, world) => { if (n === 1) world.i = 2; };
+    assert.deepEqual(await w.answer({ tab: 3 }), { status: 409, body: { error: 'dialog-changed', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Right']);
+  });
+
+  test('(−) a permission prompt appears after the first key: no key reaches it', async () => {
+    const w = three();
+    w.onKey = (n, world) => { if (n === 1) world.phase = 'prompt'; };
+    const r = await w.answer({ tab: 2 });
+    assert.deepEqual([r.status, r.body.error, r.body.sent], [409, 'dialog-changed', 1]);
+    assert.deepEqual(w.keysLog(), ['Right']);
+    assert.deepEqual(w.leaks(), [], 'the prompt received nothing');
+  });
+
+  test('(−) a failed capture and a failed key send pass their own status through', async () => {
+    const cap = three();
+    cap.captureFail = { status: 502, body: { error: 'capture-failed' } };
+    assert.deepEqual(code(await cap.answer({ tab: 1, sig: SIG })), [502, 'capture-failed']);
+    const send = three({ failSend: () => ({ status: 429, body: { error: 'rate-limited' } }) });
+    assert.deepEqual(code(await send.answer({ tab: 1 })), [429, 'rate-limited']);
+    assert.deepEqual(send.keysLog(), []);
+  });
+
+  test('(−) a move never types: a text row with typed text is left alone, and the typed text is still there after the move', async () => {
+    const w = three({ focus: 4 });
+    w.tabs[0].text = 'kept words';
+    moved(await w.answer({ tab: 1 }), 2);
+    assert.deepEqual([w.tabs[0].text, w.keysLog()], ['kept words', ['Up', 'Right']]);
+    safeMove(w);
   });
 });

@@ -221,6 +221,7 @@ describe('session window: the transcript column keeps at most 500 entries', () =
       $: (id) => els.get(id),
       document: { hidden: false, activeElement: null, createDocumentFragment: () => ({ items: [], append(el) { this.items.push(el); } }) },
       entryEl: (e) => ({ id: e.id, gone: false, remove() { this.gone = true; } }),
+      forgetTiles() {}, // trim() lets the image tiles of a removed entry go (0.5.1 C)
       scroller: () => sc,
       cleanEntries: (list) => list,
       fetchHistory,

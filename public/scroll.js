@@ -40,16 +40,24 @@ export function routeFor({ dir, top, height, client } = {}) {
   return height - client - top > 0.5 ? 'native' : 'claude';
 }
 
-/** The transcript area of the last capture in rows: the top rule of Claude's input box (draft.box.top), else the capture's row count, else 0. */
-export function viewRowsOf(body, draft) {
+/**
+ * The transcript area of the last capture in rows: the top rule of Claude's input box (draft.box.top), else the capture's row count, else 0.
+ * `crop` (0.5.1 E, crop.js cropOf's `top`) is the row where the mirror ends while nika's own panel stands in for Claude's dialog: a whole number
+ * from 0 up shortens the area to it when it is the smaller; anything else (null, a negative, a fraction, text) changes nothing.
+ */
+export function viewRowsOf(body, draft, crop = null) {
   const top = draft?.box?.top;
-  if (Number.isInteger(top) && top >= 0) return top;
-  const n = body?.rows?.length;
-  return Number.isInteger(n) && n > 0 ? n : 0;
+  let rows = 0;
+  if (Number.isInteger(top) && top >= 0) rows = top;
+  else {
+    const n = body?.rows?.length;
+    rows = Number.isInteger(n) && n > 0 ? n : 0;
+  }
+  return Number.isInteger(crop) && crop >= 0 ? Math.min(rows, crop) : rows;
 }
 
 /** Rows of wheel travel for one page: half the transcript area, at least PAGE_MIN (spike S5: a page is 15, 16, 16 rows of a 33-row area). */
-export const pageRowsOf = (body, draft) => Math.max(PAGE_MIN, Math.floor(viewRowsOf(body, draft) / 2));
+export const pageRowsOf = (body, draft, crop = null) => Math.max(PAGE_MIN, Math.floor(viewRowsOf(body, draft, crop) / 2));
 
 // ---- the gate, a twin of src/scroll.js scrollGate on what the last capture carried ------------------------------------------
 

@@ -61,7 +61,7 @@ function askRows(w) {
   const submit = several || tab.multi;
   const insert = w.vim && f === k + 1 && w.vimMode === 'insert';
   const nav = several ? 'Tab/Arrow keys' : '↑/↓';
-  const ctrl = f === k + 1 || f === 'button';
+  const ctrl = f === k + 1 || f === k + 2 || f === 'button'; // the input rows: the text row, Chat and the Next button (S-TABS)
   const indent = ' '.repeat(tab.multi ? 9 : 5);
   const rows = [line('⏺ I have a question first.'), [], [span('─'.repeat(w.cols), DIM)], stripRow(w, w.i, submit), [], [span(tab.question, { b: true, fg: 231 })], []];
   tab.options.forEach((o, j) => {
@@ -74,13 +74,17 @@ function askRows(w) {
   const tBox = tab.multi ? (tab.text === null ? '[ ] ' : '[✔] ') : '';
   const head = [span(ptr(f === k + 1), ACC), span(' '), span(`${k + 1}.`, DIM), span(` ${tBox}`)];
   if (tab.text === null) rows.push([...head, span(tab.multi ? 'Type something' : 'Type something.', { d: true })]);
-  else wrap(tab.text, w.cols - 1 - (5 + tBox.length), w.cols - 1 - indent.length).forEach((p, j) => rows.push(j === 0 ? [...head, span(p)] : [span(`${indent}${p}`)]));
+  else {
+    const tick = !tab.multi && tab.picked === null && tab.answered ? ' ✔' : ''; // the typed text is the answer of a single-select tab (S-TABS): keep it short, the tick joins the last row
+    const parts = wrap(tab.text, w.cols - 1 - (5 + tBox.length), w.cols - 1 - indent.length);
+    parts.forEach((p, j) => rows.push(j === 0 ? [...head, span(p + (j === parts.length - 1 ? tick : ''))] : [span(`${indent}${p}${j === parts.length - 1 ? tick : ''}`)]));
+  }
   if (tab.multi) {
     const label = w.i === w.tabs.length - 1 ? 'Submit' : 'Next';
     rows.push(f === 'button' ? [span('❯', ACC), span('    '), span(label, { b: true, fg: 153 })] : [span(`     ${label}`, { b: true })]);
   }
   rows.push([span('─'.repeat(w.cols), DIM)], line(`${ptr(f === k + 2)} ${k + 2}. Chat about this`), []);
-  rows.push([span(`${insert ? '-- INSERT -- · ' : ''}Enter to select · ${nav} to navigate${ctrl ? ' · ctrl+g to edit in Vim' : ''}${insert ? '' : ' · Esc to cancel'}`, DIM)]);
+  rows.push([span(`${insert ? '-- INSERT -- · ' : ''}Enter to select · ${nav} to navigate${ctrl ? ' · ctrl+g to edit in demo-editor' : ''}${insert ? '' : ' · Esc to cancel'}`, DIM)]);
   return rows;
 }
 
@@ -153,6 +157,8 @@ function goTo(w, j) {
   w.focus = 1; // coming back to a tab resets the focus (T0c)
   w.vimMode = 'insert';
 }
+/** A one-question single-select form has no strip arrows and no Submit tab: Left and Right do nothing there (S-TABS). */
+const stripArrows = (w) => w.tabs.length > 1 || w.tabs[w.i].multi;
 const close = (w, result) => { w.phase = 'idle'; w.result = result; };
 
 /** A tab is answered: a one-question form is done, any other moves to the next tab (S3 Q2). */
@@ -170,7 +176,9 @@ function toggle(tab, n) {
 function move(w, by) {
   if (w.phase === 'ask') {
     const slots = slotsOf(w.tabs[w.i]);
-    w.focus = slots[Math.max(0, Math.min(slots.length - 1, slots.indexOf(w.focus) + by))];
+    const at = slots.indexOf(w.focus);
+    // Up on option 1 wraps to the text row; Down stops at Chat (S-TABS)
+    w.focus = by < 0 && at === 0 ? w.tabs[w.i].options.length + 1 : slots[Math.max(0, Math.min(slots.length - 1, at + by))];
     if (w.focus === w.tabs[w.i].options.length + 1) w.vimMode = 'insert'; // vim: the text row takes INSERT at once (T0b)
   } else if (w.phase === 'review') w.rf = Math.max(1, Math.min(2, w.rf + by));
   else if (w.phase === 'plan') w.pf = Math.max(1, Math.min(w.plan.labels.length + 1, w.pf + by));
@@ -194,7 +202,7 @@ function digit(w, d) {
     if (w.focus === k + 1) return typeIn(w, d); // the text row takes digits as text
     if (n <= k) {
       if (tab.multi) toggle(tab, n); // a digit toggles and leaves the focus where it is (S3 Q2)
-      else { tab.picked = n; tab.text = null; advance(w); }
+      else { tab.picked = n; if (w.typedKept === false) tab.text = null; advance(w); }
     } else if (n === k + 1) w.focus = k + 1;
     else if (n === k + 2) close(w, 'chat');
   } else if (w.phase === 'review') {
@@ -220,7 +228,7 @@ function enter(w) {
   }
   if (tab.multi) return toggle(tab, w.focus);
   tab.picked = w.focus;
-  tab.text = null;
+  if (w.typedKept === false) tab.text = null;
   return advance(w);
 }
 
@@ -230,9 +238,10 @@ function key(w, name) {
   else if (name === 'Enter') enter(w);
   else if (name === 'Right') {
     const tab = w.tabs[w.i];
-    if (w.phase === 'ask' && Number.isInteger(w.focus) && w.focus <= tab.options.length) goTo(w, w.i + 1); // from an option row only (T0c)
+    if (w.phase === 'ask' && stripArrows(w) && Number.isInteger(w.focus) && w.focus <= tab.options.length) goTo(w, w.i + 1); // from an option row only (T0c, S-TABS); at Review nothing
   } else if (name === 'Left') {
-    if (w.phase === 'ask') goTo(w, w.i - 1);
+    const tab = w.tabs[w.i];
+    if (w.phase === 'ask' && stripArrows(w) && Number.isInteger(w.focus) && w.focus <= tab.options.length) goTo(w, w.i - 1); // no wrap at the first tab; the input rows keep the key
     else if (w.phase === 'review') { w.phase = 'ask'; w.i = w.tabs.length - 1; w.focus = 1; }
   } else if (name === 'Escape') {
     if (w.phase === 'ask' && w.vim && w.vimMode === 'insert' && w.focus === w.tabs[w.i].options.length + 1) w.vimMode = 'normal'; // the first Escape leaves INSERT (T0b L6a)
@@ -248,6 +257,8 @@ function key(w, name) {
  *   vim      Claude's input is vim (INSERT shows while the text row has focus and vimMode is 'insert'); mem { vim, plain } is nika's memory
  *   cols     the pane width; state the registry state (default 'attn')
  *   lag      captures after a key that still show the screen from before it (a late redraw)
+ *   typedKept  (default true) a single-select digit keeps the text typed in the text row, as Claude does (S-TABS); false clears it
+ *   Input rows (the text row, Chat, Next) keep Left and Right and add `ctrl+g to edit in demo-editor` to the footer; Up on option 1 wraps to the text row
  *   failSend(body, n), drop(body, n) (the key is lost), mangle(text) (typed text arrives changed), onKey(n, w) (runs after the n-th key took
  *   effect), before(n, w) (runs before the n-th capture), hold (a promise every capture waits for)
  * Records: log (every key with the phase, the focus slot and the INSERT marker it landed in, `failed` for a failed send), keysLog() (their names), leaks() (keys that landed

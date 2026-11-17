@@ -100,6 +100,70 @@ describe('frameOf', () => {
   });
 });
 
+// ---- 0.5.1 E: the crop (nika's own panel stands in for Claude's dialog; the mirror ends at the dialog's top row) -----------------------------
+describe('frameOf and findShift with a crop (0.5.1 E)', () => {
+  test('(+) the frame ends at the crop and carries it; the pane size and the rows above are unchanged', () => {
+    const f = frameOf(bodyAt(0), draftOf(), 20);
+    assert.equal(f.end, 20);
+    assert.equal(f.crop, 20);
+    assert.deepEqual(f.texts, DOC.slice(0, 20));
+    assert.equal(f.rows, 36);
+    assert.equal(f.cols, 120);
+  });
+
+  test('(+) a crop below the box ends the frame at the smaller of the two; a crop above the task list header wins over it too', () => {
+    assert.equal(frameOf(bodyAt(0), draftOf(), 99).end, 32, 'a crop past the box top: the box still ends the frame');
+    assert.equal(frameOf(bodyAt(0), draftOf(), 99).crop, 99, 'the crop is still recorded');
+    const tasksBox = { top: 27, bottom: 29, tasks: 17 };
+    assert.equal(frameOf(pinnedAt(0), draftOf(tasksBox), 10).end, 10);
+    assert.equal(frameOf(pinnedAt(0), draftOf(tasksBox), 25).end, 17, 'the task list header ends it first');
+  });
+
+  test('(+) a crop of null (or left out) is the frame it always was, with crop: null', () => {
+    const plain = frameOf(bodyAt(0), draftOf());
+    assert.equal(plain.crop, null);
+    assert.deepEqual(frameOf(bodyAt(0), draftOf(), null), plain);
+    assert.deepEqual(frameOf(bodyAt(0), draftOf(), undefined), plain);
+    assert.equal(plain.end, 32);
+  });
+
+  test('(−) a crop that is not a whole number from 0 up is ignored and recorded as null', () => {
+    for (const crop of [-1, 7.5, '7', NaN, Infinity, true, [], {}]) {
+      const f = frameOf(bodyAt(0), draftOf(), crop);
+      assert.equal(f.crop, null, String(crop));
+      assert.equal(f.end, 32, String(crop));
+    }
+  });
+
+  test('(+) findShift gives the same shift for two frames cropped the same way', () => {
+    const s = findShift(frameOf(bodyAt(5), draftOf(), 20), frameOf(bodyAt(2), draftOf(), 20));
+    assert.equal(s.k, 3);
+    assert.equal(s.votes, 17);
+  });
+
+  test('(−) findShift gives null when the crops differ (a crop that appears or goes never slides), either way round', () => {
+    const cropped = frameOf(bodyAt(3), draftOf(), 20);
+    const whole = frameOf(bodyAt(0), draftOf());
+    assert.equal(findShift(cropped, whole), null);
+    assert.equal(findShift(whole, cropped), null);
+    assert.equal(findShift(frameOf(bodyAt(3), draftOf(), 20), frameOf(bodyAt(0), draftOf(), 21)), null, 'two different crops');
+  });
+
+  test('(−) findShift with both crops null, or a hand-made frame with no crop field, is what it was', () => {
+    assert.notEqual(findShift(view(3), view(0)), null);
+    assert.equal(findShift(view(3), view(0)).k, 3);
+    assert.notEqual(findShift(fr(['a', 'b', 'c', 'd']), fr(['x', 'a', 'b', 'c'])), null, 'neither frame has the field');
+    assert.notEqual(findShift(fr(['a', 'b'], { crop: null }), fr(['x', 'a'])), null, 'null and absent are the same');
+  });
+
+  test('(−) the arm does not glide across a crop that appeared between the base frame and the next one: it rebases or gives up, never slides', () => {
+    const { arm } = rig();
+    assert.equal(arm.arm(UP, { scrolled: true, before: frameOf(bodyAt(3), draftOf()) }), true);
+    assert.equal(arm.offer(frameOf(bodyAt(0), draftOf(), 20)), null, 'a different size of frame: no glide, the arm is over');
+    assert.equal(arm.armed(), false);
+  });
+});
+
 // ---- Claude's task list pinned between the conversation and its box (LC18 Finding 2): static rows that must neither vote nor slide ----------
 // 17 document rows, the list (9 rows: header, 7 task rows, overflow row), one blank row, then the box. With the view moved by 3 rows, 14 of the 17 document
 // rows are in both frames: 14 rows vote the shift and the 9 list rows vote "no shift", the numbers of the live check (14 of 23 = 0.61 < GLIDE_SHARE).

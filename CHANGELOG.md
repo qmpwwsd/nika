@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.5.1 — 2026-11-17
+
+Session window (desktop app):
+
+- **See screenshots in nika.** Click the name of an image you pasted, dropped or picked, or an image in the Transcript, and it
+  opens large over the page; Esc or ✕ closes it. nika shows PNG, JPEG, GIF and WebP up to 8 MB, checks that the file really is that
+  kind of image, and never shows SVG. Messages with large images no longer vanish from the Transcript (lines up to 16 MB are read;
+  a line made of a huge number of pieces shows its last 500 entries, `cut: true` in the history answer).
+  The viewer's status line is always on the page and only its words change, so a screen reader hears "Loading image…" and the
+  errors. See `docs/design/spec.md` §9.18 and `docs/security.md` T59 to T61.
+- **The terminal view stops above Claude's question.** While nika shows its own form or panel for a question, a plan approval, a
+  permission prompt or the feedback question, the terminal view ends above it with a yellow line that names what to answer below. A
+  plan's text and a prompt's command stay visible. Type into pane shows the whole screen again. When Claude's question fills the terminal from its first row, nika still shows the whole screen for now. A permission prompt whose question
+  has 200 characters or more, or one of whose options has 80 or more, also shows the whole screen: nika cannot tell a long text
+  from one it has shortened, and it will not hide the end of what you approve.
+- **Subagents button.** A branch button in the terminal toolbar shows how many subagents are running and opens a list of all of
+  them, running first and the ended ones under "+N ended". Click one to read its transcript.
+- **Less clutter while you answer.** The quick actions (Stop, Compact, Clear, Model, Rewind, End session) hide while a question
+  form, plan approval, permission prompt or feedback panel is open; Esc, Decline and Dismiss stay in the panel, and the bar comes
+  back as soon as you answer.
+- **Jump between Claude's questions.** The steps above the question form are buttons now: click one to open that question (or
+  Review) in Claude's dialog. Nothing is answered on the way. Go back to a question you already answered and pick again to change
+  it. Text you typed in Claude's own text field shows read-only; change that in the terminal. This works with Claude's vim mode
+  too. If Claude's cursor sits in its own text field, nika presses Up to leave it; when that does not free it, the form says
+  so and you leave the field in the terminal (409 `text-focus`). See `docs/contracts/claude-tui.md` §13.9 and `docs/security.md` T63.
+- **More sits inside a long option's card.** A long option's description is clamped with a **More** button in the corner of the
+  option's card, so a click on it opens the text and never picks the option.
+- **Review lists each answer under its question.** The review step is one column at every width, so a long question and its answer
+  no longer squeeze each other.
+- **After Dismiss on the feedback panel, the message box keeps the focus.** After a keyboard Dismiss, Claude redraws its screen
+  and the panel used to drop your focus onto the page; it now goes to the message box.
+- **Tab and → take Claude's suggestion while background work runs.** nika used to refuse whenever Claude was not idle, which
+  also covered a session whose turn had ended while background agents or a shell still ran, although Claude shows its suggestion
+  and takes Tab then. Now nika looks at the screen and refuses only while a turn runs in the main session ("Claude is answering
+  right now, so nika can't accept the suggestion", 409 `busy`); a spinner counts as a running turn in vim mode too, where Claude's footer does
+  not say "esc to interrupt". Taking the suggestion with background work running has not been tried against a real Claude.
+- **The message box works again when subagents run under Claude's input box.** Agent rows under the input box no longer make
+  nika lose Claude's mode line, so the message box keeps working while subagents run.
+- **End session no longer presses Esc on a screen it cannot read.** When nika sees neither Claude's mode line nor its input
+  box, and no prompt or question it knows, End says "Claude's screen isn't at the prompt; use the terminal." and sends nothing
+  (409 `mode-unknown`). See `docs/security.md` T64.
+
 ## 0.5.0 — 2026-11-17
 
 Session window (desktop app):

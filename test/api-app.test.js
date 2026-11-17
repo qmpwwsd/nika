@@ -12,6 +12,7 @@ import { createServer } from '../src/server.js';
 import { createAppApi } from '../src/api-app.js';
 import { readHistory, readSubagentHistory } from '../src/collect/history.js';
 import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator } from '../src/store.js';
+import { createAttachments } from '../src/attachments.js';
 import { collect, findSession, findSessions } from '../src/model.js';
 import { listCommands as realListCommands } from '../src/collect/commands.js';
 import { startOrchestrator } from '../src/orchestrate.js';
@@ -20,7 +21,7 @@ import { configDir, stateDir, reportsDir } from '../src/paths.js';
 import { lastNonBlank, modeFromRows, promptFromRows, surveyShown, PROMPT_ROWS } from '../src/mode.js';
 import { MODEL_CATALOG } from '../src/models.js';
 import { makeWorld, fakeTmux, TMUX, CLAUDE } from './tmux-fake.js';
-import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, boxRows, subagentRows } from './helpers.js';
+import { makeFixture, cleanup, fakeExec, SID, NOW, PROC_START, boxRows, subagentRows, span } from './helpers.js';
 import { createMirror } from '../src/mirror.js';
 import { readDialogScreen, dialogOnScreen, sigOf as dialogSig } from '../src/dialog.js';
 import { createKeys } from '../src/keys.js';
@@ -2344,8 +2345,43 @@ describe('capture: mode, modeConfirmed, prompt', () => {
       options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, allow all edits during this session' }, { n: 3, label: 'No' }],
       sig: sigOf(PROMPT),
       bypass: false,
+      top: 1,
     });
     assert.match(r.body.prompt.sig, /^[0-9a-f]{16}$/);
+  });
+
+  // 0.5.1 E: `top` is the screen row of the prompt's question, display only (the page crops the terminal view there).
+  test('(+) prompt.top is the question row on the screen: rows above and blank rows between the prompt\'s rows move it, the sig and bypass do not read it', async () => {
+    const { a, screens } = await bootScreens();
+    const at = async (lines) => { screens['%6'] = rowsOf(lines); return (await pane(a, '%6', 'capture')).body.prompt; };
+    assert.equal((await at(PROMPT)).top, 1);
+    const above = Array.from({ length: 20 }, (_, i) => `transcript line ${i}`);
+    const low = await at([...above, ...PROMPT]);
+    assert.equal(low.top, 21);
+    assert.equal(low.sig, sigOf([...above, ...PROMPT]), 'the sig is what it was: it covers the rows, not the place');
+    const spread = await at(['Edit file notes.txt', '', ' Do you want to proceed?', '', ' ❯ 1. Yes', '   2. No', '', ' Esc to cancel']);
+    assert.equal(spread.top, 2, 'blank rows between the prompt\'s rows map back to screen rows');
+    assert.equal((await at(BYPASS_PROMPT)).top, 1, 'a prompt with bypass carries it too (the page, not the server, withholds the crop)');
+  });
+
+  test('(−) no prompt, no top: a plain screen and a stale prompt carry prompt null, and the modes list is unchanged', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt, null);
+    screens['%6'] = rowsOf([...PROMPT, 'a later row']);
+    assert.equal((await pane(a, '%6', 'capture')).body.prompt, null, 'a row after the hint: stale');
+    screens['%6'] = rowsOf(PROMPT);
+    const modes = await a.call('GET', '/api/app/modes');
+    assert.deepEqual(Object.keys(modes.body.modes['%6']).sort(), ['confirmed', 'mode'], 'the modes list gains nothing');
+  });
+
+  test('(−) the ETag keeps its shape: the same capture revalidates to a 304, and a changed prompt is still a 200', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = rowsOf(PROMPT);
+    const first = await pane(a, '%6', 'capture');
+    assert.equal((await pane(a, '%6', 'capture', { headers: { 'if-none-match': first.headers.etag } })).status, 304);
+    assert.equal(first.headers.etag, `"${first.body.etag}"`);
+    assert.match(first.body.etag, /^[0-9a-f]{32}$/);
   });
 
   test('(+) prompt.bypass is true when the prompt window mentions bypass: in the question, in an option, or only in the lines above the question', async () => {
@@ -3466,6 +3502,43 @@ describe('capture: draft', () => {
     for (const [i, one] of seen.entries()) assert.deepEqual(one, seen[0], `capture ${i + 1}`);
   });
 
+  test('(+) K2 (0.5.1): behind background-work rows the box is readable: the activity row with no suffix at 64 columns, the waiting row, and the "· N shells" mode line', async () => {
+    const { a, screens } = await bootScreens();
+    const modeLine = '\u23f5\u23f5 auto mode on \u00b7 PR #17 \u00b7 3 shells';
+    const tail = (rows) => [[], [span('  \u23fa main', { b: true })], ...rows.map((t) => [span(t.padEnd(64))])];
+    const forms = {
+      'activity row, no suffix': ['  \u25ef general-purpose  Closing a browser session'],
+      'waiting row': ['  \u25ef general-purpose  waiting on 1 shell \u00b7 Tidy the notes \u00b7 since 4:48 PM'],
+      'both and a running row': ['  \u25ef general-purpose  Closing a browser session', '  \u25ef Explore  Count the lines   3s \u00b7 \u2193 36.0k tokens'],
+    };
+    for (const insert of [true, false]) {
+      for (const [name, rows] of Object.entries(forms)) {
+        const s = boxRows({ cols: 64, lines: ['ghj'], insert, footer: modeLine, pad: true });
+        screens['%6'] = Object.assign([...s.rows, ...tail(rows)], { cursor: s.cursor });
+        const r = await pane(a, '%6', 'capture');
+        const label = `${name}${insert ? ', vim insert' : ''}`;
+        assert.equal(r.status, 200, label);
+        assert.deepEqual([r.body.mode, r.body.modeConfirmed, r.body.draft?.text], ['auto', true, 'ghj'], label);
+      }
+    }
+  });
+
+  test('(−) K2 (0.5.1): the same row outside the block reads no draft: no main row, or a block under a row that is no mode line', async () => {
+    const { a, screens } = await bootScreens();
+    const s = boxRows({ cols: 64, lines: ['ghj'], footer: '\u23f5\u23f5 auto mode on \u00b7 PR #17 \u00b7 3 shells', pad: true });
+    const row = [span('  \u25ef general-purpose  Closing a browser session'.padEnd(64))];
+    for (const [name, extra] of Object.entries({ 'no main row': [[], row], 'no blank row': [[span('  \u23fa main'.padEnd(64))], row], 'junk after it': [[], [span('  \u23fa main')], row, [span('junk')]] })) {
+      screens['%6'] = Object.assign([...s.rows, ...extra], { cursor: s.cursor });
+      const r = await pane(a, '%6', 'capture');
+      assert.equal(r.status, 200, name);
+      assert.deepEqual([r.body.mode, r.body.draft], ['unknown', null], name);
+    }
+    const dialogLike = boxRows({ cols: 64, lines: ['ghj'], footer: 'Esc to cancel', pad: true });
+    screens['%6'] = Object.assign([...dialogLike.rows, [], [span('  \u23fa main')], row], { cursor: dialogLike.cursor });
+    const r = await pane(a, '%6', 'capture');
+    assert.deepEqual([r.body.mode, r.body.draft], ['unknown', null], 'a block under a row that is no mode line');
+  });
+
   test('(+) edit follows the pane\'s memory: insert while INSERT shows (and it forgets plain), normal after INSERT was seen, plain after a probe landed as text, unknown after none', async () => {
     const { a, screens, control } = await bootScreens();
     screens['%6'] = box(['hello']);
@@ -4177,6 +4250,35 @@ describe('capture: the dialog field', () => {
     assert.ok(plan.options.length >= 2);
   });
 
+  test('(+) dialog.top (0.5.1 E): the rule above the strip for a question and a review, the plain rule under the plan; a number in the sig of none', async () => {
+    const { a, screens } = await bootScreens();
+    const text = (row) => row.map((sp) => sp.t).join('');
+    const topOf = async (opts) => { screens['%6'] = dialogRows(opts); return (await pane(a, '%6', 'capture')).body.dialog; };
+    const q = await topOf({ tabs: [TAB.project, TAB.mode] });
+    assert.equal(q.sig, dialogSig(readDialogScreen(screens['%6'], 120)), 'the controller\'s sig is the capture\'s sig: top is in neither');
+    assert.ok(Number.isInteger(q.top) && q.top >= 1 && q.top < screens['%6'].length);
+    assert.match(text(screens['%6'][q.top]), /^ *─+ *$/, 'the row at top is a rule');
+    assert.match(text(screens['%6'][q.top + 1]), /[☐☒]/, 'and the strip is right under it');
+    const r = await topOf({ tabs: [TAB.project, TAB.mode], phase: 'review' });
+    assert.equal(r.at, 'review');
+    assert.match(text(screens['%6'][r.top]), /^ *─+ *$/);
+    assert.match(text(screens['%6'][r.top + 1]), /[☐☒]/);
+    const p = await topOf({ phase: 'plan' });
+    assert.equal(p.at, 'plan');
+    assert.match(text(screens['%6'][p.top]), /^ *─+ *$/, 'the plain rule');
+    assert.match(text(screens['%6'][p.top + 1]), /Claude has written up a plan/, 'the plan prompt is right under it');
+  });
+
+  test('(−) dialog.top is absent when the dialog is unreadable or a prompt owns the slot', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = dialogRows({ phase: 'nudge' });
+    const nudge = (await pane(a, '%6', 'capture')).body.dialog;
+    assert.equal(nudge.state, 'unreadable');
+    assert.equal('top' in nudge, false);
+    screens['%6'] = rowsOf(PROMPT);
+    assert.equal((await pane(a, '%6', 'capture')).body.dialog, null);
+  });
+
   test('(+) the sig changes with the tab, the answer marks and the plan text, and not with the focus', async () => {
     const { a, screens } = await bootScreens();
     const sigs = new Set();
@@ -4467,9 +4569,30 @@ describe('capture: the survey field', () => {
     screens['%6'] = surveyScreen();
     const r = await pane(a, '%6', 'capture');
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body.survey, { state: 'ready', kind: 'rating', sig: surveyIn(screens['%6']).sig, options: SURVEY_OPTIONS });
+    assert.deepEqual(r.body.survey, { state: 'ready', kind: 'rating', sig: surveyIn(screens['%6']).sig, top: 2, options: SURVEY_OPTIONS });
     assert.match(r.body.survey.sig, SIG16);
     assert.deepEqual([r.body.prompt, r.body.dialog, r.body.draft], [null, null, null], 'the box reads nothing while the survey shows (the digits would answer it)');
+  });
+
+  test('(+) survey.top is the question row (0.5.1 E), moves with the rows above, and is part of the ETag, so a moved survey is never a 304', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = surveyScreen({ above: ['one', 'two', 'three', ''] });
+    const low = await pane(a, '%6', 'capture');
+    assert.equal(low.body.survey.top, 4);
+    assert.equal(low.body.survey.sig, surveyIn(screens['%6']).sig);
+    screens['%6'] = surveyScreen({ above: ['Done. Anything else?', ''] });
+    const high = await pane(a, '%6', 'capture', { headers: { 'if-none-match': low.headers.etag } });
+    assert.equal(high.status, 200, 'the survey moved: the page must hear of it (the fake mirror reports one rows hash, so only the survey can tell)');
+    assert.equal(high.body.survey.top, 2);
+    assert.notEqual(high.body.etag, low.body.etag);
+  });
+
+  test('(−) a terminal survey and no survey carry no top', async () => {
+    const { a, screens } = await bootScreens();
+    screens['%6'] = surveyScreen({ free: 'bypass is mentioned here' });
+    assert.deepEqual((await pane(a, '%6', 'capture')).body.survey, { state: 'terminal', reason: 'bypass' });
+    screens['%6'] = rowsOf(['hello', FOOTER.plan]);
+    assert.equal((await pane(a, '%6', 'capture')).body.survey, null);
   });
 
   test('(+) every terminal verdict reaches the page with its reason: consent, bypass, input, normal, unreadable', async () => {
@@ -5395,6 +5518,7 @@ function fakeStore(over = {}) {
   f.save = method('save', () => ({ status: 200, body: { id: ATT, type: 'png', size: 15 } }));
   f.remove = method('remove', () => true);
   f.lookup = method('lookup', () => null);
+  f.readImage = method('readImage', () => null);
   f.markSent = (...args) => { f.calls.push(['markSent', ...args]); };
   return f;
 }
@@ -5790,6 +5914,315 @@ describe('attachments: delete', () => {
     const lines = await capturingLog(async () => { r = await att(a, '%6', `attachments/${ATT}`, { method: 'DELETE' }); });
     assert.deepEqual([r.status, r.body], [200, { removed: false }]);
     assert.deepEqual(lines, ['nika: attachments: EBUSY\n']);
+  });
+});
+
+// --- images (0.5.1, C; docs/security.md T59, T61): the picture a history entry names, and an unsent attachment of the pane ---
+
+describe('images: the session and subagent routes (0.5.1, C; T59)', () => {
+  const S = '33333333-3333-4333-8333-333333333333';
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]);
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 1, 2, 3]);
+  const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>');
+  const block = (media, buf, type = 'base64') => ({ type: 'image', source: { type, media_type: media, data: buf.toString('base64') } });
+  const lineOf = (role, content) => JSON.stringify({ type: role, timestamp: '2026-11-07T12:00:00.000Z', message: { role, content } });
+  const dirs = [];
+  after(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+  /** A temp config dir holding session S (its lines) and its subagent files (id -> lines); returns the dir and the start offset of every line. */
+  const world = (lines, subs = {}) => {
+    const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-img-'));
+    dirs.push(claudeDir);
+    const proj = path.join(claudeDir, 'projects', '-demo-project');
+    fs.mkdirSync(path.join(proj, S, 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(proj, `${S}.jsonl`), `${lines.join('\n')}\n`);
+    for (const [id, l] of Object.entries(subs)) fs.writeFileSync(path.join(proj, S, 'subagents', `agent-${id}.jsonl`), `${l.join('\n')}\n`);
+    let off = 0;
+    const offsets = lines.map((l) => { const at = off; off += Buffer.byteLength(l) + 1; return at; });
+    return { claudeDir, offsets };
+  };
+  /** A readImage stand-in that records its arguments. */
+  const stub = (answer = { status: 200, body: { type: 'png', data: 'AAAA' } }) => {
+    const calls = [];
+    return { calls, fn: async (...args) => { calls.push(args); return typeof answer === 'function' ? answer(...args) : answer; } };
+  };
+  const sess = (id, ref) => `/api/app/session/${id}/image/${ref}`;
+  const sub = (id, agent, ref) => `/api/app/session/${id}/subagents/${agent}/image/${ref}`;
+
+  test('(+) the module gets the session id, null for the session itself, the ref, and the history cache; its answer goes to the page as it is', async () => {
+    const m = stub();
+    const a = await boot({ deps: makeDeps({ readImage: m.fn, readHistory: async () => ({ status: 200, body: { entries: [], nextBefore: null } }) }) });
+    const r = await a.call('GET', sess(S, '120:3'));
+    assert.deepEqual([r.status, r.body], [200, { type: 'png', data: 'AAAA' }]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.equal(r.headers['x-content-type-options'], 'nosniff');
+    assert.match(r.headers['content-type'], /^application\/json/);
+    assert.equal(m.calls.length, 1);
+    const [id, agent, ref, opts] = m.calls[0];
+    assert.deepEqual([id, agent, ref], [S, null, '120:3']);
+    assert.equal(opts.claudeDir, a.ctx.claudeDir);
+    assert.equal(typeof opts.now, 'function');
+    await a.call('GET', `/api/app/session/${S}/history`);
+    assert.equal(opts.cache, m.calls[0][3].cache);
+    await a.call('GET', sess(S, '5:0'));
+    assert.equal(m.calls[1][3].cache, opts.cache, 'one transcript-index memo for every request');
+  });
+
+  test('(+) the ref is read with a raw or a percent-encoded colon, with or without a part', async () => {
+    const m = stub();
+    const a = await boot({ deps: makeDeps({ readImage: m.fn }) });
+    for (const [raw, want] of [['12:3', '12:3'], ['12%3A3', '12:3'], ['12%3a3', '12:3'], ['12:3.4', '12:3.4'], ['12%3A3.4', '12:3.4'], ['0:0', '0:0'], ['123456789012345:99999.999', '123456789012345:99999.999']]) {
+      assert.equal((await a.call('GET', sess(S, raw))).status, 200, raw);
+      assert.equal(m.calls.at(-1)[2], want, raw);
+    }
+  });
+
+  test('(−) a session id that is not a UUID is 404 "no such session" and the module is not called', async () => {
+    const m = stub();
+    const a = await boot({ deps: makeDeps({ readImage: m.fn }) });
+    for (const id of ['not-a-uuid', REQ_ID.toUpperCase(), `${S}x`, '..%2F..%2Fetc%2Fpasswd', '%2e%2e%2f', 'a%00b', 'a%5Cb']) {
+      const r = await a.call('GET', sess(id, '1:0'));
+      assert.deepEqual([r.status, r.body.error, r.body.message], [404, 'not_found', 'no such session'], id);
+    }
+    assert.deepEqual(m.calls, []);
+  });
+
+  test('(−) a ref that is not "<offset>:<block>" or "<offset>:<block>.<part>" is 404 "no such image" and the module is not called', async () => {
+    const m = stub();
+    const a = await boot({ deps: makeDeps({ readImage: m.fn }) });
+    const bad = ['abc', '12', '12:', ':3', '12:3.', '12:3.1000', '1234567890123456:1', '12:123456', '-1:0', '12:3.4.5', '12%3A3%00', '1e3:0', '0x10:0', '12:3%20', '12;3', '12%2F3', '12:3%2F4', '+1:0', '%EF%BC%91%EF%BC%92:0'];
+    for (const ref of bad) {
+      const r = await a.call('GET', sess(S, ref));
+      assert.deepEqual([r.status, r.body.error, r.body.message], [404, 'not_found', 'no such image'], ref);
+    }
+    assert.equal((await a.call('GET', `/api/app/session/${S}/image/`)).status, 404, 'no ref: no route');
+    assert.equal((await a.call('GET', `/api/app/session/${S}/image/1:0/`)).status, 404, 'a trailing slash is no route');
+    assert.equal((await a.call('GET', `/api/app/session/${S}/image/1:0/x`)).status, 404, 'an extra segment is no route');
+    assert.deepEqual(m.calls, []);
+  });
+
+  test('(−) the module\'s 404, 413 and 415 are relayed as they are; an error it throws is a 500 that says nothing of it', async () => {
+    const answers = [{ status: 404, body: { error: 'not_found', message: 'no such image' } }, { status: 413, body: { error: 'too-large', message: 'image too large' } }, { status: 415, body: { error: 'not-image', message: 'not a supported image' } }];
+    const a = await boot({ deps: makeDeps({ readImage: async (id, agent, ref) => answers[Number(ref.split(':')[0])] ?? Promise.reject(new Error(`secret-detail ${id}`)) }) });
+    for (const [i, want] of answers.entries()) {
+      const r = await a.call('GET', sess(S, `${i}:0`));
+      assert.deepEqual([r.status, r.body], [want.status, want.body]);
+    }
+    let r;
+    const lines = await capturingLog(async () => { r = await a.call('GET', sess(S, '9:0')); });
+    assert.equal(r.status, 500);
+    assert.equal(JSON.stringify(r.body).includes('secret-detail'), false);
+    assert.ok(lines.length > 0, 'it was logged (so the check is real)');
+  });
+
+  test('(−) other methods are 405 (Allow: GET); without the app secret, with a foreign Origin or cross-site it is 403 and the module is not called', async () => {
+    const m = stub();
+    const a = await boot({ deps: makeDeps({ readImage: m.fn }) });
+    for (const method of ['POST', 'PUT', 'DELETE']) {
+      const r = await a.call(method, sess(S, '1:0'), { json: {} });
+      assert.equal(r.status, 405, method);
+      assert.equal(r.headers.allow, 'GET', method);
+    }
+    for (const headers of [{ 'x-nika-app': null }, { 'x-nika-app': WRONG_SAME_LENGTH }, { origin: 'http://evil.example' }, { 'sec-fetch-site': 'cross-site' }]) {
+      assert.equal((await a.call('GET', sess(S, '1:0'), { headers })).status, 403, JSON.stringify(headers));
+      assert.equal((await a.call('GET', sub(S, 'aaa111', '1:0'), { headers })).status, 403, JSON.stringify(headers));
+    }
+    assert.deepEqual(m.calls, []);
+  });
+
+  test('(+) the subagent route passes the session id, the agent id, the ref and the same options; the ids are also read percent-encoded', async () => {
+    const m = stub();
+    const a = await boot({ deps: makeDeps({ readImage: m.fn }) });
+    const r = await a.call('GET', sub(S, 'a0000000000000001', '40%3A2.1'));
+    assert.deepEqual([r.status, r.body], [200, { type: 'png', data: 'AAAA' }]);
+    await a.call('GET', sess(S, '1:0'));
+    await a.call('GET', sub(S, 'a%2D1', '7:0'));
+    assert.deepEqual(m.calls[0].slice(0, 3), [S, 'a0000000000000001', '40:2.1']);
+    assert.deepEqual(m.calls[2].slice(0, 3), [S, 'a-1', '7:0']);
+    assert.equal(m.calls[0][3].claudeDir, a.ctx.claudeDir);
+    assert.equal(m.calls[0][3].cache, m.calls[1][3].cache, 'the session route and the subagent route share the memo');
+  });
+
+  test('(−) the subagent route answers a bad session id, then a bad agent id, then a bad ref, each with its own message and no module call', async () => {
+    const m = stub();
+    const a = await boot({ deps: makeDeps({ readImage: m.fn }) });
+    const msg = async (id, agent, ref) => (await a.call('GET', sub(id, agent, ref))).body.message;
+    assert.equal(await msg('not-a-uuid', 'aaa111', '1:0'), 'no such session');
+    assert.equal(await msg('not-a-uuid', 'a.b', 'zz'), 'no such session', 'the session comes first');
+    for (const agent of ['a%2Fb', 'a%5Cb', 'a.b', 'a%20b', 'x'.repeat(65), '%00', '.hidden']) assert.equal(await msg(S, agent, '1:0'), 'no such subagent', agent);
+    assert.equal(await msg(S, 'a.b', 'zz'), 'no such subagent', 'the agent comes before the ref');
+    for (const ref of ['zz', '1', '1:', '1:0.', '1:0.1000']) assert.equal(await msg(S, 'aaa111', ref), 'no such image', ref);
+    assert.equal((await a.call('GET', `/api/app/session/${S}/subagents//image/1:0`)).status, 404, 'empty agent id');
+    assert.equal((await a.call('GET', `/api/app/session/${S}/subagents/a/b/image/1:0`)).status, 404, 'a slash splits the path');
+    assert.equal((await a.call('POST', sub(S, 'aaa111', '1:0'), { json: {} })).status, 405);
+    assert.deepEqual(m.calls, []);
+  });
+
+  test('(+) with the real module a picture in the session\'s transcript is served as { type, data }, and so is one in a tool result and one in a subagent', async () => {
+    const lines = [
+      lineOf('user', [{ type: 'text', text: 'look' }, block('image/png', PNG)]),
+      lineOf('user', [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'shot' }, block('image/jpeg', JPEG)] }]),
+    ];
+    const subLines = [lineOf('assistant', [block('image/png', PNG)])];
+    const { claudeDir, offsets } = world(lines, { ddd444: subLines });
+    const a = await boot({ deps: makeDeps(), ctxOver: { claudeDir } });
+    const first = await a.call('GET', sess(S, `${offsets[0]}:1`));
+    assert.deepEqual([first.status, first.body], [200, { type: 'png', data: PNG.toString('base64') }]);
+    assert.equal(first.headers['cache-control'], 'no-store');
+    assert.equal(first.headers['x-content-type-options'], 'nosniff');
+    assert.deepEqual((await a.call('GET', sess(S, `${offsets[1]}%3A0.1`))).body, { type: 'jpeg', data: JPEG.toString('base64') });
+    assert.deepEqual((await a.call('GET', sub(S, 'ddd444', '0:0'))).body, { type: 'png', data: PNG.toString('base64') });
+  });
+
+  test('(−) with the real module a miss is a 404 that names only the id that was not found, and a forged block is 415: SVG, a url source, a type that is not the bytes', async () => {
+    const lines = [
+      lineOf('user', [{ type: 'text', text: 'not a picture' }, block('image/svg+xml', SVG), block('image/png', SVG), block('image/png', PNG, 'url'), block('image/jpeg', PNG)]),
+    ];
+    const { claudeDir } = world(lines, { ddd444: [lineOf('user', 'plain')] });
+    const a = await boot({ deps: makeDeps(), ctxOver: { claudeDir } });
+    const missing = '99999999-9999-4999-8999-999999999999';
+    const miss = [
+      [sess(S, '0:9'), 'no such image'], [sess(S, '5:0'), 'no such image'], [sess(S, '0:0'), 'no such image'], [sess(S, '0:1.0'), 'no such image'], [sub(S, 'ddd444', '0:0'), 'no such image'],
+      [sess(missing, '0:1'), 'no such session'], [sub(missing, 'ddd444', '0:0'), 'no such session'], [sub(S, 'zzz999', '0:0'), 'no such subagent'],
+    ];
+    for (const [p, message] of miss) {
+      const r = await a.call('GET', p);
+      assert.deepEqual([r.status, r.body], [404, { error: 'not_found', message }], p);
+    }
+    for (const block_ of [1, 2, 3, 4]) {
+      const r = await a.call('GET', sess(S, `0:${block_}`));
+      assert.deepEqual([r.status, r.body.error], [415, 'not-image'], `block ${block_}`);
+      assert.equal(JSON.stringify(r.body).includes('svg'), false, 'the body says nothing of the block');
+    }
+  });
+
+  test('(−) the browser tier has neither image route: GET is 404 there, whatever the headers', async () => {
+    const server = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => server.listen(0, '127.0.0.1', res));
+    servers.push(server);
+    const port = server.address().port;
+    const call = (p) => new Promise((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port, method: 'GET', path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET, 'x-nika-token': 'tok' } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      q.on('error', reject);
+      q.end();
+    });
+    assert.equal(await call(sess(S, '0:0')), 404);
+    assert.equal(await call(sub(S, 'aaa111', '0:0')), 404);
+    assert.equal(await call(`/api/app/pane/%256/attachments/${ATT}/image`), 404);
+  });
+});
+
+describe('images: an unsent attachment of the pane (0.5.1, C; T61)', () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]);
+  const url = (pane, id) => `/api/app/pane/${pane}/attachments/${id}/image`;
+  const reply = { type: 'png', data: PNG.toString('base64') };
+
+  test('(+) the store gets the pane and the id, and the picture goes to the page as { type, data } and nothing else', async () => {
+    const store = fakeStore({ readImage: () => ({ ...reply, path: '/srv/x', size: 12 }) });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    const r = await a.call('GET', url('%256', ATT));
+    assert.deepEqual([r.status, r.body], [200, reply]);
+    assert.deepEqual(store.calls, [['readImage', '%6', ATT]]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.equal(r.headers['x-content-type-options'], 'nosniff');
+    assert.match(r.headers['content-type'], /^application\/json/);
+  });
+
+  test('(+) a pane nika started is eligible too, and the raw "%6" form of the pane id works', async () => {
+    const store = fakeStore({ readImage: () => reply });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    assert.equal((await a.call('GET', url('%258', ATT))).status, 200);
+    assert.equal((await a.call('GET', url('%6', ATT))).status, 200);
+    assert.deepEqual(store.calls.map((c) => c[1]), ['%8', '%6']);
+  });
+
+  test('(−) a pane that is not an eligible Claude pane (zsh, dead, unknown, malformed) is 404 and the store is not asked', async () => {
+    const store = fakeStore({ readImage: () => reply });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    for (const p of ['%255', '%2599', 'abc', '%256;rm', '%250x']) {
+      const r = await a.call('GET', url(p, ATT));
+      assert.equal(r.status, 404, p);
+      assert.equal(r.body.error, 'not_found', p);
+    }
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) an attachment id that is not 16 lowercase hex characters is 404 "no such image" and the store is not asked', async () => {
+    const store = fakeStore({ readImage: () => reply });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    for (const id of ['zz', ATT.toUpperCase().replace(/[0-9]/g, 'A'), `${ATT}0`, ATT.slice(1), 'a%2Fb', '%00', '%2e%2e%2f']) {
+      const r = await a.call('GET', url('%256', id));
+      assert.deepEqual([r.status, r.body.error, r.body.message], [404, 'not_found', 'no such image'], id);
+    }
+    assert.equal((await a.call('GET', '/api/app/pane/%256/attachments//image')).status, 404, 'empty id: no route');
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) no picture (unknown, another pane\'s, sent, wrong type: the store says null) is one and the same 404 body', async () => {
+    const store = fakeStore({ readImage: () => null });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    const answers = [await a.call('GET', url('%256', ATT)), await a.call('GET', url('%256', ATT2)), await a.call('GET', url('%256', BASE16))];
+    for (const r of answers) assert.deepEqual([r.status, r.body], [404, { error: 'not_found', message: 'no such image' }]);
+    assert.equal(store.calls.length, 3);
+  });
+
+  test('(−) an answer of the store that is not { type: png|jpeg|gif|webp, data: string } is a 404, never relayed', async () => {
+    for (const bad of [undefined, 'x', 5, [], {}, { type: 'png' }, { data: 'AAAA' }, { type: 'svg', data: 'AAAA' }, { type: 'pdf', data: 'AAAA' }, { type: 'png', data: 5 }, { type: 'png', data: null }, { type: ['png'], data: 'AAAA' }, Object.assign([], { type: 'png', data: 'AAAA' })]) {
+      const store = fakeStore({ readImage: () => bad });
+      const { a } = await bootScreens({ over: { attachments: store } });
+      const r = await a.call('GET', url('%256', ATT));
+      assert.deepEqual([r.status, r.body.message], [404, 'no such image'], JSON.stringify(bad));
+    }
+  });
+
+  test('(−) a store that throws is a 404 with the code logged only, never a path, a name or a message', async () => {
+    const store = fakeStore({ readImage: Object.assign(new Error('EBUSY /srv/nika/attachments/secret-name.png'), { code: 'EBUSY' }) });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    let r;
+    const lines = await capturingLog(async () => { r = await a.call('GET', url('%256', ATT)); });
+    assert.deepEqual([r.status, r.body], [404, { error: 'not_found', message: 'no such image' }]);
+    assert.deepEqual(lines, ['nika: attachments: EBUSY\n']);
+  });
+
+  test('(−) "pick" is not an attachment id: /attachments/pick/image is the chooser poll route and answers its own 404, without asking the store', async () => {
+    const store = fakeStore({ readImage: () => reply });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    const r = await a.call('GET', url('%256', 'pick'));
+    assert.deepEqual([r.status, r.body.message], [404, 'no such chooser request']);
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(−) other methods are 405; without the app secret, with a foreign Origin or cross-site it is 403; the store is not asked', async () => {
+    const store = fakeStore({ readImage: () => reply });
+    const { a } = await bootScreens({ over: { attachments: store } });
+    for (const method of ['POST', 'PUT', 'DELETE']) {
+      const r = await a.call(method, url('%256', ATT), { json: {} });
+      assert.equal(r.status, 405, method);
+      assert.equal(r.headers.allow, 'GET', method);
+    }
+    for (const headers of [{ 'x-nika-app': null }, { 'x-nika-app': WRONG_SAME_LENGTH }, { origin: 'http://evil.example' }, { 'sec-fetch-site': 'cross-site' }]) {
+      assert.equal((await a.call('GET', url('%256', ATT), { headers })).status, 403, JSON.stringify(headers));
+    }
+    assert.deepEqual(store.calls, []);
+  });
+
+  test('(+) end to end with the real store: an upload comes back as its own picture; (−) another pane, after the delete and a stranger id do not', async () => {
+    const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-att-'));
+    after(() => fs.rmSync(stateRoot, { recursive: true, force: true }));
+    const env = { HOME: stateRoot, XDG_STATE_HOME: stateRoot };
+    const store = createAttachments({ env, loadKeepDays: async () => 7, setTimer: () => null, clearTimer: () => {}, log: () => {} });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6', '%7') } });
+    const up = await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'shot.png', data: PNG.toString('base64') } });
+    assert.equal(up.status, 200, JSON.stringify(up.body));
+    const got = await a.call('GET', url('%256', up.body.id));
+    assert.deepEqual([got.status, got.body], [200, reply]);
+    assert.equal((await a.call('GET', url('%257', up.body.id))).status, 404, 'another pane\'s id');
+    assert.equal((await a.call('GET', url('%256', ATT))).status, 404, 'an id nika never issued');
+    assert.equal((await att(a, '%6', `attachments/${up.body.id}`, { method: 'DELETE' })).body.removed, true);
+    assert.equal((await a.call('GET', url('%256', up.body.id))).status, 404, 'after the delete');
   });
 });
 

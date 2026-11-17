@@ -200,8 +200,25 @@ export function createAttachTray(io) {
   const deletePath = (id) => io.path(`attachments/${id}`); // ids reach here only after they matched ID
   const lock = () => !enabled || sending;
 
+  /** A ready image's name as a button that opens the viewer (0.5.1 C): the bytes come from the attachment image route, by the id the server gave. */
+  function openButton(chip) {
+    const btn = h('button', {
+      type: 'button',
+      class: 'att-n att-open',
+      title: chip.name,
+      'aria-label': `View ${chip.name}`,
+      text: chip.name,
+      onclick: () => io.view({ name: chip.name, meta: chip.meta, load: () => io.get(io.path(`attachments/${chip.id}/image`)), opener: btn }),
+    });
+    return btn;
+  }
+
   function paint(chip) {
     const { li, holder, meta, x } = chip.el;
+    if (!chip.el.open && chip.state === 'ready' && chip.id && IMAGES.has(chip.type)) { // the id is the server's, checked when the upload answered // a ready chip never goes back to a plain name
+      li.replaceChildren(holder, openButton(chip), meta, x);
+      chip.el.open = true;
+    }
     li.setAttribute('data-s', chip.state);
     if (chip.state === 'uploading') li.setAttribute('aria-busy', 'true');
     else li.removeAttribute('aria-busy');

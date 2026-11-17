@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSessionControl, promptSig, boxInput, readDraft } from '../src/session-control.js';
-import { promptFromRows, rowText } from '../src/mode.js';
+import { promptFromRows, rowText, modeFromRows } from '../src/mode.js';
 import { RULE_ROW, parseDraft, boxSquash } from '../src/draft.js';
 import { boxRows, subagentRows } from './helpers.js';
 import { dialogOnScreen } from '../src/dialog.js';
@@ -873,11 +873,39 @@ describe('endSession (−)', () => {
     assert.deepEqual(keysOf(w), ['Escape']);
   });
 
-  test('(−) an unknown footer after Escape: 409 mode-unknown, nothing typed', async () => {
+  // 0.5.1 (T64, design 3.1 item 5): this was "one Escape, then mode-unknown". A screen with no readable footer and no input box may be a subagent's view
+  // of the parent's pane, where an Escape stops the viewed subagent; End refuses it before any key, busy or not.
+  test('(−) an unknown footer on a busy pane: 409 mode-unknown before any key (no Escape: it may be a subagent view), nothing typed', async () => {
     const w = world({ state: 'busy', mode: 'unknown' });
     w.onKeys = (b) => { if (b.keys?.[0] === 'Escape') w.state = 'idle'; };
     assert.deepEqual(await w.control().endSession('%2'), code(409, 'mode-unknown'));
-    assert.deepEqual(keysOf(w), ['Escape']);
+    assert.deepEqual(w.sent, []);
+    assert.deepEqual(w.slept, []);
+  });
+
+  // Round RV (M9): the test above replaced "an unknown footer after Escape: 409 mode-unknown, nothing typed" and nothing else reached the check that stays after
+  // the Escape wait (`unknownScreen(seen)` in endSession). The only way to it now: a permission prompt is on screen (so the check before the Escape is skipped,
+  // the Escape is the No path), the Escape lands, and the NEXT capture is a screen with no readable mode line and no input box (a dialog or a subagent view).
+  test('(−) M9: a permission prompt, the Escape lands, the next capture has no mode line and no input box: 409 mode-unknown after the one Escape, nothing typed', async () => {
+    for (const state of ['busy', 'attn']) {
+      const w = world({ prompt: true, state });
+      w.onKeys = (b) => {
+        if (b.keys?.[0] === 'Escape') Object.assign(w, { prompt: false, state: 'idle', mode: 'unknown', box: null }); // the prompt is answered; what is drawn now is unreadable
+      };
+      assert.equal(promptFromRows(w.rows()) !== null, true, `${state}: premise, a permission prompt is on screen first`);
+      assert.deepEqual(await w.control().endSession('%2'), code(409, 'mode-unknown'), state);
+      assert.deepEqual(keysOf(w), ['Escape'], `${state}: the Escape that answered the prompt, and nothing typed after it`);
+      assert.equal(w.slept.length, 1, `${state}: it waited once after the Escape and read again`);
+      assert.equal(modeFromRows(w.rows()), 'unknown', `${state}: premise, no mode line now`);
+      assert.equal(readDraft({ rows: w.rows(), cursor: w.cursorIn(w.rows()), cols: 80 }), null, `${state}: premise, no input box now`);
+    }
+  });
+
+  test('(+) M9, the twin: the same prompt and Escape, but a readable screen after it, goes on to /exit', async () => {
+    const w = world({ prompt: true, state: 'busy' });
+    w.onKeys = (b) => { if (b.keys?.[0] === 'Escape') Object.assign(w, { prompt: false, state: 'idle' }); };
+    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
+    assert.deepEqual(keysOf(w), ['Escape', 'text:/', 'text:exit', 'Enter']);
   });
 
   test('(−) an unknown footer on an idle pane (a dialog): no Escape, nothing typed, 409 mode-unknown', async () => {
@@ -2428,16 +2456,16 @@ describe('a question or plan dialog on screen (promptOpen)', () => {
     }
   });
 
-  test('(−) I2: End on the parked shapes sends at most its usual Escape and types nothing: busy or attn gives one Escape then 409 not-idle, idle gives 409 mode-unknown with no key', async () => {
+  // 0.5.1 (T64): busy or attn used to give one Escape (which declined the parked dialog) and then 409 not-idle. nika cannot tell these three shapes from a
+  // subagent view of the parent's pane (no readable mode line, no input box, a subagent list under the last row), where that Escape stops the viewed
+  // subagent, so End now refuses all of them before any key, whatever the registry says; the dialog stays open for the person to answer in the terminal.
+  test('(−) I2 (0.5.1): End on the parked shapes types nothing and presses nothing, busy, attn or idle: 409 mode-unknown with no key', async () => {
     for (const [name, make] of Object.entries(PARKED)) {
-      for (const state of ['busy', 'attn']) {
+      for (const state of ['busy', 'attn', 'idle']) {
         const w = withDialog(make(), { state });
-        assert.deepEqual(await w.control().endSession('%2'), code(409, 'not-idle'), `${name} / ${state}`);
-        assert.deepEqual(keysOf(w), ['Escape'], `${name} / ${state}`);
+        assert.deepEqual(await w.control().endSession('%2'), code(409, 'mode-unknown'), `${name} / ${state}`);
+        assert.deepEqual(keysOf(w), [], `${name} / ${state}`);
       }
-      const idle = withDialog(make(), { state: 'idle' });
-      assert.deepEqual(await idle.control().endSession('%2'), code(409, 'mode-unknown'), name);
-      assert.deepEqual(keysOf(idle), [], name);
     }
   });
 
@@ -2921,5 +2949,68 @@ describe('answerSurvey (0.5, F14): one digit into Claude\'s feedback survey', ()
       w.t -= 5000;
       assert.equal((await sc.stop('%2')).status, 200);
     });
+  });
+});
+
+// 0.5.1 (T64): End never presses Escape on a screen it cannot read. With a subagent's view, Claude's subagent list or the shells pill in the parent's pane
+// there is no readable mode line and no input box, and an Escape in the viewed subagent's input would stop that subagent (S-AGENTS). Synthetic rows
+// after the captured shapes: a labelled rule, the subagent's input, a rule, the footer, a blank row, the list.
+describe('End and Stop on a subagent view, the subagent list or the shells pill (0.5.1)', () => {
+  const VIEW_RULE = (label) => `${'─'.repeat(20)} ${label} ─`;
+  const LIST = (pointer) => [[], [sp('  ◯ main')], [sp(`${pointer ? '❯ ' : '  '}⏺ demo-type  tidy the notes  12s`)]];
+  const agentBox = [[sp(VIEW_RULE('tidy the notes'))], [sp(`${PROMPT_CHAR}${NB}`), sp('Message @demo-type…', true)], [sp(RULE)]];
+  const SCREENS = {
+    'the subagent view, input focus': [...agentBox, [sp('  ⏸ manual mode on · esc to stop')], ...LIST(false)],
+    'the subagent view, list focus': [...agentBox, [sp('  ↑/↓ to select')], ...LIST(true)],
+    'the shells pill selected': [...agentBox, [sp('  ⏸ manual mode on · 1 shell · enter to view tasks')], ...LIST(false)],
+  };
+  const showing = (rows, opts = {}) => {
+    const w = world({ ...opts });
+    w.rows = () => [[sp('earlier output')], ...rows];
+    return w;
+  };
+
+  test('(−) End on a screen with no mode line and no input box (registry busy, attn or idle): 409 mode-unknown and not one key, not even the Escape that would stop the viewed subagent', async () => {
+    for (const [name, rows] of Object.entries(SCREENS)) {
+      for (const state of ['busy', 'attn', 'idle']) {
+        const w = showing(rows, { state });
+        assert.equal(modeFromRows(w.rows()), 'unknown', `${name}: premise, no readable mode line`);
+        assert.equal(readDraft({ rows: w.rows(), cursor: w.cursorIn(w.rows()), cols: 80 }), null, `${name}: premise, no readable input box`);
+        assert.deepEqual(await w.control().endSession('%2'), code(409, 'mode-unknown'), `${name} / ${state}`);
+        assert.deepEqual(w.sent, [], `${name} / ${state}`);
+        assert.deepEqual(w.slept, [], `${name} / ${state}`);
+      }
+    }
+  });
+
+  test('(−) Stop on the same screens: 409 screen-unclear and not one key (the check that was already there)', async () => {
+    for (const [name, rows] of Object.entries(SCREENS)) {
+      const w = showing(rows, { state: 'busy' });
+      assert.deepEqual(await w.control().stop('%2'), code(409, 'screen-unclear'), name);
+      assert.deepEqual(w.sent, [], name);
+    }
+  });
+
+  test('(+) End on a busy pane with a permission prompt still sends Escape first (the No path), where the subagent screens send nothing', async () => {
+    const w = world({ prompt: true, state: 'busy' });
+    w.onKeys = (b) => { if (b.keys?.[0] === 'Escape') { w.prompt = false; w.state = 'idle'; } };
+    const r = await w.control().endSession('%2');
+    assert.deepEqual(r, { status: 200, body: { ended: true } });
+    assert.deepEqual(keysOf(w).slice(0, 2), ['Escape', 'text:/'], 'the Escape answers the prompt, then the probe slash of /exit');
+  });
+
+  test('(+) End on an idle main view still types /exit and presses Enter', async () => {
+    const w = world({ state: 'idle' });
+    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
+    assert.deepEqual(keysOf(w), ['text:/', 'text:exit', 'Enter']);
+  });
+
+  test('(+) the main view with its subagent list under the footer is still a readable screen: End types /exit as before', async () => {
+    const w = world({ state: 'idle' });
+    const base = w.rows;
+    w.rows = () => [...base(), [], [sp('  ⏺ main')], [sp('  ◯ Explore  scan the repo  5s')]];
+    assert.equal(modeFromRows(w.rows()), 'manual', 'premise');
+    assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
+    assert.deepEqual(keysOf(w), ['text:/', 'text:exit', 'Enter']);
   });
 });
