@@ -85,6 +85,11 @@ describe('cleanDialog: the capture field as the page may use it', () => {
     assert.equal(cleanDialog(unreadable({ kind: 'menu' })).kind, null);
   });
 
+  test('(+) every reason the server names is kept, `cut` and `clipped` apart (F16); (−) one it does not name, or a near miss, becomes layout', () => {
+    for (const reason of ['cut', 'clipped', 'wide', 'numbers', 'tab', 'layout', 'survey']) assert.deepEqual(cleanDialog(unreadable({ reason })), { state: 'unreadable', kind: 'ask', reason }, reason);
+    for (const reason of ['Clipped', 'clip', 'cut ', '', null, undefined, 7, ['clipped']]) assert.equal(cleanDialog(unreadable({ reason })).reason, 'layout', String(reason));
+  });
+
   test('(−) anything that is not exactly the contract fails closed to unreadable, never to a form and never to null', () => {
     const fail = (v, why) => {
       const c = cleanDialog(v);
@@ -499,6 +504,90 @@ describe('the six states (design W1 section 6.2): each has its own chip word and
     assert.ok(one(r.root, 'ask-q'));
     r.advance(READING_MS + 10);
     assert.equal(r.df.shown(), true, 'the reading timer died with the reading');
+  });
+
+  // ---- F16: Reading goes on while nika gives a cut-off question more rows ---------------------------------------------------------
+
+  test('(+) F16: growing keeps Reading past READING_MS (5 s on: still shown, still data-s reading), and no banner is asked for', () => {
+    const r = rig();
+    r.render(unreadable({ reason: 'cut' }), { growing: true });
+    const before = r.log.refresh;
+    r.advance(READING_MS - 1);
+    r.render(unreadable({ reason: 'cut' }), { growing: true });
+    r.advance(1);
+    r.advance(5000);
+    r.render(unreadable({ reason: 'cut' }), { growing: true });
+    assert.equal(r.df.shown(), true);
+    assert.equal(r.root.hidden, false);
+    assert.equal(r.root.attrs['data-s'], 'reading');
+    assert.equal(chip(r.root).textContent, 'Reading');
+    assert.equal(r.log.refresh, before, 'the banner was never asked for');
+    assert.deepEqual(r.log.announce, []);
+  });
+
+  test('(+) F16: growing turns false after READING_MS: the form hides at that render, and the page is told to redraw its banner', () => {
+    const r = rig();
+    r.render(unreadable({ reason: 'cut' }), { growing: true });
+    r.advance(READING_MS + 3000);
+    r.render(unreadable({ reason: 'cut' }), { growing: true });
+    assert.equal(r.df.shown(), true);
+    const before = r.log.refresh;
+    r.render(unreadable({ reason: 'cut' }), { growing: false });
+    assert.equal(r.df.shown(), false, 'the banner takes over');
+    assert.equal(r.root.hidden, true);
+    assert.ok(r.log.refresh > before);
+  });
+
+  test('(+) F16: growing true again after the banner took over draws Reading again, shown, with nothing announced', () => {
+    const r = rig();
+    r.render(unreadable());
+    r.advance(READING_MS);
+    assert.equal(r.df.shown(), false, 'the banner');
+    const before = r.log.refresh;
+    r.render(unreadable({ reason: 'cut' }), { growing: true });
+    assert.equal(r.df.shown(), true);
+    assert.equal(r.root.attrs['data-s'], 'reading');
+    assert.match(r.root.textContent, new RegExp(`Reading Claude's question${DOTS}`));
+    assert.ok(r.log.refresh > before, 'the banner is told to step aside');
+    assert.deepEqual(r.log.announce, []);
+    r.render(unreadable({ reason: 'cut' }), { growing: true });
+    r.advance(10000);
+    assert.equal(r.df.shown(), true, 'it stays while the step runs');
+  });
+
+  test('(−) F16: growing with a readable dialog builds the form at once (the flag never delays a readable step)', () => {
+    const r = rig();
+    r.render(unreadable({ reason: 'cut' }), { growing: true });
+    r.render(ask(), { growing: true });
+    assert.equal(chip(r.root).textContent, 'Needs you');
+    assert.ok(one(r.root, 'ask-q'));
+    assert.equal(r.root.attrs['data-s'], 'ready');
+    assert.equal(r.log.announce.length, 1, 'the question is announced once, as without the flag');
+    const direct = rig();
+    direct.render(ask(), { growing: true });
+    assert.equal(direct.df.live(), true);
+  });
+
+  test('(−) F16: growing changes nothing for a form that is shown (it stays kept), and sends nothing', async () => {
+    const r = rig();
+    r.render(ask());
+    inputs(r.root, 'radio')[0].checked = true;
+    inputs(r.root, 'radio')[0].fire('change');
+    const form = one(r.root, 'dlg-fs');
+    r.render(unreadable({ reason: 'cut' }), { growing: true });
+    assert.equal(one(r.root, 'dlg-fs'), form, 'the same form, not rebuilt, not replaced by Reading');
+    assert.equal(off(byText(r.root, 'Send answer')), true, 'kept: the controls are off');
+    assert.equal(r.root.attrs['data-s'], 'ready');
+    assert.equal(r.log.calls.length, 0);
+  });
+
+  test('(−) F16: growing is exactly true or nothing: a string, 1 and null read as false', () => {
+    for (const growing of ['yes', 1, null, undefined, {}, [true]]) {
+      const r = rig();
+      r.render(unreadable({ reason: 'cut' }), { growing });
+      r.advance(READING_MS);
+      assert.equal(r.df.shown(), false, `the banner after READING_MS for ${JSON.stringify(growing)}`);
+    }
   });
 
   test('(+) terminal only: the dashed chip with the off icon, the note, read-only options; only Decline is live', () => {

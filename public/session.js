@@ -22,7 +22,7 @@ import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
-import { panelSize, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS } from './fit-ui.js';
+import { panelSize, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS, GROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 import { createAttachTray } from './attach.js';
 import { createDialogForm, cleanDialog } from './dialog-form.js';
@@ -518,7 +518,7 @@ function renderMode() {
   renderQuick();
   renderAttn();
   renderPrompt();
-  DF?.render({ pane: W.pane, dialog: W.dialog, name: A.name, attention: A.attention });
+  DF?.render({ pane: W.pane, dialog: W.dialog, name: A.name, attention: A.attention, growing: growing() });
   SV?.render({ pane: W.pane, survey: W.survey, blocked: W.promptOpen || A.kind === 'attn', name: A.name }); // never beside a prompt, a dialog or the attention note
 }
 
@@ -1252,6 +1252,7 @@ function setInputEnabled(on, why) {
 
 function setGone() {
   M.gone = true;
+  GR = GROW_IDLE; // F16: the lease is over (the close below gives the window back)
   clearTimeout(M.timer);
   DS.stop();
   FIT.planner?.close(); // the heartbeat stops and the tmux window comes back (one DELETE); the next capture that answers starts a new lease
@@ -1306,6 +1307,11 @@ function drawMirror() {
 function handleCapture(r) {
   if (r.status === 304) {
     recovered();
+    try {
+      growTick(); // F16: the screen is the same, but time has passed
+    } catch {
+      // the mirror keeps working without the grow
+    }
     return;
   }
   if (r.status === 200 && Array.isArray(r.body?.rows) && Number.isInteger(r.body.cols)) {
@@ -1353,6 +1359,7 @@ function handleCapture(r) {
     M.fatal = true;
     clearTimeout(M.timer);
     SC.planner?.close();
+    GR = GROW_IDLE; // F16
     setLive('off', 'Not live');
     setPaneState('tmux');
     showOverlay('nika lost its connection to the app', 'The app refused this request. Close this window and open it again from the nika app.', { alert: true });
@@ -1420,7 +1427,10 @@ function jumpToLive() {
 // rows of the request on its way; held, the chip view an answer brought during a redraw hold, { view, opts }; refitTimer, the timer that ends the transition.
 // F11: hide and strip, the hidden rows under the strip and its height in px as read at the last commit point; sentCols, the columns of the request on its way (an answer
 // with those columns is nika's own size); scaledAt, the pane size { cols, rows } the text scale was last worked out for (null before the first).
-const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null };
+// F16: base, the size the fit asks without the grow ({ cols, rows }, the last commit's or room step's; null before the first).
+const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null };
+// F16: the grow of a cut-off question (fit-ui.js growStep): more rows for the pane while the question is open, the size back when it closes
+let GR = GROW_IDLE;
 // F10, design F10 4: after nika's own resize the last good frame stays drawn until a capture at the new size shows Claude's input box, for 1.2 s at most
 const HOLD = createRedrawHold({
   after: (fn, ms) => setTimeout(fn, ms),
@@ -1489,7 +1499,9 @@ function fitScale() {
   FIT.scaledAt = { cols: M.cols, rows: M.rows };
   // F11: the rows actually drawn count (the rows above the cut and the strip), not the hidden ones; with no strip it is F10's scale
   const hide = hiddenRows(M.body?.rows, M.cut);
-  const s = drawnScale({ frame: FIT.frame ?? p, cols: M.cols, rows: M.rows, hide, strip: hide > 0 ? fitStrip() || FIT.strip : 0 });
+  // F16: while the pane is taller because of the grow, the text keeps the size it has without it (the mirror overflows, pinned to the bottom); FIT.hide: the base counts the rows hidden at the commit
+  const rows = scaleRows({ paneRows: M.rows, G: GR, fitted: FIT.state === 'fitted', baseRows: FIT.base?.rows, d: FIT.d, hide: FIT.hide });
+  const s = drawnScale({ frame: FIT.frame ?? p, cols: M.cols, rows, hide, strip: hide > 0 ? fitStrip() || FIT.strip : 0 });
   if (s === FIT.scale) return;
   FIT.scale = s;
   $('term').style.setProperty('--fit-scale', String(s));
@@ -1509,7 +1521,10 @@ function fitCommit() {
   FIT.hide = hiddenRows(M.body?.rows, M.cut);
   FIT.strip = FIT.hide > 0 ? fitStrip() : 0;
   const ask = fillSize(frame, FIT.room, FIT.d, FIT.hide, FIT.strip);
-  FIT.planner?.size(ask.cols, ask.rows);
+  FIT.base = ask;
+  GR = growRebase(GR, ask.cols, ask.rows); // F16: a given-up question gets one new try at a new base size
+  const want = growAsk(ask, GR); // F16: while a cut-off question is open the grown rows stay asked
+  FIT.planner?.size(want.cols, want.rows);
   fitScale();
 }
 
@@ -1536,6 +1551,31 @@ function fitCaptured() {
   FIT.planner?.start();
   const at = FIT.scaledAt;
   if (!at || at.cols !== M.cols || at.rows !== M.rows) fitScale();
+  growTick();
+}
+
+/** F16: whether a step of the grow runs and the fit is `fitted`: the dialog form keeps its Reading note while it does. */
+function growing() {
+  return GR.phase === 'stepping' && FIT.state === 'fitted';
+}
+
+/**
+ * F16: one look at the drawn capture for the grow of a cut-off question (fit-ui.js growStep): called after every drawn capture and every 304. It may ask
+ * more rows, or the base size back, at once. The page is drawn again when a step starts or ends (the form keeps its Reading note while one runs, D11), and
+ * the chip's panel when its grow line comes or goes.
+ */
+function growTick() {
+  if (!FIT.planner || !FIT.base || M.gone || M.fatal) return;
+  const was = GR.phase === 'stepping' || GR.phase === 'held';
+  const before = growing();
+  const { G, ask } = growStep(GR, { now: Date.now(), dialog: W.dialog, fitted: FIT.state === 'fitted', paneRows: M.rows, baseRows: FIT.base.rows, baseCols: FIT.base.cols });
+  GR = G;
+  if (ask) {
+    const want = growAsk(FIT.base, GR); // the grown rows, or the base size after a give-up or a close
+    FIT.planner.size(want.cols, want.rows, { now: true });
+  }
+  if ((GR.phase === 'stepping' || GR.phase === 'held') !== was && FIT.pop) drawFitPop();
+  if (growing() !== before) renderMode(); // no capture may come for a while (a redraw hold keeps them back): the form must not let its Reading note run out meanwhile
 }
 
 // ---- the redraw hold (F10, design F10 4): the last good frame stays up while Claude repaints after nika's own resize ----
@@ -1554,7 +1594,8 @@ function fitSized(pane) {
   // F12: besides the box, did the drawn frame show Claude's mode line (a confirmed, known mode)? Then the hold waits for the mode line too.
   const plainBefore = M.body.alt === true && M.draft !== null;
   const modeBefore = plainBefore && M.body.modeConfirmed === true && modeKey(M.body.mode) !== 'unknown';
-  HOLD.start({ want: { cols: pane.cols, rows: pane.rows }, plainBefore, modeBefore });
+  const cutBefore = GR.phase === 'stepping' && cutQuestion(M.body.dialog); // F16: a grow step waits for Claude to repaint the question whole
+  HOLD.start({ want: { cols: pane.cols, rows: pane.rows }, plainBefore, modeBefore, cutBefore });
   kickMirror(0);
 }
 
@@ -1631,9 +1672,11 @@ function holdTimeout(pending, ctx) {
   const ask = frame ? fillSize(frame, true, FIT.d, FIT.hide, FIT.strip) : null; // F11: the room fill size, with the hidden rows of the last commit
   if (pending && frame && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, modeBefore: ctx.modeBefore, want: ctx.want, body: pending.body, draft: pending.draft, gain: ask.rows > FIT.sentRows })) {
     FIT.room = true;
+    FIT.base = ask; // F16: the grow counts from the size the fit asks without it
+    const want = growAsk(ask, GR);
     if (FIT.pop) drawFitPop();
     HOLD.start({ want: null, plainBefore: ctx.plainBefore, modeBefore: ctx.modeBefore });
-    FIT.planner?.size(ask.cols, ask.rows, { now: true });
+    FIT.planner?.size(want.cols, want.rows, { now: true });
     return;
   }
   if (pending) {
@@ -1678,7 +1721,7 @@ function renderFit(view, opts) {
  * unless the action button it was on has just gone: then it goes to Close.
  */
 function drawFitPop() {
-  const v = fitPanelView(FIT.view, { ...FIT.ui, room: FIT.room });
+  const v = fitPanelView(FIT.view, { ...FIT.ui, room: FIT.room, grow: GR.phase === 'stepping' || GR.phase === 'held' });
   if (!v) return;
   const again = $('fit-again');
   const held = document.activeElement === again;

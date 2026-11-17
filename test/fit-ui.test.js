@@ -11,6 +11,7 @@ import {
   panelSize, scaleFor, chipView, fitPanelView, stillOffSay, createFitPlanner, BEAT_MS, DEBOUNCE_MS, SCALE_MIN, FOCUS_SETTLE_MS, BLUR_SETTLE_MS, FOCUS_POLL_MS,
   remeasure, askSize, frameReady, roomStep, refitFrom, createRedrawHold, HOLD_MS, HOLD_POLL_MS, ROOM_ROWS, REFIT_MS,
   HIDE_MAX, hiddenRows, fillSize, drawnScale,
+  GROW_STEP_MIN, GROW_CAP, GROW_CONFIRM_MS, GROW_SETTLE_MS, GROW_WAIT_MS, GROW_CLOSE_MS, GROW_IDLE, growNext, cutQuestion, growAsk, scaleRows, growStep, growRebase, // F16
 } from '../public/fit-ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -2165,7 +2166,8 @@ describe('F10: createRedrawHold, the last good frame stays until Claude has repa
     assert.equal(r.log.timeouts.length, 1);
     assert.equal(r.log.timeouts[0][0], second, 'the latest capture, not the first');
     // F12 (requirement change, not a weakened test): the timeout's context carries modeBefore too (false when the start gave none)
-    assert.deepEqual(r.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: false });
+    // F16 (requirement change, not a weakened test): and cutBefore (false when the start gave none)
+    assert.deepEqual(r.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: false, cutBefore: false });
     assert.deepEqual([w.done, r.hold.active, r.log.ended], [true, false, 1]);
   });
 
@@ -2184,7 +2186,7 @@ describe('F10: createRedrawHold, the last good frame stays until Claude has repa
     await r.clk.advance(HOLD_MS - 1);
     assert.equal(r.log.timeouts.length, 0, 'the timer began again at the second start');
     await r.clk.advance(1);
-    assert.deepEqual(r.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: false }); // F12 (requirement change): modeBefore is in the context
+    assert.deepEqual(r.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: false, cutBefore: false }); // F12 (requirement change): modeBefore is in the context; F16: cutBefore too
   });
 
   // F12 (owner decision 2026-11-16)
@@ -2194,12 +2196,12 @@ describe('F10: createRedrawHold, the last good frame stays until Claude has repa
     await a.clk.advance(600);
     a.hold.start({ want: WANT, plainBefore: false, modeBefore: false });
     await a.clk.advance(HOLD_MS);
-    assert.deepEqual(a.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: true }, 'true stays true');
+    assert.deepEqual(a.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: true, cutBefore: false }, 'true stays true'); // F16 (requirement change): cutBefore is in the context
     const b = make();
     b.hold.start({ want: { cols: 100, rows: 20 }, plainBefore: true, modeBefore: false });
     b.hold.start({ want: WANT, plainBefore: true, modeBefore: true });
     await b.clk.advance(HOLD_MS);
-    assert.deepEqual(b.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: false }, 'false stays false');
+    assert.deepEqual(b.log.timeouts[0][1], { want: WANT, plainBefore: true, modeBefore: false, cutBefore: false }, 'false stays false');
     const c = make();
     c.hold.start({ want: WANT, plainBefore: true, modeBefore: 'yes' });
     await c.clk.advance(HOLD_MS);
@@ -2858,5 +2860,459 @@ describe('F11: the planner\'s `startable` (design F11 2.4)', () => {
     for (let i = 0; i < 3; i += 1) assert.equal(r.planner.startable, true);
     assert.deepEqual(r.log.sent, []);
     assert.throws(() => { 'use strict'; r.planner.startable = false; }, TypeError);
+  });
+});
+
+// ---- F16 (design F16 4, 11.2): more rows for a question Claude clips at its top ------------------------------------------------
+
+describe('F16: the constants, growNext, cutQuestion, growAsk and scaleRows', () => {
+  test('(+) the constants have the design values', () => {
+    assert.deepEqual([GROW_STEP_MIN, GROW_CAP, GROW_CONFIRM_MS, GROW_SETTLE_MS, GROW_WAIT_MS, GROW_CLOSE_MS], [12, 120, 200, 800, 6000, 1000]);
+    assert.ok(GROW_CAP <= 200, 'the route takes 200 rows at most');
+    assert.ok(GROW_SETTLE_MS > 680, 'longer than the slowest repaint of the hold comment (340-680 ms)');
+    assert.ok(GROW_WAIT_MS > BEAT_MS, 'longer than a heartbeat: a refused ask is tried again before the page gives up');
+    assert.deepEqual(GROW_IDLE, { phase: 'idle', rows: 0, askedAt: 0, settleAt: null, cutSince: null, quietSince: null, base: '' });
+    assert.equal(Object.isFrozen(GROW_IDLE), true, 'the state at rest is shared, so it cannot change');
+  });
+
+  test('(+) growNext doubles, adds at least 12 and stops at 120: 21 to 42, 10 to 22, 33 to 66, 66 and 100 to 120', () => {
+    assert.deepEqual([21, 10, 33, 66, 100, 11, 6].map(growNext), [42, 22, 66, 120, 120, 23, 18]);
+  });
+
+  test('(−) growNext has no room at the cap or above it: 120 stays 120, 130 is 120 (the caller gives up)', () => {
+    assert.equal(growNext(GROW_CAP), GROW_CAP);
+    assert.equal(growNext(130), GROW_CAP);
+    assert.equal(growNext(200), GROW_CAP);
+    assert.equal(growNext(119), GROW_CAP);
+  });
+
+  test('(+) cutQuestion: a question that is unreadable because its top is clipped, raw or cleaned', () => {
+    assert.equal(cutQuestion({ state: 'unreadable', kind: 'ask', reason: 'cut' }), true);
+    assert.equal(cutQuestion({ kind: 'ask', state: 'unreadable', reason: 'cut', extra: 1 }), true);
+  });
+
+  test('(−) cutQuestion: a shortened text (clipped), every other reason, a plan, a ready question, null and a non-object are not', () => {
+    for (const reason of ['clipped', 'wide', 'numbers', 'tab', 'layout', 'survey', undefined, 'Cut', 'cut ']) assert.equal(cutQuestion({ state: 'unreadable', kind: 'ask', reason }), false, String(reason));
+    assert.equal(cutQuestion({ state: 'unreadable', kind: 'plan', reason: 'cut' }), false, 'plans are not grown (D1)');
+    assert.equal(cutQuestion({ state: 'unreadable', kind: null, reason: 'cut' }), false);
+    assert.equal(cutQuestion({ state: 'ready', kind: 'ask', reason: 'cut' }), false);
+    for (const v of [null, undefined, 'cut', 7, true, []]) assert.equal(cutQuestion(v), false, String(v));
+  });
+
+  test('(+) growAsk: while stepping or held with more rows than the base, the grown rows and the base columns', () => {
+    const base = { cols: 145, rows: 21 };
+    assert.deepEqual(growAsk(base, { ...GROW_IDLE, phase: 'stepping', rows: 42 }), { cols: 145, rows: 42 });
+    assert.deepEqual(growAsk(base, { ...GROW_IDLE, phase: 'held', rows: 42 }), { cols: 145, rows: 42 });
+    assert.deepEqual(growAsk(base, { ...GROW_IDLE, phase: 'held', rows: 250 }), { cols: 145, rows: 200 }, 'the route takes 200 at most');
+  });
+
+  test('(−) growAsk: idle, spent, a state of nothing, rows that are not more than the base or not a number: the base', () => {
+    const base = { cols: 145, rows: 21 };
+    for (const G of [GROW_IDLE, { ...GROW_IDLE, phase: 'spent', rows: 42 }, undefined, null, { phase: 'stepping', rows: 21 }, { phase: 'stepping', rows: 20 }, { phase: 'held', rows: '42' }, { phase: 'held', rows: 42.5 }, { phase: 'held' }]) {
+      assert.deepEqual(growAsk(base, G), { cols: 145, rows: 21 }, JSON.stringify(G));
+    }
+  });
+
+  test('(+) scaleRows: while grown and fitted, the pane rows without the grow (the base minus the border row), with d 0 and 1', () => {
+    const G = { ...GROW_IDLE, phase: 'held', rows: 42 };
+    assert.equal(scaleRows({ paneRows: 42, G, fitted: true, baseRows: 21, d: 0 }), 21);
+    assert.equal(scaleRows({ paneRows: 41, G, fitted: true, baseRows: 21, d: 1 }), 20);
+    assert.equal(scaleRows({ paneRows: 42, G: { ...G, phase: 'stepping' }, fitted: true, baseRows: 21, d: 0 }), 21);
+    assert.equal(scaleRows({ paneRows: 18, G, fitted: true, baseRows: 21, d: 0 }), 18, 'never more than the pane has');
+    assert.equal(scaleRows({ paneRows: 42, G, fitted: true, baseRows: 21, d: 7 }), 21, 'a border row that is not 0 or 1 is taken as 0');
+  });
+
+  test('(−) scaleRows: not fitted, idle, spent, a bad base or no base: the pane rows', () => {
+    const G = { ...GROW_IDLE, phase: 'held', rows: 42 };
+    assert.equal(scaleRows({ paneRows: 42, G, fitted: false, baseRows: 21, d: 0 }), 42, 'in terminal the pane is the terminal\'s');
+    assert.equal(scaleRows({ paneRows: 42, G, fitted: 'fitted', baseRows: 21, d: 0 }), 42, 'only exactly true');
+    assert.equal(scaleRows({ paneRows: 42, G: GROW_IDLE, fitted: true, baseRows: 21, d: 0 }), 42);
+    assert.equal(scaleRows({ paneRows: 42, G: { ...GROW_IDLE, phase: 'spent' }, fitted: true, baseRows: 21, d: 0 }), 42);
+    for (const baseRows of [undefined, null, NaN, 0, 1.5, '21', 1]) assert.equal(scaleRows({ paneRows: 42, G, fitted: true, baseRows, d: baseRows === 1 ? 1 : 0 }), 42, String(baseRows));
+  });
+
+  // RV16 I1 (round 1): fillSize adds Claude's hidden input-box rows to the base; no input box is on screen while a question is open, so they are never drawn
+  test('(+) scaleRows (I1): the hidden rows of the last commit are taken off the base too, after the border row', () => {
+    const G = { ...GROW_IDLE, phase: 'held', rows: 48 };
+    assert.equal(scaleRows({ paneRows: 48, G, fitted: true, baseRows: 24, d: 0, hide: 5 }), 19);
+    assert.equal(scaleRows({ paneRows: 47, G, fitted: true, baseRows: 24, d: 1, hide: 5 }), 18, 'the border row and the hidden rows');
+    assert.equal(scaleRows({ paneRows: 48, G: { ...G, phase: 'stepping' }, fitted: true, baseRows: 30, d: 0, hide: HIDE_MAX }), 6, 'the largest valid hide');
+    assert.equal(scaleRows({ paneRows: 15, G, fitted: true, baseRows: 24, d: 0, hide: 5 }), 15, 'never more than the pane has');
+  });
+
+  test('(−) scaleRows (I1): a hide that is not valid counts as 0 (as in fillSize), a hide that leaves no row is ignored, and idle, spent, terminal are as before', () => {
+    const G = { ...GROW_IDLE, phase: 'held', rows: 48 };
+    for (const hide of [undefined, null, 0, -1, HIDE_MAX + 1, 5.5, '5', NaN, Infinity]) assert.equal(scaleRows({ paneRows: 48, G, fitted: true, baseRows: 24, d: 0, hide }), 24, String(hide));
+    assert.equal(scaleRows({ paneRows: 48, G, fitted: true, baseRows: 24, d: 0, hide: HIDE_MAX }), 48, 'no row left above the hidden rows: the pane rows');
+    assert.equal(scaleRows({ paneRows: 48, G, fitted: true, baseRows: 24, d: 1, hide: 23 }), 48, 'the border row and the hidden rows leave 0');
+    assert.equal(scaleRows({ paneRows: 48, G: GROW_IDLE, fitted: true, baseRows: 24, d: 0, hide: 5 }), 48, 'idle');
+    assert.equal(scaleRows({ paneRows: 48, G: { ...GROW_IDLE, phase: 'spent' }, fitted: true, baseRows: 24, d: 0, hide: 5 }), 48, 'spent');
+    assert.equal(scaleRows({ paneRows: 48, G, fitted: false, baseRows: 24, d: 0, hide: 5 }), 48, 'terminal');
+  });
+
+  test('(+) scaleRows (I1): with the base fillSize really gives for hidden rows (panel 145 x 21 or 22, 27 px strip, d 0 and 1) the text never shrinks while grown: the scale is 1 where it was 1 before the question', () => {
+    for (const d of [0, 1]) for (const panelRows of [21, 22]) for (const hide of [3, 5, 7]) {
+      const frame = { cols: 145, rows: panelRows, height: panelRows * 16.2 + 8, cellH: 16.2 };
+      const base = fillSize(frame, false, d, hide, 27);
+      const before = drawnScale({ frame, cols: base.cols, rows: base.rows - d, hide, strip: 27 });
+      const G = { ...GROW_IDLE, phase: 'held', rows: 2 * base.rows };
+      const grown = (h) => drawnScale({ frame, cols: base.cols, rows: scaleRows({ paneRows: G.rows - d, G, fitted: true, baseRows: base.rows, d, hide: h }), hide: 0, strip: 0 });
+      const why = `d ${d} panel ${panelRows} hide ${hide} base ${base.rows}`;
+      assert.equal(before, 1, why);
+      assert.equal(grown(hide), 1, why);
+      if (hide >= 5) assert.ok(grown(undefined) < 1, `without the hidden rows the text would shrink: ${why}`);
+    }
+  });
+});
+
+describe('F16: growStep, one test per row of the transition table (design F16 4.5)', () => {
+  const CUT = { kind: 'ask', state: 'unreadable', reason: 'cut' };
+  const READY = { kind: 'ask', state: 'ready', at: 'question', sig: '0123456789abcdef' };
+  const BASE = { baseRows: 21, baseCols: 145 };
+  const look = (G, over = {}) => growStep(G, { now: 0, dialog: CUT, fitted: true, paneRows: 21, ...BASE, ...over });
+  const stepping = (over = {}) => ({ ...GROW_IDLE, phase: 'stepping', rows: 42, askedAt: 0, ...over });
+  const held = (over = {}) => ({ ...GROW_IDLE, phase: 'held', rows: 42, ...over });
+  const spent = (over = {}) => ({ ...GROW_IDLE, phase: 'spent', base: '145x21', ...over });
+
+  test('(+) row 1: no question for under a second: the same phase, quietSince set, nothing asked (stepping, held, spent)', () => {
+    for (const G of [stepping(), held(), spent()]) {
+      const a = look(G, { now: 5000, dialog: null });
+      assert.equal(a.G.phase, G.phase);
+      assert.equal(a.G.quietSince, 5000);
+      assert.equal(a.ask, null);
+      const b = look(a.G, { now: 5000 + GROW_CLOSE_MS - 1, dialog: null });
+      assert.deepEqual([b.G.phase, b.G.quietSince, b.ask], [G.phase, 5000, null], 'quietSince keeps the first quiet look');
+    }
+  });
+
+  test('(+) row 2: stepping or held, no question for a second: idle, and the base size is asked back', () => {
+    for (const G of [stepping(), held()]) {
+      const a = look(G, { now: 5000, dialog: null });
+      assert.deepEqual(look(a.G, { now: 5000 + GROW_CLOSE_MS, dialog: null }), { G: GROW_IDLE, ask: { back: true } }, G.phase);
+    }
+  });
+
+  test('(+) row 3: a given-up question closes the same way, with nothing to ask (it is back already)', () => {
+    const a = look(spent(), { now: 5000, dialog: null });
+    assert.deepEqual(look(a.G, { now: 5000 + GROW_CLOSE_MS, dialog: null }), { G: GROW_IDLE, ask: null });
+  });
+
+  test('(+) row 4: a question and not fitted: a step restarts its clocks, an idle first look is forgotten, the others are as they were', () => {
+    assert.deepEqual(look(stepping({ askedAt: 100, settleAt: 900 }), { now: 5000, fitted: false }), { G: stepping({ askedAt: 5000, settleAt: null }), ask: null });
+    assert.deepEqual(look({ ...GROW_IDLE, cutSince: 4900 }, { now: 5000, fitted: false }), { G: GROW_IDLE, ask: null });
+    assert.deepEqual(look(held(), { now: 5000, fitted: false }), { G: held(), ask: null });
+    assert.deepEqual(look(spent(), { now: 5000, fitted: false }), { G: spent(), ask: null });
+    for (const fitted of [false, undefined, null, 'fitted', 1]) assert.equal(look({ ...GROW_IDLE, cutSince: 0 }, { now: 5000, fitted }).ask, null, String(fitted));
+  });
+
+  test('(+) row 5: idle and the question is not cut: idle, the first look is cleared', () => {
+    assert.deepEqual(look({ ...GROW_IDLE, cutSince: 100 }, { now: 150, dialog: READY }), { G: GROW_IDLE, ask: null });
+    assert.deepEqual(look(GROW_IDLE, { dialog: READY }), { G: GROW_IDLE, ask: null });
+    for (const reason of ['clipped', 'wide', 'tab', 'layout', 'numbers', 'survey']) assert.equal(look(GROW_IDLE, { now: 900, dialog: { kind: 'ask', state: 'unreadable', reason } }).ask, null, reason);
+  });
+
+  test('(+) row 6: idle and cut for the first time: only the time is noted', () => {
+    assert.deepEqual(look(GROW_IDLE, { now: 700 }), { G: { ...GROW_IDLE, cutSince: 700 }, ask: null });
+  });
+
+  test('(−) row 7: idle and cut for under 200 ms: nothing yet, then at 200 ms the step', () => {
+    const first = look(GROW_IDLE, { now: 700 }).G;
+    assert.deepEqual(look(first, { now: 700 + GROW_CONFIRM_MS - 1 }), { G: first, ask: null });
+    assert.equal(look(first, { now: 700 + GROW_CONFIRM_MS }).ask.rows, 42);
+  });
+
+  test('(+) row 8: idle and cut for 200 ms: stepping at twice the base rows, asked now', () => {
+    const a = look({ ...GROW_IDLE, cutSince: 700 }, { now: 950 });
+    assert.deepEqual(a, { G: { ...GROW_IDLE, phase: 'stepping', rows: 42, askedAt: 950 }, ask: { rows: 42 } });
+    assert.equal(look({ ...GROW_IDLE, cutSince: 0 }, { now: 300, baseRows: 10 }).ask.rows, 22, 'at least 12 more');
+  });
+
+  test('(−) row 9: idle and cut, the base is at the cap: given up at once, nothing asked', () => {
+    const a = look({ ...GROW_IDLE, cutSince: 0 }, { now: 300, baseRows: GROW_CAP });
+    assert.deepEqual(a, { G: { ...GROW_IDLE, phase: 'spent', base: '145x120' }, ask: null });
+    assert.equal(look({ ...GROW_IDLE, cutSince: 0 }, { now: 300, baseRows: 200 }).G.phase, 'spent');
+  });
+
+  test('(+) row 10: stepping or held and the question is no longer cut (ready, shortened, too wide, tab): held', () => {
+    for (const G of [stepping(), held()]) {
+      for (const dialog of [READY, { kind: 'ask', state: 'unreadable', reason: 'clipped' }, { kind: 'ask', state: 'unreadable', reason: 'wide' }, { kind: 'ask', state: 'unreadable', reason: 'tab' }]) {
+        const a = look({ ...G, settleAt: 900 }, { now: 5000, dialog, paneRows: 42 });
+        assert.deepEqual([a.G.phase, a.G.rows, a.ask], ['held', 42, null], `${G.phase} ${dialog.reason ?? dialog.state}`);
+      }
+    }
+    assert.equal(look(stepping({ settleAt: 900 }), { now: 5000, dialog: READY, paneRows: 42 }).G.settleAt, null, 'the settle is over');
+    assert.equal(look(stepping(), { now: 5000, dialog: READY, paneRows: 21 }).G.phase, 'held', 'readable at the old size (a smaller question) is held too');
+  });
+
+  test('(+) row 11: held, cut again and the drawn frame is below the grown size: stepping again, the clock restarts', () => {
+    assert.deepEqual(look(held({ askedAt: 10 }), { now: 5000, paneRows: 21 }), { G: stepping({ askedAt: 5000, settleAt: null }), ask: null });
+  });
+
+  test('(−) row 12: stepping, cut, the frame below the grown size, under 6 s: wait', () => {
+    const G = stepping({ askedAt: 1000 });
+    assert.deepEqual(look(G, { now: 1000 + GROW_WAIT_MS - 1, paneRows: 21 }), { G, ask: null });
+    assert.deepEqual(look(G, { now: 1000, paneRows: 30 }), { G, ask: null }, 'a frame in between');
+  });
+
+  test('(−) row 13: stepping, cut, the frame below the grown size for 6 s: given up, the base size back', () => {
+    const a = look(stepping({ askedAt: 1000 }), { now: 1000 + GROW_WAIT_MS, paneRows: 21 });
+    assert.deepEqual(a, { G: spent(), ask: { back: true } });
+  });
+
+  test('(+) row 14: stepping or held, cut, at the grown size, no settle yet: the settle starts', () => {
+    for (const G of [stepping(), held()]) {
+      assert.deepEqual(look(G, { now: 2000, paneRows: 42 }), { G: stepping({ settleAt: 2000 + GROW_SETTLE_MS }), ask: null }, G.phase);
+    }
+    assert.equal(look(stepping(), { now: 2000, paneRows: 41 }).G.settleAt, 2800, 'a border row: the pane is one row short of the ask');
+  });
+
+  test('(−) row 15: stepping, cut, at the grown size, before the settle ends: wait', () => {
+    const G = stepping({ settleAt: 2800 });
+    assert.deepEqual(look(G, { now: 2799, paneRows: 42 }), { G, ask: null });
+  });
+
+  test('(+) row 16: stepping, cut, at the grown size, the settle over, room left: the next step from the current rows', () => {
+    assert.deepEqual(look(stepping({ settleAt: 2800 }), { now: 2800, paneRows: 42 }), { G: stepping({ rows: 84, askedAt: 2800, settleAt: null }), ask: { rows: 84 } });
+  });
+
+  test('(−) row 17: stepping, cut, at the grown size, the settle over, at the cap: given up, the base size back', () => {
+    const a = look(stepping({ rows: GROW_CAP, settleAt: 2800 }), { now: 2800, paneRows: GROW_CAP });
+    assert.deepEqual(a, { G: spent(), ask: { back: true } });
+  });
+
+  test('(−) row 18: a given-up question stays given up for any question on screen, cut or not', () => {
+    for (const dialog of [CUT, READY, { kind: 'ask', state: 'unreadable', reason: 'wide' }]) {
+      for (const now of [0, 300, 99999]) assert.deepEqual(look(spent(), { now, dialog }), { G: spent(), ask: null }, `${dialog.reason ?? dialog.state} ${now}`);
+    }
+  });
+
+  test('(+) the owner\'s case end to end: 145 x 21 grows to 42, is held while the question is open, and goes back a second after it closes', () => {
+    let G = GROW_IDLE;
+    const at = (now, over) => { const r = look(G, { now, ...over }); G = r.G; return r.ask; };
+    assert.equal(at(0), null, 'the first look');
+    assert.deepEqual(at(250), { rows: 42 }, 'confirmed: one step');
+    assert.equal(at(330, { paneRows: 21 }), null, 'the redraw hold keeps the old frame');
+    assert.equal(at(700, { paneRows: 42 }), null, 'the pane is at 42 and still cut: the settle starts');
+    assert.equal(G.settleAt, 1500);
+    assert.equal(at(1000, { paneRows: 42, dialog: READY }), null, 'Claude repainted: the question is whole');
+    assert.equal(G.phase, 'held');
+    assert.equal(at(3000, { paneRows: 42, dialog: READY }), null, 'it stays grown while the question is open');
+    assert.equal(at(3250, { paneRows: 42, dialog: null }), null, 'answered: the first quiet look');
+    assert.equal(at(4000, { paneRows: 42, dialog: null }), null, 'not yet a second');
+    assert.deepEqual(at(4250, { paneRows: 42, dialog: null }), { back: true });
+    assert.deepEqual(G, GROW_IDLE);
+  });
+
+  test('(+) two steps: still cut after the settle at 42 rows asks 84', () => {
+    let G = look({ ...GROW_IDLE, cutSince: 0 }, { now: 250 }).G;
+    assert.equal(G.rows, 42);
+    G = look(G, { now: 700, paneRows: 42 }).G;
+    const r = look(G, { now: 1500, paneRows: 42 });
+    assert.deepEqual(r.ask, { rows: 84 });
+    assert.equal(look(r.G, { now: 1600, paneRows: 42 }).ask, null, 'the frame is not at 84 yet');
+    const done = look(r.G, { now: 2000, paneRows: 84, dialog: READY });
+    assert.equal(done.G.phase, 'held');
+  });
+
+  test('(+) a give-up at the cap: base 66 asks 120, still cut after the settle, back and spent', () => {
+    const a = look({ ...GROW_IDLE, cutSince: 0 }, { now: 300, baseRows: 66 });
+    assert.deepEqual(a.ask, { rows: 120 });
+    const b = look(look(a.G, { now: 900, paneRows: 120, baseRows: 66 }).G, { now: 1700, paneRows: 120, baseRows: 66 });
+    assert.deepEqual(b.ask, { back: true });
+    assert.equal(b.G.phase, 'spent');
+    assert.equal(b.G.base, '145x66');
+  });
+
+  test('(−) a cut seen once and gone before 200 ms asks nothing, and the next cut starts the count again', () => {
+    let G = look(GROW_IDLE, { now: 1000 }).G;
+    G = look(G, { now: 1100, dialog: READY }).G;
+    assert.equal(G.cutSince, null);
+    const again = look(G, { now: 1150 });
+    assert.deepEqual([again.G.cutSince, again.ask], [1150, null]);
+    assert.equal(look(again.G, { now: 1150 + GROW_CONFIRM_MS - 1 }).ask, null);
+  });
+
+  test('(−) a cut while not fitted asks nothing and the first look is cleared; fitted again counts from the start', () => {
+    let G = look(GROW_IDLE, { now: 0 }).G;
+    G = look(G, { now: 500, fitted: false }).G;
+    assert.equal(G.cutSince, null);
+    for (let t = 1000; t < 40000; t += 250) {
+      const r = look(G, { now: t, fitted: false });
+      assert.equal(r.ask, null);
+      G = r.G;
+    }
+    const first = look(G, { now: 40000 });
+    assert.deepEqual([first.ask, first.G.cutSince], [null, 40000]);
+  });
+
+  test('(+) a parked step keeps its clock fresh: 30 s in terminal give nothing up, and after fitted and the settle the next step comes', () => {
+    let G = stepping({ askedAt: 0 });
+    for (let t = 250; t <= 30000; t += 250) {
+      const r = look(G, { now: t, fitted: false, paneRows: 21 });
+      assert.equal(r.ask, null);
+      G = r.G;
+    }
+    assert.equal(G.phase, 'stepping');
+    assert.equal(G.askedAt, 30000);
+    let r = look(G, { now: 30250, paneRows: 21 });
+    assert.deepEqual([r.G.phase, r.ask], ['stepping', null], 'fitted again, the frame not at 42 yet: wait');
+    r = look(r.G, { now: 30500, paneRows: 42 });
+    assert.equal(r.G.settleAt, 31300);
+    assert.deepEqual(look(r.G, { now: 31300, paneRows: 42 }).ask, { rows: 84 });
+  });
+
+  test('(−) a quiet frame of 600 ms between two tabs does not size back, and the next quiet stretch counts from its own start', () => {
+    let G = held();
+    G = look(G, { now: 1000, dialog: null }).G;
+    const mid = look(G, { now: 1600, dialog: null });
+    assert.equal(mid.ask, null);
+    G = look(mid.G, { now: 1650, dialog: READY, paneRows: 42 }).G;
+    assert.equal(G.quietSince, null);
+    G = look(G, { now: 2000, dialog: null }).G;
+    assert.equal(G.quietSince, 2000);
+    assert.equal(look(G, { now: 2999, dialog: null }).ask, null);
+    assert.deepEqual(look(G, { now: 3000, dialog: null }).ask, { back: true });
+  });
+
+  test('(+) a plan, a prompt or a dialog of no kind replacing the question counts as closed after a second', () => {
+    for (const dialog of [{ kind: 'plan', state: 'unreadable', reason: 'cut' }, { kind: 'plan', state: 'ready' }, { kind: null, state: 'unreadable', reason: 'layout' }, undefined]) {
+      const a = look(held(), { now: 1000, dialog });
+      assert.equal(a.G.quietSince, 1000);
+      assert.deepEqual(look(a.G, { now: 2000, dialog }).ask, { back: true });
+    }
+  });
+
+  test('(−) a given-up question that is cut again asks nothing, however long it stays', () => {
+    let G = spent();
+    for (let t = 0; t < 20000; t += 250) {
+      const r = look(G, { now: t });
+      assert.equal(r.ask, null);
+      G = r.G;
+    }
+    assert.equal(G.phase, 'spent');
+  });
+
+  test('(+) growRebase: a given-up question gets a new try when the base changed (rows, or columns alone); (−) not on the same base, and not for any other phase', () => {
+    assert.equal(growRebase(spent(), 145, 30), GROW_IDLE);
+    assert.equal(growRebase(spent(), 120, 21), GROW_IDLE, 'a width commit (the transcript toggle) is a new situation too');
+    const same = spent();
+    assert.equal(growRebase(same, 145, 21), same);
+    for (const G of [GROW_IDLE, stepping(), held()]) assert.equal(growRebase(G, 80, 10), G, G.phase);
+  });
+
+  test('(+) held, then the next tab is cut again: the settle, then a step from the current rows (not from the base)', () => {
+    let G = held({ rows: 42 });
+    let r = look(G, { now: 1000, paneRows: 42 });
+    assert.deepEqual([r.G.phase, r.G.settleAt, r.ask], ['stepping', 1800, null]);
+    r = look(r.G, { now: 1800, paneRows: 42 });
+    assert.deepEqual(r.ask, { rows: 84 });
+    G = held({ rows: 20 });
+    assert.deepEqual(look(G, { now: 1000, paneRows: 30 }).G.settleAt, 1800, 'a pane taller than the grown rows (a larger base) counts as at the size');
+    r = look(look(G, { now: 1000, paneRows: 30, baseRows: 30 }).G, { now: 1800, paneRows: 30, baseRows: 30 });
+    assert.deepEqual(r.ask, { rows: 60 }, 'from max(rows, base)');
+  });
+});
+
+describe('F16: frameReady, createRedrawHold and fitPanelView for the grow', () => {
+  const want = { cols: 145, rows: 42 };
+  const rows42 = new Array(42).fill([]);
+  const body = (over = {}) => ({ cols: 145, rows: rows42, alt: true, prompt: null, dialog: null, ...over });
+  const CUT = { state: 'unreadable', kind: 'ask', reason: 'cut' };
+  const WHOLE = { state: 'ready', kind: 'ask', at: 'question', sig: '0123456789abcdef' };
+
+  test('(+) cutBefore: a question that is whole at the size ends the hold, and so does any screen but a clipped question', () => {
+    for (const dialog of [WHOLE, null, undefined, { state: 'unreadable', kind: 'ask', reason: 'clipped' }, { state: 'unreadable', kind: 'ask', reason: 'wide' }, { state: 'unreadable', kind: 'plan', reason: 'cut' }]) {
+      assert.equal(frameReady({ body: body({ dialog }), draft: null, want, plainBefore: true, cutBefore: true }), true, JSON.stringify(dialog));
+    }
+    assert.equal(frameReady({ body: body({ prompt: { question: 'x', options: [] } }), draft: null, want, plainBefore: true, cutBefore: true }), true, 'a prompt');
+  });
+
+  test('(−) cutBefore: a question still clipped at the top keeps the hold, a wrong size keeps it, and a readable box does not end it', () => {
+    assert.equal(frameReady({ body: body({ dialog: CUT }), draft: null, want, plainBefore: true, cutBefore: true }), false);
+    assert.equal(frameReady({ body: body({ dialog: CUT }), draft: { state: 'empty' }, want, plainBefore: false, cutBefore: true }), false, 'nothing but the question counts');
+    assert.equal(frameReady({ body: body({ dialog: WHOLE, cols: 100 }), draft: null, want, plainBefore: true, cutBefore: true }), false, 'the width');
+    assert.equal(frameReady({ body: body({ dialog: WHOLE, rows: new Array(21).fill([]) }), draft: null, want, plainBefore: true, cutBefore: true }), false, 'the rows');
+    assert.equal(frameReady({ body: body({ dialog: WHOLE }), draft: null, want: null, plainBefore: true, cutBefore: true }), false, 'no want');
+  });
+
+  test('(+) without cutBefore every old case is as it was; only exactly true counts (a string, 1 and undefined do not)', () => {
+    assert.equal(frameReady({ body: body({ dialog: CUT }), draft: null, want, plainBefore: true }), true, 'a dialog ends the F10 hold, as before');
+    for (const cutBefore of [undefined, false, 'yes', 1, null]) assert.equal(frameReady({ body: body({ dialog: CUT }), draft: null, want, plainBefore: true, cutBefore }), true, String(cutBefore));
+    assert.equal(frameReady({ body: body(), draft: null, want, plainBefore: true }), false, 'no dialog, no box: Claude has not repainted');
+  });
+
+  const make = () => {
+    const clk = clock();
+    const log = { timeouts: [] };
+    const hold = createRedrawHold({ after: clk.after, cancel: clk.cancel, timeout: (pending, ctx) => log.timeouts.push([pending, ctx]) });
+    return { hold, clk, log };
+  };
+  const cap = (dialog) => ({ body: body({ dialog }), draft: null });
+
+  test('(+) createRedrawHold: a hold started with cutBefore keeps the capture of a clipped question and lets the whole one through', () => {
+    const r = make();
+    r.hold.start({ want, plainBefore: true, cutBefore: true });
+    assert.equal(r.hold.offer(cap(CUT)), 'keep');
+    assert.equal(r.hold.offer(cap(CUT)), 'keep');
+    assert.equal(r.hold.offer(cap(WHOLE)), 'apply');
+    assert.equal(r.hold.active, false);
+  });
+
+  test('(+) cutBefore stays that of the first start, like plainBefore, and the timeout context carries it', async () => {
+    const r = make();
+    r.hold.start({ want: { cols: 100, rows: 20 }, plainBefore: true, cutBefore: true });
+    await r.clk.advance(600);
+    r.hold.start({ want, plainBefore: false, cutBefore: false });
+    assert.equal(r.hold.offer(cap(CUT)), 'keep', 'still the first start\'s');
+    await r.clk.advance(HOLD_MS);
+    assert.deepEqual(r.log.timeouts[0][1], { want, plainBefore: true, modeBefore: false, cutBefore: true });
+    const b = make();
+    b.hold.start({ want, plainBefore: true });
+    b.hold.start({ want, plainBefore: true, cutBefore: true });
+    await b.clk.advance(HOLD_MS);
+    assert.equal(b.log.timeouts[0][1].cutBefore, false, 'false stays false');
+  });
+
+  test('(−) createRedrawHold: cutBefore is exactly true or nothing, and a new hold forgets the last one\'s', async () => {
+    const r = make();
+    r.hold.start({ want, plainBefore: true, cutBefore: 'yes' });
+    await r.clk.advance(HOLD_MS);
+    assert.equal(r.log.timeouts[0][1].cutBefore, false);
+    r.hold.start({ want, plainBefore: true, cutBefore: true });
+    r.hold.end();
+    r.hold.start({ want, plainBefore: true });
+    assert.equal(r.hold.offer(cap(CUT)), 'apply', 'a dialog ends a hold without cutBefore, as in F10');
+  });
+
+  const fit = (state, reason = null) => chipView({ fit: { state, reason, pane: { cols: 120, rows: 39 }, panes: 3, userZoom: false } });
+  const IDLE = { pending: false, note: false };
+  const hintOf = (view, ui) => fitPanelView(view, ui).hint;
+
+  test('(+) fitPanelView: ui.grow shows the grow line on fitted and fitted:terminal, over the room line, and the room keeps Fit again', () => {
+    const line = hintOf(fit('fitted'), { ...IDLE, grow: true });
+    assert.match(line, /^Claude's question is taller than this panel, so nika gave the pane more rows while it is open\./);
+    assert.match(line, /the size goes back when the question closes\.$/);
+    assert.equal(hintOf(fit('fitted', 'terminal'), { ...IDLE, grow: true }), line);
+    assert.equal(hintOf(fit('fitted'), { ...IDLE, grow: true, room: true }), line, 'the grow line wins over the room line');
+    assert.deepEqual(fitPanelView(fit('fitted'), { ...IDLE, grow: true, room: true }).action, { text: 'Fit again' });
+    assert.equal(fitPanelView(fit('fitted'), { ...IDLE, grow: true }).action, null, 'the grow has no action of its own');
+  });
+
+  test('(−) fitPanelView: ui.grow is ignored for zoomed, terminal, blocked and other, and a non-boolean grow is ignored everywhere', () => {
+    const others = [['zoomed', 'panel-smaller'], ['blocked', 'user-change'], ['blocked', 'changed'], ['blocked', null], ['blocked', 'user-zoom'], ['blocked', 'size-option'], ['blocked', 'foreign-tag'], ['other', null], ['terminal', null], ['terminal', 'switching']];
+    for (const [state, reason] of others) assert.deepEqual(fitPanelView(fit(state, reason), { ...IDLE, grow: true }), fitPanelView(fit(state, reason), IDLE), `${state}:${reason}`);
+    for (const grow of [undefined, false, 'true', 1, null, {}]) {
+      assert.deepEqual(fitPanelView(fit('fitted'), { ...IDLE, grow }), fitPanelView(fit('fitted'), IDLE), String(grow));
+      assert.equal(hintOf(fit('fitted', 'terminal'), { ...IDLE, grow }), hintOf(fit('fitted', 'terminal'), IDLE), String(grow));
+    }
+    assert.deepEqual(fitPanelView(fit('fitted'), undefined).hint, null);
+  });
+
+  test('(+) fit-ui.js stays ASCII with the F16 code in it, and the grow line has no "#" and no path', () => {
+    const src = readSrc('fit-ui.js');
+    assert.equal([...src].every((ch) => ch.codePointAt(0) < 128), true);
+    const line = hintOf(fit('fitted'), { ...IDLE, grow: true });
+    assert.equal([...line].every((ch) => ch.codePointAt(0) < 128), true);
+    assert.doesNotMatch(line, /#|\/|\\|~/);
   });
 });

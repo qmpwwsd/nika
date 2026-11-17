@@ -22,7 +22,7 @@ const QUESTION_MAX = 500;
 const LABEL_MAX = 200;
 const DESC_MAX = 500;
 const ANSWER_MAX = 500;
-const REASONS = new Set(['cut', 'wide', 'numbers', 'tab', 'layout', 'survey']);
+const REASONS = new Set(['cut', 'clipped', 'wide', 'numbers', 'tab', 'layout', 'survey']);
 
 const range = (list) => list.map(([a, b]) => `${String.fromCharCode(a)}-${String.fromCharCode(b)}`).join('');
 const CONTROLS = [[0, 0x1f], [0x7f, 0x9f]]; // C0, DEL, C1
@@ -507,7 +507,8 @@ export function createDialogForm(io) {
     show(false);
   }
 
-  function unreadable(dialog) {
+  /** `growing` (F16): nika is giving Claude's pane more rows for this question, so Reading goes on past READING_MS and the banner waits. */
+  function unreadable(dialog, growing) {
     if (F !== null) { // a shown form stays; it only says it cannot read the screen for now
       F.kept = true;
       paint();
@@ -515,8 +516,8 @@ export function createDialogForm(io) {
     }
     if (reading === null) reading = { since: now(), timer: null, expired: false, drawn: false };
     const left = READING_MS - (now() - reading.since);
-    if (left > 0 && !reading.expired) {
-      if (reading.timer === null) {
+    if (growing === true || (left > 0 && !reading.expired)) {
+      if (left > 0 && !reading.expired && reading.timer === null) {
         const mine = reading;
         mine.timer = after(() => {
           mine.timer = null;
@@ -524,7 +525,7 @@ export function createDialogForm(io) {
           if (reading === mine && last !== null) render(last);
         }, left);
       }
-      if (!reading.drawn) {
+      if (!reading.drawn || !visible) { // also after the banner took over: a step started again
         reading.drawn = true;
         drawReading(dialog.kind);
       }
@@ -536,9 +537,9 @@ export function createDialogForm(io) {
     }
   }
 
-  function step({ pane, dialog }) {
+  function step({ pane, dialog, growing }) {
     if (pane !== 'ok' || !dialog) leave();
-    else if (dialog.state === 'unreadable') unreadable(dialog);
+    else if (dialog.state === 'unreadable') unreadable(dialog, growing === true);
     else {
       stopReading();
       if (F !== null && F.sig === dialog.sig) { // the same step: the nodes stay, so typed text and focus survive the captures

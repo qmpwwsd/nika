@@ -25,8 +25,9 @@ export const PLAN_PICK = 'digit';
 export const PLAIN_TEXT = true;
 /** The plan's free-text option; its label is this constant whatever is typed, so typing never changes the step's identity. */
 export const PLAN_TEXT_LABEL = 'Tell Claude what to change';
-/** Why a dialog on screen is not read, in the order they are decided (the first one found wins). */
-export const REASONS = ['cut', 'wide', 'numbers', 'tab', 'layout', 'survey'];
+/** Why a dialog on screen is not read, in the order they are decided (the first one found wins). `cut`: clipped at the top (or a plan without
+ *  its rules): more rows can show it (F16). `clipped`: a text ends in an ellipsis: Claude shortened it to the width; rows never help. */
+export const REASONS = ['cut', 'clipped', 'wide', 'numbers', 'tab', 'layout', 'survey'];
 
 const MIN_COLS = 20;
 const SPAN_MAX = 100; // rows from the strip down to the footer: 7 options with wrapped descriptions fit well within
@@ -160,11 +161,11 @@ function findStrip(texts, stop) {
   return -1;
 }
 
-/** clean() with a cap. Empty or too long adds `layout`; a text that ends in an ellipsis adds `cut` (Claude may have cut it) when `ellipsis`. */
+/** clean() with a cap. Empty or too long adds `layout`; a text that ends in an ellipsis adds `clipped` (Claude shortened it) when `ellipsis`. */
 function take(bad, text, max, ellipsis = true) {
   const v = clean(text, max + 1);
   if (v === null || v.length > max) { bad.add('layout'); return ''; }
-  if (ellipsis && v.endsWith(ELLIPSIS)) bad.add('cut');
+  if (ellipsis && v.endsWith(ELLIPSIS)) bad.add('clipped');
   return v;
 }
 
@@ -429,7 +430,8 @@ function readPlan(shape, rows, cols) {
  *               button 'Next' | 'Submit' | null
  *     review:   tabs, warn, pairs [{ question, answer }]
  *     plan:     options [{ n, label, text }], textRow { n, value|null } | null, planRows (the visible plan, only for the identity)
- * Strings are clean()ed and bounded. A dialog is unreadable when it is cut off (`cut`), may be cut at the pane's edge or is wrapped in a way
+ * Strings are clean()ed and bounded. A dialog is unreadable when it is cut off at the top (`cut`), has a text Claude shortened with an
+ * ellipsis (`clipped`), may be cut at the pane's edge or is wrapped in a way
  * that cannot be told from a description (`wide`), is numbered above 9 or with gaps (`numbers`), has no single current tab (`tab`), or
  * is any other shape (`layout`); a feedback survey on screen is `survey`. A wrapped footer is always unreadable.
  */

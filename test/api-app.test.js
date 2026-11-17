@@ -4210,6 +4210,17 @@ describe('capture: the dialog field', () => {
     }
   });
 
+  test('(+) F16: the capture names why a dialog is unreadable: `cut` when the top is clipped (rows can show it), `clipped` when a label ends in an ellipsis (rows never help)', async () => {
+    const { a, screens } = await bootScreens();
+    const whole = dialogRows({ tabs: [TAB.project] });
+    screens['%6'] = Object.assign(whole.filter((_, i) => i !== 2 && i !== 3), { cols: whole.cols });
+    assert.deepEqual((await pane(a, '%6', 'capture')).body.dialog, { state: 'unreadable', kind: 'ask', reason: 'cut' }, 'no top rule and no strip');
+    screens['%6'] = dialogRows({ tabs: [{ ...TAB.project, options: [['acme-ap…', 'Open the acme-api project.'], ['web-shop', 'Open the web-shop project.']] }] });
+    assert.deepEqual((await pane(a, '%6', 'capture')).body.dialog, { state: 'unreadable', kind: 'ask', reason: 'clipped' }, 'a shortened label');
+    screens['%6'] = dialogRows({ tabs: [TAB.project] });
+    assert.equal((await pane(a, '%6', 'capture')).body.dialog.state, 'ready', 'the same dialog whole reads');
+  });
+
   test('(−) a dialog that mentions bypass is ready with bypass true (the page then shows it as terminal-only)', async () => {
     const { a, screens } = await bootScreens();
     screens['%6'] = dialogRows({ tabs: [{ header: 'Mode', question: 'Which mode?', options: [['bypass permissions', 'Skip every check.'], ['safe', 'Run every step.']] }] });

@@ -190,7 +190,7 @@ const rowAt = (rows, pred) => rows.findIndex((r) => pred(text(r)));
 describe('constants', () => {
   test('(+) hold the design values', () => {
     assert.deepEqual([TABS_MAX, NUMBER_MAX, HEADER_MAX, QUESTION_MAX, LABEL_MAX, DESC_MAX, ANSWER_MAX, TEXT_MAX, STEPS_MAX], [8, 9, 40, 500, 200, 500, 500, 300, 24]);
-    assert.deepEqual(REASONS, ['cut', 'wide', 'numbers', 'tab', 'layout', 'survey']);
+    assert.deepEqual(REASONS, ['cut', 'clipped', 'wide', 'numbers', 'tab', 'layout', 'survey']);
   });
 
   test('(+) the switches the live checks decided (T0b run C, T0c run B)', () => {
@@ -733,12 +733,23 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
     assert.equal(reason(rowsFrom({ ...reviewParts(), top: [''] })), 'cut');
   });
 
-  test('(−) cut: a header, a label, the question or a review answer ends in an ellipsis', () => {
-    assert.equal(reason(ask({ tabs: ['Project', 'To…'] })), 'cut');
-    assert.equal(reason(ask({ options: [{ label: 'acme-ap…', desc: 'x' }, OPTS[1]] })), 'cut');
-    assert.equal(reason(ask({ question: 'Which project should I o…' })), 'cut');
-    assert.equal(reason(rowsFrom(reviewParts({ pairs: [{ q: 'Which?', a: 'a very long answer that was…' }] }))), 'cut');
-    assert.equal(reason(rowsFrom(reviewParts({ pairs: [{ q: 'Which project should…', a: 'x' }] }))), 'cut');
+  test('(−) clipped (F16): a header, a label, the question or a review answer ends in an ellipsis (Claude shortened it to the width: more rows never help)', () => {
+    assert.equal(reason(ask({ tabs: ['Project', 'To…'] })), 'clipped');
+    assert.equal(reason(ask({ options: [{ label: 'acme-ap…', desc: 'x' }, OPTS[1]] })), 'clipped');
+    assert.equal(reason(ask({ question: 'Which project should I o…' })), 'clipped');
+    assert.equal(reason(rowsFrom(reviewParts({ pairs: [{ q: 'Which?', a: 'a very long answer that was…' }] }))), 'clipped');
+    assert.equal(reason(rowsFrom(reviewParts({ pairs: [{ q: 'Which project should…', a: 'x' }] }))), 'clipped');
+  });
+
+  test('(−) clipped (F16): a plan option label that ends in an ellipsis is a shortened text too, not a clipped top (plans are never grown, D1)', () => {
+    assert.equal(reason(rowsFrom(planParts({ labels: ['Yes, and use auto mo…', 'Yes, manually approve edits'] }))), 'clipped');
+    assert.equal(reason(rowsFrom(planParts())), undefined, 'the same plan whole reads');
+  });
+
+  test('(−) the top wins over an ellipsis: a clipped strip AND a missing top rule or strip reads cut (rows can show it), never clipped (F16)', () => {
+    assert.equal(reason(rowsFrom({ ...askParts({ tabs: ['Project', 'To…'] }), top: [''] })), 'cut');
+    assert.equal(reason(rowsFrom({ ...askParts({ question: 'Which project should I o…' }), strip: [] })), 'cut');
+    assert.equal(reason(rowsFrom({ ...reviewParts({ pairs: [{ q: 'Which?', a: 'a very long answer that was…' }] }), top: [''] })), 'cut');
   });
 
   test('(−) cut: a short pane that clipped the strip and the top rule (T0b 3.6, 14 and 10 rows)', () => {
@@ -758,7 +769,7 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
     assert.equal(reason(rowsFrom({ ...planParts(), d1: [] })), 'cut');
     assert.equal(reason(rowsFrom({ ...planParts(), d2: [] })), 'cut');
     assert.equal(reason(rowsFrom({ ...planParts(), prompt: [] })), 'cut');
-    assert.equal(reason(rowsFrom({ ...planParts(), prompt: ['   Claude has written up a plan and is ready to execute. Would you like to p…'] })), 'cut');
+    assert.equal(reason(rowsFrom({ ...planParts(), prompt: ['   Claude has written up a plan and is ready to execute. Would you like to p…'] })), 'cut', 'a prompt row ending in an ellipsis is "no prompt row": plans are not split (F16)');
   });
 
   test('(−) wide: a description row, or any region row, as wide as the pane (it may be cut there)', () => {
@@ -801,7 +812,7 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
     for (const cols of [undefined, null, 'x', 19, 0, NaN, 120.5]) assert.equal(readDialogScreen(ask(), cols).unreadable, 'wide', String(cols));
   });
 
-  test('(−) the T0b 40-column capture: strip headers cut with an ellipsis, wrapped question, label and footer: unreadable, never a form', () => {
+  test('(−) the T0b 40-column capture: strip headers cut with an ellipsis (clipped, F16), wrapped question, label and footer: unreadable, never a form', () => {
     const w = 40;
     const lines = [
       '─'.repeat(w), '←  ☐ Project  ☐ To…  ☐ Mo…  ✔ Submit  →', '', 'Which project should I open for the', 'weekly release review today?', '',
@@ -811,7 +822,7 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
     ];
     const rows = [[], ...lines.map((l, i) => (i === 1 ? strip({ tabs: ['Project', 'To…', 'Mo…'], submit: true }) : lineOf(l)))];
     assert.equal(dialogOnScreen(rows), true);
-    assert.equal(read(rows, w).unreadable, 'cut');
+    assert.equal(read(rows, w).unreadable, 'clipped');
     assert.equal(dialogCapture(rows, w).state, 'unreadable');
   });
 
@@ -954,9 +965,14 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
     assert.equal(reason(ask({ above: ['Claude said: (Optional) Press [1] to tell us more'] })), undefined, 'a quote mid-row');
   });
 
-  test('(−) the first failing rule decides, in the order of REASONS (cut before wide before numbers before tab before layout before survey)', () => {
+  test('(−) the first failing rule decides, in the order of REASONS (cut before clipped before wide before numbers before tab before layout before survey)', () => {
     const cutAndWide = ask({ cols: 70, tabs: ['Project', 'To…'], footer: ['Enter to select · Tab/Arrow keys to navigate', '· Esc to cancel'] });
-    assert.equal(reason(cutAndWide, 70), 'cut');
+    assert.equal(reason(cutAndWide, 70), 'clipped');
+    assert.equal(reason(rowsFrom({ ...askParts({ cols: 70, tabs: ['Project', 'To…'] }), top: [''] }), 70), 'cut');
+    // RV16 M1 (round 1): a clipped top beats a wrapped footer (`wide`): the page grows only on `cut`, so this decides whether a narrow panel grows
+    const wrapped = ['Enter to select · Tab/Arrow keys to navigate', '· Esc to cancel'];
+    assert.equal(reason(ask({ cols: 70, footer: wrapped }), 70), 'wide', 'the wrapped footer alone');
+    assert.equal(reason(rowsFrom({ ...askParts({ cols: 70, footer: wrapped }), top: [''] }), 70), 'cut', 'with the top clipped too');
     const wideAndTab = ask({ cols: 70, mark: 'none', footer: ['Enter to select · Tab/Arrow keys to navigate', '· Esc to cancel'] });
     assert.equal(reason(wideAndTab, 70), 'wide');
     assert.equal(reason(ask({ mark: 'none', options: [OPTS[0], { ...OPTS[1], label: 'acme-api' }] })), 'tab');

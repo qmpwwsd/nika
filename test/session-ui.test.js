@@ -18,6 +18,7 @@ import {
   createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal,
   createRedrawHold as createRedrawHoldReal, remeasure as remeasureReal, askSize as askSizeReal, roomStep as roomStepReal, refitFrom as refitFromReal, HOLD_MS as HOLD_MS_REAL, REFIT_MS as REFIT_MS_REAL, FOCUS_SETTLE_MS as FOCUS_SETTLE_REAL, BLUR_SETTLE_MS as BLUR_SETTLE_REAL,
   hiddenRows as hiddenRowsReal, fillSize as fillSizeReal, drawnScale as drawnScaleReal, // F11
+  GROW_IDLE as GROW_IDLE_REAL, growStep as growStepReal, growRebase as growRebaseReal, growAsk as growAskReal, scaleRows as scaleRowsReal, cutQuestion as cutQuestionReal, // F16
 } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
 import { h as hReal, icon as iconReal, roleTagEl as roleTagElReal, subStateEl as subStateElReal, subagentItemEl as subagentItemElReal, labelEl as labelElReal } from '../public/dom.js';
@@ -4472,6 +4473,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     return {
       setTimeout(fn, ms) { const id = next++; timers.set(id, { at: now + ms, fn }); return id; },
       clearTimeout(id) { timers.delete(id); },
+      get now() { return now; },
       get pending() { return timers.size; },
       async advance(ms) {
         const end = now + ms;
@@ -4500,6 +4502,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     'function nextCapture(ms = 2500)', 'function captureHandled(n)',
     // F11 (design F11 2 to 6)
     'function fitStrip()',
+    // F16 (design F16 5.2)
+    'function growing()', 'function growTick()',
   ];
   /** An element that also answers contains() (the fake El has no tree search): the panel's focus and dismissal rules ask it. */
   class Box extends El {
@@ -4521,7 +4525,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
    */
   const rig = ({ pane = '%12', box: size = { w: 827, h: 562 }, cell = { w: 800, h: 18 }, replies = [], observer = true, realDraw = false, strip = 27 } = {}) => {
     const clk = fakeClock();
-    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [], placed: [], kicks: [], noted: [], drawn: [], lives: [], scrolled: [], rowsOn: {}, classOps: [], cutRows: [] };
+    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [], placed: [], kicks: [], noted: [], drawn: [], lives: [], scrolled: [], rowsOn: {}, classOps: [], cutRows: [], df: [] };
     // F10: the page measures the border box (getBoundingClientRect), here the same numbers as the client box; scrollTop / scrollHeight show the re-pin
     const term = { clientWidth: size.w, clientHeight: size.h, scrollTop: 0, scrollHeight: 0, rectExtra: { w: 0, h: 0 }, getBoundingClientRect: () => ({ width: term.clientWidth + term.rectExtra.w, height: term.clientHeight + term.rectExtra.h }), style: { setProperty: (k, v) => log.props.push([k, v]) } };
     // F10: the mirror's rows element: the refit class (classList), the custom property (style.setProperty, never a style attribute) and the animationend listener
@@ -4549,7 +4553,10 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     focusState.el = null;
     const ctx = {
       paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null, cut: null, waiters: [], sent: 0 },
-      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null }, SC: { planner: null, scrolled: false },
+      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null }, SC: { planner: null, scrolled: false },
+      // F16: the grow's state, the pure rules, what the form is told, the page's dialog and a clock the test sets (growTick reads Date.now())
+      GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal,
+      W: { dialog: null, pane: 'ok' }, renderMode: () => log.df.push(fns.growing()), Date: { now: () => clk.now },
       P: { on: false }, // F11: Type into pane, read by the real drawMirror
       $: (id) => els[id],
       call: async (path, opts) => { log.calls.push({ path, ...opts }); return replies.length ? replies.shift() : FITTED; },
@@ -4581,7 +4588,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     let fns = null;
     ctx.HOLD = createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout, timeout: (pending, c) => fns.holdTimeout(pending, c), ended: () => fns.holdEnded() });
     // F11: `realDraw` runs the page's own drawMirror (it sets M.cut and shows the strip) instead of the spy
-    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled${realDraw ? ', drawMirror' : ''} })`, ctx);
+    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick${realDraw ? ', drawMirror' : ''} })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
       ...fns, ctx, log, clk, page, term, rows, cutEl, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
@@ -5244,6 +5251,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       FIT: { planner: { start: () => order.push('start'), ...planner }, panel: { cols: 100, rows: 30 }, scale: 1 },
       scaleFor: scaleForReal, setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
       hiddenRows: hiddenRowsReal, drawnScale: drawnScaleReal, // F11 (requirement change: the scale is worked out by drawnScale, which is scaleFor when no rows are hidden)
+      scaleRows: scaleRowsReal, GR: GROW_IDLE_REAL, growTick() {}, // F16 (requirement change: fitScale counts the rows through scaleRows, fitCaptured and the 304 end with growTick)
     };
     const src = `${fnOf('function handleCapture(r)')}\n${fnOf('function fitScale()')}\n${fnOf('function fitCaptured()')}; handleCapture`;
     if (fitCaptured) ctx.fitCaptured = fitCaptured;
@@ -6357,7 +6365,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const sized = fnOf('function fitSized(pane)');
     assert.match(sized, /const plainBefore = M\.body\.alt === true && M\.draft !== null;/);
     assert.match(sized, /const modeBefore = plainBefore && M\.body\.modeConfirmed === true && modeKey\(M\.body\.mode\) !== 'unknown';/);
-    assert.match(sized, /HOLD\.start\(\{ want: \{ cols: pane\.cols, rows: pane\.rows \}, plainBefore, modeBefore \}\);/);
+    assert.match(sized, /HOLD\.start\(\{ want: \{ cols: pane\.cols, rows: pane\.rows \}, plainBefore, modeBefore, cutBefore \}\);/); // F16 (requirement change): and cutBefore
     const timeout = fnOf('function holdTimeout(pending, ctx)');
     assert.match(timeout, /roomStep\(\{[^}]*plainBefore: ctx\.plainBefore, modeBefore: ctx\.modeBefore,/);
     assert.match(timeout, /HOLD\.start\(\{ want: null, plainBefore: ctx\.plainBefore, modeBefore: ctx\.modeBefore \}\);/);
@@ -7064,6 +7072,349 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.doesNotMatch(src, /setAttribute\('style'|\.style\.cssText|innerHTML|textContent =|\.style\.[a-z]+ =/);
     assert.equal([...code(JS['session.js']).matchAll(/--fit-scale/g)].length, 1);
   });
+
+  // ---- F16 (design F16 5 and 11.4): more rows for a question Claude clips at its top ------------------------------------------------------------
+  const CUTD = { state: 'unreadable', kind: 'ask', reason: 'cut' };
+  const WHOLE = { state: 'ready', kind: 'ask', at: 'question', sig: '0123456789abcdef' };
+  /** What the drawn capture says about the dialog: the page's own W.dialog and the raw body the hold judges. */
+  const showDialog = (r, dialog) => { r.ctx.W.dialog = dialog; r.ctx.M.body = { ...r.ctx.M.body, dialog }; };
+  /** The page with a 100 x 30 panel and pane, the fit started and its first answer given (`state`); `more` are the answers to the next requests. */
+  const growRig = async ({ state = 'fitted', more = [] } = {}) => {
+    const r = rig({ replies: [answerAt(state, { cols: 100, rows: 30 }), ...more] });
+    r.wireFit();
+    r.ctx.M.cols = 100;
+    r.ctx.M.rows = 30;
+    r.ctx.M.body = shot(100, 30).body;
+    r.ctx.M.draft = null;
+    r.fitCaptured();
+    await r.clk.advance(0);
+    return r;
+  };
+  const rowsOfPuts = (r) => r.log.calls.filter((c) => c.method === 'PUT').map((c) => c.json.rows);
+  /** The pane is now `rows` tall in the drawn frame (the redraw hold let the capture through). */
+  const paneAt = (r, rows) => { r.ctx.M.rows = rows; r.ctx.HOLD.end(); };
+  /** A cut question seen on a capture, and again on a 304 250 ms later: the first step is asked. */
+  const firstStep = async (r) => {
+    showDialog(r, CUTD);
+    r.fitCaptured();
+    await r.clk.advance(250);
+    r.handleCapture({ status: 304, body: null });
+  };
+
+  test('(+) F16: a capture with a cut question, then a 304 250 ms on: one PUT at once with growNext(base) rows (no 250 ms debounce), the base columns and open: false', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    showDialog(r, CUTD);
+    r.fitCaptured();
+    assert.deepEqual(calls(r), [PUT(100, 30, true)], 'the first look asks nothing');
+    await r.clk.advance(250);
+    r.handleCapture({ status: 304, body: null });
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 60, false)], 'sent in the same call, not 250 ms later');
+    assert.equal(r.ctx.GR.phase, 'stepping');
+    assert.equal(r.ctx.GR.rows, 60);
+  });
+
+  test('(−) F16: a cut seen once and gone before it was confirmed asks nothing, and a question that is whole asks nothing', async () => {
+    const r = await growRig();
+    showDialog(r, CUTD);
+    r.fitCaptured();
+    await r.clk.advance(100);
+    r.handleCapture({ status: 304, body: null });
+    showDialog(r, WHOLE);
+    await r.clk.advance(300);
+    r.handleCapture({ status: 304, body: null });
+    await r.clk.advance(1000);
+    r.handleCapture({ status: 304, body: null });
+    assert.deepEqual(rowsOfPuts(r), [30]);
+    assert.equal(r.ctx.GR.phase, 'idle');
+  });
+
+  test('(−) F16: the same cut question with the chip in `terminal` (a terminal has the size) asks nothing, however long it lasts', async () => {
+    const r = await growRig({ state: 'terminal' });
+    await firstStep(r);
+    for (let i = 0; i < 12; i += 1) {
+      await r.clk.advance(250);
+      r.handleCapture({ status: 304, body: null });
+    }
+    assert.deepEqual(rowsOfPuts(r), [30]);
+    assert.equal(r.ctx.GR.phase, 'idle');
+  });
+
+  test('(−) F16: the same cut question for a plan, for a shortened text (clipped) and with no planner or base asks nothing; a gone or lost pane neither', async () => {
+    for (const dialog of [{ state: 'unreadable', kind: 'plan', reason: 'cut' }, { state: 'unreadable', kind: 'ask', reason: 'clipped' }]) {
+      const r = await growRig();
+      showDialog(r, dialog);
+      r.fitCaptured();
+      await r.clk.advance(250);
+      r.handleCapture({ status: 304, body: null });
+      assert.deepEqual(rowsOfPuts(r), [30], dialog.kind + dialog.reason);
+    }
+    for (const stop of [(r) => { r.ctx.FIT.base = null; }, (r) => { r.ctx.FIT.planner = null; }, (r) => { r.ctx.M.gone = true; }, (r) => { r.ctx.M.fatal = true; }]) {
+      const r = await growRig();
+      stop(r);
+      showDialog(r, CUTD);
+      assert.doesNotThrow(() => r.growTick());
+      await r.clk.advance(250);
+      assert.doesNotThrow(() => r.growTick());
+      assert.deepEqual(rowsOfPuts(r), [30]);
+    }
+  });
+
+  test('(+) F16: fitCommit while grown asks the grown rows with the new base columns (a panel resize keeps the question readable); idle it asks the base', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    await firstStep(r);
+    await r.clk.advance(0); // the answer to the step
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 });
+    r.term.clientWidth = 24 + 8 * 110 + 1;
+    r.log.ro();
+    await r.clk.advance(250);
+    assert.deepEqual(calls(r).slice(-1), [PUT(110, 60, false)]);
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 110, rows: 30 });
+    const idle = await growRig();
+    idle.term.clientWidth = 24 + 8 * 110 + 1;
+    idle.log.ro();
+    await idle.clk.advance(250);
+    assert.deepEqual(calls(idle).slice(-1), [PUT(110, 30, false)]);
+  });
+
+  test('(+) F16: the room step keeps FIT.base in step with its ask, and asks the grown rows when they are more', async () => {
+    const r = await heldRig({ more: [answerAt('fitted', { cols: 210, rows: 32 })] });
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 145, rows: 22 }, 'a commit: the panel itself');
+    r.handleHeld(shot(145, 21));
+    await r.clk.advance(HOLD_MS);
+    assert.deepEqual(calls(r).slice(-1), [PUT(210, 33, false)]);
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 210, rows: 33 }, 'the grow would count from the room size');
+    const g = await heldRig({ more: [answerAt('fitted', { cols: 210, rows: 32 })] });
+    g.ctx.GR = { ...GROW_IDLE_REAL, phase: 'held', rows: 66 };
+    g.handleHeld(shot(145, 21));
+    await g.clk.advance(HOLD_MS);
+    assert.deepEqual(calls(g).slice(-1), [PUT(210, 66, false)], 'the grown rows are more than the room: they stay asked');
+  });
+
+  test('(+) F16: fitScale keeps the pre-grow scale for a 60-row pane in a 30-row panel while grown and fitted; (−) not in terminal, not when idle', async () => {
+    const r = await growRig();
+    r.ctx.GR = { ...GROW_IDLE_REAL, phase: 'held', rows: 60 };
+    r.ctx.M.rows = 60;
+    const props = r.log.props.length;
+    r.fitScale();
+    assert.equal(r.ctx.FIT.scale, 1);
+    assert.equal(r.log.props.length, props, 'the text keeps its size');
+    r.ctx.FIT.state = 'terminal';
+    r.fitScale();
+    assert.deepEqual(norm(r.log.props.slice(props)), [['--fit-scale', '0.5']], 'a pane the panel does not hold is scaled as before');
+    const idle = await growRig();
+    idle.ctx.M.rows = 60;
+    idle.fitScale();
+    assert.equal(idle.ctx.FIT.scale, 0.5, 'no grow: as before');
+    const border = await growRig();
+    border.ctx.GR = { ...GROW_IDLE_REAL, phase: 'stepping', rows: 60 };
+    border.ctx.FIT.d = 1;
+    border.ctx.M.rows = 59;
+    border.fitScale();
+    assert.equal(border.ctx.FIT.scale, 1, 'the border row is taken off the base: the 29 rows of the pane without the grow fit the 30-row panel (the pane\'s own 59 would not)');
+  });
+
+  // RV16 I1 (round 1): the base the commit asked counts Claude's hidden input-box rows, but no input box is on screen while a question is open
+  /** F11's lease on a 145 x 22 panel, then a question cut at its top and its grow to the pane size `grown`; returns the rig and the text scales on the way. */
+  const hiddenGrow = async ({ first, held, panes, grown, stepRows }) => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: panes }), answerAt('fitted', { cols: 145, rows: grown })] });
+    r.wireFit();
+    r.handleCapture(first);
+    await r.clk.advance(0);
+    r.handleHeld(held);
+    const scale = { before: r.ctx.FIT.scale, props: scaleProps(r).length };
+    r.ctx.M.draft = null; // a question is open: the drawn capture has no input box, so nothing is cut off the bottom any more
+    r.ctx.M.cut = null;
+    await firstStep(r);
+    await r.clk.advance(0);
+    scale.cut = r.ctx.FIT.scale;
+    assert.deepEqual(rowsOfPuts(r), [stepRows[0], stepRows[1]], 'the commit, then the first step');
+    paneAt(r, grown);
+    showDialog(r, WHOLE);
+    r.fitCaptured();
+    scale.grown = r.ctx.FIT.scale;
+    assert.equal(r.ctx.GR.phase, 'held');
+    return { r, scale };
+  };
+
+  test('(+) F16 (I1): with hidden rows at the commit the text keeps its size when the pane grows (the hidden rows are no part of the pane without the grow)', async () => {
+    const { r, scale } = await hiddenGrow({ first: fshot(171, 45), held: fshot(145, 25), panes: 25, grown: 51, stepRows: [26, 52] });
+    assert.equal(r.ctx.FIT.hide, 6);
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 145, rows: 26 }, 'the base counts the 6 hidden rows');
+    assert.equal(scale.before, 1);
+    assert.equal(scale.cut, 1);
+    assert.equal(scale.grown, 1, 'with the hidden rows counted (51 - 25 + 19 rows) it would be 0.88');
+    assert.deepEqual(scaleProps(r).slice(scale.props), [], 'the text scale is not even set again: it keeps the 1 it had before the question');
+  });
+
+  test('(−) F16 (I1): without hidden rows at the commit it is as it was (the base is the panel itself); and the same rig in terminal is not pinned', async () => {
+    const { r, scale } = await hiddenGrow({ first: fshot(171, 45, undefined, { draft: null }), held: fshot(145, 21, undefined, { draft: null }), panes: 21, grown: 43, stepRows: [22, 44] });
+    assert.equal(r.ctx.FIT.hide, 0);
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 145, rows: 22 });
+    assert.deepEqual([scale.before, scale.cut, scale.grown], [1, 1, 1]);
+    r.ctx.FIT.state = 'terminal';
+    r.ctx.M.rows = 43;
+    r.fitScale();
+    assert.ok(r.ctx.FIT.scale < 1, 'a pane the panel does not hold is scaled as before: ' + r.ctx.FIT.scale);
+  });
+
+  test('(−) F16 (I1): the hidden rows of an earlier commit do not count after a new commit without them (FIT.hide is the last commit\'s)', async () => {
+    const { r } = await hiddenGrow({ first: fshot(171, 45), held: fshot(145, 25), panes: 25, grown: 51, stepRows: [26, 52] });
+    r.ctx.FIT.hide = 0; // what a commit that saw no hidden rows leaves
+    r.ctx.M.rows = 51;
+    r.ctx.FIT.scaledAt = null;
+    r.fitScale();
+    assert.ok(r.ctx.FIT.scale < 1, 'the base 26 less the border row: 25 rows of the pane without the grow, in 22 rows: ' + r.ctx.FIT.scale);
+  });
+
+  test('(+) F16: fitSized during a step starts the hold with cutBefore: true; (−) outside a step, on a whole question or with no question it is false', async () => {
+    const started = [];
+    const spy = { start: (a) => started.push(norm(a)), end() {}, get active() { return false; } };
+    const run = async (G, dialog) => {
+      const r = await growRig();
+      r.ctx.HOLD = spy;
+      r.ctx.GR = G;
+      showDialog(r, dialog);
+      r.fitSized({ cols: 100, rows: 60 });
+    };
+    started.length = 0;
+    await run({ ...GROW_IDLE_REAL, phase: 'stepping', rows: 60 }, CUTD);
+    assert.deepEqual(started, [{ want: { cols: 100, rows: 60 }, plainBefore: false, modeBefore: false, cutBefore: true }]);
+    for (const [G, dialog] of [[GROW_IDLE_REAL, CUTD], [{ ...GROW_IDLE_REAL, phase: 'held', rows: 60 }, CUTD], [{ ...GROW_IDLE_REAL, phase: 'stepping', rows: 60 }, WHOLE], [{ ...GROW_IDLE_REAL, phase: 'stepping', rows: 60 }, null], [{ ...GROW_IDLE_REAL, phase: 'spent' }, CUTD]]) {
+      started.length = 0;
+      await run(G, dialog);
+      assert.equal(started[0].cutBefore, false, `${G.phase} ${dialog?.state ?? 'no dialog'}`);
+    }
+  });
+
+  test('(+) F16: the grow end to end: step, the frame arrives, held; the question closes, a second of quiet, then one PUT with the base rows', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 30 })] });
+    await firstStep(r);
+    await r.clk.advance(0);
+    assert.deepEqual(rowsOfPuts(r), [30, 60]);
+    paneAt(r, 60);
+    showDialog(r, WHOLE);
+    r.ctx.M.rows = 60;
+    r.fitCaptured();
+    assert.equal(r.ctx.GR.phase, 'held');
+    for (let i = 0; i < 6; i += 1) { await r.clk.advance(250); r.handleCapture({ status: 304, body: null }); }
+    assert.deepEqual(rowsOfPuts(r), [30, 60], 'it stays grown while the question is open');
+    showDialog(r, null);
+    r.fitCaptured(); // the first quiet look
+    for (let i = 0; i < 3; i += 1) { await r.clk.advance(250); r.handleCapture({ status: 304, body: null }); }
+    assert.deepEqual(rowsOfPuts(r), [30, 60], '750 ms of quiet: not yet');
+    await r.clk.advance(250);
+    r.handleCapture({ status: 304, body: null });
+    assert.deepEqual(rowsOfPuts(r), [30, 60, 30], 'a second of quiet: the base rows, once');
+    assert.equal(r.ctx.GR.phase, 'idle');
+    for (let i = 0; i < 4; i += 1) { await r.clk.advance(250); r.handleCapture({ status: 304, body: null }); }
+    assert.deepEqual(rowsOfPuts(r), [30, 60, 30], 'and no more');
+  });
+
+  test('(+) F16: a step whose size never shows is given up after 6 s (the base rows back, no new try), and a new base size gives it one new try', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 30 })] }); // the ask is answered, but the pane stays 30 rows
+    await firstStep(r);
+    await r.clk.advance(0);
+    assert.equal(r.ctx.GR.phase, 'stepping');
+    for (let i = 0; i < 23; i += 1) { await r.clk.advance(250); r.handleCapture({ status: 304, body: null }); }
+    assert.equal(r.ctx.GR.phase, 'stepping', '5.75 s: still waiting');
+    await r.clk.advance(250);
+    r.handleCapture({ status: 304, body: null });
+    assert.equal(r.ctx.GR.phase, 'spent');
+    assert.deepEqual(calls(r).slice(-1).map((c) => c.json.rows), [30], 'the base size is asked back');
+    const sent = r.log.calls.length;
+    for (let i = 0; i < 12; i += 1) { await r.clk.advance(250); r.handleCapture({ status: 304, body: null }); }
+    assert.deepEqual(rowsOfPuts(r).slice(-1), [30], 'no new grow for this question');
+    r.term.clientWidth = 24 + 8 * 110 + 1;
+    r.log.ro();
+    await r.clk.advance(250);
+    assert.equal(r.ctx.GR.phase, 'idle', 'the base changed: a new situation');
+    r.fitCaptured();
+    await r.clk.advance(250);
+    r.handleCapture({ status: 304, body: null });
+    assert.deepEqual(calls(r).slice(-1), [PUT(110, 60, false)]);
+    assert.ok(r.log.calls.length > sent);
+  });
+
+  test('(+) F16: the form is told `growing` only while a step runs and the fit is `fitted`: the page is drawn again when it starts and when it ends', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    assert.deepEqual(r.log.df, [], 'an ordinary capture draws nothing more');
+    await firstStep(r);
+    assert.deepEqual(r.log.df, [true], 'the step started: the form keeps its Reading note');
+    assert.equal(r.growing(), true);
+    paneAt(r, 60);
+    showDialog(r, WHOLE);
+    r.fitCaptured();
+    assert.deepEqual(r.log.df, [true, false], 'held: the step is over');
+    assert.equal(r.growing(), false);
+    r.ctx.GR = { ...GROW_IDLE_REAL, phase: 'stepping', rows: 60 };
+    r.ctx.FIT.state = 'terminal';
+    assert.equal(r.growing(), false, 'a step that waits for the fit to come back does not hold the banner');
+    r.ctx.FIT.state = 'fitted';
+    r.ctx.GR = { ...GROW_IDLE_REAL, phase: 'spent' };
+    assert.equal(r.growing(), false);
+  });
+
+  test('(+) F16: setGone and the 403 branch reset the grow; (−) a 304 or a 500 does not', async () => {
+    const held = () => ({ ...GROW_IDLE_REAL, phase: 'held', rows: 60 });
+    const gone = await growRig();
+    gone.ctx.GR = held();
+    gone.setGone();
+    assert.deepEqual(norm(gone.ctx.GR), norm(GROW_IDLE_REAL));
+    const lost = await growRig();
+    lost.ctx.GR = held();
+    lost.handleCapture({ status: 403, body: null });
+    assert.deepEqual(norm(lost.ctx.GR), norm(GROW_IDLE_REAL));
+    const same = await growRig();
+    same.ctx.GR = held();
+    showDialog(same, WHOLE);
+    same.handleCapture({ status: 304, body: null });
+    same.handleCapture({ status: 500, body: { message: 'x' } });
+    assert.equal(same.ctx.GR.phase, 'held');
+  });
+
+  test('(+) F16: the chip\'s panel shows the grow line while grown and drops it after the size back (an open panel is drawn again)', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 30 })] });
+    r.openFitPop();
+    assert.equal(r.popHint.hidden, true);
+    await firstStep(r);
+    assert.equal(r.popHint.hidden, false);
+    assert.match(r.popHint.textContent, /^Claude's question is taller than this panel, so nika gave the pane more rows while it is open\./);
+    paneAt(r, 60);
+    showDialog(r, WHOLE);
+    r.fitCaptured();
+    assert.match(r.popHint.textContent, /taller than this panel/, 'held: still there');
+    showDialog(r, null);
+    r.fitCaptured();
+    await r.clk.advance(1000);
+    r.handleCapture({ status: 304, body: null });
+    assert.equal(r.popHint.hidden, true, 'the size back: the line is gone');
+    assert.equal(r.popHint.textContent, '');
+  });
+
+  test('(+) F16: the code is where the design puts it: the commit and the room step count the grow, the scale pins, the hold knows its step, the reset sits in setGone and the 403 branch', () => {
+    assert.match(fnOf('function fitCommit()'), /FIT\.base = ask;\s*GR = growRebase\(GR, ask\.cols, ask\.rows\);\s*const want = growAsk\(ask, GR\);\s*FIT\.planner\?\.size\(want\.cols, want\.rows\);/);
+    assert.match(fnOf('function holdTimeout(pending, ctx)'), /FIT\.base = ask;\s*const want = growAsk\(ask, GR\);/);
+    assert.match(fnOf('function holdTimeout(pending, ctx)'), /FIT\.planner\?\.size\(want\.cols, want\.rows, \{ now: true \}\);/);
+    assert.match(fnOf('function fitScale()'), /scaleRows\(\{ paneRows: M\.rows, G: GR, fitted: FIT\.state === 'fitted', baseRows: FIT\.base\?\.rows, d: FIT\.d, hide: FIT\.hide \}\)/);
+    assert.match(fnOf('function fitScale()'), /FIT\.scaledAt = \{ cols: M\.cols, rows: M\.rows \};/, 'the record keeps the real pane size');
+    assert.match(fnOf('function fitSized(pane)'), /const cutBefore = GR\.phase === 'stepping' && cutQuestion\(M\.body\.dialog\);\s*HOLD\.start\(\{ want: \{ cols: pane\.cols, rows: pane\.rows \}, plainBefore, modeBefore, cutBefore \}\);/);
+    assert.match(fnOf('function drawFitPop()'), /fitPanelView\(FIT\.view, \{ \.\.\.FIT\.ui, room: FIT\.room, grow: GR\.phase === 'stepping' \|\| GR\.phase === 'held' \}\)/);
+    assert.match(fnOf('function fitCaptured()'), /growTick\(\);\s*\}/);
+    assert.match(fnOf('function handleCapture(r)'), /if \(r\.status === 304\) \{\s*recovered\(\);\s*try \{\s*growTick\(\);\s*\} catch \{[^}]*\}\s*return;\s*\}/);
+    assert.match(fnOf('function setGone()'), /M\.gone = true;\s*GR = GROW_IDLE;/);
+    assert.match(SRC, /if \(r\.status === 403\) \{\s*M\.fatal = true;\s*clearTimeout\(M\.timer\);\s*SC\.planner\?\.close\(\);\s*GR = GROW_IDLE;/);
+    assert.match(fnOf('function renderMode()'), /DF\?\.render\(\{ pane: W\.pane, dialog: W\.dialog, name: A\.name, attention: A\.attention, growing: growing\(\) \}\);/);
+    assert.match(fnOf('function growing()'), /return GR\.phase === 'stepping' && FIT\.state === 'fitted';/);
+    assert.match(SRC, /^let GR = GROW_IDLE;/m);
+    assert.match(JS['session.js'], /import \{[^}]*\bGROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion\b[^}]*\} from '\.\/fit-ui\.js';/);
+  });
+
+  test('(−) F16: the new page code keeps constraint 6: no markup sink, no style attribute, no inline script, no new request of its own', () => {
+    const src = ['function growing()', 'function growTick()'].map(fnOf).join('\n');
+    assert.deepEqual(findSinks(src), []);
+    assert.doesNotMatch(src, /innerHTML|insertAdjacentHTML|\.style\b|setAttribute|document\.|fetch\(|call\(|eval\(/);
+    assert.equal([...code(JS['session.js']).matchAll(/--fit-scale/g)].length, 1, 'the scale is still set in one place');
+  });
 });
 
 // ---- 0.5, W3-T3: scrolling Claude's view (the wheel, PgUp/PgDn/Home/End, Jump to live, the corner note) ----------------------------------
@@ -7227,7 +7578,7 @@ describe('W3-T3: scroll in the session window (wiring)', () => {
     const probe = Object.assign(el('fit-probe'), { getBoundingClientRect: () => ({ width: 800, height: 18 }) });
     const byId = { term, 'jump-live': jump, 'paused-note': note, composer, 'hist-scroll': el('hist-scroll'), 'fit-probe': probe };
     const ctx = {
-      paneId: pane, M: { gone: false, fatal: false, frozen: false, cols: 120, rows: 36, etag: 'ab', timer: 0, body, draft: cleanDraftReal(body?.draft) }, P: { on: false }, FIT: { scale: 1, planner: null },
+      paneId: pane, M: { gone: false, fatal: false, frozen: false, cols: 120, rows: 36, etag: 'ab', timer: 0, body, draft: cleanDraftReal(body?.draft) }, P: { on: false }, FIT: { scale: 1, planner: null }, GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, // F16 (requirement change): setGone resets the grow
       $: (id) => byId[id], call: async (path, { signal, ...opts } = {}) => { log.calls.push({ path, ...opts }); log.signals.push(signal); return replies.length ? replies.shift() : { status: 200, body: { sent: 1, scrolled: true } }; },
       showProblem: (m, k, ms) => log.problems.push([m, k, ms]), announce: (m) => log.said.push(m), kickMirror: (ms) => log.kicks.push(ms),
       setLive: (state, text) => log.lives.push([state, text]), MID: ' - ', TIMES: 'x', h: hReal, icon: iconReal, AbortController,
@@ -7878,11 +8229,14 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
       paneId: '%12', SW: { parts: [{}], busy: null }, W: { pane: 'ok', dialog: 'D', mode: 'default', confirmed: true, msg: null, promptOpen: true },
       A: { kind: 'attn', name: 'builder-1', attention: 'Claude has a question' }, switcherState: () => ({ reason: '' }),
       renderTag: stub('tag'), renderSegments: stub('segments'), renderWhy: stub('why'), renderQuick: stub('quick'), renderAttn: stub('attn'), renderPrompt: stub('prompt'),
-      DF: { render: (a) => { order.push('form'); args = a; } }, SV: null,
+      DF: { render: (a) => { order.push('form'); args = a; } }, SV: null, growing: () => false, // F16 (requirement change): the form is also told whether nika is growing the pane
     };
     mk(['function renderMode()'], ctx).renderMode();
     assert.deepEqual(order, ['tag', 'segments', 'why', 'quick', 'attn', 'prompt', 'form']);
-    assert.deepEqual(norm(args), { pane: 'ok', dialog: 'D', name: 'builder-1', attention: 'Claude has a question' });
+    assert.deepEqual(norm(args), { pane: 'ok', dialog: 'D', name: 'builder-1', attention: 'Claude has a question', growing: false });
+    ctx.growing = () => true;
+    mk(['function renderMode()'], ctx).renderMode();
+    assert.equal(args.growing, true, 'what growing() says goes to the form as it is');
   });
 
   test('(−) P3: before the form exists (no pane, or boot not done) renderMode draws no form and does not fail', () => {

@@ -4,7 +4,9 @@
 // header chip, a button that opens a panel with the reason and, where it helps, Fit again (F1, design F12). F10 (design F10): the panel is measured
 // only at fixed moments (remeasure), the page may ask once for room for Claude's footer (askSize, roomStep) and keeps drawing the last good frame
 // until Claude has repainted at the new size (frameReady, createRedrawHold). F11 (design F11): while the mirror hides Claude's input box and footer under its
-// one-row strip, the size asked also counts those hidden rows (hiddenRows, fillSize) and the text scale counts only the rows drawn (drawnScale). This file has no DOM and makes no request of its own: session.js hands
+// one-row strip, the size asked also counts those hidden rows (hiddenRows, fillSize) and the text scale counts only the rows drawn (drawnScale). F16 (design F16): while a
+// question Claude draws taller than the pane is cut off at its top and the fit is `fitted`, the page asks for more rows, one step at a time (growStep, growNext, growAsk), keeps
+// the text scale of the size without the grow (scaleRows) and holds the last frame until the question is whole (frameReady, cutBefore). This file has no DOM and makes no request of its own: session.js hands
 // createFitPlanner a route, a clock and a chip sink, so Node tests every rule (test/fit-ui.test.js). A server answer is data: chipView looks its
 // words up in fixed tables, so no string of the server ever reaches the page.
 // Keep this file ASCII: write every symbol as an escape.
@@ -20,6 +22,14 @@ export const HOLD_POLL_MS = 100; // the mirror polls this often while a hold run
 export const ROOM_ROWS = 33; // the rows asked for once when Claude's input box and footer did not fit the panel (a pane of 32 holds a 7-line task list)
 export const REFIT_MS = 120; // the new frame fades (and zooms) in over this long; none with prefers-reduced-motion
 export const HIDE_MAX = 24; // more hidden rows than a readable box (13 + 2 rules) and a footer can make: the screen is not one F11 knows, so nothing is added
+export const GROW_STEP_MIN = 12; // F16: a step adds at least this many rows
+export const GROW_CAP = 120; // F16: the most window rows a grow asks (the reader finds a strip within 100 rows of the footer, plus a rule, the task block and the border row)
+export const GROW_CONFIRM_MS = 200; // F16: a cut question must still be cut this long after it was first seen (the next capture or 304)
+export const GROW_SETTLE_MS = 800; // F16: after the pane shows the grown size, Claude's repaint (340-680 ms) has this long before "still cut" counts
+export const GROW_WAIT_MS = 6000; // F16: a step whose size the drawn frame never reaches in this long (while fitted) is given up (more than BEAT_MS)
+export const GROW_CLOSE_MS = 1000; // F16: no question on screen for this long: it is closed and the size goes back
+/** F16: the grow's state at rest. phase: idle, stepping, held or spent; rows: the window rows asked (0 when none); askedAt: when the last step was asked; settleAt: when "still cut" counts (null: not started); cutSince: when a cut was first seen while idle; quietSince: when the question went off the screen; base: the base size a given-up grow gave up at, `<cols>x<rows>`. */
+export const GROW_IDLE = Object.freeze({ phase: 'idle', rows: 0, askedAt: 0, settleAt: null, cutSince: null, quietSince: null, base: '' });
 const COLS = [40, 400]; // the route's range (design 5)
 const ROWS = [10, 200];
 const PAD_X = 24; // .term padding: 12 px left and right
@@ -129,9 +139,12 @@ export function drawnScale({ frame, cols, rows, hide, strip }) {
  * size must match, and then at least one of: a readable box, a prompt, a dialog, no full-screen view, or nothing to wait for (!plainBefore).
  * F12: with `modeBefore` exactly true (Claude's mode line was readable before the resize) a readable box counts only when the capture also has
  * `modeConfirmed` exactly true; the other four exits are as they were.
+ * F16: with `cutBefore` exactly true (a grow step for a question clipped at the top) the frame is ready at the size when its question is no longer clipped at the top
+ * (cutQuestion), whatever else is on screen: nothing but the repaint of that question is waited for.
  */
-export function frameReady({ body, draft, want, plainBefore, modeBefore } = {}) {
+export function frameReady({ body, draft, want, plainBefore, modeBefore, cutBefore } = {}) {
   if (!body || !want || body.cols !== want.cols || !Array.isArray(body.rows) || body.rows.length !== want.rows) return false;
+  if (cutBefore === true) return !cutQuestion(body.dialog);
   const box = hasBox(draft) && (modeBefore !== true || body.modeConfirmed === true);
   return box || Boolean(body.prompt) || body.dialog != null || body.alt !== true || plainBefore !== true;
 }
@@ -150,6 +163,80 @@ export function roomStep({ room, frameRows, state, plainBefore, want, body, draf
   return body.alt === true && !body.prompt && body.dialog == null && (!hasBox(draft) || (modeBefore === true && body.modeConfirmed !== true));
 }
 
+// ---- F16: more rows for a question Claude clips at its top ---------------------------------------------------------------------
+
+/** F16: the next step's window rows: double, at least GROW_STEP_MIN more, at most GROW_CAP (equal to `rows` or less when there is no room left). */
+export const growNext = (rows) => Math.min(GROW_CAP, Math.max(rows + GROW_STEP_MIN, rows * 2));
+
+/** F16: a question clipped at the top (a raw capture dialog or a cleanDialog answer): rows can show it. A plan, a text shortened with an ellipsis (`clipped`) and every other reason are not. */
+export const cutQuestion = (d) => d !== null && typeof d === 'object' && d.kind === 'ask' && d.state === 'unreadable' && d.reason === 'cut';
+
+const isGrown = (G) => G?.phase === 'stepping' || G?.phase === 'held';
+
+/** F16: the size asked: `base` ({ cols, rows }, the commit's fillSize) or, while grown, the grow's rows when they are more (never above the route's 200). */
+export function growAsk(base, G) {
+  return isGrown(G) && Number.isInteger(G.rows) && G.rows > base.rows ? { cols: base.cols, rows: Math.min(ROWS[1], G.rows) } : { cols: base.cols, rows: base.rows };
+}
+
+/**
+ * F16: the rows the text scale counts: while grown and fitted, the pane rows without the grow, else the pane's. Those are the `baseRows` window rows minus the
+ * border row `d` and minus the `hide` rows of the last commit (fillSize adds Claude's hidden input-box rows to the base, but no input box is on screen while a
+ * question is open, so they are never drawn: D8, the text never shrinks while grown). A `hide` that is not valid (validHide) counts as 0, as in fillSize.
+ */
+export function scaleRows({ paneRows, G, fitted, baseRows, d, hide }) {
+  const own = Number.isInteger(baseRows) ? baseRows - (d === 1 ? 1 : 0) - (validHide(hide) ? hide : 0) : 0;
+  return isGrown(G) && fitted === true && own >= 1 ? Math.min(paneRows, own) : paneRows;
+}
+
+/**
+ * F16: one look at the screen. `G` is the grow's state (GROW_IDLE at rest), input { now, dialog, fitted, paneRows, baseRows, baseCols }:
+ *   dialog   cleanDialog's answer for the capture drawn last (null: none)
+ *   fitted   the chip state of the latest fit answer is exactly 'fitted'
+ *   paneRows the drawn capture's row count
+ *   baseRows, baseCols the size the fit asks without the grow
+ * Returns { G, ask }: ask null (nothing to send), { rows } (ask that many window rows now) or { back: true } (ask the base size now).
+ */
+export function growStep(G, { now, dialog, fitted, paneRows, baseRows, baseCols }) {
+  const spent = { ...GROW_IDLE, phase: 'spent', base: `${baseCols}x${baseRows}` };
+  const cut = cutQuestion(dialog);
+  if (dialog?.kind !== 'ask') { // no question on screen (none, a plan, a prompt, kind null)
+    if (G.phase === 'idle') return { G: G.cutSince === null ? G : { ...G, cutSince: null }, ask: null };
+    const quietSince = G.quietSince ?? now;
+    if (now - quietSince < GROW_CLOSE_MS) return { G: { ...G, quietSince }, ask: null };
+    return { G: GROW_IDLE, ask: isGrown(G) ? { back: true } : null }; // closed: a grown pane goes back, a spent one already is
+  }
+  const g = G.quietSince === null ? G : { ...G, quietSince: null };
+  if (fitted !== true) { // parked: nothing moves, a step's clocks wait for `fitted`
+    if (g.phase === 'stepping') return { G: { ...g, askedAt: now, settleAt: null }, ask: null };
+    if (g.phase === 'idle' && g.cutSince !== null) return { G: { ...g, cutSince: null }, ask: null };
+    return { G: g, ask: null };
+  }
+  if (g.phase === 'spent') return { G: g, ask: null };
+  if (g.phase === 'idle') {
+    if (!cut) return { G: g.cutSince === null ? g : { ...g, cutSince: null }, ask: null };
+    if (g.cutSince === null) return { G: { ...g, cutSince: now }, ask: null };
+    if (now - g.cutSince < GROW_CONFIRM_MS) return { G: g, ask: null };
+    const rows = growNext(baseRows);
+    if (!(rows > baseRows)) return { G: spent, ask: null }; // the panel is at the cap already
+    return { G: { ...GROW_IDLE, phase: 'stepping', rows, askedAt: now }, ask: { rows } };
+  }
+  if (!cut) return { G: g.phase === 'held' ? g : { ...g, phase: 'held', settleAt: null }, ask: null }; // readable, or the top is on screen
+  if (paneRows < g.rows - 1) { // the drawn frame is not at the grown size yet (the border row d is 0 or 1)
+    if (g.phase === 'held') return { G: { ...g, phase: 'stepping', askedAt: now, settleAt: null }, ask: null };
+    if (now - g.askedAt >= GROW_WAIT_MS) return { G: spent, ask: { back: true } };
+    return { G: g, ask: null };
+  }
+  if (g.settleAt === null) return { G: { ...g, phase: 'stepping', settleAt: now + GROW_SETTLE_MS }, ask: null };
+  if (now < g.settleAt) return { G: g, ask: null };
+  const from = Math.max(g.rows, baseRows);
+  const rows = growNext(from);
+  if (!(rows > from)) return { G: spent, ask: { back: true } }; // still cut at the cap
+  return { G: { ...g, phase: 'stepping', rows, askedAt: now, settleAt: null }, ask: { rows } };
+}
+
+/** F16: a commit changed the base size: a given-up question gets one new try at the new size (a resize by the user is a new situation). */
+export const growRebase = (G, cols, rows) => (G.phase === 'spent' && G.base !== `${cols}x${rows}` ? GROW_IDLE : G);
+
 /** F10: where the zoom of a new frame starts, as a scale: the old text scale over the new one when the text grows (never below 0.5), else 1 (a fade only). */
 export function refitFrom(oldScale, newScale) {
   if (!finite(oldScale) || !finite(newScale)) return 1;
@@ -161,17 +248,18 @@ const validPane = (p) => p !== null && typeof p === 'object' && Number.isInteger
 
 /**
  * F10, design F10 4: the redraw hold. After nika's own resize the page keeps drawing the last good frame until a capture shows Claude's input box at the
- * new size, for HOLD_MS at most. `io.after(fn, ms)` / `io.cancel(timer)` are the clock; `io.timeout(pending, { want, plainBefore, modeBefore })` (optional) is told when
+ * new size, for HOLD_MS at most. `io.after(fn, ms)` / `io.cancel(timer)` are the clock; `io.timeout(pending, { want, plainBefore, modeBefore, cutBefore })` (optional) is told when
  * the time is up, with the latest capture that was kept (or null), and may start the hold again from inside (the room step), which keeps it going; if it
  * does not, the hold is over. `io.ended()` (optional) is told every time a hold stops (a ready frame, end(), a timeout that did not start it again).
- * - start({ want, plainBefore, modeBefore }): a hold begins (or, while one runs, goes on with the new `want` and a restarted timer; plainBefore and modeBefore
- *   stay those of the first start). `want` is the answered pane size { cols, rows }, or null while the answer is awaited (nothing is ready then).
+ * - start({ want, plainBefore, modeBefore, cutBefore }): a hold begins (or, while one runs, goes on with the new `want` and a restarted timer; plainBefore,
+ *   modeBefore and cutBefore stay those of the first start). `want` is the answered pane size { cols, rows }, or null while the answer is awaited (nothing is ready then).
  *   F12: modeBefore (exactly true counts) says Claude's mode line was readable in the frame drawn before the resize; the hold then waits for it too.
+ *   F16: cutBefore (exactly true counts) says this resize is a grow step for a question clipped at the top; the hold then waits for the question to be whole (frameReady).
  * - offer(capture = { body, draft, ... }): 'apply' with no hold, or when the capture is ready (the hold ends); else 'keep' (it becomes the pending one).
  * - wait(): a promise that resolves when no hold runs (at once when none does). end(): the hold stops now; active: whether one runs.
  */
 export function createRedrawHold(io) {
-  const H = { on: false, want: null, plainBefore: false, modeBefore: false, pending: null, timer: null, waiters: [] };
+  const H = { on: false, want: null, plainBefore: false, modeBefore: false, cutBefore: false, pending: null, timer: null, waiters: [] };
 
   const stop = () => {
     if (H.timer !== null) io.cancel(H.timer);
@@ -189,17 +277,18 @@ export function createRedrawHold(io) {
     H.timer = io.after(() => {
       H.timer = null;
       if (!H.on) return;
-      try { io.timeout?.(H.pending, { want: H.want, plainBefore: H.plainBefore, modeBefore: H.modeBefore }); } catch { /* the hold ends below all the same */ }
+      try { io.timeout?.(H.pending, { want: H.want, plainBefore: H.plainBefore, modeBefore: H.modeBefore, cutBefore: H.cutBefore }); } catch { /* the hold ends below all the same */ }
       if (H.on && H.timer === null) stop(); // io.timeout did not start it again
     }, HOLD_MS);
   };
 
   return {
-    start({ want, plainBefore, modeBefore } = {}) {
+    start({ want, plainBefore, modeBefore, cutBefore } = {}) {
       if (!H.on) {
         H.on = true;
         H.plainBefore = plainBefore === true;
         H.modeBefore = modeBefore === true;
+        H.cutBefore = cutBefore === true;
         H.pending = null;
       }
       H.want = validPane(want) ? { cols: want.cols, rows: want.rows } : null;
@@ -207,7 +296,7 @@ export function createRedrawHold(io) {
     },
     offer(capture) {
       if (!H.on) return 'apply';
-      if (frameReady({ body: capture?.body, draft: capture?.draft, want: H.want, plainBefore: H.plainBefore, modeBefore: H.modeBefore })) {
+      if (frameReady({ body: capture?.body, draft: capture?.draft, want: H.want, plainBefore: H.plainBefore, modeBefore: H.modeBefore, cutBefore: H.cutBefore })) {
         stop();
         return 'apply';
       }
@@ -278,6 +367,8 @@ const PANEL_NOTE = 'nika could not fit the window just now. It tries again withi
 // F10: the panel of a fitted view while the page asked for the room (the hint replaces the view's own; Fit again clears the room and asks for full-size text).
 // F11 (owner answer Q3): "33 rows" is no longer exact, the room ask can carry more
 const ROOM_HINT = "Claude's input box and footer did not fit this panel's rows, so nika gave the pane more rows and scaled the text. Fit again tries full-size text.";
+// F16: the panel of a fitted view while a cut-off question has more rows (replaces the view's hint and the room hint; no action of its own)
+const GROW_HINT = "Claude's question is taller than this panel, so nika gave the pane more rows while it is open. Scroll the terminal up to see all of it; the size goes back when the question closes.";
 const FITTING = 'Fitting\u2026';
 // Looked up by the key of a chipView, never by a word of the server. `action` is the button's text: only where open: true can change
 // something (the server refuses it again for user-zoom, size-option and foreign-tag, and those recover once the user acts in tmux).
@@ -307,16 +398,18 @@ const PANEL = {
  * or null when `view` is not one. heading and why are the view's label and title; hint, code (a command shown as text) and action
  * ({ text }, "Fitting..." while pending) come from a fixed table by the view's key, and a key it does not know has none of them.
  * F10: `ui.room` (exactly true) turns the hint into ROOM_HINT and the action into Fit again for `fitted:` and `fitted:terminal`; every other key ignores it.
+ * F16: `ui.grow` (exactly true) turns the hint into GROW_HINT for the same two keys, over the room hint; the action is the room's alone; every other key ignores it.
  */
 export function fitPanelView(view, ui) {
   if (view === null || typeof view !== 'object' || typeof view.key !== 'string') return null;
   const row = Object.hasOwn(PANEL, view.key) ? PANEL[view.key] : {};
   const room = ui?.room === true && (view.key === 'fitted:' || view.key === 'fitted:terminal');
+  const grow = ui?.grow === true && (view.key === 'fitted:' || view.key === 'fitted:terminal');
   const action = room ? 'Fit again' : row.action;
   return {
     heading: typeof view.label === 'string' ? view.label : '',
     why: typeof view.title === 'string' ? view.title : '',
-    hint: room ? ROOM_HINT : row.hint ?? null,
+    hint: grow ? GROW_HINT : room ? ROOM_HINT : row.hint ?? null,
     code: row.code ?? null,
     action: action ? { text: ui?.pending === true ? FITTING : action } : null,
     note: ui?.note === true ? PANEL_NOTE : null,
