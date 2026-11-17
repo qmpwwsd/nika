@@ -275,6 +275,20 @@ Labels (both tiers; spawning in the desktop app and the CLI):
 
 Fixes:
 
+- **With Claude Code 2.1.326, a question, plan or permission prompt with Claude's task list under it is read again.** 2.1.326 draws the
+  list another way ("3/6 tasks done · 1 in progress", then "… +3 tasks (3 done)"), and nika did not know that shape, so it saw no question
+  at all: no form, no note, no taller pane. nika now reads both the 2.1.326 list and the older one, as long as a whole list is one of them,
+  and still cuts it off only when every count adds up. The prompt's buttons answer as before. Not yet tried against a live Claude
+  2.1.326 after the change.
+- **The review step of a question form is read when a question is long.** Claude 2.1.326 draws a bar in front of a long question there
+  (and in front of no short one, and of no answer). nika read that as a screen it could not understand ("nika can't read Claude's dialog
+  right now"), so you had to press Submit in the terminal. It now shows the review as a form, with Submit answers and Decline. Not yet
+  tried against a live Claude.
+- **After you switch away and back while a question form is open, Claude's pane returns to the panel's size.** Switching back measured
+  the terminal view while the form was taking some of its height, and when the question closed the pane went back to that smaller size
+  (2 to 6 rows short) and stayed there. nika now measures the panel again once the form (or the prompt buttons, the feedback survey or
+  the "needs you" note) has closed, if this window has focus and Fit is on. A window that was not in front measures when you click back
+  into it, as before. Not yet tried against a live Claude.
 - **Agents started with `nika spawn` no longer stop at Claude's "Adding a new directory" question.** Claude Code 2.1.326 asks every
   agent to trust nika's report folder when it is passed with `--add-dir`, at every start; "No, exit", Esc or a stray Enter ended the
   agent, and nika could not show the question. nika now passes the folder in the agent's settings (`permissions.additionalDirectories`),

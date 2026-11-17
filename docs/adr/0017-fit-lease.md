@@ -586,3 +586,30 @@ its real cost is not measured. (3) While this window has focus and a terminal al
 into the terminal (F9 then gives the terminal its size back); how tmux pans it is not verified. (4) A question the page gave up on, a plan, a `clipped`, `wide`, `numbers`, `tab`, `layout` or `survey` dialog keeps the banner, as before.
 (5) The server cannot tell any of these asks from a panel of that size, and every rule of the lease, the squeeze rule, the cap and the rate applies to them (`docs/security.md` T52, item 25).
 - **Not built:** growing for a plan approval, a setting for the grow, a size-back as soon as the form is read, text scaled to the grown pane, a server change.
+
+## Amendment 2026-11-17 (0.5, FX2): a fresh commit when a panel that a commit was measured under closes
+
+**Context.** The live check LC17 (build 17, K2) ran a focus round trip while a question form was open. The form (like the prompt panel's buttons, the feedback survey and the attention note) takes height from
+the terminal box, and a window `focus` is a commit point (F9, F10), so the commit measured a box about 10 rows tall where the resting panel is 14 to 16. F16's size back after the question closed goes to the
+commit's base, so the window ended at 10 to 12 rows, 2 to 6 below the panel, until the next commit (a resize of the panel). The same run without a focus event ended at the panel's size. F10 says the form must never
+cause a commit; the focus commit is not caused by the form, it only measures with the form shown. **Page side only. No new route, body key, answer field, lease-file key, tmux command or argv shape** (`ARGV` and
+`FILE_KEYS` unchanged), and no change of the route's ranges, the rate limit or any gate.
+
+**Decision.**
+- **A commit remembers.** `fitCommit` sets `FIT.short` from `boxShortened()`: true when the prompt panel (`prompt-btns`), the question form (`dialog-form`), the survey (`survey-panel`) or the attention note
+  (`attn-note`) is not hidden. Every commit sets it, so a commit with none of them shown clears it.
+- **When the panel closes.** `fitPanelClosed()` runs at the top of `growTick`, so after every drawn capture and every 304, before the grow looks at the base. While the flag is false or any of the four is still shown
+  it does nothing. When none is shown it clears the flag, and then takes **one** `fitCommit()` only if there is a planner, the chip's state is neither `null` nor `blocked`, and the window has focus (`fitFocused()`).
+  So the base is the panel's size again before F16 asks the size back, and the way back is counted from it.
+- **Blurred, hidden, Fit off or no chip.** The flag ends and no commit is taken. A window that was blurred gets its commit from the later `focus` event, as before, and measures the whole panel.
+- **A height change alone is still no commit** (F10): the new look needs an earlier commit that was measured under a panel, and a test asserts that the `ResizeObserver` look commits nothing. No new timer, listener or request.
+  The extra commit is the ordinary `fitCommit`; a size that did not change is not asked for.
+
+**Alternatives.** *A commit at the instant a panel hides:* it would need a hook in each of the four panels and new stubs in every page harness; `growTick` already runs after every capture and every 304, so the cost is
+up to one mirror poll of delay. *A commit on every height change:* the F10 cascade (one focus gave five window sizes in four seconds); rejected there and unchanged. *Counting only the question form:* the prompt panel,
+the survey and the attention note take height from the box in the same way, so all four are counted.
+
+**Consequences.** (1) Up to one mirror poll passes between a panel hiding and the commit. (2) Other causes of a shorter box at a commit (a grown composer, a problem line, a suggestion line, the chip's panel) are not
+covered. (3) The chips `fitted`, `zoomed`, `terminal` and `other` commit; `blocked` ("Fit · off") and an absent chip do not. (4) The page's rig tests cover each of the four panels, the blurred and Fit-off cases and the
+source shape (the look only in `growTick`, one declaration and one call); the live repeat of LC17 K2 (the end size should equal the panel, not 10 or 12 rows) is open. `docs/design/spec.md` §9.13 ("The panel's size after a
+commit taken under a panel") and `docs/contracts/api-app.md` ("A steady size", "A cut-off question") carry the details.

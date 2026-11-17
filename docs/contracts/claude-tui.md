@@ -21,6 +21,10 @@ question (§13.1, §13.5), the plan approval footer of 2.1.325 (§13.3), a paste
 answers to the give with a layout (§15) were checked on 2026-11-16 against Claude Code 2.1.325 and tmux 3.8 (macOS, private tmux servers, throwaway
 projects, Haiku), with made-up text. The orchestrator's own long-running Claude 2.1.319 was not re-checked.
 
+Claude Code 2.1.326 draws the task list in another form (§1, F13) and the review step's question rows with the `│ ` bar (§13.1, §13.2). Both were checked on
+2026-11-17 (spike S-T326, Claude Code 2.1.326, tmux 3.8, macOS, a private tmux server, a throwaway git project, Haiku, 120-column panes, 45 rows unless a
+row says otherwise), with made-up text, and found in a live check of the same day (LC17). Every such paragraph says "2.1.326, spike S-T326".
+
 ## 1. Footer (mode line)
 
 The mode line is the last non-blank row of the pane while Claude's prompt box is shown, **not counting a list of background
@@ -30,7 +34,8 @@ subagents drawn under it** (below). Around the phrase:
   either, so the two look the same. `-- NORMAL --` was never drawn (checked 2026-11-14, Claude Code 2.1.321 to 2.1.325);
   nika's mode reader still accepts the text, but nothing relies on it;
 - an optional suffix: ` (shift+tab to cycle)`, then ` · ← for agents`; while the parent is busy with background subagents, and
-  after they finish, also ` · /tasks to see subagents` (nika ignores suffixes);
+  after they finish, also ` · /tasks to see subagents` (nika ignores suffixes); 2.1.326 (spike S-T326) also drew ` · ctrl+t to hide tasks` and ` · ← <n> agent`
+  (F13, below), and they change nothing either;
 - a user status line may sit in the rows above it (free content: ignore it).
 
 | Mode | Phrase | Token nika matches (case-insensitive) | Color (xterm-256) |
@@ -172,11 +177,11 @@ and 64 to 120 columns (spike S-F13). A permission prompt in a named session, 120
 - **Named and unnamed sessions.** Started with `-n <name>`, the rule row is labelled `<dashes> <name> ─`, followed by exactly one blank row and the
   header. Started without `-n`, there is **no rule row** under a dialog: the footer, the blank rows, the header. At idle the input box's top rule is
   plain without `-n` and labelled with it.
-- **The header** is `  <T> tasks (<D> done, <P> in progress, <O> open)`: the word is always `tasks` (`1 tasks` is real); the `in progress` part is
+- **The header (2.1.325)** is `  <T> tasks (<D> done, <P> in progress, <O> open)`: the word is always `tasks` (`1 tasks` is real); the `in progress` part is
   absent when it is 0 (all done reads `8 tasks (8 done, 0 open)`); `done` and `open` are always printed, also at 0. Task rows are `  ◼ ` (in
   progress), `  ✔ ` (done) or `  ◻ ` (open) and a label cut with `…`, in the order in progress, open, done. From the binary only, never seen: a label may
   end with ` › blocked by #n` or ` (@owner)`, and an in-progress task with an owner can add a second row.
-- **The overflow row** is three spaces, `…`, a space and `+<counts>` (`   … +3 completed`); the visible rows plus the hidden ones add up to the
+- **The overflow row (2.1.325)** is three spaces, `…`, a space and `+<counts>` (`   … +3 completed`); the visible rows plus the hidden ones add up to the
   header's counts. From the binary only: the hidden counts read `N in progress`, `N pending`, `N completed`, only those above 0, in that order, joined by
   `, `; the number of visible rows is 0 up to 10 pane rows, then `min(5, max(3, rows − 14))`, and with 0 visible rows the header stands alone.
 - **When it goes.** About 3 to 4 s after the last task completes the block is still there (all `✔`); by 7 s it is gone. While Claude works the list is
@@ -189,17 +194,63 @@ and 64 to 120 columns (spike S-F13). A permission prompt in a named session, 120
 - **Not verified:** Claude 2.1.319; overflow rows with hidden `pending` or `in progress` tasks; the `blocked by` and owner suffixes; the
   survey together with a task list; vim mode.
 
-nika's rule (`taskEnd` in `src/mode.js`, called by `footerEnd` and by the prompt reader; rule 12 of `rules/project-rules.md` has the approved text). It
+**Claude 2.1.326 draws the block in another form (2.1.326, spike S-T326; checked 2026-11-17).** Where it sits is the same as above (under the dialog's last
+row or the prompt's footer; blank rows, the labelled rule row, exactly one blank row and the block in a named session; blank rows and the block in an unnamed
+one; the block is the last row of the screen). What changed is the text. A made-up block under a question step:
+
+```
+  3/6 tasks done · 1 in progress
+  ◼ Mix dough
+  ◻ Bake loaves
+  ◻ Slice bread
+  … +3 tasks (3 done)
+```
+
+- **Every row is indented by two spaces.** No row has a tab.
+- **The header** is `  <D>/<T> tasks done`, then ` · <P> in progress` (U+00B7 with a space on each side) only when P is 1 or more. The word is `task` when
+  T is 1 (`0/1 task done`, `1/1 task done`) and `tasks` otherwise. The open count is **not** in the header: open = T − D − P. Other headers seen:
+  `0/8 tasks done`, `3/9 tasks done · 4 in progress`, `0/6 tasks done · 6 in progress`, `8/8 tasks done`.
+- **Task rows** are the same as in 2.1.325: `  ◼ ` in progress, `  ◻ ` open, `  ✔ ` done and the label. The order is in progress, then open, then done, and
+  inside a state by task id. A done task is shown only when there is room after the other two.
+- **The overflow row** is `  … +<N> task[s] (<parts>)`: **two** spaces (2.1.325: three), `…`, a space, `+`. N is the number of hidden tasks and the sum of the
+  parts; the word is `task` when N is 1, else `tasks`. The parts are only those above 0, in the order `<n> in progress`, `<n> open`, `<n> done`, joined by
+  `, `. The words changed from 2.1.325 (`pending` is now `open`, `completed` is now `done`). Seen: `(1 in progress)`, `(5 open)`, `(3 done)`,
+  `(1 open, 3 done)`, `(1 in progress, 4 done)`, `(1 in progress, 2 open, 3 done)`. Not seen: `in progress` and `open` without `done`.
+- **How many task rows** depends on the pane's height, not on the dialog's size (the dialog was the same size at 45 and at 22 rows and the block did not
+  change): 5 rows at 19 rows and up (more tasks than that give the overflow row), 4 at 18, 3 at 14 to 17, and at **12 and 13 rows three rows and no overflow row
+  although tasks are hidden** (Claude's bottom edge cuts the block). At 10 rows and fewer only the header is left. The rule of thumb
+  `min(5, max(3, rows − 14))` fits all 12 heights tried; it is a fit, not Claude's source.
+- **All done.** Completing the last open task makes the header `<T>/<T> task[s] done` and the rows `✔`; the overflow row keeps `(<n> done)`. That frame
+  lasts 3 to 4 s, then the **whole block goes**, header included: a named session keeps the lone rule row as its last row (the shape of 2.1.325's plan
+  approval, which nika already cuts), an unnamed one ends at the dialog's footer and blank rows. No `all done` text exists; the only signal is D = T.
+- **At idle** the block sits above the input box (block, one blank row, the box's top rule, `❯`, the bottom rule, the mode line), and the mode line carries
+  the hint `· ctrl+t to hide tasks`. nika reads the mode from the start of that row, so the tail changes nothing. A mode line tail `· ← <n> agent` showed up
+  in the same session from about the sixth prompt on, with no subagent started by the test; its cause is unknown, and it is a suffix like the others that
+  nika ignores (§1).
+- **Not tried:** a pane of 11 rows; an unnamed session below 16 rows; the idle block at a small height and the unnamed idle shape; labels that end in
+  `blocked by #n` or `(@owner)`; a long or cut label.
+
+nika's rule (`taskEnd` in `src/mode.js`, called by `footerEnd` and by the prompt reader; rule 12 of `rules/project-rules.md` has the approved text for 2.1.325). It
 reads **bottom-up on right-trimmed rows** and cuts **exactly one** of the following, otherwise nothing (the footer reads `unknown`, fail closed):
 
 1. The anchor is the last row of a question step (either footer form), the review's `2. Cancel`, the plan approval's footer, or a permission prompt's
    footer, a row starting `Esc to cancel` that counts only when the prompt reader parses a prompt in the 15 non-blank rows that end there.
 2. Under it, any number of blank rows, then either a rule row alone at column 0 (plain, or `<dashes> <name> ─`) as the last non-blank row; or, in a named
    session, a rule row at column 0, **exactly one** blank row and the task block; or, in an unnamed session, the task block with at least one blank row above it.
-3. The task block is the header (regex-exact, `1 tasks` accepted, `in progress` only when above 0), task rows that start `  ◼ `, `  ✔ ` or `  ◻ ` followed
-   by a non-space character (the label is never read for meaning), and at most one last row `   … +<counts>`. The counts must add up: total = done +
-   in progress + open and at least 1; `◼` rows plus hidden in progress = in progress; `◻` rows plus hidden pending = open; `✔` rows plus hidden
-   completed = done. A header with no task row is allowed only with no overflow row.
+3. The task block is the header, task rows that start `  ◼ `, `  ✔ ` or `  ◻ ` followed by a non-space character (the label is never read for
+   meaning), and at most one last overflow row. It has **two forms, and one block is one form**: a header of one version with an overflow row of the other
+   is no block, nothing is cut (2.1.326, spike S-T326).
+   - *2.1.325:* the header `  <T> tasks (…)` (regex-exact, `1 tasks` accepted, `in progress` only when above 0) and an overflow row `   … +<counts>`. The
+     counts must add up: total = done + in progress + open and at least 1; `◼` rows plus hidden in progress = in progress; `◻` rows plus hidden pending = open;
+     `✔` rows plus hidden completed = done. Rows and no overflow row: the same sums, exactly.
+   - *2.1.326:* the header `  <D>/<T> task[s] done[ · <P> in progress]` is strict: T is 1 or more, `task` exactly when T is 1, D + P is at most T, and
+     ` · 0 in progress` is no header. The overflow row `  … +<N> task[s] (<parts>)` is strict: two spaces, N the sum of the parts, `task` exactly when N is
+     1, every part above 0, each at most once and in the order `in progress`, `open`, `done`, and only those words (the 2.1.325 words `pending` and `completed`
+     are not accepted). The open count is T − D − P. With an overflow row, as in 2.1.325: `◼` rows plus the hidden in progress = P, `◻` rows plus the hidden open
+     = T − D − P, `✔` rows plus the hidden done = D, and at least one task row above the overflow row. With task rows and **no** overflow row (the 12 to 13
+     row pane), each state's visible rows are at most the header's count for that state: nika cannot tell hidden tasks from none there, and the anchor, the
+     blank-row and rule placement and the bottom position still have to hold. nika applies no cap on the number of rows (the numbers bind them).
+   - *Either form:* a header with no task row under it (a pane too short for the rows) is read on its own numbers and allows no overflow row.
 4. Any other row (a second row under a task, a notification row) means **no cut**. Never under a mode line. A subagent list together with any of this
    is no cut. The bypass guard reads two windows: the 15 non-blank rows that end at the footer and those that end at the screen's last row, so the
    rows nika leaves out are read too, and the prompt's `sig`, options and question are the same with and without the block.
@@ -1087,6 +1138,8 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel      the footer: 
   The option descriptions have no bar. A 71-character question wrapped to two rows at 64 columns has no bar; an 89-character one has it at 64 columns (two rows)
   and at 120 (one row, 91 wide). The 80-column boundary itself is from the binary only (`text.includes("\n") || width(text) > 80`); 80 and 81 were not tested.
   nika leaves the bar out of the question's text when **every** question row has it, and reads a screen where only some rows have it as `layout`.
+  2.1.326, spike S-T326: the question step draws the bar at column 0, with no leading space, on every row of a 187-character question; a 14-character question
+  has none. The bytes are `│` dim (`ESC[2m│ESC[0m`) and a space, then the text. The review step has its own bar (§13.2).
   **Open (M2, not seen live):** a barred question that holds a blank paragraph row (the bar is drawn when the text holds a line break). If Claude draws that row as `│` alone, nika reads it as a question row without the bar (the bar test is `│ `, and the row is not empty), so the dialog is `unreadable / layout` and the user answers it in the terminal. If Claude leaves that row empty it reads fine. A capture of one such question decides whether `│` alone should count as barred.
 - **A text row can be as wide as the pane.** The measured limit below (`cols − 1`) held for short questions; with the bar the widest row reached `cols` at 64 (64
   wide: the bar and 62 characters), 70 and 80 columns, and 87 at 90 and 119 at 120 depending on the wrap. A row of that width is a wrap only when the row
@@ -1108,6 +1161,39 @@ Ready to submit your answers?
 - The review lists the **answered** questions only; unanswered ones are omitted and the warning row shows. A multi-select answer reads
   `<ticked labels in list order>, <the Other text>`. After Submit, Claude's result lines list the answers in the order they were given.
 - `Enter` on the review's `1. Submit answers` submits the dialog. `Enter` on a multi question's button row does **not**: it opens the review.
+
+**The review's bar (2.1.326, spike S-T326 item 9; first seen in the live check LC17; checked 2026-11-17).** Claude draws the `│ ` bar in the review too, and
+**per question**: on every row of a long question, on no row of a short one. A made-up review of a short and a long question (blank rows as Claude draws them):
+
+```
+←  ☒ Fruit  ☒ Depth  ✔ Submit  →
+(blank)
+Review your answers
+(blank)
+ ● Which fruit?                                         a short question: no bar
+   → Apple                                              an answer row: never a bar
+ │ ● <a question wider than the pane, so it wraps … ,   a long question: the bar on its first row
+ │   … and the rest of the question>                    and on every wrapped row
+   → Shallow
+(blank)
+Ready to submit your answers?
+(blank)
+❯ 1. Submit answers
+  2. Cancel
+```
+
+- The first row of a barred question is ` │ ● <text>` and each wrapped row is ` │   <text>`: one leading space, `│` (U+2502, dim, `ESC[2m│ESC[0m`), then
+  the row as it reads without the bar. The bar goes in after the one-space indent, so taking it out gives the unbarred row back. The continuation row has
+  the text aligned under the one after `● `. The long question wraps near the pane's edge (LC17, 147 columns: rows of 138 and 146 columns).
+- The answer rows (`   → <answer>`), the `Ready to submit your answers?` row and the option rows never have the bar.
+- The threshold was seen at the two ends only: 14 characters have no bar, 187 have it. A question of 100 to 120 characters was not tried. That Claude uses the
+  question step's rule here (wider than 80 columns, or a line break; §13.1) is not verified.
+- nika reads the bar **per question** (`readReview` in `src/dialog.js`): all rows of one question have it or none do, and different questions of one review may
+  differ. It takes the bar out before reading, so the same text has the same `sig` with or without it. These are `layout`: some but not all rows of one
+  question barred, a barred answer row or a barred answer continuation, a row that is only the bar, and a bar on `1. Submit answers` or on `Ready to submit
+  your answers?`. A bar on the last row (`2. Cancel`) means the review is not recognised at all (as before). A review row as wide as the pane stays
+  `wide`: the review has no wrapped-row exemption (§13.5), and the captured rows were narrower than the pane.
+- Before this was built (build 17) every barred review row read `unreadable / layout`, so a review of long questions could not be submitted from the page.
 
 ### 13.3 The plan approval
 
@@ -1161,7 +1247,7 @@ paragraph or the same option's description (a question row followed by another q
 a long question is drawn that wide (§13.1). At 40 columns Claude wraps the question, the labels, the descriptions and the footer (2 rows, 3 with INSERT), so the old banner shows |
 | `numbers` | Option numbers not `1..k+2` without gaps, or above 9 (a digit answers without `Enter`, so `k` is at most 7); the free-text row not `k+1`, the chat row not `k+2`; a button row on a single-select question or none on a multi-select one |
 | `tab` | Not exactly one current tab (zero or two marked tokens) |
-| `layout` | Some but not all of the question's rows start with Claude's `│ ` bar (§13.1); a question row that is only the bar, with no text, reads as no bar (shape unverified); the footer says `↑/↓` with several tabs, or `Tab/Arrow keys` with one tab and no `Submit`; a multi-select question or several tabs without `Submit`; a duplicate label, a label equal to the free-text or chat placeholder, a header, label or question holding `☐`, `☒` or `✔`; a string over its maximum (header 40, question 500, label 200, description 500, answer 500); the button row's name disagreeing with the last-tab rule; any other shape |
+| `layout` | Some but not all of the question's rows start with Claude's `│ ` bar (§13.1; on the review step, some but not all rows of one question, §13.2, 2.1.326); a barred review answer row, a bar on the review's `1. Submit answers` or `Ready to submit your answers?` row (§13.2); a question row that is only the bar, with no text, reads as no bar (shape unverified); the footer says `↑/↓` with several tabs, or `Tab/Arrow keys` with one tab and no `Submit`; a multi-select question or several tabs without `Submit`; a duplicate label, a label equal to the free-text or chat placeholder, a header, label or question holding `☐`, `☒` or `✔`; a string over its maximum (header 40, question 500, label 200, description 500, answer 500); the button row's name disagreeing with the last-tab rule; any other shape |
 | `survey` | Claude's feedback survey is on screen (it takes digits, §10.1) |
 
 - Measured on short questions: the widest text row is `cols - 1` in every capture (119 at 120 columns, 39 at 40); only rule rows reach `cols`. A long question

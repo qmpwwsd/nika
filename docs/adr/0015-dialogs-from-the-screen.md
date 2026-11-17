@@ -128,3 +128,36 @@ reason still cleans to `layout`, so an old page with a new server fails closed).
 
 **Consequences.** Only the page's grow reads the difference. A plan's option label ending in `…` now reads `clipped` (it read `cut`); plans are never grown, so the page shows the same banner. `docs/contracts/claude-tui.md` §13.5 and
 `docs/contracts/api-app.md` (the capture's `dialog` field) list both reasons.
+
+## Amendment 2026-11-17 (0.5, T326 and FX2): Claude 2.1.326's task list, and the bar on the review step
+
+**Context.** The live check LC17 (build 17) found two things with Claude Code 2.1.326. (1) Claude draws its task list in another form: the header `  D/T tasks done`
+(with ` · P in progress` when P is above 0) and an overflow row `  … +N task[s] (…)` with two spaces and the words `in progress`, `open`, `done`. `taskEnd` knew only the 2.1.325 form,
+so a question, review, plan or permission prompt with the list under it read as no dialog at all (`dialog: null`, no form, no banner, no grow). The follow-up spike S-T326 fed its captures
+to the old reader: every block under a dialog or a prompt (14 of 14) was wrong; only idle and the lone rule row read right. (2) The review step draws the bar `│ ` in front of the rows of a long question
+(` │ ● <question>`, ` │   <rest>`) and not in front of a short question or of any answer row, so a review of long questions read `unreadable / layout` and could not be submitted from the page.
+Both came from spike evidence only; nothing is copied from a private session (`claude-tui.md` §1 and §13.2 have the made-up shapes).
+
+**Decision.**
+- **T326, two forms (`src/mode.js`: `taskEnd`, with `headOf`, `moreOf`, `partsOf`).** `taskEnd` reads the 2.1.325 form and the 2.1.326 form, and **one block is one form**: a header of one version with an
+  overflow row of the other is no block. The 2.1.326 header is strict (T at least 1, `task` exactly when T is 1, D + P at most T, no ` · 0 in progress`), and so is its overflow row (two spaces, N the sum of the parts,
+  `task` exactly when N is 1, parts above 0 once each and in the order `in progress`, `open`, `done`, those words only). The counts rule of the 2026-11-16 amendment holds: with an overflow row the visible rows plus
+  the hidden parts equal the header's counts, state by state. One addition for the pane of 12 to 13 rows, where Claude draws three task rows and no overflow row although tasks are hidden: a 2.1.326 block with task
+  rows and no overflow row is read when no state has more visible rows than the header counts; a 2.1.325 block without an overflow row stays exact. A header with no row under it is read on its own numbers and allows
+  no overflow row. Nothing else changed: the anchors, the placement (rule row, exactly one blank row in a named session, at least one blank row in an unnamed one), the lone rule row, the bottom position, the 15-row
+  prompt window, the bypass windows and the fail-closed `-1` (nothing cut, the footer reads `unknown`). No cap on the number of rows is applied; the numbers bind them.
+- **FX2, the review's bar (`src/dialog.js`: `BAR_ROW`, `readReview`).** The review step accepts the bar on a question's rows and takes it out before reading, **per question**: every row of one question (the `●` row
+  and each wrapped row) is barred or none is, and different questions of one review may differ. These are `layout`: a mix inside one question, a barred answer row or answer continuation, a row that is only the bar,
+  and a bar on `1. Submit answers` or on `Ready to submit your answers?`; a bar on the last row (`2. Cancel`) leaves the review unrecognised, as before. The text is stored without the bar, so `sig` is the same with or
+  without it (the question step already worked this way). A review row as wide as the pane stays `wide`. FX2 first built the rule per step (all question rows of the review barred or none); spike S-T326 item 9 then showed
+  a short question without the bar next to a long one with it, so the rule is per question (a rule change on new evidence; the one test that mixed across questions became a `(+)` case, the mix inside one question stays a `(−)` case).
+
+**Alternatives.** *Dropping the 2.1.325 form:* not done, a session on an older Claude still draws it. *Reading the 2.1.326 header and overflow row without the "one block, one form" rule:* a mixed block matches no
+captured drawing, so it stays uncut. *A bar rule per review step:* rejected by the evidence above. *Capping the task rows at 5:* not done; the counts already bind the rows, and a cap would break on a Claude that
+shows more.
+
+**Consequences.** (1) Under 2.1.326 the form, the banner, the grow (ADR 0017, F16) and the permission prompt's buttons read as they do without the list; the prompt's `sig` and options are unchanged. (2) In the 12 to 13 row pane the
+2.1.326 rule accepts fewer rows than the header counts, so a block cut by something else would also read; the anchor, the placement and the bottom position still have to hold. (3) The block's all-done frame
+(`N/N tasks done`, 3 to 4 s) reads like any other, and what is left after it (a lone rule row, or blank rows) is cut as before. (4) Both fixes are tested on synthetic rows built from the spike; a live re-check
+(LC17 K1 and K1b) is open. (5) The task-list sentence of rule 12 in `rules/project-rules.md` and threat T37 in `docs/security.md` still name the 2.1.325 header; this amendment does not change a rule text.
+`docs/contracts/claude-tui.md` (§1, F13; §13.1, §13.2, §13.5), `docs/design/spec.md` §9.16 and `docs/contracts/api-app.md` (the capture's `dialog` field) carry the details.

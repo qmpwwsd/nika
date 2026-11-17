@@ -573,7 +573,8 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
   is offered (single-select: always; multi-select: only on the last tab); `checked` is Claude's own box and appears for multi-select only.
   Options are the real ones, `1..k` with `k` at most 7; Claude's free-text row (`k+1`) and `Chat about this` (`k+2`) are not listed.
 - `{ "state": "ready", "kind": "ask", "at": "review", "sig", "bypass", "tabs", "warn", "pairs": [ { "question", "answer" } ] }`: Claude's
-  review step (`warn` is its `You have not answered all questions` row; the review lists the answered questions only).
+  review step (`warn` is its `You have not answered all questions` row; the review lists the answered questions only). Claude 2.1.326 draws a `│ ` bar in front of the rows of a long review question (and of none
+  else); nika reads it per question, and `question`, `answer` and `sig` are the same with or without it (`claude-tui.md` §13.2).
 - `{ "state": "ready", "kind": "plan", "at": "plan", "sig", "bypass", "options": [ { "n", "label", "text" } ] }`: the plan approval's
   choices; `text` marks the last option, Claude's free-text one (`Tell Claude what to change`, which nika never answers). The plan text is not
   in the field.
@@ -1251,6 +1252,9 @@ above). Everything below is the page's behaviour, written here because it decide
   a banner, a composer line, a prompt panel, the textarea growing) and a width change of less than one cell send no request and change no text size; the mirror stays
   pinned to the bottom (not while it is paused), so the top rows may be hidden while a panel is open. A blur measures nothing. So one focus change is one resize
   (the take carries the size measured at the focus); the one extra resize is the room step below.
+  **One more moment since FX2 (0.5, 2026-11-17; page side, no server change):** every commit records whether the prompt panel, the question form, the feedback survey or the attention note was shown when it
+  measured (a focus under the form measures a box shorter than the resting one). When the last of them closes, the window has focus and the chip's state is neither absent nor `blocked`, the page takes one
+  fresh commit at the next drawn capture or 304, before the grow below asks its size back; with no focus the record ends and the later window `focus` commits. A height change alone is still no commit.
 - **The asked size.** The body is still exactly `{ cols, rows, open, focus }` in the route's ranges (40–400 × 10–200); the server does not know that the page asked
   for more rows than it measured. The page asks for its panel's size, and, once a window needs it, for room: 33 rows (`ROOM_ROWS`) and as many columns as keep the
   panel's proportion, `floor(panel cols × (33 − d) / panel rows)`, never fewer than the panel's, at most 400, where `d` is the border row (the asked rows minus the
@@ -1328,7 +1332,8 @@ above). Everything below is the page's behaviour, written here because it decide
     (a commit that changes the base size, a width alone included, gives a new try).
   - *Staying.* A question that is no longer `cut` (readable, or unreadable for another reason) keeps the rows: answering takes a fresh capture of the screen, and sizing back first would clip it again. A later tab or the review that is
     `cut` steps again.
-  - *Going back.* When no question dialog has been on screen for 1 s (`GROW_CLOSE_MS`; none, a plan or a prompt all count; a shorter gap between two tabs does not), the page asks the base size again.
+  - *Going back.* When no question dialog has been on screen for 1 s (`GROW_CLOSE_MS`; none, a plan or a prompt all count; a shorter gap between two tabs does not), the page asks the base size again. Since FX2 that base is
+    measured again first when the last commit was taken under a panel (see "A steady size" above), so the size back is the panel's size, not the short box's.
   - *Not `fitted`.* In `terminal`, `zoomed`, `blocked` and `other` the page takes no step and the step's clocks wait; it keeps the grown rows in what it asks, so a commit or a take that follows already carries them (`max(base, grown)`).
   - *A renew, not a take.* The ask is a renew from a page that holds the lease, so `TAKE_MAX` (12 takes a minute) does not count it; the route's 4 PUT a second per pane, the lock, the lease and every other gate apply. The server cannot tell it from a
     panel of that size.
