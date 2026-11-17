@@ -4,7 +4,7 @@
 // Keep this file ASCII: write every symbol as an escape.
 import { createHash } from 'node:crypto';
 import { clean } from './text.js';
-import { RULE_ROW, SHELL_FOOTER, lastNonBlank, modeFromRows, promptFromRows, rowText, surveyOrFollowUpShown } from './mode.js';
+import { RULE_ROW, SHELL_FOOTER, lastNonBlank, modeFromRows, promptFromRows, rowText, surveyOrFollowUpShown, taskBlockAbove } from './mode.js';
 
 // RULE_ROW (a rule row of Claude's input box) lives in src/mode.js, where the auto-mode nudge's exact anchor needs it; it is re-exported here.
 export { RULE_ROW };
@@ -193,7 +193,8 @@ function joinRows(bodies, w) {
  *   sig       16 hex of sha256(`${state}\n${mode}\n${text}`); null when unreadable
  *   reason    unreadable only: 'history' | 'layout' | 'tall' | 'pasted' | 'trailing' (checked in this order; layout also means
  *             dim text next to real text, see dimIsTrailing, and a wrap that reads two ways, see joinRows)
- *   box       { top, bottom }: the row indexes of the two rule rows
+ *   box       { top, bottom }: the row indexes of the two rule rows; plus `tasks`, the row index of the header of Claude's task list, only when the list
+ *             is pinned right above the top rule (one blank row between; taskBlockAbove in src/mode.js), else the field is absent (0 <= tasks < top)
  *   cursorAtEnd   the cursor sits right after the last visible real character of the last box row (padding spaces do not count)
  *   suggestion    dim text of an empty box (not the `Try "..."` example, not Claude's queued placeholder), clean() at most 200; else null
  *   queued        true for an empty box whose only content is the dim text `Press up to edit queued messages` (Claude shows it while
@@ -259,7 +260,8 @@ function readBox(rows, cursor, cols, { survey = false } = {}) {
   // documented T51 anchor: a draft is never read from a screen that parses as a permission prompt.
   if (!footerKnown || promptFromRows(rows) !== null) return null;
 
-  const box = { top, bottom };
+  const tasks = taskBlockAbove(rows.slice(0, top + 1).map(rowText), top); // Claude's task list pinned above the box (0.5, LC18): the page keeps it out of the glide
+  const box = tasks >= 0 ? { top, bottom, tasks } : { top, bottom };
   let parts = null; // set once the rows are split; a refusal after that carries them
   const bad = (reason) => ({ draft: { state: 'unreadable', mode: first.mode, text: '', sig: null, reason, box, cursorAtEnd: false, suggestion: null, queued: false, ghost: false }, parts });
   const label = LABELLED.exec(rowText(rows[top]).trimEnd())?.[1];

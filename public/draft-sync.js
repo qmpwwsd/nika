@@ -107,6 +107,7 @@ export function cleanDraft(raw) {
   if (!STATES.has(state) || !MODES.has(mode) || typeof text !== 'string' || text.length > TEXT_MAX) return null;
   if (!box || !Number.isInteger(box.top) || !Number.isInteger(box.bottom) || box.top < 0 || box.bottom <= box.top) return null;
   const at = { top: box.top, bottom: box.bottom };
+  if (Number.isInteger(box.tasks) && box.tasks >= 0 && box.tasks < box.top) at.tasks = box.tasks; // Claude's task list pinned above the box (LC18): the glide's frame ends there (public/glide.js)
   if (state === 'unreadable') {
     return { state, mode, text: '', sig: null, reason: Object.hasOwn(REASON_TEXT, reason) ? reason : 'layout', box: at, cursorAtEnd: false, suggestion: null, queued: false };
   }

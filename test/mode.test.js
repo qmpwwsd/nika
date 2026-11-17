@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as mode from '../src/mode.js';
 import {
   MODES, MODE_TARGETS, PROMPT_ROWS, FOOTER, OPTION, rowText, lastNonBlank, modeFromRows, promptFromRows, mentionsBypass, bypassWindow,
-  surveyShown, followUpShown, surveyOrFollowUpShown, pillShown, SHELL_FOOTER, ASK_FOOTER, PLAN_FOOTER, REVIEW_END, isDialogEnd, nudgeFooterAt, footerEnd,
+  surveyShown, followUpShown, surveyOrFollowUpShown, pillShown, SHELL_FOOTER, ASK_FOOTER, PLAN_FOOTER, REVIEW_END, isDialogEnd, nudgeFooterAt, footerEnd, taskBlockAbove,
 } from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
 import { dialogCapture } from '../src/dialog.js';
@@ -1520,5 +1520,227 @@ describe('task list under a dialog or a permission prompt (F13-A v2)', () => {
       const noAnchor = [...rowsOf('transcript line', 'a message', 'Esc to cancel · Tab to amend'), ...v2(o)];
       assert.equal(at(noAnchor), noAnchor.length - 1, 'Esc to cancel with no prompt above it is no anchor');
     });
+  });
+});
+
+// ---- 0.5, LC18: Claude's task list pinned ABOVE the input box (taskBlockAbove: the same block reader as the list under a dialog) --------
+describe('taskBlockAbove: the task list pinned above the input box (LC18)', () => {
+  const FULL = '─'.repeat(120);
+  const NAMED_RULE = `${'─'.repeat(104)} demo-session ─`;
+  const line = (t) => [span(t)];
+  const text = (rows) => rows.map(rowText);
+  /** The 2.1.325 block alone (header, task rows, overflow row): taskRows with no rule row and no blank rows. Made-up labels. */
+  const v1 = (o = {}) => taskRows({ named: false, blank: 0, ...o });
+  /** The 2.1.326 block alone; the same arithmetic as the builder of the T326 tests above (kept here so those tests stay as they are). */
+  const v2 = ({ doing = 1, open = 1, done = 2, hid = {}, claim = {}, head = null, more = null } = {}) => {
+    const [hd, ho, hx] = [hid.doing ?? 0, hid.open ?? 0, hid.done ?? 0];
+    const n = { total: doing + open + done + hd + ho + hx, done: done + hx, doing: doing + hd, ...claim };
+    const headText = head ?? `  ${n.done}/${n.total} ${n.total === 1 ? 'task' : 'tasks'} done${n.doing > 0 ? ` · ${n.doing} in progress` : ''}`;
+    const sum = hd + ho + hx;
+    const parts = [[hd, 'in progress'], [ho, 'open'], [hx, 'done']].filter(([c]) => c > 0).map(([c, w]) => `${c} ${w}`);
+    const moreText = more ?? (sum > 0 ? `  … +${sum} ${sum === 1 ? 'task' : 'tasks'} (${parts.join(', ')})` : null);
+    return [...taskRows({ named: false, blank: 0, doing, open, shownDone: done, hiddenDone: 0, head: headText }), ...(moreText === null ? [] : [line(moreText)])];
+  };
+  /**
+   * A whole screen as Claude draws it: `before` rows of conversation, the block, `mid` (a row between the block and the blank rows, if any), `gap` blank rows,
+   * the box's top rule, a one-row box, the lower rule and the mode line. `top` is the top rule's row, `head` where the block's header sits.
+   */
+  const screen = (block, { before = 3, gap = 1, rule = FULL, mid = null } = {}) => {
+    const rows = [
+      ...Array.from({ length: before }, (_, i) => line(`transcript line ${i}`)),
+      ...block, ...(mid === null ? [] : [mid]),
+      ...Array.from({ length: gap }, () => []),
+      line(rule), line('❯ '), line(FULL), line('  ⏸ manual mode on'),
+    ];
+    return { texts: text(rows), top: before + block.length + (mid === null ? 0 : 1) + gap, head: before };
+  };
+  const edit = (block, change) => { const rows = block.map((r) => [...r]); change(rows); return rows; };
+  const headAt = (rows) => rows.findIndex((r) => /tasks? \(|tasks? done/.test(rowText(r)));
+
+  /** Every shape of both versions that is a block (the shapes of the F13-A and T326 tests, made up). */
+  const SHAPES = {
+    '2.1.325 plain block': v1(),
+    '2.1.325 no in-progress part, all done, overflow': v1({ doing: 0, open: 0, shownDone: 5, hiddenDone: 3 }),
+    '2.1.325 1 tasks (one in progress)': v1({ doing: 1, open: 0, shownDone: 0, hiddenDone: 0 }),
+    '2.1.325 1 tasks (one done)': v1({ doing: 0, open: 0, shownDone: 1, hiddenDone: 0 }),
+    '2.1.325 no overflow row': v1({ hiddenDone: 0 }),
+    '2.1.325 overflow: in progress': v1({ hiddenDoing: 2, hiddenDone: 0 }),
+    '2.1.325 overflow: pending': v1({ hiddenOpen: 2, hiddenDone: 0 }),
+    '2.1.325 overflow: all three': v1({ hiddenDoing: 1, hiddenOpen: 2, hiddenDone: 3 }),
+    '2.1.325 header only': v1({ doing: 0, open: 0, shownDone: 0, hiddenDone: 0, claim: { total: 5, done: 3, open: 2 } }),
+    '2.1.325 header only, in progress': v1({ doing: 0, open: 0, shownDone: 0, hiddenDone: 0, claim: { total: 5, done: 3, doing: 1, open: 1 } }),
+    '2.1.325 mixed order': v1({ order: 'xdxoxo', hiddenDone: 1 }),
+    '2.1.325 long list': v1({ doing: 3, open: 2, shownDone: 5, hiddenDone: 1234 }),
+    '2.1.325 labels with suffixes': v1({ labels: ['A label that was cut by Claude…', 'Review the notes › blocked by #1, #2', 'Tidy the folders (@robin)', '◼ ✔ ◻ inside the label'] }),
+    '2.1.326 5 rows and the overflow row, in progress': v2({ doing: 2, open: 1, done: 2, hid: { open: 3, done: 3 } }),
+    '2.1.326 5 rows and the overflow row, no in-progress part': v2({ doing: 0, open: 2, done: 3, hid: { open: 3 } }),
+    '2.1.326 all done, overflow': v2({ doing: 0, open: 0, done: 5, hid: { done: 3 } }),
+    '2.1.326 all done, no overflow': v2({ doing: 0, open: 0, done: 4 }),
+    '2.1.326 1/1 task done': v2({ doing: 0, open: 0, done: 1 }),
+    '2.1.326 0/1 task done': v2({ doing: 0, open: 1, done: 0 }),
+    '2.1.326 +1 task (1 done)': v2({ doing: 2, open: 1, done: 2, hid: { done: 1 } }),
+    '2.1.326 three rows, tasks hidden, no overflow row': v2({ doing: 1, open: 1, done: 1, claim: { total: 10, done: 4, doing: 2 } }),
+    '2.1.326 header only': v2({ doing: 0, open: 0, done: 0, claim: { total: 9, done: 3, doing: 4 } }),
+    '2.1.326 header only, all done': v2({ doing: 0, open: 0, done: 0, claim: { total: 6, done: 6 } }),
+    '2.1.326 four-digit counts': v2({ doing: 2, open: 1, done: 2, hid: { doing: 1, open: 1234, done: 4321 } }),
+  };
+  /** Rows that look like a block and are not one (the numbers do not add up, a shape that is no block row): the same reader refuses them under a dialog. */
+  const MISFITS = {
+    '2.1.325 the total does not add up': v1({ claim: { total: 8 } }),
+    '2.1.325 the done count does not match the rows and the overflow row': v1({ claim: { done: 6, total: 8 } }),
+    '2.1.325 the in-progress count does not match the rows': v1({ claim: { doing: 2, total: 8 } }),
+    '2.1.325 the open count does not match the rows': v1({ claim: { open: 2, total: 8 } }),
+    '2.1.325 the hidden in-progress count does not match': v1({ hiddenDoing: 2, claim: { doing: 4, total: 10 } }),
+    '2.1.325 no task at all (total 0)': v1({ doing: 0, open: 0, shownDone: 0, hiddenDone: 0 }),
+    '2.1.325 an overflow row and no task row': v1({ doing: 0, open: 0, shownDone: 0, hiddenDone: 3 }),
+    '2.1.325 the header says 0 in progress': v1({ doing: 0, open: 2, shownDone: 2, hiddenDone: 0, head: '  4 tasks (2 done, 0 in progress, 2 open)' }),
+    '2.1.325 the header says 1 task': v1({ doing: 0, open: 0, shownDone: 1, hiddenDone: 0, head: '  1 task (1 done, 0 open)' }),
+    '2.1.325 the overflow row names a state that does not exist': edit(v1(), (rows) => { rows[rows.length - 1] = line('   … +3 finished'); }),
+    '2.1.325 a row with an unknown glyph': edit(v1(), (rows) => rows.splice(2, 0, line('  ● Another thing'))),
+    '2.1.325 a task row indented by one space': edit(v1(), (rows) => { rows[1] = line(' ◼ Draft the outline'); }),
+    '2.1.325 a task row indented by three spaces': edit(v1(), (rows) => { rows[1] = line('   ◼ Draft the outline'); }),
+    '2.1.325 a glyph row without a label': edit(v1(), (rows) => { rows[1] = line('  ◼ '); }),
+    '2.1.325 a second row under a task': edit(v1(), (rows) => rows.splice(2, 0, line('    rest of the label'))),
+    '2.1.325 a notice between the tasks': edit(v1(), (rows) => rows.splice(3, 0, line('  A notice from the shell'))),
+    '2.1.325 a notice after the last row of the block': [...v1(), line('  A notice from the shell')],
+    '2.1.326 done + in progress above the total': v2({ doing: 1, open: 1, done: 2, claim: { total: 2 } }),
+    '2.1.326 more rows of a state than the header counts, no overflow row': v2({ doing: 1, open: 1, done: 2, claim: { total: 3 } }),
+    '2.1.326 +N is not the sum': v2({ hid: { open: 1, done: 3 }, more: '  … +5 tasks (1 open, 3 done)' }),
+    '2.1.326 "+1 tasks"': v2({ hid: { done: 1 }, more: '  … +1 tasks (1 done)' }),
+    '2.1.326 parts out of order': v2({ hid: { open: 1, done: 3 }, more: '  … +4 tasks (3 done, 1 open)' }),
+    '2.1.326 the words of the old version': v2({ hid: { done: 3 }, more: '  … +3 tasks (3 completed)' }),
+    '2.1.326 header "1/2 task done"': v2({ doing: 0, open: 1, done: 1, head: '  1/2 task done' }),
+    '2.1.326 header "0 in progress"': v2({ doing: 0, open: 2, done: 1, head: '  1/3 tasks done · 0 in progress' }),
+    '2.1.326 an overflow row and no task row': v2({ doing: 0, open: 0, done: 0, hid: { done: 3 } }),
+    '2.1.326 two overflow rows': [...v2({ hid: { done: 3 } }), line('  … +3 tasks (3 done)')],
+    'the 2.1.326 header with a 2.1.325 overflow row': v2({ hid: { open: 1, done: 3 }, more: '   … +1 pending, 3 completed' }),
+    'the 2.1.325 header with a 2.1.326 overflow row': edit(v1({ hiddenDone: 3 }), (rows) => { rows[rows.length - 1] = line('  … +3 tasks (3 done)'); }),
+  };
+  const DIALOG = rowsOf('transcript line', '', 'Which project should I open?', '', '❯ 1. acme-api', '  2. Type something.', 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel');
+
+  test('(+) the header row of every shape of both versions, for 0, 3 and 40 conversation rows above it, under a plain or a labelled top rule', () => {
+    for (const [name, block] of Object.entries(SHAPES)) {
+      for (const before of [0, 3, 40]) {
+        for (const rule of [FULL, NAMED_RULE]) {
+          const s = screen(block, { before, rule });
+          assert.equal(taskBlockAbove(Object.freeze(s.texts), s.top), s.head, `${name} / ${before} rows before / ${rule === FULL ? 'plain' : 'labelled'} rule`);
+        }
+      }
+    }
+  });
+
+  test('(+) the answer is a row of the block\'s header: 0 <= index < top, and the row reads as a header', () => {
+    for (const [name, block] of Object.entries(SHAPES)) {
+      const s = screen(block);
+      const at = taskBlockAbove(s.texts, s.top);
+      assert.ok(Number.isInteger(at) && at >= 0 && at < s.top, name);
+      assert.match(s.texts[at], /^ {2}(?:\d+ tasks \(|\d+\/\d+ tasks? done)/, name);
+    }
+  });
+
+  test('(+) the same reader as the list under a dialog: every shape is cut under a dialog and found above a box; every misfit is neither', () => {
+    for (const [name, block] of Object.entries(SHAPES)) {
+      assert.equal(footerEnd(text([...DIALOG, [], ...block])), DIALOG.length - 1, `${name}: cut under a dialog`);
+    }
+    for (const [name, block] of Object.entries(MISFITS)) {
+      const rows = [...DIALOG, [], ...block];
+      assert.equal(footerEnd(text(rows)), rows.length - 1, `${name}: not cut under a dialog`);
+      const s = screen(block);
+      assert.equal(taskBlockAbove(s.texts, s.top), -1, `${name}: not found above a box`);
+    }
+  });
+
+  test('(+) rows padded with spaces to the pane width, a blank row of spaces or no-break spaces, and rows below the box do not matter', () => {
+    for (const [name, block] of Object.entries(SHAPES)) {
+      const s = screen(block);
+      const padded = s.texts.map((t) => t.padEnd(120, ' '));
+      assert.equal(taskBlockAbove(padded, s.top), s.head, `${name}: padded`);
+      const spaced = s.texts.map((t, i) => (i === s.top - 1 ? ' '.repeat(120) : t));
+      assert.equal(taskBlockAbove(spaced, s.top), s.head, `${name}: a blank row of no-break spaces`);
+      assert.equal(taskBlockAbove(s.texts.slice(0, s.top + 1), s.top), s.head, `${name}: only the rows up to the top rule`);
+      assert.equal(taskBlockAbove([...s.texts, 'a status line', ''], s.top), s.head, `${name}: more rows below`);
+    }
+  });
+
+  test('(+) a block quoted in the conversation above the real one is not part of it: the header is the real block\'s', () => {
+    const quoted = screen(v1(), { before: 0 }).texts.slice(0, -4); // a whole block (header, rows, overflow) in the conversation
+    const s = screen(SHAPES['2.1.326 5 rows and the overflow row, in progress'], { before: 0 });
+    const texts = [...quoted, '', ...s.texts];
+    assert.equal(taskBlockAbove(texts, s.top + quoted.length + 1), quoted.length + 1);
+  });
+
+  test('(−) the places: two or three blank rows, none, a text row in place of the blank row, a row between the block and the blank row', () => {
+    for (const [name, block] of Object.entries(SHAPES)) {
+      for (const [what, opts] of Object.entries({
+        'two blank rows': { gap: 2 },
+        'three blank rows': { gap: 3 },
+        'no blank row': { gap: 0 },
+        'a notice between the block and the blank row': { mid: line('  A notice from the shell') },
+        'a conversation row between the block and the blank row': { mid: line('⏺ The old block is above.') },
+      })) {
+        const s = screen(block, opts);
+        assert.equal(taskBlockAbove(s.texts, s.top), -1, `${name} / ${what}`);
+      }
+      const s = screen(block);
+      const noBlank = s.texts.map((t, i) => (i === s.top - 1 ? '  a note' : t));
+      assert.equal(taskBlockAbove(noBlank, s.top), -1, `${name} / a text row instead of the blank row`);
+    }
+  });
+
+  test('(−) block shapes that are no block: the numbers do not add up, an unknown glyph, a wrong indent, a notice, mixed versions, a second overflow row', () => {
+    for (const [name, block] of Object.entries(MISFITS)) {
+      for (const before of [0, 3]) {
+        const s = screen(block, { before });
+        assert.equal(taskBlockAbove(s.texts, s.top), -1, `${name} / ${before} rows before`);
+      }
+    }
+  });
+
+  test('(−) `top` must be the box\'s top rule: out of range, not an integer, or a row that is not a rule row (an indented dash row, the blank row, the header, the box row)', () => {
+    const s = screen(SHAPES['2.1.325 plain block']);
+    assert.equal(taskBlockAbove(s.texts, s.top), s.head, 'control');
+    for (const top of [-1, 0, 1, s.texts.length, s.texts.length + 5, 2 ** 31, 1.5, NaN, Infinity, String(s.top), [s.top], null, undefined, {}]) {
+      assert.equal(taskBlockAbove(s.texts, top), -1, `top = ${String(top)}`);
+    }
+    for (const [what, at] of Object.entries({ 'the blank row': s.top - 1, 'the last row of the block': s.top - 2, 'the header': s.head, 'the box row': s.top + 1, 'the mode line': s.texts.length - 1 })) {
+      assert.equal(taskBlockAbove(s.texts, at), -1, what);
+    }
+    const indented = s.texts.map((t, i) => (i === s.top ? `  ${t}` : t));
+    assert.equal(taskBlockAbove(indented, s.top), -1, 'a rule row indented by two spaces');
+    const single = s.texts.map((t, i) => (i === s.top ? '─' : t));
+    assert.equal(taskBlockAbove(single, s.top), -1, 'one dash is no rule row');
+  });
+
+  test('(−) the lower rule of the box is no top rule: the row above it is the box row, not a blank row', () => {
+    const s = screen(SHAPES['2.1.325 plain block']);
+    assert.equal(taskBlockAbove(s.texts, s.top + 2), -1);
+  });
+
+  test('(−) texts that are not an array of rows: nothing, a string, an object, an array-like', () => {
+    const s = screen(SHAPES['2.1.325 plain block']);
+    const arrayLike = { length: s.texts.length, ...s.texts };
+    for (const texts of [undefined, null, 'x', 42, {}, arrayLike]) assert.equal(taskBlockAbove(texts, s.top), -1, String(texts));
+    assert.equal(taskBlockAbove([], 0), -1);
+    assert.equal(taskBlockAbove([FULL], 0), -1, 'a rule row and nothing above it');
+    assert.equal(taskBlockAbove(['', FULL], 1), -1, 'a blank row and no block');
+    assert.equal(taskBlockAbove([...s.texts.slice(0, 1), null, 5, ...s.texts.slice(3)], s.top), s.head, 'a row that is not a string above the block is ignored');
+    for (const at of [s.head, s.head + 1, s.top - 2]) { // in the block: the header, a task row, the last row
+      const broken = s.texts.map((t, i) => (i === at ? null : t));
+      assert.doesNotThrow(() => taskBlockAbove(broken, s.top));
+      assert.equal(taskBlockAbove(broken, s.top), -1, `a row that is not a string inside the block (row ${at}) is no block`);
+    }
+  });
+
+  test('(−) a block under a mode line, or at the bottom of a screen with no box, is not above a box', () => {
+    const under = text([line('transcript line'), line(FULL), line('❯ '), line(FULL), line('  ⏸ manual mode on'), [], ...v1()]);
+    for (let top = -1; top <= under.length; top += 1) assert.equal(taskBlockAbove(under, top), -1, `top = ${top}`);
+    const noBox = text([line('transcript line'), [], ...v1(), []]);
+    for (let top = 0; top <= noBox.length; top += 1) assert.equal(taskBlockAbove(noBox, top), -1, `no box / top = ${top}`);
+  });
+
+  test('(+) taskBlockAbove is the only new export of the block reader: blockHead stays private', () => {
+    assert.equal(typeof taskBlockAbove, 'function');
+    assert.equal('blockHead' in mode, false);
+    assert.equal('taskEnd' in mode, false);
   });
 });

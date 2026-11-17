@@ -170,6 +170,43 @@ describe('cleanDraft: the capture body is data', () => {
     ];
     for (const b of bad) assert.equal(cleanDraft(b), null, JSON.stringify(b));
   });
+
+  // ---- LC18: Claude's task list pinned above the box (box.tasks, the row of its header); the glide's frame ends there (test/glide.test.js) ----
+  const withTasks = (make, tasks, extra = {}) => make({ box: { top: 30, bottom: 32, tasks, ...extra } });
+
+  test('(+) box.tasks survives when it is an integer from 0 up to (not including) the box\'s top, on a text, an empty and an unreadable draft', () => {
+    for (const tasks of [0, 1, 17, 29]) {
+      assert.deepEqual(cleanDraft(withTasks((o) => text('fix the typo', o), tasks)), text('fix the typo', { box: { top: 30, bottom: 32, tasks } }), `text / ${tasks}`);
+      assert.deepEqual(cleanDraft(withTasks(empty, tasks)).box, { top: 30, bottom: 32, tasks }, `empty / ${tasks}`);
+      assert.deepEqual(cleanDraft(withTasks((o) => unreadable('pasted', o), tasks)), unreadable('pasted', { box: { top: 30, bottom: 32, tasks } }), `unreadable / ${tasks}`);
+    }
+  });
+
+  test('(−) a tasks that is not an integer, is negative, is the box\'s top or past it, or is a string number is dropped: the box is exactly { top, bottom } and the draft is kept', () => {
+    for (const tasks of [1.5, -1, -0.5, 30, 31, 99, 2 ** 40, '17', '0', null, true, false, [], [17], {}, NaN, Infinity, -Infinity, undefined]) {
+      for (const [name, make] of [['text', (o) => text('a', o)], ['empty', empty], ['unreadable', (o) => unreadable('pasted', o)]]) {
+        const d = cleanDraft(withTasks(make, tasks));
+        assert.notEqual(d, null, `${name} / ${String(tasks)}: only the field is dropped`);
+        assert.deepEqual(d.box, { top: 30, bottom: 32 }, `${name} / ${String(tasks)}`);
+        assert.equal(Object.hasOwn(d.box, 'tasks'), false, `${name} / ${String(tasks)}`);
+        assert.deepEqual({ ...d, box: BOX }, { ...make({}), box: BOX }, `${name} / ${String(tasks)}: nothing else changes`);
+      }
+    }
+  });
+
+  test('(+) a box without the field (an older server, or no list) stays exactly { top, bottom }; other keys of the box are never kept', () => {
+    assert.deepEqual(cleanDraft(text('a')).box, { top: 30, bottom: 32 });
+    assert.deepEqual(cleanDraft(unreadable('pasted')).box, { top: 30, bottom: 32 });
+    assert.deepEqual(cleanDraft(withTasks((o) => text('a', o), 3, { extra: '<b>x</b>', cursor: 4 })).box, { top: 30, bottom: 32, tasks: 3 });
+  });
+
+  test('(+) the cleaned box is a copy: the capture body is not kept', () => {
+    const raw = text('a', { box: { top: 30, bottom: 32, tasks: 3 } });
+    const d = cleanDraft(raw);
+    assert.notEqual(d.box, raw.box);
+    raw.box.tasks = 5;
+    assert.equal(d.box.tasks, 3);
+  });
 });
 
 describe('cutAt (design 5): where the mirror stops', () => {

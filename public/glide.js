@@ -9,10 +9,16 @@ export const GLIDE_SHARE = 0.8; // share of all votes the shift must have
 
 const clean = (t) => t.replace(/\u00a0/g, ' ').trimEnd();
 
-/** A frame for the matcher: the conversation rows (above Claude's input box) as texts, with the pane size and whether Claude's view is at its bottom (the capture's `scrolled` is false). */
+/**
+ * A frame for the matcher: the conversation rows (above Claude's input box) as texts, with the pane size and whether Claude's view is at its bottom (the capture's
+ * `scrolled` is false). Claude's task list, pinned between the conversation and the box, is not conversation: it neither votes nor slides, so the frame ends at the
+ * list's header row, `draft.box.tasks` (src/draft.js), when that is an integer from 0 to the box's top; anything else is ignored and the frame ends at the box.
+ */
 export function frameOf(body, draft) {
   const rows = Array.isArray(body?.rows) ? body.rows : [];
-  const end = Math.min(rows.length, viewRowsOf(body, draft));
+  const view = Math.min(rows.length, viewRowsOf(body, draft));
+  const tasks = draft?.box?.tasks;
+  const end = Number.isInteger(tasks) && tasks >= 0 && tasks <= view ? tasks : view;
   return { texts: rows.slice(0, end).map((r) => clean(rowText(r))), end, cols: body?.cols, rows: rows.length, bottom: body?.scrolled === false };
 }
 

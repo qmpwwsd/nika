@@ -8,6 +8,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GLIDE_MS, GLIDE_ARM_MS, GLIDE_MIN_ROWS, GLIDE_SHARE, frameOf, findShift, createGlideArm, glideFrom, matrixY, paneWriteDisarms } from '../public/glide.js';
 import { rowText } from '../public/scroll.js';
+import { parseDraft } from '../src/draft.js';
+import { cleanDraft } from '../public/draft-sync.js';
+import { boxRows, taskRows } from './helpers.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = fs.readFileSync(path.join(HERE, '..', 'public', 'glide.js'), 'utf8');
@@ -94,6 +97,136 @@ describe('frameOf', () => {
   test('(+) rowText is the one scroll.js has: the spans joined, anything else empty', () => {
     assert.equal(rowText([{ t: 'a' }, { t: 'b' }]), 'ab');
     assert.equal(rowText(null), '');
+  });
+});
+
+// ---- Claude's task list pinned between the conversation and its box (LC18 Finding 2): static rows that must neither vote nor slide ----------
+// 17 document rows, the list (9 rows: header, 7 task rows, overflow row), one blank row, then the box. With the view moved by 3 rows, 14 of the 17 document
+// rows are in both frames: 14 rows vote the shift and the 9 list rows vote "no shift", the numbers of the live check (14 of 23 = 0.61 < GLIDE_SHARE).
+const SHOWN = 17;
+const LIST = ['  3/9 tasks done · 1 in progress', ...Array.from({ length: 7 }, (_, i) => `  ◻ Made-up task ${i}`), '  … +1 task (1 open)'];
+const pinnedAt = (o, over = {}) => ({
+  alt: true, scrolled: o > 0, cols: 120,
+  rows: [...DOC.slice(o, o + SHOWN).map(spans), ...LIST.map(spans), spans(''), spans('-----'), spans('> '), spans('-----'), spans('? for shortcuts')],
+  ...over,
+});
+const PLAIN_BOX = { top: 27, bottom: 29 }; // the draft before box.tasks existed: the list rows are inside the frame
+const LIST_BOX = { ...PLAIN_BOX, tasks: SHOWN };
+
+describe('frameOf: the task list pinned above Claude\'s box (LC18)', () => {
+  test('(+) the frame ends at the list\'s header (draft.box.tasks): the list rows are not in it, the pane size is unchanged', () => {
+    const f = frameOf(pinnedAt(0), draftOf(LIST_BOX));
+    assert.equal(f.end, SHOWN);
+    assert.equal(f.texts.length, SHOWN);
+    assert.deepEqual(f.texts, DOC.slice(0, SHOWN));
+    assert.equal(f.rows, 31);
+    assert.equal(f.cols, 120);
+    assert.equal(f.bottom, true);
+    const before = frameOf(pinnedAt(0), draftOf(PLAIN_BOX));
+    assert.equal(before.end, 27, 'without the field the frame still ends at the box, as it did');
+    assert.deepEqual(before.texts.slice(0, SHOWN), f.texts);
+    assert.deepEqual(before.texts.slice(SHOWN, SHOWN + LIST.length), LIST);
+  });
+
+  test('(+) a list at the very top of the screen (tasks 0) leaves nothing to compare; tasks at the box\'s top is the whole frame', () => {
+    const none = frameOf(pinnedAt(0), draftOf({ ...PLAIN_BOX, tasks: 0 }));
+    assert.equal(none.end, 0);
+    assert.deepEqual(none.texts, []);
+    assert.equal(frameOf(pinnedAt(0), draftOf({ ...PLAIN_BOX, tasks: 27 })).end, 27);
+  });
+
+  test('(+) a header past the rows of a short capture cannot read past them; one inside them ends the frame there', () => {
+    const body = { cols: 10, rows: [[{ t: 'a' }], [{ t: 'b' }], [{ t: 'c' }]] };
+    assert.equal(frameOf(body, { box: { top: 99, tasks: 5 } }).end, 3);
+    assert.equal(frameOf(body, { box: { top: 99, tasks: 2 } }).end, 2);
+    assert.deepEqual(frameOf(body, { box: { top: 99, tasks: 2 } }).texts, ['a', 'b']);
+  });
+
+  test('(−) a tasks that is not an integer, is negative or lies past the box\'s top is ignored: the frame ends at the box', () => {
+    for (const tasks of [1.5, -1, -0.5, '17', '0', null, true, false, [], [17], {}, NaN, Infinity, -Infinity, 28, 99, 2 ** 40, undefined]) {
+      const f = frameOf(pinnedAt(0), draftOf({ ...PLAIN_BOX, tasks }));
+      assert.equal(f.end, 27, `tasks = ${String(tasks)}`);
+      assert.equal(f.texts.length, 27, `tasks = ${String(tasks)}`);
+    }
+  });
+
+  test('(−) no draft, no box, a box with no tasks: the frame is what it was', () => {
+    for (const draft of [null, undefined, {}, { box: null }, { box: {} }]) assert.equal(frameOf(pinnedAt(0), draft).end, 31, JSON.stringify(draft));
+    for (const box of [{ top: 27 }, PLAIN_BOX]) assert.equal(frameOf(pinnedAt(0), draftOf(box)).end, 27, JSON.stringify(box));
+  });
+
+  test('(+) the live numbers: without the field the 9 list rows vote "no shift" and the glide never starts; with it the pair is a clean shift of 3', () => {
+    const plain = findShift(frameOf(pinnedAt(3), draftOf(PLAIN_BOX)), frameOf(pinnedAt(0), draftOf(PLAIN_BOX)));
+    assert.deepEqual([plain.k, plain.votes, plain.total, plain.tie], [3, 14, 23, false]);
+    assert.ok(plain.votes < GLIDE_SHARE * plain.total, 'under the share (0.61 < 0.8)');
+    const a = rig().arm;
+    a.arm(UP, { scrolled: true, before: frameOf(pinnedAt(3), draftOf(PLAIN_BOX)) });
+    assert.deepEqual(a.offer(frameOf(pinnedAt(0), draftOf(PLAIN_BOX))), { act: 'rebase' }, 'the bug: the matcher rebases, the rows jump');
+
+    const clean = findShift(frameOf(pinnedAt(3), draftOf(LIST_BOX)), frameOf(pinnedAt(0), draftOf(LIST_BOX)));
+    assert.deepEqual([clean.k, clean.votes, clean.total, clean.tie], [3, 14, 14, false]);
+    const b = rig().arm;
+    b.arm(UP, { scrolled: true, before: frameOf(pinnedAt(3), draftOf(LIST_BOX)) });
+    assert.deepEqual(b.offer(frameOf(pinnedAt(0), draftOf(LIST_BOX))), { act: 'glide', k: 3, end: SHOWN }, 'only the conversation rows slide: end is the list\'s header');
+  });
+
+  test('(+) a down request glides the same way, and a list that changes between the frames does not disturb the conversation\'s vote', () => {
+    const a = rig().arm;
+    a.arm(DOWN, { scrolled: true, before: frameOf(pinnedAt(0), draftOf(LIST_BOX)) });
+    assert.deepEqual(a.offer(frameOf(pinnedAt(3), draftOf(LIST_BOX))), { act: 'glide', k: -3, end: SHOWN });
+    const b = rig().arm;
+    b.arm(UP, { scrolled: true, before: frameOf(pinnedAt(3), draftOf(LIST_BOX)) });
+    const moved = pinnedAt(0);
+    moved.rows[SHOWN + 1] = spans('  ✔ A task that just got done'); // a list row changed: it is not in the frame
+    assert.deepEqual(b.offer(frameOf(moved, draftOf(LIST_BOX))), { act: 'glide', k: 3, end: SHOWN });
+  });
+
+  test('(+) the reader and the matcher agree: the Draft parseDraft writes for a real screen ends the frame at the header of the list', () => {
+    const live = (o, tasks = taskRows({ named: false, blank: 0, doing: 1, open: 3, shownDone: 3, hiddenDone: 1 })) => {
+      const s = boxRows({ lines: [''] });
+      const above = [...DOC.slice(o, o + SHOWN).map(spans), ...tasks, []];
+      const rows = [...above, ...s.rows];
+      const draft = parseDraft(rows, { ...s.cursor, y: s.cursor.y + above.length }, s.cols);
+      return { draft, frame: frameOf({ alt: true, scrolled: o > 0, cols: s.cols, rows }, draft) };
+    };
+    const first = live(3);
+    const second = live(0);
+    assert.equal(first.draft.box.tasks, SHOWN);
+    assert.equal(first.frame.end, SHOWN);
+    assert.deepEqual(second.frame.texts, DOC.slice(0, SHOWN));
+    const arm = rig().arm;
+    arm.arm(UP, { scrolled: true, before: first.frame });
+    assert.deepEqual(arm.offer(second.frame), { act: 'glide', k: 3, end: SHOWN });
+    const bare = live(0, []); // no list: the same screen as before, the frame ends at the box
+    assert.equal(Object.hasOwn(bare.draft.box, 'tasks'), false);
+    assert.equal(bare.frame.end, bare.draft.box.top);
+  });
+
+  test('(+) the page\'s own path: the server\'s Draft over the wire, through cleanDraft, then frameOf ends at the list\'s header and the pair glides', () => {
+    const live = (o) => {
+      const s = boxRows({ lines: [''] });
+      const above = [...DOC.slice(o, o + SHOWN).map(spans), ...taskRows({ named: false, blank: 0, doing: 1, open: 3, shownDone: 3, hiddenDone: 1 }), []];
+      const rows = [...above, ...s.rows];
+      const wire = JSON.parse(JSON.stringify(parseDraft(rows, { ...s.cursor, y: s.cursor.y + above.length }, s.cols))); // the capture body's draft
+      const body = { alt: true, scrolled: o > 0, cols: s.cols, rows };
+      const draft = cleanDraft(wire); // what public/session.js hands to frameOf
+      return { wire, draft, frame: frameOf(body, draft), body };
+    };
+    const first = live(3);
+    const second = live(0);
+    assert.equal(first.wire.box.tasks, SHOWN, 'the server wrote it');
+    assert.equal(first.draft.box.tasks, SHOWN, 'cleanDraft kept it');
+    assert.equal(first.frame.end, SHOWN);
+    assert.deepEqual(second.frame.texts, DOC.slice(0, SHOWN));
+    const arm = rig().arm;
+    arm.arm(UP, { scrolled: true, before: first.frame });
+    assert.deepEqual(arm.offer(second.frame), { act: 'glide', k: 3, end: SHOWN });
+    // The same screen with a value cleanDraft refuses: the frame ends at the box, as before the field existed.
+    for (const tasks of [-1, 1.5, '17', first.draft.box.top, first.draft.box.top + 1]) {
+      const bad = cleanDraft({ ...first.wire, box: { ...first.wire.box, tasks } });
+      assert.deepEqual(bad.box, { top: first.draft.box.top, bottom: first.draft.box.bottom }, String(tasks));
+      assert.equal(frameOf(first.body, bad).end, first.draft.box.top, String(tasks));
+    }
   });
 });
 

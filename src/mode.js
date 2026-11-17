@@ -185,30 +185,24 @@ function blockAnchor(texts, k) {
 }
 
 /**
- * Index of the last row of the dialog or the permission prompt when `texts` end in what Claude draws under it (see above), else -1. Read bottom-up: a rule
- * row alone as the last non-blank row; or at most one overflow row, the task rows, the header, the blank rows (exactly one under a rule row, at least one
- * otherwise), the optional rule row, more blank rows if any, and the anchor (blockAnchor). The header and the overflow row are of the same version.
- * The counts must add up (headOf checks the header alone: total >= 1, and for 2.1.325 total = done + in progress + open, for 2.1.326 done + in progress <= total):
- * with an overflow row (either version) the \u25fc rows plus the hidden in-progress tasks = in progress, the \u25fb rows plus the hidden open ones = open,
- * the \u2714 rows plus the hidden done ones = done; a 2.1.325 block with task rows and no overflow row adds up exactly too, a 2.1.326 one
- * (the pane of 12 or 13 rows) when no state has more rows than the header counts; a header with no row under it (a pane too short for the rows)
- * is read on its own numbers but allows no overflow row. Anything else (a second row under a task, a notification row, an unknown glyph,
- * a rule row followed by two blank rows, the block under a mode line, not at the bottom) returns -1, so nothing is cut and the footer reads `unknown`.
+ * Index of the header row of the task block whose last row is texts[last], else -1. Read bottom-up: at most one overflow row, the task rows,
+ * the header; the header and the overflow row are of the same version. The counts must add up (headOf checks the header alone: total >= 1, and
+ * for 2.1.325 total = done + in progress + open, for 2.1.326 done + in progress <= total): with an overflow row (either version) the \u25fc rows
+ * plus the hidden in-progress tasks = in progress, the \u25fb rows plus the hidden open ones = open, the \u2714 rows plus the hidden done ones
+ * = done; a 2.1.325 block with task rows and no overflow row adds up exactly too, a 2.1.326 one (the pane of 12 or 13 rows) when no state has
+ * more rows than the header counts; a header with no row under it (a pane too short for the rows) is read on its own numbers but allows no
+ * overflow row. One reader for the block under a dialog (taskEnd) and the block above the input box (taskBlockAbove).
  */
-function taskEnd(texts) {
-  let at = skipBlank(texts, texts.length - 1);
-  if (at < 0) return -1;
-  if (isRule(texts, at)) { // the lone rule row
-    const k = skipBlank(texts, at - 1);
-    return blockAnchor(texts, k) ? k : -1;
-  }
-  const more = moreOf(texts[at].trimEnd());
+function blockHead(texts, last) {
+  const text = (x) => (typeof texts[x] === 'string' ? texts[x].trimEnd() : '');
+  let at = last;
+  const more = moreOf(text(at));
   if (more !== null) at -= 1;
   const seen = { '\u25fc': 0, '\u2714': 0, '\u25fb': 0 };
   let rows = 0;
-  const rowAt = (x) => (x >= 0 ? TASK_ROW.exec(texts[x].trimEnd()) : null);
+  const rowAt = (x) => (x >= 0 ? TASK_ROW.exec(text(x)) : null);
   for (let m = rowAt(at); m !== null; m = rowAt(at)) { seen[m[1]] += 1; rows += 1; at -= 1; }
-  const head = at >= 0 ? headOf(texts[at].trimEnd()) : null;
+  const head = at >= 0 ? headOf(text(at)) : null;
   if (head === null || (more !== null && (more.v !== head.v || rows === 0))) return -1;
   if (rows > 0 || more !== null) {
     const hidden = more === null ? [0, 0, 0] : more.hidden;
@@ -216,12 +210,44 @@ function taskEnd(texts) {
     const states = [[seen['\u25fc'], hidden[0], head.doing], [seen['\u25fb'], hidden[1], head.open], [seen['\u2714'], hidden[2], head.done]];
     if (states.some(([shown, hid, counted]) => (exact ? shown + hid !== counted : shown > counted))) return -1;
   }
+  return at;
+}
+
+/**
+ * Index of the last row of the dialog or the permission prompt when `texts` end in what Claude draws under it (see above), else -1. Read bottom-up: a rule
+ * row alone as the last non-blank row; or the block (blockHead: at most one overflow row, the task rows, the header), the blank rows (exactly one under a
+ * rule row, at least one otherwise), the optional rule row, more blank rows if any, and the anchor (blockAnchor). Anything else (a second row under a task,
+ * a notification row, an unknown glyph, a rule row followed by two blank rows, the block under a mode line, not at the bottom) returns -1, so nothing is
+ * cut and the footer reads `unknown`.
+ */
+function taskEnd(texts) {
+  const last = skipBlank(texts, texts.length - 1);
+  if (last < 0) return -1;
+  if (isRule(texts, last)) { // the lone rule row
+    const k = skipBlank(texts, last - 1);
+    return blockAnchor(texts, k) ? k : -1;
+  }
+  const at = blockHead(texts, last);
+  if (at < 0) return -1;
   const above = skipBlank(texts, at - 1);
   const blanks = at - 1 - above;
   if (blanks < 1) return -1;
   if (!isRule(texts, above)) return blockAnchor(texts, above) ? above : -1; // an unnamed session
   const k = skipBlank(texts, above - 1);
   return blanks === 1 && blockAnchor(texts, k) ? k : -1; // a named one: the rule row, exactly one blank row
+}
+
+/**
+ * Index of the header row of the task block Claude pins above its input box (0.5, LC18), else -1. `top` is the row of the box's top rule (a rule
+ * row, isRule); right above it are exactly ONE blank row and the block, read by the same reader as the block under a dialog (blockHead: both
+ * versions, the same strictness and count rules). Two blank rows, none, a row that is not part of the block, a block whose numbers do not add
+ * up, a `top` that is not a rule row or lies outside `texts` give -1. Pure shape check: nothing is cut here; the page keeps the rows from the
+ * header down still while the conversation above slides (public/glide.js).
+ */
+export function taskBlockAbove(texts, top) {
+  if (!Array.isArray(texts) || !Number.isInteger(top) || !isRule(texts, top)) return -1; // isRule is false for a row outside `texts`
+  if (plain(texts[top - 1]) !== '') return -1; // one blank row; with two, the row above it is blank and blockHead finds no block there
+  return blockHead(texts, top - 2);
 }
 
 /**

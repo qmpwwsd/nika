@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { parseDraft, boxSquash, squash, SIG, RULE_ROW, HISTORY_LABEL, normDraft, sameDraft, inEnvelope, chunks, width } from '../src/draft.js';
 import { rowText } from '../src/mode.js';
 import { readDraft } from '../src/session-control.js';
-import { boxRows, span, subagentRows } from './helpers.js';
+import { boxRows, span, subagentRows, taskRows } from './helpers.js';
 
 // Synthetic screens only (acme-api, web-shop). The layout follows docs/contracts/claude-tui.md and spike S9 (Claude Code 2.1.321):
 // top rule, `glyph + no-break space + text`, two-space continuation rows, bottom rule, status line, mode line.
@@ -1225,6 +1225,143 @@ describe('parseDraft: the subagent list below the footer (F2, live capture 2.1.3
       assert.equal(parse(below({ lines: ['hello'] }, ['Claude asked: how is Claude doing this session? and moved on'])).text, 'hello');
       assert.equal(parse(boxRows({ lines: ['1: Bad    2: Fine    3: Good    0: Dismiss'] })).text, '1: Bad    2: Fine    3: Good    0: Dismiss', 'a draft that contains the words is a draft (it is not a row of its own: it starts with the glyph)');
     });
+  });
+});
+
+describe('parseDraft: the task list pinned above the box (LC18, box.tasks)', () => {
+  const line = (t) => [span(t)];
+  /** Claude 2.1.325's block alone, and 2.1.326's (header, task rows, overflow row); made-up labels. */
+  const v1 = (o = {}) => taskRows({ named: false, blank: 0, ...o });
+  const v2 = () => [...taskRows({ named: false, blank: 0, doing: 1, open: 2, shownDone: 2, hiddenDone: 0, head: '  6/9 tasks done · 1 in progress' }), line('  … +4 tasks (4 done)')];
+  const convo = (n) => Array.from({ length: n }, (_, i) => line(`transcript line ${i}`));
+  /** `before` conversation rows, the block, `gap` blank rows: what Claude draws above its box. */
+  const pinned = (block, { before = 3, gap = 1 } = {}) => [...convo(before), ...block, ...Array.from({ length: gap }, () => [])];
+  /** boxRows(opts) under `above`: the capture's rows, the cursor moved down with the box. */
+  const under = (above, opts = {}) => {
+    const s = boxRows(opts);
+    return { rows: [...above, ...s.rows], cursor: s.cursor === null ? null : { ...s.cursor, y: s.cursor.y + above.length }, cols: s.cols };
+  };
+  /** The Draft of the screen, read as drawn and padded with spaces to the width (both must be the same Draft). */
+  const readUnder = (above, opts = {}) => {
+    const s = under(above, opts);
+    const draft = parseDraft(s.rows, s.cursor, s.cols);
+    const padRow = (row) => { const n = s.cols - row.map((sp) => sp.t).join('').length; return n > 0 ? [...row, span(' '.repeat(n))] : row; };
+    assert.deepEqual(parseDraft(s.rows.map(padRow), s.cursor, s.cols), draft, 'padded with spaces to the width: the same Draft');
+    return draft;
+  };
+  /** The same Draft as without the block: the box rows moved down, nothing else changed. */
+  const sameAsBare = (draft, above, opts) => {
+    const bare = read(opts);
+    const { box, ...rest } = draft;
+    const { box: bareBox, ...bareRest } = bare;
+    assert.deepEqual(rest, bareRest);
+    assert.equal(box.top, above.length + bareBox.top);
+    assert.equal(box.bottom, above.length + bareBox.bottom);
+  };
+  const SHAPES = { '2.1.325 block': v1(), '2.1.325 block with an overflow row': v1({ hiddenDone: 3 }), '2.1.326 block': v2(), '2.1.325 header only': v1({ doing: 0, open: 0, shownDone: 0, hiddenDone: 0, claim: { total: 5, done: 3, open: 2 } }) };
+
+  test('(+) an idle screen with the block above the box carries box.tasks: the row of the header', () => {
+    for (const [name, block] of Object.entries(SHAPES)) {
+      for (const before of [0, 3, 30]) {
+        const above = pinned(block, { before });
+        const d = readUnder(above, { lines: [''] });
+        assert.deepEqual(d.box, { top: above.length, bottom: above.length + 2, tasks: before }, `${name} / ${before} rows before`);
+        assert.ok(Number.isInteger(d.box.tasks) && d.box.tasks >= 0 && d.box.tasks < d.box.top, `${name}: 0 <= tasks < top`);
+        assert.equal(d.state, 'empty');
+      }
+    }
+  });
+
+  test('(+) every other field of the Draft is what it is without the block: state, mode, text, sig, cursorAtEnd, suggestion, queued, ghost', () => {
+    const above = pinned(v1({ hiddenDone: 3 }));
+    for (const opts of [{ lines: [''] }, { lines: ['hello'] }, { lines: ['line one', 'line two'] }, { lines: [''], ghost: 'Try asking for a summary' }, { lines: ['hello'], insert: true },
+      { mode: 'bash', lines: ['echo hi'] }, { lines: ['hello'], label: 'demo-session' }, { lines: ['hello'], ghost: ' there' }]) {
+      const d = readUnder(above, opts);
+      assert.equal(d.box.tasks, 3, JSON.stringify(opts));
+      sameAsBare(d, above, opts);
+    }
+  });
+
+  test('(+) an unreadable box carries it too (its box is the same box): history, a tall box, pasted text', () => {
+    const above = pinned(v2());
+    const tall = { lines: Array.from({ length: 14 }, (_, i) => `row ${i}`) };
+    for (const opts of [{ lines: ['an old prompt'], label: 'History 2/3' }, tall, { lines: ['[Pasted text #1 +3 lines]'] }]) {
+      const d = readUnder(above, opts);
+      assert.equal(d.state, 'unreadable', JSON.stringify(opts).slice(0, 60));
+      assert.equal(d.box.tasks, 3);
+      assert.equal(d.sig, null);
+    }
+  });
+
+  test('(+) the readers of a live pane give it: readDraft (the capture route), boxSquash (the attachment send) and the block above row 0 (tasks 0)', () => {
+    for (const before of [0, 3]) {
+      const s = under(pinned(v1(), { before }), { lines: ['sync me'] });
+      assert.equal(readDraft({ rows: s.rows, cursor: s.cursor, cols: s.cols }).box.tasks, before);
+      assert.equal(boxSquash(s.rows, s.cursor, s.cols).draft.box.tasks, before);
+      assert.equal(parseDraft(s.rows, s.cursor, s.cols).box.tasks, before);
+    }
+  });
+
+  test('(+) the block at the very top of the screen (tasks 0) is carried, not dropped as "no value"', () => {
+    const d = readUnder(pinned(v1(), { before: 0 }), { lines: [''] });
+    assert.equal(d.box.tasks, 0);
+    assert.equal(Object.hasOwn(d.box, 'tasks'), true);
+  });
+
+  test('(−) no block, or a block that is not right above the top rule: the box is { top, bottom } and nothing else changes', () => {
+    const cases = {
+      'no block at all': convo(3),
+      'two blank rows between': pinned(v1(), { gap: 2 }),
+      'no blank row between': pinned(v1(), { gap: 0 }),
+      'a hint row between the blank row and the top rule': [...pinned(v1()), line('  Esc again to clear')],
+      'a notice between the block and the blank row': [...convo(3), ...v1(), line('  A notice from the shell'), []],
+      'only a header, in a conversation row': [...convo(3), line('  3 tasks (1 done, 2 open)'), line('  some words'), []],
+    };
+    for (const [name, above] of Object.entries(cases)) {
+      for (const opts of [{ lines: [''] }, { lines: ['hello'] }]) {
+        const d = readUnder(above, opts);
+        assert.equal(Object.hasOwn(d.box, 'tasks'), false, name);
+        assert.deepEqual(Object.keys(d.box), ['top', 'bottom'], name);
+        sameAsBare(d, above, opts);
+      }
+    }
+  });
+
+  test('(−) a block whose numbers do not add up, an unknown glyph or a second row under a task is no block: no tasks field', () => {
+    const cases = {
+      'the total does not add up': v1({ claim: { total: 8 } }),
+      'the done count does not match': v1({ claim: { done: 6, total: 8 } }),
+      'the overflow row names a state that does not exist': (() => { const b = v1(); b[b.length - 1] = line('   … +3 finished'); return b; })(),
+      'an unknown glyph': (() => { const b = v1(); b.splice(2, 0, line('  ● Another thing')); return b; })(),
+      'a second row under a task': (() => { const b = v1(); b.splice(2, 0, line('    rest of the label')); return b; })(),
+      'the 2.1.326 header with a 2.1.325 overflow row': [...taskRows({ named: false, blank: 0, doing: 1, open: 2, shownDone: 2, hiddenDone: 0, head: '  6/9 tasks done · 1 in progress' }), line('   … +4 completed')],
+    };
+    for (const [name, block] of Object.entries(cases)) {
+      const above = pinned(block);
+      const d = readUnder(above, { lines: ['hello'] });
+      assert.equal(Object.hasOwn(d.box, 'tasks'), false, name);
+      sameAsBare(d, above, { lines: ['hello'] });
+    }
+  });
+
+  test('(−) a block below the box (under the mode line, a list Claude draws there) is not the one above it: no tasks field', () => {
+    const s = boxRows({ lines: ['hello'] });
+    const rows = [...convo(3), ...s.rows, [], ...v1()];
+    const cursor = { ...s.cursor, y: s.cursor.y + 3 };
+    const d = parseDraft(rows, cursor, s.cols);
+    // The block below the footer is not cut (only the subagent list and the dialog task list are): the footer is then not a mode line.
+    assert.equal(d, null);
+    const bare = parseDraft([...convo(3), ...s.rows], cursor, s.cols);
+    assert.equal(Object.hasOwn(bare.box, 'tasks'), false);
+  });
+
+  test('(−) the gates are unchanged: a block above a screen with no mode line, no cursor between the rules or a permission prompt is still no box', () => {
+    const above = pinned(v1());
+    const s = under(above, { lines: ['hello'], footer: 'Esc to cancel' });
+    assert.equal(parseDraft(s.rows, s.cursor, s.cols), null, 'no mode line');
+    const t = under(above, { lines: ['hello'] });
+    assert.equal(parseDraft(t.rows, { ...t.cursor, y: above.length }, t.cols), null, 'the cursor on the top rule');
+    assert.equal(parseDraft(t.rows, t.cursor, t.cols).box.tasks, 3, 'control');
   });
 });
 
