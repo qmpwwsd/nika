@@ -278,12 +278,27 @@ const settle = async () => { for (let i = 0; i < 6; i += 1) await tick(); };
 function rig(opts = {}) {
   current?.();
   const restore = installDom({ createElement: (t) => new TEl(t), createElementNS: (ns, t) => new TEl(t) });
-  Object.defineProperty(globalThis.document, 'activeElement', { get: () => focus.el, configurable: true });
+  // What the page sees as the focused element. A browser puts focus on BODY (null here) when the focused node leaves the document or sits in
+  // something hidden; the fake DOM keeps the stale pointer, so the getter does that fixup: the node must hang from `page` through its parents'
+  // child lists, with nothing hidden on the way.
+  const attached = (el) => {
+    let top = el;
+    for (let n = el; n; n = n.parent) {
+      if (n.hidden === true) return false;
+      if (n.parent && !n.parent.kids.includes(n)) return false;
+      top = n;
+    }
+    return top === page;
+  };
+  Object.defineProperty(globalThis.document, 'activeElement', { get: () => (focus.el !== null && attached(focus.el) ? focus.el : null), configurable: true });
   focus.el = null;
   current = restore;
+  const page = new TEl('div');
   const root = new TEl('div');
   root.hidden = true;
   const box = new TEl('textarea');
+  const other = new TEl('button'); // a control outside the panel: where focus is when the user has clicked elsewhere
+  page.append(root, box, other);
   const log = { calls: [], announce: [], say: [], problem: [], gone: 0, boxFocus: 0 };
   const state = { reply: opts.reply ?? (() => ({ status: 200, body: { answered: 3 } })) };
   box.focus = () => { log.boxFocus += 1; focus.el = box; };
@@ -300,7 +315,7 @@ function rig(opts = {}) {
   };
   const panel = createSurveyPanel(io);
   const render = (survey, over = {}) => panel.render({ pane: 'ok', survey: survey === null ? null : cleanSurvey(survey), blocked: false, name: 'builder-1', ...over });
-  return { panel, io, root, box, log, state, render };
+  return { panel, io, root, box, other, log, state, render };
 }
 
 const q = (root, cls) => root.all(withClass(cls));
@@ -704,6 +719,130 @@ describe('where the panel shows (design 2.6 "Placement")', () => {
 });
 
 // ---- the page's markup, styles and wiring ---------------------------------------------------------------------------------------
+
+// ---- focus when the panel redraws or leaves under a focused button (live check LC21, O1) --------------------------------------------
+// LC21 trace after Tab to "0 Dismiss" and Enter: BUTTON at 3 ms, BODY at 510 ms with the panel still shown, hidden at 562 ms. The answer arrives
+// (~500 ms) and draws the capture held back meanwhile, a half-erased survey, which the server reads as `terminal`; drawTerminal() replaced the
+// focused button and nothing took its place, so the later leave() found focus on BODY, not inside the panel, and handed nothing over.
+
+describe('focus after a keyboard Dismiss: a redraw or a hide under a focused button never leaves it on BODY (LC21 O1)', () => {
+  const REASONS = Object.keys(TERMINAL_LINES);
+  const active = () => globalThis.document.activeElement;
+  const held = () => {
+    let release;
+    const hold = new Promise((resolve) => { release = resolve; });
+    return { hold, release };
+  };
+
+  test('(+) the O1 trace: Tab to Dismiss, Enter, the answer arrives with Terminal only waiting: the panel redraws and focus is on the message box, not BODY; when the survey is gone it hides and focus stays there', async () => {
+    const { hold, release } = held();
+    const r = rig({ reply: () => hold });
+    r.render(rating());
+    const dismiss = byN(r.root, 0);
+    focus.el = dismiss; // Tab
+    dismiss.click(); // Enter on a native button is a click
+    await settle();
+    assert.equal(active(), dismiss, 'while the request runs the button keeps focus (aria-disabled does not take it away)');
+    r.render(terminal('unreadable')); // Claude is half-way through erasing its survey
+    assert.equal(r.root.attrs['data-s'], 'sending', 'held back until the request ends');
+    assert.equal(active(), dismiss);
+    release({ status: 200, body: { answered: 0 } });
+    await settle();
+    assert.equal(r.root.attrs['data-s'], 'terminal', 'redrawn: no button is left to hold focus');
+    assert.equal(buttons(r.root).length, 0);
+    assert.equal(r.root.hidden, false, 'the panel is still shown, as in the trace');
+    assert.equal(active(), r.box, 'spec 9.5: focus that leaves the panel goes to the message box');
+    assert.equal(r.log.boxFocus, 1);
+    r.render(null); // the next capture: the survey is gone
+    assert.equal(r.root.hidden, true);
+    assert.equal(active(), r.box);
+    assert.equal(r.log.boxFocus, 1, 'handed over once, not again at the hide');
+  });
+
+  for (const reason of REASONS) {
+    test(`(+) a focused button and a capture that turns terminal / ${reason}: focus goes to the message box, once, and the same reason again does not move it`, () => {
+      const r = rig();
+      r.render(rating());
+      focus.el = byN(r.root, 2);
+      r.render(terminal(reason));
+      assert.equal(buttons(r.root).length, 0);
+      assert.equal(active(), r.box);
+      assert.equal(r.log.boxFocus, 1);
+      focus.el = r.other; // the user moves on
+      r.render(terminal(reason));
+      assert.equal(active(), r.other, 'the same terminal state is not drawn again, so it takes nothing');
+      assert.equal(r.log.boxFocus, 1);
+    });
+  }
+
+  test("(+) focus on the question itself (it took focus when a survey replaced a button) goes to the message box when the panel turns terminal", () => {
+    const r = rig();
+    r.render(rating());
+    focus.el = byN(r.root, 2);
+    r.render(consent());
+    assert.equal(active().attrs.id, 'svy-q');
+    r.render(terminal('consent'));
+    assert.equal(active(), r.box);
+    assert.equal(r.log.boxFocus, 1);
+  });
+
+  test('(−) focus is not moved when it was not in the panel: on another control, on BODY (a mouse press leaves a button unfocused in some browsers), or moved away while the request ran', async () => {
+    for (const where of [(r) => r.other, () => null]) {
+      const r = rig();
+      r.render(rating());
+      focus.el = where(r);
+      r.render(terminal('unreadable'));
+      assert.equal(r.root.attrs['data-s'], 'terminal');
+      assert.equal(active(), where(r));
+      r.render(null);
+      assert.equal(active(), where(r));
+      assert.equal(r.log.boxFocus, 0, 'the panel appearing, changing or leaving never takes focus from elsewhere');
+    }
+    const { hold, release } = held();
+    const r = rig({ reply: () => hold });
+    r.render(rating());
+    focus.el = byN(r.root, 0);
+    byN(r.root, 0).click();
+    await settle();
+    r.render(terminal('unreadable'));
+    focus.el = r.other; // the user clicked into another control while the request ran
+    release({ status: 200, body: { answered: 0 } });
+    await settle();
+    assert.equal(r.root.attrs['data-s'], 'terminal');
+    assert.equal(active(), r.other);
+    assert.equal(r.log.boxFocus, 0);
+  });
+
+  test('(−) no move while the panel stays and keeps a focusable button: the answer arrives, the same survey is still on screen, focus stays on Dismiss until the survey is gone', async () => {
+    const { hold, release } = held();
+    const r = rig({ reply: () => hold });
+    r.render(rating());
+    const dismiss = byN(r.root, 0);
+    focus.el = dismiss;
+    dismiss.click();
+    await settle();
+    release({ status: 200, body: { answered: 0 } });
+    await settle();
+    assert.equal(r.root.attrs['data-s'], 'sent');
+    r.render(rating());
+    r.render(rating());
+    assert.equal(r.root.hidden, false);
+    assert.equal(active(), dismiss);
+    assert.equal(r.log.boxFocus, 0);
+    r.render(null);
+    assert.equal(active(), r.box, 'then the usual hand-over');
+    assert.equal(r.log.boxFocus, 1);
+  });
+
+  test('(−) a new survey that replaces the focused button keeps focus in the panel, on its question, not in the message box', () => {
+    const r = rig();
+    r.render(rating());
+    focus.el = byN(r.root, 2);
+    r.render(consent());
+    assert.equal(active().attrs.id, 'svy-q');
+    assert.equal(r.log.boxFocus, 0);
+  });
+});
 
 describe('constraint 6 and the wiring', () => {
   const HTML = read('public/session.html');

@@ -242,6 +242,7 @@ export function createSurveyPanel(io) {
   }
 
   function drawTerminal(reason) {
+    const focused = root.contains(document.activeElement); // asked before the old content goes: a removed node drops focus to BODY
     F = null;
     drawn = reason;
     root.replaceChildren(
@@ -254,6 +255,7 @@ export function createSurveyPanel(io) {
     root.setAttribute('aria-label', "Claude's feedback question");
     show(true);
     io.announce(announcement({ state: 'terminal', reason }, { name: name() }));
+    if (focused) io.composer().focus({ preventScroll: true }); // the control that had focus is gone and the note has none: the message box (LC21 O1; leave() would find BODY)
   }
 
   function leave() {
