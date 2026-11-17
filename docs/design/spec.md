@@ -2151,6 +2151,8 @@ step. Your queued message then goes to Claude at once." (`public/quick-actions.j
 text (`STILL_SENDING` in `public/draft-sync.js`). It clears when that Send succeeds; if that Send fails, its own line replaces it. A
 disabled box stays silent.
 
+**Known limit (0.5.0).** With a very short panel (about 12 rows) and a draft of two or more lines, Send may do nothing, because Claude's input box is not fully on screen (LC18 Finding 4).
+
 ### 9.13 Fit: the mirror fills the panel (0.5, W7)
 
 **(built 2026-11-14 (0.5).)** The session window measures its terminal panel in cells and asks the server to make the mirrored
@@ -2539,7 +2541,11 @@ goes to the base, wherever it came from. So when the grow asks the base size bac
 | a grow step (the size goes up), or while the grow runs or is held | no look: it applies only to the way back |
 
 The look is **not a commit point**: nothing is sent at the look (the way back is the one request, as before), no timer, listener or markup is added, and a height change alone is still no commit (F10). The base only ever grows at the look. One extra layout read per way back. The logic is
-`fitBaseFresh` in `public/session.js`, called from `growTick` when the ask is the way back. Decision: ADR 0017, amendment 2026-11-17 (FX3).
+`fitBaseFresh` in `public/session.js`, called from `growTick` when the ask is the way back. Decision: ADR 0017, amendment 2026-11-17 (FX3). Checked live (LC19, 2026-11-17, Claude Code 2.1.326): in 5 of 5 runs with a terminal that attached after the question had opened, a blur, a focus and an answer, the window ended at 13 or 14 rows, the panel's size (LC18: 10).
+
+**Known limits of the size (0.5.0).**
+- A grow's way back can end a few rows short when the last commit was taken while a question was already open (the page was opened or focused then): the hidden rows of Claude's input box were not on screen to count. It ends at the next commit (a resize, a focus, Fit again). (RVF2 M2, LC19 F1.)
+- After a grown question closes, the pane may show the smaller size for about a second before it settles (LC19 S1).
 
 ### 9.14 Attachments (0.5, W2)
 
@@ -2717,7 +2723,7 @@ bottom by itself when a message is submitted.
 the page compares the next frame with the one it drew: when the conversation moved as one block (at least 3 rows that occur once agree on the shift, they are at least 80 % of the matches, and the shift is in the request's direction),
 it draws the new frame and slides the conversation rows from where they were into place over 150 ms (`ease-out`, transform only). When a request of several pages, or a jump to the top or bottom, leaves fewer than 3 rows that agree on one shift (in practice none are shared), the page slides
 the new view in from half the conversation's height in its direction (it shows the direction, not the distance). Only the rows above Claude's input box move; the box, the footer and the task list (shown with Type into pane on) stay and
-cover the sliding rows. Claude's task list pinned **above** its input box (the list, one blank row, the box's top rule; since GT, LC18 Finding 2) stays too: the capture's `draft.box.tasks` names its header row and the page ends the frame it compares there, so the list neither votes in the match nor slides (with it counted, 14 of 23 rows voted the shift, 0.61 against the 0.8 share, and the arm rebased: the view jumped); the conversation above it slides. A page that gets no `tasks` (an older server, no list, a list that does not match exactly) compares and slides as before. The rows box clips (`overflow: clip`), so a slide never changes the mirror's scroll area, "Paused while you scroll" or the pin to the bottom. A second jump during a slide continues from where the rows are, so a
+cover the sliding rows. Claude's task list pinned **above** its input box (the list, one blank row, the box's top rule; since GT, LC18 Finding 2) stays too: the capture's `draft.box.tasks` names its header row and the page ends the frame it compares there, so the list neither votes in the match nor slides (with it counted, 14 of 23 rows voted the shift, 0.61 against the 0.8 share, and the arm rebased: the view jumped); the conversation above it slides. A page that gets no `tasks` (an older server, no list, a list that does not match exactly) compares and slides as before. Checked live (LC19, 2026-11-17, Claude Code 2.1.326, a three-task list): wheel, Page Up, Page Down, Home and End each glided, and the list's rows did not move in any frame. The rows box clips (`overflow: clip`), so a slide never changes the mirror's scroll area, "Paused while you scroll" or the pin to the bottom. A second jump during a slide continues from where the rows are, so a
 trackpad flick reads as one motion; requests sent before the first frame is drawn each get their own slide. Only a frame that comes within 0.7 s of a scroll request (renewed by the route's answer) can slide. Any other write to the pane
 (a key, Send, a command, a dialog or survey answer, Stop, a mode switch, a draft write, End) ends the pending slide, as does nika's own resize, a gone pane and a refused or lost scroll request, so output that streams in, Claude's return to
 the bottom after Send and nika's resizes never slide; the capture poll, the fit heartbeat and further scroll requests do not end it. Down and End slide only while Claude's view is scrolled up, and a down slide ends when a frame shows
@@ -2791,6 +2797,7 @@ and the prompt's buttons work as they do without the list (re-checked live in LC
 none in front of a short question or of any answer row; a review can hold both. nika reads each question on its own: all its rows barred or none, the bar removed before the text is read, the `sig` the
 same with or without it, so the review shows as the form (heading, pairs, **Submit answers**, **Decline**) and Submit works from the page. A mix inside one question, a barred answer row or a bar on
 Claude's own `Submit answers` and `Ready to submit your answers?` rows stays `unreadable / layout` and keeps the banner (`claude-tui.md` §13.2). Re-checked live in LC18: the review of two long questions showed as a form (`at: review`, two pairs) and Submit from the page reached Claude.
+A question row as wide as the pane where its rest row continues it under the same bar (found in the live check LC19, 2026-11-17: questions of about 330 and 300 characters at 106 and 147 columns) is read too, as on the question step; the last row of a question, an answer row, the heading and the `Ready…` row as wide as the pane stay `unreadable / wide` (FXR).
 
 **States.** Every state has its own colour, icon and word.
 
@@ -2856,6 +2863,8 @@ later tab "Question 2 of 4: <question>" · "Review your answers: 4 answers, abov
 Read it in the terminal view; choices above the message box." A step that mentions bypass says the terminal-only note instead of "above the
 message box". The `.dlg[data-inert]` look (60 % opacity, `not-allowed`) shows whenever the form cannot take an answer; option rows are at
 least 32 px high and More / Less is 24 px (WCAG 2.5.8).
+
+**Known limit (0.5.0).** At 49 columns or fewer Claude wraps a question's footer, and nika does not read the dialog: the banner shows and you answer in the terminal (LC17).
 
 **Not built:** "Chat about this"; the plan's text option and the plan text; moving between Claude's tabs; free text in a multi-select
 question on a tab that is not the last; a keyboard shortcut for an option; a Settings switch; anything on the browser tier.

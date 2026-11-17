@@ -281,17 +281,19 @@ Fixes:
   and still cuts it off only when every count adds up. The prompt's buttons answer as before. Tried against a live Claude 2.1.326.
 - **The review step of a question form is read when a question is long.** Claude 2.1.326 draws a bar in front of a long question there
   (and in front of no short one, and of no answer). nika read that as a screen it could not understand ("nika can't read Claude's dialog
-  right now"), so you had to press Submit in the terminal. It now shows the review as a form, with Submit answers and Decline. Tried
-  against a live Claude.
+  right now"), so you had to press Submit in the terminal. It now shows the review as a form, with Submit answers and Decline. A
+  question row that Claude fills to the pane's width and carries on in the next row (two questions of about 300 characters did it at
+  106 and 147 columns) is read as well. Tried against a live Claude, except the wide-row case, which that check found.
 - **After you switch away and back while a question form is open, Claude's pane returns to the panel's size.** Switching back measured
   the terminal view while the form was taking some of its height, and when the question closed the pane went back to that smaller size
   (2 to 6 rows short) and stayed there. nika now measures the panel again once the form (or the prompt buttons, the feedback survey or
   the "needs you" note) has closed, if this window has focus and Fit is on. A window that was not in front measures when you click back
   into it, as before. When a long question has grown the pane and Claude's pane goes back to the panel's size, nika also looks at the
-  panel once more first, so a pane that is now taller than when it was measured is not pulled back to the old, smaller size.
+  panel once more first, so a pane that is now taller than when it was measured is not pulled back to the old, smaller size. Tried
+  against a live Claude.
 - **Scrolling glides also while Claude's task list is shown above its input box.** The list stays put while the rest of the screen
   scrolls. nika used to count its rows as part of the screen that moves, so the glide fell back to plain steps; it now leaves the list
-  out when it follows the scroll.
+  out when it follows the scroll. Tried against a live Claude.
 - **Agents started with `nika spawn` no longer stop at Claude's "Adding a new directory" question.** Claude Code 2.1.326 asks every
   agent to trust nika's report folder when it is passed with `--add-dir`, at every start; "No, exit", Esc or a stray Enter ended the
   agent, and nika could not show the question. nika now passes the folder in the agent's settings (`permissions.additionalDirectories`),
@@ -364,6 +366,15 @@ Fixes:
 - **Every non-image attachment path is pasted with a leading space**, so Claude's box never begins with `/` (a slash command); nika stops
   and presses no Enter if it does. nika also removes an attachment folder once it is empty.
 - **The release check refuses an undated or unreleased changelog heading** (`(unreleased)` must become the release date before a tag).
+
+Known limits:
+
+- A grow's way back can end a few rows short when the last commit was taken while a question was already open (the page was opened or
+  focused then): the hidden rows of Claude's input box were not on screen to count. It ends at the next commit (a resize, a focus, Fit again).
+- After a grown question closes, the pane may show the smaller size for about a second before it settles.
+- At 49 columns or fewer Claude wraps a question's footer, and nika does not read the dialog: answer it in the terminal.
+- With a very short panel (about 12 rows) and a draft of two or more lines, Send may do nothing, because Claude's input box is not fully on
+  screen.
 
 ## 0.4.0 — 2026-11-16
 

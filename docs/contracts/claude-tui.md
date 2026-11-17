@@ -1152,7 +1152,8 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel      the footer: 
   **Open (M2, not seen live):** a barred question that holds a blank paragraph row (the bar is drawn when the text holds a line break). If Claude draws that row as `│` alone, nika reads it as a question row without the bar (the bar test is `│ `, and the row is not empty), so the dialog is `unreadable / layout` and the user answers it in the terminal. If Claude leaves that row empty it reads fine. A capture of one such question decides whether `│` alone should count as barred.
 - **A text row can be as wide as the pane.** The measured limit below (`cols − 1`) held for short questions; with the bar the widest row reached `cols` at 64 (64
   wide: the bar and 62 characters), 70 and 80 columns, and 87 at 90 and 119 at 120 depending on the wrap. A row of that width is a wrap only when the row
-  right below it continues the same question paragraph or the same option's description; nika accepts it only then (`wide` otherwise, §13.5).
+  right below it continues the same question paragraph or the same option's description; nika accepts it only then (`wide` otherwise, §13.5). The review step
+  has the same exemption for its question rows (§13.2).
 
 ### 13.2 The review step
 
@@ -1200,8 +1201,13 @@ Ready to submit your answers?
 - nika reads the bar **per question** (`readReview` in `src/dialog.js`): all rows of one question have it or none do, and different questions of one review may
   differ. It takes the bar out before reading, so the same text has the same `sig` with or without it. These are `layout`: some but not all rows of one
   question barred, a barred answer row or a barred answer continuation, a row that is only the bar, and a bar on `1. Submit answers` or on `Ready to submit
-  your answers?`. A bar on the last row (`2. Cancel`) means the review is not recognised at all (as before). A review row as wide as the pane stays
-  `wide`: the review has no wrapped-row exemption (§13.5), and the captured rows were narrower than the pane.
+  your answers?`. A bar on the last row (`2. Cancel`) means the review is not recognised at all (as before).
+- A question row as wide as the pane is a wrap, not a cut (FXR; live check LC19: two questions of about 330 and 300 characters, at 106 and 147 columns, drew the `●`
+  row exactly as wide as the pane with its rest row ` │   <rest>` below). The review has the exemption of the question step (§13.1, §13.5): a `●` row or a
+  wrapped rest row that reaches the pane's last column is accepted when the row directly below it is a rest row of the **same** question with the same bar state.
+  Still `wide`: the last row of a question, a `●` row with its answer row directly below, a full-width answer row or answer continuation, a full-width
+  `Review your answers` heading or `Ready to submit your answers?` row, a blank row between the full row and its rest, and a rest row of the other bar state.
+  (Before FXR, build 19, every such review read `unreadable / wide`, so Submit had to be pressed in the terminal.)
 - Before this was built (build 17) every barred review row read `unreadable / layout`, so a review of long questions could not be submitted from the page.
 
 ### 13.3 The plan approval
@@ -1252,7 +1258,7 @@ Both take a digit or `Enter` that was meant for something else, so every control
 | `cut` | No top rule directly above the strip, or no strip (a pane shorter than the dialog: the dialog clips from the top, the option list scrolls, and `↑` / `↓` replace the two leading spaces of the first or last visible option row, which no option pattern matches); a plan without `Ready to code?`, either `╌` rule or the prompt row. More rows show it: since F16 (0.5) the page gives a cut-off question more rows (`api-app.md`, "A cut-off question"; never a plan) |
 | `clipped` | (0.5, F16; before it this was `cut`) A tab header, an option label (a question's or a plan's), the question, or a review question or answer that ends in `…`: Claude shortened the text to the pane's width. More rows never help. Descriptions and the typed text value are not checked for it |
 | `wide` | A row (not a rule, not the free-text row's wrapped value, not a plan row) as wide as the pane: Claude may have cut it. A row under an option row whose first word would **not** have fitted behind the option's last character: a wrapped label looks like a description by its indent, so nika cannot tell them apart unless the row's first word would have fitted behind the label (word wrap at `cols - 1` would then have kept it there, so the row is a description: `src/dialog.js:222-225`). A wrapped footer. Fewer than 20 columns. **Exempt (F13-B):** a row that reaches the pane's last column is accepted when the row right below it continues the same question
-paragraph or the same option's description (a question row followed by another question row, a description row followed by another row of the same description), because
+paragraph or the same option's description (a question row followed by another question row, a description row followed by another row of the same description; on the review step, a question row followed by a rest row of the same question with the same bar state, FXR, §13.2), because
 a long question is drawn that wide (§13.1). At 40 columns Claude wraps the question, the labels, the descriptions and the footer (2 rows, 3 with INSERT), so the old banner shows |
 | `numbers` | Option numbers not `1..k+2` without gaps, or above 9 (a digit answers without `Enter`, so `k` is at most 7); the free-text row not `k+1`, the chat row not `k+2`; a button row on a single-select question or none on a multi-select one |
 | `tab` | Not exactly one current tab (zero or two marked tokens) |
