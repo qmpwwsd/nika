@@ -3552,6 +3552,123 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     });
   });
 
+  // ---- Final review RVF2, M1: the end of a Send is in a finally, so a job that throws cannot leave the page stuck on "Still sending" ----------
+
+  describe('M1: a Send whose job throws still ends', () => {
+    const count = (log, what) => log.order.filter((o) => o === what).length;
+    const UNKNOWN_OUTCOME = submitMessageReal({ status: 0 }); // the page's existing line for "nika did not hear back: not known whether Enter was pressed"
+    /** The Send rig that records the Send button's aria-busy ([set|remove]) and collects the lines shown in `shown` ([message, kind]). */
+    const throwRig = (opts = {}) => {
+      const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo'), ...opts });
+      r.log.shown = [];
+      r.log.busy = [];
+      Object.assign(r.ctx, {
+        STILL_SENDING: STILL_SENDING_REAL, STILL_SENDING_MS: STILL_SENDING_MS_REAL, submitMessage: submitMessageReal,
+        showProblem: (m, k) => r.log.shown.push([m, k]),
+        $: () => ({ setAttribute: (k, v) => r.log.busy.push(['set', k, v]), removeAttribute: (k) => r.log.busy.push(['remove', k]) }),
+      });
+      return r;
+    };
+    /** After the failed Send: the state is reset, the hold released once, the button not busy, the text and Shell untouched, and the failure said once. */
+    const endedAfterThrow = (r) => {
+      assert.equal(r.ctx.sending, false, 'sending is false again');
+      assert.equal(count(r.log, 'begin'), 1);
+      assert.equal(count(r.log, 'end'), 1, 'DS.endSend ran once');
+      assert.deepEqual(r.log.busy, [['set', 'aria-busy', 'true'], ['remove', 'aria-busy']], 'the Send button is busy only while the job runs');
+      assert.equal(r.ta.value, 'fix the typo', 'a failed Send keeps the text');
+      assert.deepEqual(r.log.said, [], 'no "Sent" echo');
+      assert.equal(r.log.shellOff, 0, 'Shell is not turned off by a Send that did not finish');
+      assert.deepEqual(r.log.shown, [[UNKNOWN_OUTCOME, 'error']], 'the page says it is not known whether Enter was pressed, once');
+    };
+
+    test('(−) the submit route throws (a code error in submitEnter): the Send ends, the error does not escape, and the next Send goes out with no "Still sending" line', async () => {
+      let boom = true;
+      const r = throwRig({ submit: () => { if (boom) throw new TypeError('boom'); return TAKEN; } });
+      await assert.doesNotReject(r.send(), 'the Send handler does not leak a rejection');
+      assert.equal(r.log.posts.length, 1, 'the first Send made its request');
+      endedAfterThrow(r);
+      boom = false;
+      r.log.shown.length = 0;
+      await r.send();
+      assert.ok(!r.log.shown.some(([m]) => m === STILL_SENDING_REAL), 'no "Still sending" line');
+      assert.deepEqual(r.log.shown, []);
+      assert.equal(r.log.posts.length, 2, 'the second Send made its request');
+      assert.deepEqual(r.log.posts[1], ['submit', { base: SIG1 }]);
+      assert.equal(r.ctx.sending, false);
+      assert.equal(count(r.log, 'begin'), 2);
+      assert.equal(count(r.log, 'end'), 2);
+      assert.deepEqual(r.log.said, ['Sent Enter to %12']);
+      assert.equal(r.ta.value, '', 'the second Send finished as a normal one: the box is emptied');
+    });
+
+    test('(−) DS.send throws on the push route (a synced box with other text): the same ending', async () => {
+      const r = throwRig({ screen: D('text', 'fix the') });
+      r.ctx.DS.send = async () => { r.log.order.push('push'); throw new TypeError('boom'); };
+      await assert.doesNotReject(r.send());
+      assert.deepEqual(r.log.posts, [], 'no Enter after a push that threw');
+      endedAfterThrow(r);
+    });
+
+    test('(−) the keys route throws on the typed route (no readable box): the same ending, and no Enter follows', async () => {
+      const r = throwRig({ screen: null });
+      r.ctx.deliver = async () => { r.log.order.push('keys'); throw new TypeError('boom'); };
+      await assert.doesNotReject(r.send());
+      assert.deepEqual(r.log.posts, [], 'no Enter after a text that never arrived');
+      endedAfterThrow(r);
+    });
+
+    test('(−) a job that throws before any request: the same ending (a rejection from enqueueJob itself)', async () => {
+      const r = throwRig();
+      r.ctx.enqueueJob = () => Promise.reject(new TypeError('boom'));
+      await assert.doesNotReject(r.send());
+      endedAfterThrow(r);
+    });
+
+    test('(+) a normal Send ends as before: state reset once, the button busy only while the job runs, endSend once and last, the echo and the cleared box', async () => {
+      const r = throwRig();
+      await r.send();
+      assert.equal(r.ctx.sending, false);
+      assert.deepEqual(r.log.order, ['begin', 'submit', 'submitted', 'sent', 'end'], 'the order is the one of today');
+      assert.deepEqual(r.log.busy, [['set', 'aria-busy', 'true'], ['remove', 'aria-busy']]);
+      assert.deepEqual(r.log.shown, []);
+      assert.deepEqual(r.log.said, ['Sent Enter to %12']);
+      assert.equal(r.ta.value, '');
+    });
+
+    test('(+) a Send that fails the usual way (a refusal from the route, no throw) is untouched: the route\'s own line, the text kept, the state reset once', async () => {
+      const r = throwRig({ submit: () => ({ status: 409, body: { error: 'prompt-open' } }) });
+      await r.send();
+      assert.equal(r.ctx.sending, false);
+      assert.equal(count(r.log, 'end'), 1);
+      assert.deepEqual(r.log.shown, [[submitMessageReal({ status: 409, code: 'prompt-open' }), 'error']], 'only the line of the refusal, not the unknown-outcome one');
+      assert.equal(r.ta.value, 'fix the typo');
+    });
+
+    test('(−) a code error after the job (the echo throws): the same ending, the line shown, the box text kept', async () => {
+      const r = throwRig();
+      r.ctx.say = () => { throw new TypeError('boom'); };
+      await assert.doesNotReject(r.send());
+      assert.equal(r.log.posts.length, 1, 'the request went out');
+      endedAfterThrow(r);
+    });
+
+    test('(−) the report itself throws (showProblem): the Send still ends, which is the finally\'s own job (the rejection is the report\'s, nothing more)', async () => {
+      const r = throwRig({ submit: () => { throw new TypeError('boom'); } });
+      r.ctx.showProblem = () => { throw new RangeError('report'); };
+      await assert.rejects(r.send(), RangeError);
+      assert.equal(r.ctx.sending, false, 'sending is false again');
+      assert.equal(count(r.log, 'end'), 1, 'DS.endSend ran once');
+      assert.deepEqual(r.log.busy, [['set', 'aria-busy', 'true'], ['remove', 'aria-busy']]);
+    });
+
+    test('(+) the three resets sit in one finally, once, after the catch (source shape)', () => {
+      const fn = code(JS['session.js']).split('async function sendComposer()')[1].split('\n}\n')[0];
+      assert.match(fn, /\} catch \{[^}]*showProblem\(submitMessage\(\{ status: 0 \}\), 'error'\);\s*\} finally \{\s*sending = false;\s*\$\('send'\)\.removeAttribute\('aria-busy'\);\s*DS\.endSend\(\);\s*\}/);
+      assert.equal([...fn.matchAll(/sending = false;/g)].length, 1, 'one reset, in the finally');
+      assert.equal([...fn.matchAll(/DS\.endSend\(\)/g)].length, 1);
+    });
+  });
+
   test('(+) row 1: the screen equals the box: the guarded Enter alone with the screen\'s sig, no push, no text, then the box is cleared and the sync told', async () => {
     const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo') });
     await r.send();

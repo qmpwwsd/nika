@@ -2249,16 +2249,22 @@ async function sendComposer() {
   sending = true;
   DS.beginSend(); // the background sync holds still until this send is over
   $('send').setAttribute('aria-busy', 'true');
-  // every Send ends in the one guarded Enter (submitEnter); the text before it is pushed into Claude's input (a synced box) or typed by the keys route (no readable box)
-  const r = await enqueueJob(route.act === 'push' ? () => pushThenSubmit(route) : route.act === 'enter' ? () => submitEnter(route.submit.base) : () => typeThenSubmit(plan.payloads));
-  sending = false;
-  $('send').removeAttribute('aria-busy');
-  if (r.ok) { // else the text stays in the box, and Shell stays on so a retry still goes as a command
-    say(r.taken === true && A.kind === 'busy' && value.trim() !== '' ? `Queued for Claude: ${route.textSummary ?? plan.summary}` : `Sent ${plan.summary} to ${paneId}`); // Claude takes a message sent while it works at its next step; the echo names the text, not the Enter (a lone Enter queues nothing of ours)
-    if (S.on) setShell(false); // like Claude's own ! mode: the next message is a message
-    clearBox(value);
+  try { // the end of a Send is in the finally (as attach.js send): a job that throws must not leave `sending` set and the sync held until a reload
+    // every Send ends in the one guarded Enter (submitEnter); the text before it is pushed into Claude's input (a synced box) or typed by the keys route (no readable box)
+    const r = await enqueueJob(route.act === 'push' ? () => pushThenSubmit(route) : route.act === 'enter' ? () => submitEnter(route.submit.base) : () => typeThenSubmit(plan.payloads));
+    if (r.ok) { // else the text stays in the box, and Shell stays on so a retry still goes as a command
+      say(r.taken === true && A.kind === 'busy' && value.trim() !== '' ? `Queued for Claude: ${route.textSummary ?? plan.summary}` : `Sent ${plan.summary} to ${paneId}`); // Claude takes a message sent while it works at its next step; the echo names the text, not the Enter (a lone Enter queues nothing of ours)
+      if (S.on) setShell(false); // like Claude's own ! mode: the next message is a message
+      clearBox(value);
+    }
+  } catch {
+    // a code error in the job or after it (the network errors are caught in call()): whether Enter went out is not known, the text stays in the box; the line of the submit route for "no answer" says so
+    showProblem(submitMessage({ status: 0 }), 'error');
+  } finally {
+    sending = false;
+    $('send').removeAttribute('aria-busy');
+    DS.endSend();
   }
-  DS.endSend();
 }
 
 /** The message box after its text went to Claude: emptied only when it still holds what was sent (the user may have typed on); the sync forgets the unsent text. */
