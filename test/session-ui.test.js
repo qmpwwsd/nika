@@ -10996,7 +10996,8 @@ describe('0.5.1 E: the mirror ends above Claude\'s dialog while nika\'s panel an
     const cases = {
       'sig mismatch': scene('question', { wdialog: READY('question', { sig: 'fedcba9876543210' }) }),
       'no top': scene('question', { body: BODY({ dialog: READY('question', { top: undefined }) }) }),
-      'top 0': scene('question', { body: BODY({ dialog: READY('question', { top: 0 }) }) }),
+      'top 0 for a prompt (R1: a question, review or survey may crop at 0, a prompt may not)': scene('prompt', { body: BODY({ prompt: { ...SCENES.prompt.body.prompt, top: 0 } }) }),
+      'top 0 for a plan': scene('plan', { body: BODY({ dialog: READY('plan', { top: 0 }) }) }),
       'top past the rows': scene('question', { body: BODY({ dialog: READY('question', { top: 14 }) }) }),
       'pane gone': scene('question', { pane: 'gone' }),
     };
@@ -11007,6 +11008,55 @@ describe('0.5.1 E: the mirror ends above Claude\'s dialog while nika\'s panel an
       assert.equal(r.ctx.M.crop, null, label);
       assert.equal(r.els['term-cut'].hidden, true, label);
     }
+  });
+
+  test('(+) R1: a question, a review and a survey crop at row 0: no row is drawn, the cursor is dropped, and the strip shows the panel look with that kind\'s words', () => {
+    const at0 = {
+      question: { dialog: READY('question', { top: 0 }) },
+      review: { dialog: READY('review', { top: 0 }) },
+      survey: { survey: { state: 'ready', kind: 'rating', sig: SIG, top: 0 } },
+    };
+    for (const [kind, parts] of Object.entries(at0)) {
+      const r = rig({ body: BODY(parts), panel: SCENES[kind].panel, wdialog: SCENES[kind].w.dialog });
+      r.drawMirror();
+      assert.equal(r.drawn.length, 1, kind);
+      assert.equal(r.drawn[0].rows, 0, `${kind}: the strip alone`);
+      assert.equal(r.drawn[0].cursor, null, `${kind}: the cursor sat under the strip`);
+      assert.equal(r.els['term-cut'].hidden, false, kind);
+      assert.equal(r.els['term-cut'].attrs['data-kind'], 'panel', kind);
+      assert.equal(r.els['term-cut-ic'].attrs.href, '#i-dialog', kind);
+      assert.equal(r.els['term-cut-t'].textContent, CROP_TEXT_REAL[kind], kind);
+      assert.deepEqual(norm(r.ctx.M.crop), { top: 0, kind }, kind);
+      assert.equal(r.ctx.M.cut, null, `${kind}: M.cut is still only the input-box cut`);
+    }
+  });
+
+  test('(−) R1: the same row-0 captures with Type into pane on show every row and the cursor, with no crop and no strip', () => {
+    for (const kind of ['question', 'review']) {
+      const r = rig({ body: BODY({ dialog: READY(kind, { top: 0 }) }), panel: SCENES[kind].panel, wdialog: SCENES[kind].w.dialog, pass: true });
+      r.drawMirror();
+      assert.equal(r.drawn[0].rows, 14, kind);
+      assert.deepEqual(norm(r.drawn[0].cursor), { x: 2, y: 12, visible: true }, kind);
+      assert.equal(r.ctx.M.crop, null, kind);
+      assert.equal(r.els['term-cut'].hidden, true, kind);
+    }
+  });
+
+  test('(+) R1: blank rows right above a review\'s top are left out of the view: the strip sits under the last row with ink', () => {
+    const rows = Array.from({ length: 14 }, (_, i) => (i === 3 || i === 4 ? row('   ') : row(`row ${i}`)));
+    const r = rig({ body: BODY({ rows, dialog: READY('review', { top: 5 }) }), panel: SCENES.review.panel, wdialog: SCENES.review.w.dialog });
+    r.drawMirror();
+    assert.equal(r.drawn[0].rows, 3, 'rows 0, 1 and 2');
+    assert.equal(r.drawn[0].last, 'row 2');
+    assert.deepEqual(norm(r.ctx.M.crop), { top: 3, kind: 'review' });
+  });
+
+  test('(−) R1: the blank-row trim leaves a permission prompt alone (the same blank rows stay above its crop)', () => {
+    const rows = Array.from({ length: 14 }, (_, i) => (i === 3 || i === 4 ? row('   ') : row(`row ${i}`)));
+    const r = rig({ body: BODY({ rows, prompt: SCENES.prompt.body.prompt }), panel: SCENES.prompt.panel });
+    r.drawMirror();
+    assert.equal(r.drawn[0].rows, 5);
+    assert.deepEqual(norm(r.ctx.M.crop), { top: 5, kind: 'prompt' });
   });
 
   test('(+) the strip goes back to the input look when the crop goes while the box is cut, and hides when nothing is cut', () => {

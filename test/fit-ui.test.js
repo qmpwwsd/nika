@@ -12,6 +12,7 @@ import {
   remeasure, askSize, frameReady, roomStep, refitFrom, createRedrawHold, HOLD_MS, HOLD_POLL_MS, ROOM_ROWS, REFIT_MS,
   HIDE_MAX, hiddenRows, fillSize, drawnScale,
   GROW_STEP_MIN, GROW_CAP, GROW_CONFIRM_MS, GROW_SETTLE_MS, GROW_WAIT_MS, GROW_CLOSE_MS, GROW_IDLE, growNext, cutQuestion, growAsk, scaleRows, growStep, growRebase, // F16
+  inked, // 0.5.2 R1
 } from '../public/fit-ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -3314,5 +3315,25 @@ describe('F16: frameReady, createRedrawHold and fitPanelView for the grow', () =
     const line = hintOf(fit('fitted'), { ...IDLE, grow: true });
     assert.equal([...line].every((ch) => ch.codePointAt(0) < 128), true);
     assert.doesNotMatch(line, /#|\/|\\|~/);
+  });
+});
+
+describe('0.5.2 R1: inked, a row with ink (shared by hiddenRows and crop.js trimTop)', () => {
+  test('(+) a row has ink when some span holds a character other than a space or a no-break space', () => {
+    assert.equal(inked([{ t: 'a' }]), true);
+    assert.equal(inked([{ t: '  ' }, { t: ' x ' }]), true, 'one inked span is enough');
+    assert.equal(inked([{ t: '\u2500' }]), true, 'a rule character is ink');
+  });
+
+  test('(−) blank rows: spaces, no-break spaces, empty text, no spans', () => {
+    assert.equal(inked([{ t: '   ' }]), false);
+    assert.equal(inked([{ t: ' ' }, { t: '\u00a0\u00a0' }]), false);
+    assert.equal(inked([{ t: '' }]), false);
+    assert.equal(inked([]), false);
+  });
+
+  test('(−) what is not a row of spans has no ink: no list, a span that is not an object or has no text', () => {
+    for (const row of [undefined, null, 'abc', 5, {}, { t: 'x' }]) assert.equal(inked(row), false, JSON.stringify(row));
+    for (const span of [null, undefined, 5, 'x', { t: 5 }, { s: {} }, { t: null }]) assert.equal(inked([span]), false, JSON.stringify(span));
   });
 });

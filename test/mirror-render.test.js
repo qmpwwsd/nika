@@ -231,6 +231,23 @@ describe('applyMirror', () => {
     assert.equal(c.children.length, 1);
   });
 
+  test('(+) 0.5.2 R1: a crop at row 0 (toRenderModel with cutAt 0, the cursor dropped) removes every drawn row, and a first draw at row 0 adds none', () => {
+    const doc = fakeDoc();
+    const c = doc.createElement('div');
+    const body = cap([[span('one')], [span('two')], [span('three')], [span('four')], [span('five')]]);
+    const cursor = { x: 1, y: 4, visible: true };
+    assert.equal(applyMirror(c, toRenderModel(body), cursor), 5);
+    assert.equal(c.children.length, 5);
+    assert.equal(cutCursor(cursor, 0), null, 'a cursor on any row sat at or below the cut');
+    assert.equal(applyMirror(c, toRenderModel(body, { cutAt: 0 }), cutCursor(cursor, 0)), 5, 'all five rows are taken off');
+    assert.equal(c.children.length, 0, 'the strip alone: no row child is left');
+    const fresh = doc.createElement('div');
+    assert.equal(applyMirror(fresh, toRenderModel(body, { cutAt: 0 }), null), 0);
+    assert.equal(fresh.children.length, 0);
+    assert.equal(applyMirror(c, toRenderModel(body), cursor), 5, 'and the rows come back when the crop goes');
+    assert.equal(c.children.length, 5);
+  });
+
   test('(−) hostile text lands only in textContent: no markup is parsed, no extra elements appear', () => {
     const doc = fakeDoc();
     const c = doc.createElement('div');

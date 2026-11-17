@@ -80,8 +80,8 @@ export function askSize(frame, room, d) {
   return { cols: Math.max(cols, Math.min(COLS[1], Math.floor((cols * (ROOM_ROWS - border)) / rows))), rows: ROOM_ROWS };
 }
 
-// F11: a row has ink when some span of it holds a character other than a space or U+00A0
-const inked = (row) => Array.isArray(row) && row.some((span) => span !== null && typeof span === 'object' && typeof span.t === 'string' && /[^ \u00a0]/.test(span.t));
+// F11: a row has ink when some span of it holds a character other than a space or U+00A0 (0.5.2 R1: exported, crop.js trims the blank rows above a crop with it)
+export const inked = (row) => Array.isArray(row) && row.some((span) => span !== null && typeof span === 'object' && typeof span.t === 'string' && /[^ \u00a0]/.test(span.t));
 
 /**
  * F11: the rows Claude draws from the cut row down (its input box and footer, which the mirror hides under a one-row strip): the last row with ink + 1 - cut.
