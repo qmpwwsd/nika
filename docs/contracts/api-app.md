@@ -43,7 +43,7 @@ Id shapes come from `src/ids.js`:
 5. Every response: `Cache-Control: no-store`, the 0.1 security headers, no CORS headers.
 
 Common error body: `{"error": "<code>", "message": "<short text>"}`; codes used below: `forbidden` 403, `not_found` 404,
-`invalid` 400, `unsupported_media` 415, `too_large` 413, `conflict` 409, `busy` 429 (the fit routes of 0.5 also answer `busy` 409, see `…/fit`), `tmux_unavailable` 503 (the tmux binary is
+`invalid` 400, `unsupported_media` 415, `too_large` 413, `conflict` 409, `busy` 429 (the fit routes of 0.5 also answer `busy` 409, see `…/fit`; so does the suggestion route since 0.5.1, with a `draft`, see `…/suggestion`), `tmux_unavailable` 503 (the tmux binary is
 missing; since 0.4 a tmux server that is not running is not an error for Start or spawn: they create the session),
 `claude_unavailable` 503, `tmux_failed` 502 (a tmux call failed unexpectedly), `claude_exited` 502 (0.4: the new pane was gone or dead
 a second after Start, Resume or spawn created it), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
@@ -409,7 +409,8 @@ an id ending in `[1m]`, else 200000 (an unknown or custom id is treated as 200k,
 ```json
 { "entries": [ { "id": "<byte offset of the line>:<block index>", "at": "<ISO>", "role": "user" | "assistant", "kind": "text" | "thinking" | "tool_use" | "tool_result",
                  "text": "<cleanBlock()>", "tool": "<name>?", "truncated": false, "subagent": "<agent id>?" } ],
-  "nextBefore": 123456 | null }
+  "nextBefore": 123456 | null,
+  "cut": true? }          // 0.5.1: only on a long-line page that dropped entries (see "Long lines" below); otherwise the key is absent
 ```
 Text is passed through `cleanBlock()` (first removes whole terminal escape sequences: CSI `ESC [ … final`, OSC
 `ESC ] … BEL|ESC \` (an unterminated OSC drops the rest of the text) and two-character `ESC @`–`ESC _`, so `ESC[2mCompactedESC[22m`
@@ -441,6 +442,12 @@ newline included); its start is searched at most 32 MiB back (`SCAN_MAX`); a lin
 back as a page of its own (its entries, and `nextBefore` its start). Long reads and image reads share one slot (`longLimited`, always taken inside the 4 in flight above); a
 16-entry cache keyed by device, inode and line end keeps the parsed entries of a long line (copies, never bytes), only for a line that ends with a newline. The 32 KB cut per
 entry applies as before; picture bytes are in no entry.
+- **At most 500 entries per long-line page (`LONG_ENTRIES_MAX`).** A page made from one long line keeps the **last 500 entries of the line**. When it drops some, the body
+  carries `"cut": true`; every other page has no `cut` key at all, so a client that does not know the field sees the old shape. `nextBefore` is still the start of that
+  line, so the earlier lines stay reachable; the dropped start of that one line is not. A window page made of many short lines is never capped or marked this way. The cap
+  bounds the parse result and the response, not only the read: a forged line of a hundred thousand tiny blocks is walked from its end and stops at 500 entries.
+- **Never cached:** a cut page, and a page whose entry text adds up to more than 1 MiB (1,048,576 characters); each is read again on the next request. A page under both limits is
+  cached as before.
 
 ### `GET /api/app/session/:id/subagents/:agentId/history?before=<n>&limit=<n>` (0.5, W8)
 The read-only view of one of Claude's own subagents (spec §9.17). The request carries two ids and byte offsets, never a path. `id` must be a `UUID`
@@ -467,7 +474,8 @@ Checks, in this order; the first that fails answers:
 The malformed ids are refused before `limit` is read: a bad agent id with `limit=0` is 404, not 400. A dot segment in `:agentId` (`..`, `%2E%2E`) never reaches the
 handler (the URL parser folds it into the session's own history route, with the same guard); the handler is not called.
 
-200: exactly the history shape, `{ "entries": [ … ], "nextBefore": n | null }`, oldest first, read from the subagent's own file by the same code as the route
+200: exactly the history shape, `{ "entries": [ … ], "nextBefore": n | null }` (and `"cut": true` on a long-line page that dropped entries, with the same 500-entry cap and
+cache rule as above), oldest first, read from the subagent's own file by the same code as the route
 above: `user` and `assistant` lines are entries, every other line type (`attachment`, `api-request*`) is skipped. Text is data: instruction-like text in a
 subagent's transcript is shown, never acted on.
 
@@ -623,10 +631,18 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
   mode?` and the auto-mode nudge are `unreadable` with `kind: null` and `reason: "layout"`: nika recognises them so that every control
   that needs a plain box fails closed, and never answers them. The page keeps its banner for every `unreadable`, after Reading (2 s, longer while it gives a cut-off question more rows, F16). An unknown `reason` cleans to `layout` on the page.
 - `{ "state": "ready", "kind": "ask", "at": "question", "sig", "bypass", "tabs": [ { "header", "answered" } ], "current", "final",
-  "question", "multi", "other", "options": [ { "n", "label", "description" | null, "checked"? } ] }`: one question, the current tab of
-  Claude's strip. `final` is true for a single tab with a single-select question (the answer ends the dialog); `other` says whether free text
-  is offered (single-select: always; multi-select: only on the last tab); `checked` is Claude's own box and appears for multi-select only.
-  Options are the real ones, `1..k` with `k` at most 7; Claude's free-text row (`k+1`) and `Chat about this` (`k+2`) are not listed.
+  "question", "multi", "other", "options": [ { "n", "label", "description" | null, "checked" } ], "typed": null | { "text", "answered" } }`:
+  one question, the current tab of Claude's strip. `final` is true for a single tab with a single-select question (the answer ends the
+  dialog); `other` says whether free text is offered (single-select: always; multi-select: only on the last tab). Options are the real
+  ones, `1..k` with `k` at most 7; Claude's free-text row (`k+1`) and `Chat about this` (`k+2`) are not listed.
+  - `checked` (a boolean on **every** option since 0.5.1, D) is Claude's own mark: a multi-select box, or, on a single-select question, the
+    tick (` ✔`) Claude draws after the option that is the answer already given. Before 0.5.1 it appeared for multi-select only.
+  - `typed` (0.5.1, D; question steps only) is what Claude's own text row holds: `null` when the row is empty, else
+    `{ "text": <1 to 500 characters, cleaned>, "answered": <boolean> }`. `answered` is the row's own mark: the ticked box on a multi-select
+    question, the tick after the text on a single-select one. nika never edits that text; the page shows it read-only. Text over 500
+    characters makes the whole step `unreadable` (`layout`), so `typed.text` is never cut.
+  - `checked` and `typed` are display only. Neither is in the `sig` or in the step's identity, so `sig` does not change when an answer is
+    given, changed or typed in the terminal; the ETag follows the rows as before.
 - `{ "state": "ready", "kind": "ask", "at": "review", "sig", "bypass", "tabs", "warn", "pairs": [ { "question", "answer" } ] }`: Claude's
   review step (`warn` is its `You have not answered all questions` row; the review lists the answered questions only). Claude 2.1.326 draws a `│ ` bar in front of the rows of a long review question (and of none
   else); nika reads it per question, and `question`, `answer` and `sig` are the same with or without it (`claude-tui.md` §13.2).
@@ -855,21 +871,41 @@ capture's shape). Same pane rule as capture and the same one-lock rule as the ot
    control (`\n` and `\t` included), DEL or a C1 control. This check runs before the pane check.
 2. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane (mode switch, answer,
    command, End or a draft write) → 409 `busy-switching`. Stop takes no lock.
-3. The registry state, read fresh (skipping its cache), is not `idle`, or Stop's or End's interrupt is running on the pane → 409
-   `not-idle`, no `draft` key (a `Tab` could take a suggestion into a box while Claude works).
-4. One fresh capture (never the cache): the only capture before the key. A capture that fails → its status and body. A permission
-   prompt on screen → 409 `not-idle`. No plain box (`draft` would be `null`: footer unknown → 409 `mode-unknown`; otherwise, a cursor
-   outside the box included, 409 `input-unreadable`), both without a `draft` key (a second cursor check behind the parser, never
-   reached while the parser holds, would answer `draft: null`). `state` is `unreadable` → 409 `draft-unreadable`
-   with `reason` and `draft`.
-5. The box must be `empty`, in `prompt` mode, with `draft.suggestion` equal to `text`; anything else (text typed, the suggestion
+3. One fresh capture (never the cache): the only capture before the key. The registry state is **not** read (0.5.1, item K; see "Why the
+   screen decides" below). A capture that fails → its status and body. A permission prompt or a dialog on screen → 409 `not-idle`. No
+   plain box (`draft` would be `null`: footer unknown → 409 `mode-unknown`; otherwise, a cursor outside the box included, 409
+   `input-unreadable`), both without a `draft` key (a second cursor check behind the parser, never reached while the parser holds, would
+   answer `draft: null`). `state` is `unreadable` → 409 `draft-unreadable` with `reason` and `draft`.
+4. The box must be `empty`, in `prompt` mode, with `draft.suggestion` equal to `text`; anything else (text typed, the suggestion
    changed or gone, a `!` box) → 409 `draft-changed` with `draft` (the page adopts it). Nothing is sent.
+5. **No turn may run in main (0.5.1, K and K-vim)** → else 409 `busy` with `draft` (the page adopts it), `Tab` not sent. A turn runs when
+   the same capture shows either marker (`src/turn.js`, `claude-tui.md` §8):
+   - the mode line (the last non-blank row) has a segment that is exactly `esc to interrupt`, between middle dots; or
+   - a spinner row sits in the 12 non-blank rows right above the box's top rule: one symbol, a verb that ends in an ellipsis and one
+     parenthesis to the end of the row. It counts when the parenthesis holds the segment `esc to interrupt`, or, because Claude draws no hint in
+     vim INSERT (K-vim, Claude 2.1.326), when the symbol is one of Claude's own spinner glyphs (middle dot, `*`, `✢`, `✳`, `✶`, `✻`, `✽`) and
+     the verb starts with a capital letter.
+
+   None of these is a running turn, so the `Tab` goes: the finished line (`<symbol> Worked for 8m 9s · done 4:21 PM`, with or without
+   `· 1 shell still running`), `Waiting for 1 background agent to finish`, the footer pills (`1 shell`, `↓ to manage`) and the agent list
+   under the footer. A bullet of the assistant's text or an agent row never matches the spinner shape. A pane so narrow that the spinner
+   row wraps loses the spinner marker (the footer's hint is still read).
 6. Exactly one key, `Tab`, through the keys path (it counts toward the 20 requests per second per pane; a 429 or a tmux error stops
-   here and answers that status and body plus the `draft` of one more fresh read, best effort). A Stop or End interrupt that started
-   meanwhile, or whose `Escape` went out less than 40 ms ago → 409 `not-idle` with `draft`, `Tab` not sent.
+   here and answers that status and body plus the `draft` of one more fresh read, best effort). A Stop or End interrupt that is running
+   on the pane, or whose `Escape` went out less than 40 ms ago → 409 `not-idle` with `draft`, `Tab` not sent. This is the only
+   interrupt check: it is made at the key, not before the capture.
 7. Read back, up to 4 fresh captures 150 ms apart: the box is readable, `state` `text`, `prompt` mode, and its text equals `text`
    (compared as the draft write compares, `claude-tui.md` §10) → `200 { draft }`. Else → 409 `draft-mismatch` with the `draft` last
    read (`null` when the box is gone). The `Tab` is never repeated.
+
+**Why the screen decides (0.5.1, K).** Before 0.5.1 step 3 asked the registry for `idle`. Claude's registry reads `busy` while background
+agents run and `shell` while a background shell runs, also after the turn that started them has ended, and Claude still shows its
+suggestion and takes `Tab` and `→` then. So "the registry is not idle" said nothing about whether a `Tab` is safe, and the route refused
+a suggestion Claude would have taken. What a `Tab` must avoid is Claude answering in main, and that is on the screen (step 5). The
+failure is closed in one direction only: a wrong "running" refuses a `Tab` (409 `busy`, nothing sent); a wrong "not running" is still
+held by the checks of steps 3 and 4 (an empty box, the exact suggestion, the cursor in the box, no prompt or dialog) and by the
+read-back of step 7. `not-idle` from this route now means a prompt or dialog is open, or a Stop or End interrupt runs; a server older
+than 0.5.1 also answered `not-idle` whenever the registry was not `idle`.
 
 Never sent by this route: anything but that one `Tab`. No `Enter` (the page's Send does that, through `POST …/submit` below), no
 `Escape`, no text. Nothing of the body or of a draft is logged (errors carry the pane id and the code only). The route exists on the
@@ -1706,19 +1742,23 @@ Answers a permission prompt with a fresh parse (T26); "Esc = No" stays the keys 
 ### `POST /api/app/pane/:id/dialog` (body ≤ 20 KB, `CAP.keys`)
 Answers Claude's question dialog (`AskUserQuestion`) or plan approval (`ExitPlanMode`), **one step per request**, or declines it (0.5, W1;
 ADR 0015, `docs/security.md` T37). The dialog is read from the screen only (the `dialog` field above); nika follows Claude's own tabs: the
-current question, then (for a form with several) the next one under a new `sig`, then Claude's review. Four body shapes, exact key sets
-(anything else is `400 invalid`, checked before the pane):
+current question, then (for a form with several) the next one under a new `sig`, then Claude's review. Since 0.5.1 (D) the same route also
+moves Claude's dialog to another step without answering anything (`tab`, below), and an answered step can be answered again. Five body shapes,
+exact key sets (anything else is `400 invalid`, checked before the pane):
 ```json
 { "sig": "<16 hex>", "picks": [2], "text": "my own answer" }
 { "sig": "<16 hex>", "submit": true }
 { "sig": "<16 hex>", "choice": 2 }
 { "sig": "<16 hex>", "cancel": true }
+{ "sig": "<16 hex>", "tab": 1 }
 ```
 - `picks` (with `text` optional): the current question. 0 to 7 distinct integers 1 to 7. `text`: 1 to 300 UTF-16 units, well formed, no control,
   bidi, zero-width, line-separator or other format character (`\p{Cf}`), no leading combining mark, no space at either end, **and not
   starting with 1 to 9** (the `invalid` message says so). A leading digit is refused as a precaution, because Claude may take it as the option
   shortcut on an empty text row (a live check found it typed as text). `submit: true` is the review's Submit. `choice` is an integer 1 to 9.
-  `cancel: true` is Decline, for any step.
+  `cancel: true` is Decline, for any step. `tab` (0.5.1, D) is an integer 0 to 8: the index of the step to move to, where the number of
+  questions (`tabs.length`) is Claude's Review step. A body with `tab` moves, and does not answer; the rest of this section's answer rules
+  do not apply to it (see "Moving to another step" below). The `invalid` message for a body of any other shape names all five shapes.
 - Single-select: exactly one pick or one `text` (not both). Multi-select: at least one pick, or `text`; `text` only on the last tab. `picks`
   may not name a number beyond the options; `choice` must be a shown option and not the plan's free-text one; the shape must fit the step
   (`picks` the question, `submit` the review, `choice` the plan). These misfits are `400 invalid`, after the read.
@@ -1743,9 +1783,9 @@ one key the screen calls for; a Stop or End interrupt running, or its `Escape` s
 
 | Step | The key the screen calls for | Refused (409, nothing more sent) |
 |---|---|---|
-| question, single-select, a pick | the digit as text (`send-keys -l`), focus on an option row | `dialog-touched`: the tab already shows ☒, or text sits in the text row; `dialog-focus`: the focus is not on an option |
-| question, single-select, `text` | `Down` to the text row, then the text (`-l`), then `Enter` once the row reads back exactly the text | `dialog-touched` (other text there); `dialog-focus`; `text-mode`: the focus is on the row and nothing shows vim INSERT or a known plain pane; `text-mismatch` |
-| question, multi-select, picks | one digit per box that differs (smallest first; a digit toggles and leaves the focus), then `Right` from an option row | `dialog-focus` (the focus is not on an option row) |
+| question, single-select, a pick | the digit as text (`send-keys -l`), focus on an option row. An answered tab (☒) is answered again the same way (0.5.1, D); text already in Claude's text row is left alone | `dialog-focus`: the focus is not on an option |
+| question, single-select, `text` | `Down` to the text row, then the text (`-l`), then `Enter` once the row reads back exactly the text. If the row already holds exactly this text (answered before, or typed in the terminal): `Down` to the row and `Enter` only, nothing is typed again | `dialog-touched` (other text there); `dialog-focus`; `text-mode`: the focus is on the row and nothing shows vim INSERT or a known plain pane; `text-mismatch` |
+| question, multi-select, picks | one digit per box that differs (smallest first; a digit toggles and leaves the focus), then `Right` from an option row | `dialog-focus` (the focus is not on an option row); `dialog-touched` (text in Claude's text row that is not this request's: a request without `text` carries none) |
 | question, multi-select, `text` (last tab only) | the picks, `Down` to the text row, the text, `Down` to the button row, `Enter` there (it opens the review, it does not submit) | as above |
 | review, `submit` | `Enter`, only with the focus on `1. Submit answers` | `dialog-focus` |
 | plan, `choice` | the digit as text, with the focus not on the free-text option | `dialog-touched` (feedback typed in the free-text option); `dialog-focus` |
@@ -1762,14 +1802,62 @@ mode and vim NORMAL draw the same screen, so a request that starts on the row wi
 after the first key carries `sent`** (the keys already pressed). Nothing is undone: nika never types to clean up (a half-toggled multi
 question, a moved focus and typed text stay as they are; the same request again resumes, the xor fixes the boxes).
 
-**Never sent:** `Up`, `Left`, `Tab`, `BTab`, `Space`, `C-c`, `C-u`, `C-d`; a digit while the text row has the focus; anything on `Chat about
-this`; `Enter` except as listed; any key after the dialog closed; any key toward another tab. The named-key allow-list is unchanged.
+**Re-answering an answered step (0.5.1, D).** Claude lets the user come back to a question that shows ☒ and answer it again; a pick
+replaces the answer and Claude moves to the **next** step (not the next unanswered one, and to Review after the last question), so the
+answers `next` and `review` hold. nika used to refuse such a step (`dialog-touched`, "the tab already shows ☒"); it now answers it like any other:
+the same keys, under the same `sig`. What does not change: nika never edits text Claude's text row already holds. On a **single-select**
+question a pick leaves that text alone (the pick replaces the answer; Claude keeps the text in the row but drops its tick). A `text` request
+types nothing when the row already holds exactly that text: it goes `Down` to the row and presses `Enter` once, which answers with that text again.
+Other text in the row is `dialog-touched` for a `text` request, and on a **multi-select** question for any request that does not carry that
+same text (the page sends the typed text in every multi-select answer for this reason). The 3-second `already-answered` hold of a `sig`
+is forgotten when a move succeeds, so a step the user went back to can be answered at once.
+
+**Never sent by an answer:** `Up`, `Left`, `Tab`, `BTab`, `Space`, `C-c`, `C-u`, `C-d`; a digit while the text row has the focus; anything on `Chat about
+this`; `Enter` except as listed; any key after the dialog closed; any key toward another tab (moving is its own body, next section). The
+named-key allow-list is unchanged.
+
+**Moving to another step (0.5.1, D; `{ sig, tab }`; `docs/security.md` T63).** The body names the step the dialog should show: `tab` is the
+index of a question, or `tabs.length` for Claude's Review. The `sig` is the one the page read for the **current** step. Nothing is answered on
+the way: a move sends no `Enter`, digit, `Escape`, `Tab`, `BTab` or text. It sends `Left` toward an earlier step and not `BTab`, because a
+`BTab` that lands after the dialog closed would cycle the permission mode (T23). Under the per-pane lock (409 `busy-switching`). Facts of
+Claude 2.1.326 it relies on (`claude-tui.md` §13.9): `Right` and `Left` move one step from an option row and do nothing on the text row, on
+`Chat about this` or on a multi question's `Next` button; there is no wrap at either end; `Up` leaves an input row.
+
+*Read phase, nothing sent* (the first match decides):
+1. Body invalid (`tab` not an integer 0 to 8 included) → `400 invalid`. Ineligible pane → `404 not_found`. Lock → `409 busy-switching`.
+2. A fresh capture; a failed one → its own status and body.
+3. No dialog on screen → `409 no-dialog`; a screen that may hold a dialog nika cannot read, an `unreadable` dialog, a plan approval, or a
+   `sig` that is not the body's → `409 dialog-changed`. A dialog with fewer than two steps → `400 invalid` ("this dialog has one question").
+4. Bypass on the dialog → `400 terminal-only` (checked before the `tab` value). `tab` above `tabs.length` → `400 invalid` ("tab is not one of
+   the steps"); `tab` equal to the current step → `400 invalid` ("tab is the current step").
+
+*Steps* (at most 24 rounds; a key budget of the distance plus 3). Each round starts with a **fresh** capture, read for the strip of tabs
+only (`stripOf` in `src/dialog.js`, which does not need the options to be readable). It must still show the same tab headers (else 409
+`dialog-changed`) and the same answered marks (else 409 `dialog-touched`), no bypass (400 `terminal-only`), and the step our last
+`Right` or `Left` should have reached (else 409 `dialog-changed`: the user pressed a key too, or Claude redrew elsewhere). Then:
+- the strip shows the asked step → `200 { "done": "moved" }`, plus `sent` (the keys pressed) when any went out;
+- else, one key, never two in a round, and none while Stop's or End's `Escape` runs or went out less than 40 ms ago (409 `not-idle`):
+  - on an **option row**: `Right` (toward a later step) or `Left` (toward an earlier one). It settles when the strip's step changed;
+  - on an **input row** (Claude's text row, `Chat about this`, a multi question's `Next` button; the footer then also reads
+    `ctrl+g to edit in <editor>`), where `Right` and `Left` do nothing or only move the text cursor: `Up`, which leaves it (one `Up`
+    from the text row, two from `Chat about this`, three from `Next`), in plain mode and in vim INSERT and NORMAL alike. It settles when
+    a full read of the same step shows another focus. At most 3 `Up`s, then 409 `text-focus`. An input row of a step **other** than
+    the one the request started on → 409 `dialog-focus` (the person moved the focus in the terminal). nika presses no `Up` on a step it
+    cannot read whole (409 `dialog-changed`), because it could not prove that the focus changed.
+- a key that did not change the step within the settle window (up to 4 captures 150 ms apart), the key budget used up or 24 rounds → 409
+  `not-taken` (never repeated); the strip gone or unreadable at the settle read → 409 `dialog-changed`.
+
+Answer: `200 { "done": "moved", "sent": <keys> }`. Errors: `400` `invalid`, `terminal-only`; `404 not_found`; `409` `busy-switching`,
+`no-dialog`, `dialog-changed`, `dialog-touched`, `dialog-focus`, `text-focus`, `not-taken`, `not-idle`; `429` and `5xx` from the capture or
+`keys.send`. **Every non-200 after the first key carries `sent`.** Nothing is undone: a move stops where it is. The page follows the
+capture: it draws the step Claude now shows, under its own `sig`. Each key counts toward the keys route's 20 requests/s per pane.
 Nothing of a body, a dialog string or a `sig` is logged. One action per pane at a time (the lock shared with mode, End, commands, answer, draft,
 submit and fit steps); each key counts toward the keys route's 20 requests/s per pane.
 
 **Other controls while a dialog shows** (`promptOpen`: a permission prompt, a question step, the review, a plan approval, `Exit plan mode?`
 or the auto-mode nudge): Stop → 409 `prompt-open` (a screen with no mode line and no input box where nika recognises no dialog → 409 `screen-unclear`), nothing sent; End sends one
-`Escape` first, as for a permission prompt, then the usual re-read (409 `not-idle` if the dialog is still there); the mode switch and the
+`Escape` first, as for a permission prompt, then the usual re-read (409 `not-idle` if the dialog is still there; on a screen with no mode line
+and no input box where nika recognises no dialog, End sends nothing and answers 409 `mode-unknown`, see End step 2); the mode switch and the
 commands → 409 `not-idle`; a draft write and a suggestion accept → 409 `not-idle`; `submit` → 409 `prompt-open`; the attachment send → 409
 (its box read finds no plain box); the scroll route → 409 `screen-unclear`; the keys route and the page's passthrough are unchanged (the
 bypass guard of T26); the permission `answer` route is unchanged and sees no prompt.
@@ -1869,7 +1957,17 @@ Body `{}`. Steps, in this order:
 
 1. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane → 409
    `busy-switching`.
-2. Fresh capture and registry state. A `prompt` or a dialog on screen (`promptOpen`, the route above): send `Escape` once (cancel, the "No" path; a dialog is declined). A registry state
+2. Fresh capture and registry state. **First, before any key (0.5.1, `docs/security.md` T64):** a screen with no readable mode line (footer
+   `unknown`) and no input box that `src/draft.js` reads, when no permission prompt and no dialog that nika recognises (`promptOpen`) is on
+   screen → 409 `mode-unknown`, nothing sent, whatever the registry says (busy, needs-you or idle) and without the `Escape` below. nika
+   cannot tell such a screen from one where an `Escape` does harm: a subagent's view of the parent's pane, Claude's subagent list or the
+   shells pill under the box (an `Escape` in a viewed subagent's input stops that subagent; spike S-AGENTS, Claude 2.1.326; the list itself is
+   `claude-tui.md` §1), or a dialog that nika parks instead of reading (a wrapped ask footer or `Exit plan mode?` with a subagent list under
+   it, a plan clipped above its title; an `Escape` would decline it). The page says "Claude's screen isn't at the prompt; use the
+   terminal." A recognised permission prompt or dialog keeps its path below (`Escape` is the "No" path). Stop already refuses the same
+   screens with 409 `screen-unclear`.
+
+   After that check: a `prompt` or a dialog on screen (`promptOpen`, the route above): send `Escape` once (cancel, the "No" path; a dialog is declined). A registry state
    that is a non-empty string other than `idle` (busy): interrupt as the stop route above does (in vim insert mode two
    `Escape`s, the second only while the registry still says busy, read uncached; a Stop already interrupting the pane →
    409 `not-idle`, nothing sent). No state at all (no live session on the pane, or two

@@ -511,6 +511,25 @@ same menu. Removed and hidden commands are left out.
   (checked 2026-11-15, Claude Code 2.1.325, §10.12): `shell`, and `busy` while the screen says `Waiting for 1 background agent to
   finish` (the subagent list under the footer, §1). During a running turn (`busy`, the footer ends in `esc to interrupt`) Claude queues
   the message and takes it at its next step. nika's Send presses `Enter` in every registry state and does not tell these apart.
+- **Is a turn running in main? Read it from the screen, not from `status` (0.5.1, items K and K-vim; `src/turn.js`).** `busy` and `shell` also
+  describe a session whose turn has ended while background agents or a shell still run, and Claude shows its prompt suggestion and takes
+  `Tab` then, so the registry cannot say whether a `Tab` is safe (the accept route, `api-app.md`, reads the screen). Two markers mean a turn
+  runs in main:
+  1. **The mode line's hint.** The last non-blank row has a segment that is exactly `esc to interrupt` between middle dots:
+     `<mode> (shift+tab to cycle) · esc to interrupt`, `<mode> · esc to interrupt · ↓ to manage`. It is not the only marker: the hint is gone
+     while the box holds text (§10.12), and in vim INSERT the footer never carries it, not even in manual mode (§10.12, "vim while a turn runs").
+  2. **The spinner row above the box.** In the 12 non-blank rows right above the box's top rule (a task list, a queued message and a tip can
+     sit between): one symbol, a space, a verb that ends in an ellipsis, a space and one parenthesis to the end of the row. Either the
+     parenthesis holds the segment `esc to interrupt` (`<spinner> Weaving… (12s · esc to interrupt)`, `<spinner> Weaving… (14s · ↓ 1.2k tokens ·
+     esc to interrupt)`), or it holds no hint at all, which is how the live spinner is drawn in vim INSERT (Claude Code 2.1.326:
+     `<spinner> Mulling… (3m 5s · ↓ 4.1k tokens)`, `<spinner> Mulling… (3m 5s · thinking with high effort)`). Without the hint a row counts
+     only when its symbol is one of Claude's spinner glyphs (middle dot, `*`, `✢`, `✳`, `✶`, `✻`, `✽`) and its verb starts with a capital letter.
+
+  Not a running turn, and none of them has the hint or the spinner shape: the finished line (`<symbol> Worked for 2m 10s · done 9:41 AM`, also
+  with `· 1 shell still running`), `<symbol> Waiting for 2 background agents to finish`, the footer pills (`1 shell`, `↓ to manage`), an agent
+  row (it leads with its own circle) and the assistant's text (it leads with its bullet). Limit: a pane so narrow that the spinner row wraps
+  loses the spinner marker (the footer's hint is still read). A wrongly read "running" only refuses an accept; a wrongly read "not running" is
+  still held by the other checks of that route.
 
 ## 9. Registry procStart
 
@@ -771,6 +790,12 @@ and vim insert mode, made-up text).
   text with no SGR, and the cursor is at its end. Not tested live: `→` and `Tab` in vim insert mode, and nika's accept route on
   a real suggestion (the owner checks it). What `Enter` submits on an empty box that shows a suggestion is not verified either; nika's submit route
   refuses such a box (409 `suggestion-shown`, `api-app.md`) and the page's Send with both boxes empty sends nothing (W13).
+- **While background work runs (0.5.1, items K and K-vim).** The registry says `busy` while background agents run and `shell` while a background
+  shell runs, also after the turn in main has ended (§8), yet Claude shows its suggestion then and its own `Tab` takes it. So nika's accept
+  route no longer asks the registry for idle: it reads the screen and refuses only while a turn runs in main (§8, "Is a turn running in
+  main?"). That Claude's own `Tab` takes a suggestion in a session with background work is the premise of the change that built K; no run of
+  nika's route against a real Claude in that state is recorded here, and the route's tests use synthetic screens. In vim INSERT the footer has no `esc to interrupt`, so there the spinner row
+  decides (§8).
 - **Leaving.** Typing one or two characters, or a paste into the empty box, removes the suggestion; emptying the box again brings
   it back until a slash command is run (after `/config` it was gone) or a new turn starts.
 - **`Tab` without a suggestion.** On an empty box that shows only the `Try "…"` example (or nothing), `Tab` changes nothing in
@@ -1172,7 +1197,9 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel      the footer: 
 - A multi-select question has `[ ] <label>` / `[✔] <label>` rows; a digit toggles a box and leaves the focus where it is. An answered
   single-select label ends in ` ✔` (nika removes it). Typing in the multi text row ticks its box by itself.
 - The tmux cursor sits on the focused row, and parks at column 0 of a row (`0,39`) on the button row and on `Chat about this`.
-- Re-entering a tab (`Left` in the terminal) resets the focus to option 1 and keeps ticks and typed text.
+- Re-entering a tab (`Left` in the terminal) resets the focus to option 1 and keeps ticks and typed text. 2.1.326 (spike S-TABS, 2026-11-17): on a
+  single-select step that was answered with an option, the focus comes back on that option (its row ends in ` ✔`); after a typed answer it is on option 1.
+  How the steps are walked and an answer changed: §13.9.
 - **A long question wears a bar** (2.1.325, checked 2026-11-16 at 64, 70, 80, 90 and 120 columns). When the question text is wider than 80 columns or holds a
   line break, Claude draws every row of the **question** with a dim `│ ` in front (U+2502 then a space; `ESC[2m│ESC[0m `, then the bold text), at any pane width.
   The option descriptions have no bar. A 71-character question wrapped to two rows at 64 columns has no bar; an 89-character one has it at 64 columns (two rows)
@@ -1315,9 +1342,10 @@ a long question is drawn that wide (§13.1). At 40 columns Claude wraps the ques
 | review | submit | `Enter` on `1. Submit answers` | live |
 | plan | choice | a digit | live (option 2) |
 | any | decline | `Escape`; in vim INSERT the first only leaves INSERT, a second (after a gap) closes the dialog | first: S3, T0, T4; the second: T0b (1.2 s apart) |
+| question or review, several steps | go to another step without answering | from an option row `Right` (later step) or `Left` (earlier step), one key at a time; on an input row `Up` first (§13.9) | the keys by hand: S-TABS (plain) and S-VIM (vim); through nika: tests only |
 
 - `Right` does **nothing** from the text row or from the button row; it works from an option row (so the multi text road uses `Down` and
-  `Enter`, and only the last tab's was verified). `Left` goes to the previous tab and resets the focus to option 1.
+  `Enter`, and only the last tab's was verified). `Left` goes to the previous tab; the focus lands on the answered option, else on option 1 (§13.1).
 - One `Escape` closes the whole dialog at once (`User declined to answer questions`); the model does not continue. After two declines in one
   session the model may refuse to ask a third time.
 - vim: the `-- INSERT --` marker shows **only while the text row has the focus**; one `Escape` there leaves INSERT and keeps the dialog and the
@@ -1328,8 +1356,9 @@ a long question is drawn that wide (§13.1). At 40 columns Claude wraps the ques
 - Down from the first option walks 1, 2, 3, the text row, `Chat about this`, and stays there; with a dialog open it never reaches the
   `<n> shells` pill.
 
-**Never sent by nika:** `Up`, `Tab`, `BTab`, `Space`, `C-c`, `C-u`, `C-d`, `Left`; a digit while the text row has the focus; anything on
-`Chat about this`; `Enter` except as listed; any key after the dialog closed; any key toward another tab.
+**Never sent by nika:** `Tab`, `BTab`, `Space`, `C-c`, `C-u`, `C-d`; `Up`, `Left` and `Right` outside a step move (§13.9) and the multi-select
+advance above; a digit while the text row has the focus; anything on `Chat about this` except the `Up` that leaves it in a step move;
+`Enter` except as listed; any key after the dialog closed. (Before 0.5.1 `Up` and `Left` were never sent at all.)
 
 ### 13.7 The live check through nika's page (W1-T4)
 
@@ -1362,6 +1391,83 @@ derived from the rows the panel was read from and is display only: it is in no `
 
 A screen that does not read exactly (`unreadable`, `terminal`, a nudge, bypass in the guard's window) carries no `top`, and the page never crops it. Rows below `top` are
 only not drawn; Type into pane shows the whole screen.
+
+### 13.9 Moving between steps and changing an answer (0.5.1, D)
+
+How a dialog with several steps (questions, then the review) is walked without answering, and what happens to an answer that is given a
+second time. Checked on 2026-11-17, Claude Code 2.1.326, tmux 3.8, in throwaway sessions with made-up questions: spike S-TABS (plain input,
+four dialogs of one to four questions, every key one at a time) and spike S-VIM (vim editor mode, one two-question dialog). The examples
+below are written for this document, not copied from a capture. The route is the `{ sig, tab }` body of
+`POST /api/app/pane/:id/dialog` (`api-app.md`); the page is `docs/design/spec.md` §9.16; the threat is `docs/security.md` T63.
+
+**Where the focus sits decides what a key does.** The footer tells (§13.1): it ends `· ctrl+g to edit in Vim` (before `· Esc to cancel`)
+when the focus is on an **input row**, and not when it is on an option row. Input rows are the question's text row, `Chat about this`, and
+a multi-select question's `Next` button. Row order on a multi-select question, top to bottom: the options, the text row, `Next`, then (below
+the rule) `Chat about this`.
+
+| Focus | Key | Effect |
+|---|---|---|
+| option row | `Right` | next step (a question, or the review after the last one). Nothing is answered. At the review it does nothing: no wrap |
+| option row | `Left` | previous step (from the review, the last question). On the first step it does nothing: no wrap |
+| option row | `Up` | moves the focus up one row; on option 1 it wraps to the text row (an input row) |
+| input row | `Right`, `Left` | **no step change.** On a text row that holds text they move the text cursor; on `Chat about this` and `Next` nothing |
+| input row | `Up` | leaves the row: the focus goes one row up, onto an option row once it has left the input rows. The typed text stays where it was |
+| input row | `Tab`, `BTab` | no step change. On a multi-select's empty text row and on `Next` they move the focus down and up by one row |
+| any step | a digit, `Enter` | answers the step (below), or on an input row types the digit as text. Never part of a move |
+| any step | `Escape` | declines the **whole dialog** at once and every answer is lost; it is not "back one step" |
+| single dialog (one question) | `Right`, `Left`, `Tab`, `BTab` | nothing: no strip arrows, no `Submit` step |
+
+- **The review's focus.** Every arrival on the review puts the focus on `1. Submit answers`; `1` or `Enter` submits, `2` or `Escape` declines everything. A move
+  that ends on the review therefore sends nothing but the move's own keys.
+- **After a move the focus is reset**, not where the person left it: on the answered option of a single-select step that was answered with an option,
+  else on option 1. Ticks of a multi-select step and typed text survive a move (typed text that was not submitted too).
+- **A key lands in about 20 ms.** The step changed by the first screen read after a key in S-TABS; several keys in one `send-keys` call did what the same
+  keys one by one did. nika still sends one key per round and reads a fresh screen before each (`api-app.md`).
+
+**An answered step.** The tab token is `☒` and the answer is shown when the step is entered again: a single-select answer by an option row that ends
+in ` ✔` with the focus on it; a typed single answer as `<k+1>. <text> ✔` on the text row; a multi-select by `[✔]` rows. Claude lets the person answer it again
+like any step:
+
+- Picking another option **replaces** the answer. A text row that held a typed answer keeps its text but loses the ` ✔`.
+- A single-select answer, new or repeated, **advances one step**, also when that step is already answered and a later one is not: it is the next
+  step, not the next unanswered one. A multi-select digit toggles a box and stays; the tab turns back to `☐` when the last tick is taken off, and the
+  review then leaves that question out and shows its warning row.
+- The review lists each multi-select answer in the order the boxes were **ticked**, not in option order, so comparing a review line with the option
+  list by position is wrong. Answers to other steps are kept.
+
+**Typed text.** On a text row digits are text, `Enter` submits the text as the answer, `Left` and `Right` move the text cursor. A tab change keeps unsubmitted
+text. The way out without losing it is `Up` (above), then `Left` or `Right`.
+
+**What nika can see.** The pointer row is not in the capture, and `sig` is the same with the pointer on any row of a step. The answered option of a single step
+(`checked`) and the typed text (`typed`) were not read before 0.5.1; since D they are in the capture, display only and in no `sig` (`api-app.md`, capture;
+a typed text over 500 characters makes the step unreadable). `sig` of a question step does not change when the step is answered; the review's `sig` covers
+its pairs.
+
+**vim (S-VIM, editor mode `vim`).**
+
+- `Right` and `Left` from an option row move the step exactly as in plain mode, and the footer carries no vim marker there.
+- The text row is a vim line that starts in INSERT: the footer reads `-- INSERT -- · Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim`
+  (no `Esc to cancel` while INSERT shows, §13.1). `Left` and `Right` there move the text cursor in INSERT and in NORMAL alike. `Up` leaves the row in both
+  (to the option above) and the footer is the plain one again.
+- `Escape` on the text row in INSERT only switches vim to NORMAL: the dialog and the text stay (footer `… · ctrl+g to edit in Vim · Esc to cancel`).
+  `Escape` on an option row closes the whole dialog and the prompt comes back in INSERT. A second `Escape` on the text row (NORMAL) was not run.
+- So a move never needs to know whether vim is in INSERT or NORMAL: `Up` and `Right`/`Left` do the same in both.
+
+**What nika sends for a move.** From an option row: `Right` toward a later step, `Left` toward an earlier one, one key per round, each after a fresh
+capture, until the strip says the asked step is current; never `BTab` for "back", since a `BTab` that lands after the dialog closed would cycle the permission
+mode (T23, T63). From an input row of the current step: `Up`, re-reading the focus after each, at most 3, then it stops with `text-focus` and the
+person leaves the row in the terminal. Never `Enter`, a digit, `Escape`, `Tab`, `BTab` or text. The budget is the distance plus 3 keys.
+
+**Not verified.**
+
+- A move through nika's page or API against a real Claude: the keys above were pressed by hand; nika's route is covered by tests on synthetic screens only.
+- The number of `Up` presses that leave an input row. S-TABS saw `Up` from `Chat about this` land on the text row (single) or on `Next` (multi), and `Up` from `Next`
+  land on the text row; it wrote "at most 2" without running a chain from `Chat about this` on a multi-select step, which by row order needs 3. nika's limit is 3.
+- A second `Escape` on the vim text row; `Tab`/`BTab` in the vim states; vim NORMAL commands (`x`, `dd`, `u`) on the text row with text present.
+- A dialog whose step is cut or whose headers end in `…`: the capture says `unreadable` (`clipped`, §13.5), so no move is offered; the keys themselves behave the same.
+- What `Right`, `Left` and `Up` do if the dialog closes between nika's read and the key: `Up` can recall the previous prompt into an idle box, `Right` can take a shown
+  suggestion into the box, `Left` can open Claude's agents screen (it lists sessions of other projects, and nika 0.5.1 does not mask it). Nothing is submitted. This is the
+  residual risk of T63.
 
 ## 14. Claude's own subagents: their files while they run (0.5, W8)
 

@@ -2069,7 +2069,8 @@ pane's width, no control character but newline and tab; `public/draft-sync.js` `
   `POST /api/app/pane/:id/suggestion { text }` with the suggestion it shows, in the keys chain, so arrows typed just before go
   first; nika sends no Tab of its own and posts nothing when its own copy is already stale. On 200 the box takes Claude's text with the
   caret at its end (a box the user typed into meanwhile keeps its text: nika wins while the user types here), the problem line clears
-  and the echo says "Accepted Claude's suggestion: <text>". The note is a polite `role="status"` region, so a screen reader hears
+  and the echo says "Accepted Claude's suggestion: <text>". **(0.5.1, K)** The accept works while background agents or a shell are still running, after the turn in the main session
+  has ended (Claude shows its suggestion then and takes `Tab`); it is refused only while a turn runs on screen (409 `busy`, line below). The note is a polite `role="status"` region, so a screen reader hears
   "Suggestion: Tab or → accepts what Claude suggests." each time a suggestion appears.
 - *Without a suggestion* Tab keeps moving focus and → keeps going to the pane as an arrow key (empty box) or moving the caret (text).
 - *Send* with an empty message box that shows a suggestion is still `Enter` alone (table below). What Claude submits then is not
@@ -2081,7 +2082,8 @@ pane's width, no control character but newline and tab; `public/draft-sync.js` `
 | 409 `draft-mismatch` | "Claude's input did not take the suggestion. nika shows what it holds now." |
 | 409 `draft-changed`, or the page's own copy already stale | "Claude's suggestion changed. Nothing was sent." |
 | 409 `draft-unreadable` | the paused line above ("Claude's input holds <reason>. Send or clear it in the terminal.") |
-| 409 `not-idle` | "Claude is busy or a prompt is open, so nika can't accept the suggestion now. Nothing was sent." |
+| 409 `busy` (0.5.1, K) | "Claude is answering right now, so nika can't accept the suggestion. Nothing was sent." (a turn runs in the main session, read from the screen; background agents or a shell running do **not** cause it) |
+| 409 `not-idle` | "Claude is working or a prompt is open, so nika can't accept the suggestion now. Nothing was sent." (since 0.5.1 the server sends it for a prompt or dialog on screen, or while Stop or End runs; the words keep "working" for an older server that sent it whenever the registry was not idle) |
 | 409 `input-unreadable`, `mode-unknown` | "nika can't read Claude's input box right now (a menu may be open). Nothing was sent." |
 | 409 `busy-switching` | "Another action is running on this session. Try again in a moment." |
 | 400 | "nika can't accept this suggestion." |
@@ -2775,7 +2777,8 @@ field on :3335.
 The form reads **exactly or not at all**. A dialog nika cannot read (a cut-off screen that more rows do not show, §9.13 (F16), a too-wide screen, a wrapped label, a text shortened with `…`, an unknown shape, a
 feedback survey, which is answered by its own panel, §9.5, not by this form) keeps the old banner ("<name> needs you: <reason>. Answer it in the terminal, or turn on Type into pane."), and the gates
 still count it as a prompt. The form shows **one step at a time** (the current question, the review, or the plan's choices) and follows
-Claude's own tabs; it never moves between them. After an answer the next question appears with a new `sig`.
+Claude's own steps. **(0.5.1, D)** The step strip is a row of buttons: a click asks Claude to move its dialog to that step and answers nothing (below), and a
+step that was answered can be answered again. After an answer the next question appears with a new `sig`; after a move, the asked step does.
 
 **Placement.** `div.ask.dlg#dialog-form` (`role="group"`, `aria-labelledby` the question or, for a plan, the kind tag) sits in
 `#composer-box` after the permission panel (`#prompt-btns`). It reuses `.ask` (`--attn-row` fill, 3 px `--attn` left edge) and takes at most
@@ -2786,12 +2789,13 @@ nodes, so typed text and focus survive the 250 ms captures. The attention note a
 | Part | What it is |
 |---|---|
 | Header `.ask-h` | state chip (below) · kind tag (`i-dialog` "Question", or `i-m-plan` "Plan approval" in `--m-plan`) · the attention reason (`.ask-reason`) |
-| Tabs `ol.dlg-tabs` (`aria-label="Questions"`, shown for two or more tabs) | one item per tab of Claude's strip, **not buttons**: the header, `i-check` when answered or an empty ring, `.sr-only` "answered" / "not answered", `aria-current="step"` on the current one; plus "Review". Under a 560 px composer (container query) the list is replaced by the line "Question 2 of 4 · Tools" (or "Review") |
+| Steps `ol.dlg-tabs` (`aria-label="Steps"`, shown for two or more tabs; **0.5.1, D**) | one `li > button.dlg-tab[type=button]` per tab of Claude's strip, and one "Review": the header, `i-check` when answered or an empty ring, `.sr-only` ", answered" / ", not answered" (the visible header comes first in the accessible name, WCAG 2.5.3), `aria-current="step"` on the current one. Plain buttons in an ordered list, not an ARIA tablist and no roving tabindex: each is one Tab stop. Each has `aria-describedby="dlg-steps-desc"`, a `.sr-only` line "Opens this step in Claude's dialog. Nothing is answered." The current step, and every step while a request runs, after a move, while the form is locked, kept-unreadable or terminal-only, is `aria-disabled="true"` (never `disabled`, so it keeps its name and its focus; a click on it does nothing). `min-height: 24px` (WCAG 2.5.8), focus ring `2px solid var(--focus)`. Answered: `--busy` text, check icon and the word; not answered: ring and the word; current: `--accent` edge and `--accent-soft` fill, bold, and `aria-current`. The strip wraps and shows at **every** width; the old line "Question 2 of 4 · Tools" is in the DOM only (it feeds the announcement) and is hidden at every width |
 | Question | `fieldset > legend.ask-q` (600, `tabindex="-1"`) |
-| Option rows `label.ch` | a radio (single-select) or a checkbox (multi-select) · `kbd` with Claude's number · the label · the description (`--fs-small`, `--text-muted`). A description over 180 characters is clamped to 3 lines with a **More** / **Less** link (`aria-expanded`). Checked: `--accent-soft` fill, `--accent` edge. A multi-select box starts as Claude shows it |
-| Other | `label.ch` "Other" with a text field (`maxlength="300"`, placeholder "Type your answer", `aria-label` "Other answer"); typing selects it. A counter "n/300" from 250 characters. A first digit shows the warn line "Start with a word: Claude can read a first digit as an option." and Send then moves the focus back to the field instead of sending. Where the capture says `other: false` (a multi-select question that is not on the last tab) the row is a `.pbtn-off` line "Other answers: use the terminal" |
+| Option rows `label.ch` | a radio (single-select) or a checkbox (multi-select) · `kbd` with Claude's number · the label · the description (`--fs-small`, `--text-muted`). A description over 180 characters is clamped to 3 lines with a **More** / **Less** button (`button.btn.link.dlg-more`, `aria-expanded`, `aria-controls` the description). Checked: `--accent-soft` fill, `--accent` edge. **A long option is one card (0.5.1, A):** the card is a `div.dlg-opt` (`--line-strong` border, `--surface` fill, `--surface-2` on hover, the checked look above, all on the card, whose `data-on` follows the pick) that holds the option's label, which has no look of its own, and under it **More** / **Less** in the card's bottom-right corner, inside the border. The button stays outside the label (a button inside a label is nested interactive content), so a click on it opens or closes the text and never picks the option. A short option is still one label that is the card. While the form cannot take an answer the card dims once (60 %), not twice Every option starts as Claude shows it (0.5.1, D): a multi-select box as Claude ticks it, and on a single-select question the option Claude has marked as the answer is pre-selected. Unsent input (a changed pick or Other text) is kept per question while you look at other steps, in memory only, for at most 8 questions; it is dropped when the dialog closes or its tab headers change, and a question whose answer was just sent keeps nothing |
+| Other | `label.ch` "Other" with a text field (`maxlength="300"`, placeholder "Type your answer", `aria-label` "Other answer"); typing selects it. A counter "n/300" from 250 characters. A first digit shows the warn line "Start with a word: Claude can read a first digit as an option." and Send then moves the focus back to the field instead of sending. Where the capture says `other: false` (a multi-select question that is not on the last tab) the row is a `.pbtn-off` line "Other answers: use the terminal". **Typed text (0.5.1, D):** when Claude's own text row holds text (the capture's `typed`), the field shows that text **pre-filled and read-only** under the note "To change typed text, use the terminal." (`aria-describedby`); nika never edits Claude's text row. On a single-select question the row is selected only when that text is Claude's answer, and picking another option replaces the answer; on a multi-select question the Other box stays ticked and locked and every request carries the same text |
+| Answered step (0.5.1, D) | A tab Claude marks answered shows the note "Already answered. Answer again to change it, or choose another step." (`i-info`, `.dlg-note`) above the options. The state is the usual "Needs you" and the buttons are live: picking another option and pressing the form's answer button answers it again, exactly like a new answer; Claude then goes to the **next** step (to Review after the last question), not back to Review. A multi-select that is changed is sent as today |
 | Buttons (question) | **Send answer** (`.btn.primary`) when the answer ends the dialog (`final`: one tab, single-select), else **Answer**; **Decline** (`.btn.ghost`, `title` "Presses Esc in the pane: Claude stops and waits for you"). Enter in the Other field is the primary button, never a newline (Shift+Enter and an IME's Enter excepted). The primary is aria-disabled until the choice is valid (one pick, or a typed answer; a multi-select needs at least one pick or text) |
-| Review | heading "Review your answers"; when Claude shows it, a warn row (`i-warn`, `--idle`) "You have not answered all questions"; `dl.dlg-review` in two columns with the question (`dt`) and the answer (`dd`) as Claude shows them (the question column is `fit-content(60%)`: a long question wraps at 60 % of the row and its answer keeps the rest; under 560 px of composer width each answer stays under its question; LC20 O1); **Submit answers** (primary) and **Decline** |
+| Review | heading "Review your answers"; when Claude shows it, a warn row (`i-warn`, `--idle`) "You have not answered all questions"; `dl.dlg-review` with the question (`dt`, muted) and the answer (`dd`, 600, indented 12 px) as Claude shows them. **(0.5.1, B; owner decision 2026-11-17.)** The review is **one column at every width**: each answer sits under its question and never beside it, so a long question or a long answer never squeezes the other (the squeeze was found in the live check LC20; the two-column `fit-content(60%)` layout is gone). Both wrap anywhere; pairs are 8 px apart, and the 560 px container rule has no review part any more; **Submit answers** (primary) and **Decline** |
 | Plan | the note "Read the plan in the terminal view." (`i-window`; the plan text is never shown or sent to the page); one `button.pbtn` per choice (`kbd` and Claude's label, verbatim) that answers on click, Enter or Space; the text option ("Tell Claude what to change") is a `.pbtn-off` row "<label>: use the terminal"; **Reject (Esc)** (`.pbtn.esc`, the Decline) |
 
 **Under the dialog (0.5, final review; Claude 2.1.325, and 2.1.326 since T326).** Claude draws its task list (2.1.325: `N tasks (…)`; 2.1.326: `D/N tasks done`, with ` · P in progress` when P is above 0; one row per task) and, in a named session, the labelled rule row under a
@@ -2817,6 +2821,7 @@ A question row as wide as the pane where its rest row continues it under the sam
 | ready | `ready`, `bypass: false` | the existing "Needs you" pill (`--attn`) | live |
 | terminal only | `ready`, `bypass: true` | `--text-muted`, dashed edge, no fill · `i-off` · "Terminal only" | read-only (the options are shown, not offered); only Decline (Reject) is live; the note "This mentions bypass, so nika leaves it to you: answer it in the terminal." |
 | answering | a request is in flight | `--accent` on `--accent-soft` · spinner · "Answering" | everything aria-disabled; the pressed button has `aria-busy` |
+| moving (0.5.1, D) | a step button was pressed and the request is in flight, **and after its 200 `done: 'moved'`** until a capture with another `sig` arrives | `--text` on `--surface-2` (neutral, so it is not read as an answer) · spinner · "Moving" | everything aria-disabled, the step strip included; nothing is announced for the move itself, the step it lands on is announced when it is drawn |
 | answered | 200 (or 409 `already-answered`) | `--busy` on `--busy-soft` · `i-check` · "Answered" ("Submitted" and "Declined" in their cases) | locked until a new `sig` or `dialog: null` |
 | failed | any other answer | `--danger` on `--danger-soft` · `i-warn` · "Not answered" | per the table below |
 | kept, unreadable | a form is shown and the next capture is `unreadable` | the chip keeps its state; the note "nika can't read Claude's dialog right now. Wait a moment, or answer in the terminal." | Send aria-disabled; the next readable capture takes the note away |
@@ -2837,11 +2842,16 @@ text. With `sent > 0` the line gains " nika had pressed <n> key(s) in the pane b
 | 409 `already-answered` | none (answered in a second window) | locked, chip "Answered" |
 | 409 `busy-switching` | "Another action is running on this session." | re-enabled |
 | 409 `not-idle` | "nika is stopping Claude's turn; try again in a moment." | re-enabled |
+| 409 `text-focus` (0.5.1, D; a step move only) | "Claude's text field has the focus. Move off it in the terminal, then try again." | re-enabled |
+| 200 `done: 'moved'` (0.5.1, D) | none; the "Sent n keys to %12" echo only when keys were pressed, no polite "Answered." | chip "Moving" until the next capture has another `sig` (a lock, as for an answer) |
 | 400 `terminal-only` | "Answer this in the terminal." | locked |
 | 400 `invalid`, any other 409 or status | "nika couldn't send this answer. Check it and try again." | re-enabled |
 | 429 | "Too many keys at once; try again." | re-enabled |
 | 404 | "The session is gone." | the pane-gone state (§3.9) |
 | 5xx, network error | "nika couldn't reach tmux." | re-enabled |
+
+A step move (`{ sig, tab }`) uses the same table: `no-dialog`, `dialog-changed`, `dialog-touched`, `dialog-focus`, `not-taken`, `busy-switching`, `not-idle`, `terminal-only`, `invalid`, 429, 404
+and 5xx all show the line of their row, and `sent > 0` adds the same sentence about pressed keys. Only `text-focus` and the 200 `moved` are new.
 
 **Rulings (2026-11-15).** (1) **The form stays locked after 409 `dialog-touched` and `dialog-focus`**: the user changed the dialog in the
 terminal, so the line sends them there to finish it; a new `sig` or `dialog: null` unlocks the form. (2) **Escape in the message box is a
@@ -2864,19 +2874,24 @@ own; Decline and Reject are the explicit ways, and digits are not shortcuts.
   screen (`api-app.md`).
 
 **Keyboard, focus and announcements.** Tab order: quick actions → permission panel (if shown) → the form (one stop per radio group,
-each checkbox, Other, the primary button, Decline; the tabs list is not focusable) → the Shell toggle → the message box (§9.10). Arrow keys
+each checkbox, Other, the primary button, Decline) → the Shell toggle → the message box (§9.10). **(0.5.1, D)** The step buttons come first in the form, each one Tab stop,
+before the question (the strip is above the question in the DOM). Arrow keys
 and Space are native. The form appearing never moves focus. When the form rebuilds for the next tab or the review while focus was inside it,
-focus goes to the new legend (or the review heading, or the plan note); when the form leaves with focus inside it, focus goes to the message
+focus goes to the new legend (or the review heading, or the plan note); **after a step move, when focus was on a step button, it stays on the button of the same step
+(the strip is drawn again, so the new button gets it); if that button does not exist any more, focus goes to the form root (`#dialog-form`, `tabindex="-1"`)**; when the form leaves with focus inside it, focus goes to the message
 box. Announcements (polite, once per step): "builder-1 asks: Which checks should I run? Question 1 of 4, above the message box." · on each
 later tab "Question 2 of 4: <question>" · "Review your answers: 4 answers, above the message box." · "builder-1 asks you to approve a plan.
 Read it in the terminal view; choices above the message box." A step that mentions bypass says the terminal-only note instead of "above the
 message box". The `.dlg[data-inert]` look (60 % opacity, `not-allowed`) shows whenever the form cannot take an answer; option rows are at
-least 32 px high and More / Less is 24 px (WCAG 2.5.8).
+least 32 px high, the step buttons and More / Less are 24 px (WCAG 2.5.8).
 
-**Known limit (0.5.0).** At 49 columns or fewer Claude wraps a question's footer, and nika does not read the dialog: the banner shows and you answer in the terminal (LC17).
+**Known limit (0.5.0, re-checked for 0.5.1).** At 49 columns or fewer Claude wraps a question's footer, and nika does not read the dialog: the banner shows and you answer in the terminal (LC17). Nothing in 0.5.1 changes that: the steps are buttons only inside a form that is shown.
 
-**Not built:** "Chat about this"; the plan's text option and the plan text; moving between Claude's tabs; free text in a multi-select
-question on a tab that is not the last; a keyboard shortcut for an option; a Settings switch; anything on the browser tier.
+**Known limit (0.5.1, D).** When the tab headers do not fit the width, Claude shortens the unfocused ones with `…` (spike S-TABS: four headers of 15 to 17 characters shortened at 80 and 60 columns). nika reads a header that ends in `…` as `clipped`, so the banner shows instead of the form, and with it no step buttons: you answer or move in the terminal. Short headers, or a wider pane, keep the form.
+
+**Not built:** "Chat about this"; the plan's text option and the plan text; editing the text Claude's text row holds (it is shown read-only, 0.5.1); a step
+move that always succeeds (when three `Up` presses do not take Claude's focus off its text, Chat or Next row, the route says 409 `text-focus` and the user leaves the row in the terminal); free text in a multi-select
+question on a tab that is not the last; a keyboard shortcut for an option or a step; a Settings switch; anything on the browser tier. (Moving between Claude's steps is built in 0.5.1, D.)
 
 ### 9.17 Subagents: rows, the session list and the read-only view (0.5, W8; the W11 line)
 
@@ -3060,6 +3075,10 @@ tile or chip that opened it, or to the message box when that one has left the pa
 
 404, 413 and 415 offer no Retry (the same request would give the same answer). There is no empty state: the viewer opens only from a chip or tile that has a reference.
 
+**The status line is always there.** `#img-state` (`role="status"`) is rendered in every state and is never hidden; only its text changes, so a screen reader's live region
+exists before the first message arrives. When there is nothing to say (a picture is showing, or the viewer is closed) the text is empty and the warning icon and Retry are hidden.
+The line shares the picture's grid cell, so an empty line takes no room and the picture does not move when a message comes and goes.
+
 **Responsive and accessibility.** The dialog is `min(1200px, 100vw - 32px)` wide and `100vw - 16px` at 600 px and below; the picture scrolls inside the stage if it
 is still larger. Tiles shrink to the Transcript column (`max-width: min(100%, 320px)`); thumbnails are at most 180 px high. Tokens only (`--surface-2`, `--line`,
 `--text-muted`, `--focus`, `--scrim`); every state has its own words and, where it is a problem, its own icon, never colour alone. No animation is added.
@@ -3083,8 +3102,13 @@ a ready dialog, or the feedback survey panel with a ready survey. The mirror is 
 | feedback survey | everything above the question row | "Feedback question · answer it in the panel below" |
 
 **No crop (the whole screen shows, as before)** when: the dialog is unreadable (the attention banner, or "Reading…" with no ready capture); the form is in
-terminal mode, or the survey is terminal-only; the permission prompt has any bypass option or the window mentions bypass; Type into pane is on; `top` is
-missing, 0 or out of range; or the dialog's `sig` is not the one the form was drawn for. A crop that appears or goes between two frames never glides.
+terminal mode, or the survey is terminal-only; the permission prompt has any bypass option or the window mentions bypass; **the permission prompt's question is 200
+characters or longer, or any option label is 80 or longer**; Type into pane is on; `top` is missing, 0 or out of range; or the dialog's `sig` is not the one the form was
+drawn for. A crop that appears or goes between two frames never glides.
+
+The two lengths are where the server cuts a prompt's text (`prompt.question` at 200, each label at 80) and it marks nothing when it cuts, so a text of exactly that
+length may be a shortened one. A crop could then hide the tail of what the user is about to approve; the whole screen shows instead, as before 0.5.1. A label of exactly 80
+characters that was never cut is not cropped either: the safe side. The lengths live in `public/crop.js`, and a test pins them to the parser in `src/mode.js`.
 
 **The strip.** The same element as the input-box cut (§9.12, `#term-cut`), one line in both looks (`white-space: nowrap`, the words ellipsise, the icon keeps its
 size), so its height is identical and the fit's strip height stays valid. It stays `aria-hidden`; the panel below announces itself.
@@ -3098,7 +3122,8 @@ size), so its height is identical and the fit's strip height stays valid. It sta
 **Effects on the rest.** The crop is its own number (`M.crop`); the input-box cut (`M.cut`) is untouched, so the fit (§9.13: `hiddenRows`, the scale, the grow)
 sees exactly what it saw before, and the text scale does not jump when a panel appears. The crop takes the smaller of itself and the input-box cut (a prompt,
 dialog or survey has no plain box, so in practice they never overlap). Scrolling and the glide take the crop's top, so page sizes and frames stay honest.
-Known effect: with the crop, fewer rows than the panel holds can be drawn; the strip then sits under the last drawn row with blank panel below.
+Known effect: with the crop, fewer rows than the panel holds can be drawn; the strip then sits under the last drawn row with blank panel below. (Re-checked against the 0.5.1 code: the fit still
+measures with the input-box cut only and ignores a strip that stands for a dialog crop alone, `public/session.js` `M.cut`; a long permission prompt gets no crop at all, above, so it adds no case.)
 
 ### 9.20 Subagents button (0.5.1, item H)
 
