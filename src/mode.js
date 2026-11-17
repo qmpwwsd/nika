@@ -107,35 +107,74 @@ function subagentEnd(texts) {
   return ok ? footer : texts.length - 1;
 }
 
-// Claude's task list and the rule row under a dialog (0.5, F13; spike S-F13, Claude 2.1.325, and the 2.1.319 capture of an open question dialog).
+// Claude's task list and the rule row under a dialog (0.5, F13; spikes S-F13, Claude 2.1.325, the 2.1.319 capture of an open question dialog, and S-T326, 2.1.326).
 // Claude anchors this block to the bottom of the screen, under the last row of a question, review or plan dialog or of a permission prompt:
 // any number of blank rows (a taller pane has more), then ONE of
 //   - a rule row alone (plain, or labelled with the session name) as the last row: the plan approval of a named session;
 //   - the task block: in a named session a rule row at column 0, exactly one blank row, the block; in an unnamed one (no rule row) just
-//     the block, with at least one blank row above it. The block is the header `  <T> tasks (<D> done, <P> in progress, <O> open)` (the in-progress
-//     part only when P is above 0; the word is "tasks" for one task too), one row per listed task `  <glyph> <label>` (U+25FC in progress, U+2714
-//     done, U+25FB open; a label may end in U+2026, ` U+203A blocked by #n` or ` (@owner)`) and at most one last row `   \u2026 +<n> in progress, <n> pending, <n> completed` naming the hidden
-//     tasks (only the parts above 0, in that order). With the input box shown the list sits ABOVE the box instead.
-// Rows are rtrimmed and recognised by their fixed prefix, never by the label, which is model-controlled text.
-const TASK_HEAD = /^ {2}(\d{1,4}) tasks \((\d{1,4}) done, (?:(\d{1,4}) in progress, )?(\d{1,4}) open\)$/;
+//     the block, with at least one blank row above it. With the input box shown the list sits ABOVE the box instead.
+// The block has two forms, and ONE block is one form (a header of one version with an overflow row of the other is no block):
+//   - Claude 2.1.325: the header `  <T> tasks (<D> done, <P> in progress, <O> open)` (the in-progress part only when P is above 0; the word is
+//     "tasks" for one task too) and at most one last row of three spaces, U+2026, ` +<n> in progress, <n> pending, <n> completed` naming the
+//     hidden tasks (only the parts above 0, in that order);
+//   - Claude 2.1.326: the header `  <D>/<T> tasks done` followed by ` \u00b7 <P> in progress` only when P is above 0 (the word is "task" when T is 1,
+//     else "tasks"; the open count is T - D - P) and at most one last row of TWO spaces, U+2026, ` +<N> task(s) (<n> in progress, <n> open, <n> done)`
+//     (N is the sum of the parts, "task" only when N is 1, the parts above 0 only, in that order). Claude draws 5, 4 or 3 task rows by pane height
+//     and, at 12 or 13 rows, three task rows and NO overflow row although tasks are hidden; at 10 rows or fewer the header alone.
+// Both forms list one row per task `  <glyph> <label>` (U+25FC in progress, U+2714 done, U+25FB open; a label may end in U+2026, ` U+203A blocked
+// by #n` or ` (@owner)`). Rows are rtrimmed and recognised by their fixed prefix, never by the label, which is model-controlled text.
+const TASK_HEAD = /^ {2}(\d{1,4}) tasks \((\d{1,4}) done, (?:(\d{1,4}) in progress, )?(\d{1,4}) open\)$/; // 2.1.325
+const TASK_HEAD_V2 = /^ {2}(\d{1,4})\/(\d{1,4}) (task|tasks) done(?: \u00b7 (\d{1,4}) in progress)?$/; // 2.1.326: done/total
 const TASK_ROW = /^ {2}([\u25fc\u2714\u25fb]) \S.*$/;
-const TASK_MORE = /^ {3}\u2026 \+(.+)$/;
-const MORE_PART = /^([1-9]\d{0,3}) (in progress|pending|completed)$/;
-const MORE_STATES = ['in progress', 'pending', 'completed'];
+const TASK_MORE = /^ {3}\u2026 \+(.+)$/; // 2.1.325
+const TASK_MORE_V2 = /^ {2}\u2026 \+(\d{1,5}) (task|tasks) \((.+)\)$/; // 2.1.326
+const MORE_PART = /^([1-9]\d{0,3}) (in progress|pending|completed|open|done)$/;
+const MORE_WORDS = { 1: ['in progress', 'pending', 'completed'], 2: ['in progress', 'open', 'done'] }; // by version; one list is one version's words
 
-/** The hidden counts { 'in progress', pending, completed } of an overflow row (each part above 0, once, in that order), else null. */
-function moreOf(text) {
-  const m = TASK_MORE.exec(text);
-  if (m === null) return null;
-  const hidden = { 'in progress': 0, pending: 0, completed: 0 };
+/** The hidden counts [in progress, open, done] of the parts of an overflow row (each part above 0, once, in the order of `words`), else null. */
+function partsOf(list, words) {
+  const hidden = [0, 0, 0];
   let last = -1;
-  for (const part of m[1].split(', ')) {
+  for (const part of list.split(', ')) {
     const p = MORE_PART.exec(part);
-    if (p === null || MORE_STATES.indexOf(p[2]) <= last) return null;
-    last = MORE_STATES.indexOf(p[2]);
-    hidden[p[2]] = Number(p[1]);
+    if (p === null) return null;
+    const state = words.indexOf(p[2]); // -1 for a word of the other version: caught below, as the first part or after another one
+    if (state <= last) return null;
+    last = state;
+    hidden[state] = Number(p[1]);
   }
   return hidden;
+}
+
+/** { v: 1 | 2, hidden: [in progress, open, done] } for an overflow row of either version, else null. */
+function moreOf(text) {
+  const old = TASK_MORE.exec(text);
+  if (old !== null) {
+    const hidden = partsOf(old[1], MORE_WORDS[1]);
+    return hidden === null ? null : { v: 1, hidden };
+  }
+  const m = TASK_MORE_V2.exec(text);
+  if (m === null) return null;
+  const hidden = partsOf(m[3], MORE_WORDS[2]);
+  if (hidden === null) return null;
+  const sum = hidden[0] + hidden[1] + hidden[2];
+  return String(sum) === m[1] && m[2] === (sum === 1 ? 'task' : 'tasks') ? { v: 2, hidden } : null;
+}
+
+/** { v: 1 | 2, total, done, doing, open } for the header of either version when its own numbers hold together, else null. */
+function headOf(text) {
+  const old = TASK_HEAD.exec(text);
+  if (old !== null) {
+    const [total, done, open] = [old[1], old[2], old[4]].map(Number);
+    const doing = old[3] === undefined ? 0 : Number(old[3]);
+    return (old[3] !== undefined && doing < 1) || total < 1 || total !== done + doing + open ? null : { v: 1, total, done, doing, open };
+  }
+  const m = TASK_HEAD_V2.exec(text);
+  if (m === null) return null;
+  const [done, total] = [m[1], m[2]].map(Number);
+  const doing = m[4] === undefined ? 0 : Number(m[4]);
+  if ((m[4] !== undefined && doing < 1) || total < 1 || m[3] !== (total === 1 ? 'task' : 'tasks') || done + doing > total) return null;
+  return { v: 2, total, done, doing, open: total - done - doing };
 }
 
 /** True when texts[k] is the last row of what a task block or a lone rule row may hang under: a dialog end, or the footer of a permission prompt that parses. */
@@ -148,11 +187,13 @@ function blockAnchor(texts, k) {
 /**
  * Index of the last row of the dialog or the permission prompt when `texts` end in what Claude draws under it (see above), else -1. Read bottom-up: a rule
  * row alone as the last non-blank row; or at most one overflow row, the task rows, the header, the blank rows (exactly one under a rule row, at least one
- * otherwise), the optional rule row, more blank rows if any, and the anchor (blockAnchor). The counts must add up: total = done + in progress + open >= 1,
- * the \u25fc rows plus the hidden in-progress tasks = in progress, the \u25fb rows plus the hidden pending ones = open, the \u2714 rows plus the hidden completed ones = done;
- * a header with no row under it (a pane too short for the rows) is read on its sum alone but allows no overflow row. Anything else (a second row
- * under a task, a notification row, an unknown glyph, a rule row followed by two blank rows, the block under a mode line, not at the bottom) returns -1,
- * so nothing is cut and the footer reads `unknown`.
+ * otherwise), the optional rule row, more blank rows if any, and the anchor (blockAnchor). The header and the overflow row are of the same version.
+ * The counts must add up (headOf checks the header alone: total >= 1, and for 2.1.325 total = done + in progress + open, for 2.1.326 done + in progress <= total):
+ * with an overflow row (either version) the \u25fc rows plus the hidden in-progress tasks = in progress, the \u25fb rows plus the hidden open ones = open,
+ * the \u2714 rows plus the hidden done ones = done; a 2.1.325 block with task rows and no overflow row adds up exactly too, a 2.1.326 one
+ * (the pane of 12 or 13 rows) when no state has more rows than the header counts; a header with no row under it (a pane too short for the rows)
+ * is read on its own numbers but allows no overflow row. Anything else (a second row under a task, a notification row, an unknown glyph,
+ * a rule row followed by two blank rows, the block under a mode line, not at the bottom) returns -1, so nothing is cut and the footer reads `unknown`.
  */
 function taskEnd(texts) {
   let at = skipBlank(texts, texts.length - 1);
@@ -167,14 +208,14 @@ function taskEnd(texts) {
   let rows = 0;
   const rowAt = (x) => (x >= 0 ? TASK_ROW.exec(texts[x].trimEnd()) : null);
   for (let m = rowAt(at); m !== null; m = rowAt(at)) { seen[m[1]] += 1; rows += 1; at -= 1; }
-  const head = at >= 0 ? TASK_HEAD.exec(texts[at].trimEnd()) : null;
-  if (head === null) return -1;
-  const [total, done, open] = [head[1], head[2], head[4]].map(Number);
-  const doing = head[3] === undefined ? 0 : Number(head[3]);
-  if ((head[3] !== undefined && doing < 1) || total < 1 || total !== done + doing + open || (rows === 0 && more !== null)) return -1;
-  const hidden = more ?? { 'in progress': 0, pending: 0, completed: 0 };
-  if ((rows > 0 || more !== null)
-    && (seen['\u25fc'] + hidden['in progress'] !== doing || seen['\u25fb'] + hidden.pending !== open || seen['\u2714'] + hidden.completed !== done)) return -1;
+  const head = at >= 0 ? headOf(texts[at].trimEnd()) : null;
+  if (head === null || (more !== null && (more.v !== head.v || rows === 0))) return -1;
+  if (rows > 0 || more !== null) {
+    const hidden = more === null ? [0, 0, 0] : more.hidden;
+    const exact = more !== null || head.v === 1; // 2.1.326 without an overflow row: rows may be fewer than the header counts
+    const states = [[seen['\u25fc'], hidden[0], head.doing], [seen['\u25fb'], hidden[1], head.open], [seen['\u2714'], hidden[2], head.done]];
+    if (states.some(([shown, hid, counted]) => (exact ? shown + hid !== counted : shown > counted))) return -1;
+  }
   const above = skipBlank(texts, at - 1);
   const blanks = at - 1 - above;
   if (blanks < 1) return -1;

@@ -6,6 +6,7 @@ import {
   surveyShown, followUpShown, surveyOrFollowUpShown, pillShown, SHELL_FOOTER, ASK_FOOTER, PLAN_FOOTER, REVIEW_END, isDialogEnd, nudgeFooterAt, footerEnd,
 } from '../src/mode.js';
 import { parseCapture } from '../src/mirror.js';
+import { dialogCapture } from '../src/dialog.js';
 import { promptSig } from '../src/session-control.js';
 import { subagentRows, taskRows, taskScreen, taskMisfits } from './helpers.js';
 
@@ -1219,5 +1220,305 @@ describe('task list under a dialog or a permission prompt (F13-A v2)', () => {
     for (const bad of [null, undefined, [], [[]], [[{}]], [[{ t: 5 }]], [null], [[null]], 'x', 5, {}]) {
       assert.doesNotThrow(() => { lastNonBlank(bad, 3); bypassWindow(bad); modeFromRows(bad); promptFromRows(bad); promptSig(bad); }, JSON.stringify(bad));
     }
+  });
+
+  // ---- T326 (spike S-T326): Claude 2.1.326 draws the block as `<D>/<T> tasks done · <P> in progress` with the overflow row
+  // `  … +<N> task(s) (<n> in progress, <n> open, <n> done)` (two spaces). Every fixture below is made up; none is a captured text. ---------------
+  describe('the Claude 2.1.326 form of the task list (T326)', () => {
+    const sty = (o) => ({ ...DEF, ...o });
+    const DIM = sty({ fg: 246 });
+    const ACC = sty({ fg: 153 });
+    /** A question dialog that src/dialog.js reads as `ready` (made-up text; two tabs, three options), 120 columns. */
+    const QUESTION = [
+      [span('⏺ I have a question first.')], [],
+      [span('─'.repeat(120), DIM)],
+      [span('←'), span(' '), span(' ☐ Project ', sty({ fg: 16, bg: 153 })), span(' '), span(' ☐ Tools '), span(' '), span(' ✔ Submit '), span(' '), span('→')],
+      [],
+      [span('Which project should I open?', sty({ b: true, fg: 231 }))],
+      [],
+      [span('❯', ACC), span(' '), span('1.', DIM), span(' acme-api', ACC)], [span('     Open the acme-api project.', DIM)],
+      [span('  '), span('2.', DIM), span(' web-shop')], [span('     Open the web-shop project.', DIM)],
+      [span('  '), span('3.', DIM), span(' Type something.', sty({ d: true }))],
+      [span('─'.repeat(120), DIM)],
+      [span('  4. Chat about this')],
+      [],
+      [span('Enter to select · Tab/Arrow keys to navigate · Esc to cancel', DIM)],
+    ];
+    const capture = (rows) => dialogCapture(rows, 120);
+    const readable = capture(QUESTION);
+    const dialogs = { ...screens, 'readable question': () => QUESTION };
+    const unread = (c) => c === null || c.state !== 'ready';
+
+    /**
+     * The 2.1.326 block under a dialog: taskRows' blank rows, rule row and task rows with this version's header, then its overflow row.
+     *   doing, open, done   the task rows shown (in this order of drawing: doing, done, open, as taskRows draws them)
+     *   hid                 { doing, open, done }: the hidden tasks, named in the overflow row (none: no overflow row)
+     *   claim               overrides of the header numbers { total, done, doing }; head: the whole header; more: the whole overflow row
+     * The header numbers are the truth computed from the rows and the hidden counts unless claim overrides them.
+     */
+    const v2 = ({ doing = 1, open = 1, done = 2, hid = {}, claim = {}, head = null, more = null, ...rest } = {}) => {
+      const [hd, ho, hx] = [hid.doing ?? 0, hid.open ?? 0, hid.done ?? 0];
+      const n = { total: doing + open + done + hd + ho + hx, done: done + hx, doing: doing + hd, ...claim };
+      const headText = head ?? `  ${n.done}/${n.total} ${n.total === 1 ? 'task' : 'tasks'} done${n.doing > 0 ? ` · ${n.doing} in progress` : ''}`;
+      const sum = hd + ho + hx;
+      const parts = [[hd, 'in progress'], [ho, 'open'], [hx, 'done']].filter(([c]) => c > 0).map(([c, w]) => `${c} ${w}`);
+      const moreText = more ?? (sum > 0 ? `  … +${sum} ${sum === 1 ? 'task' : 'tasks'} (${parts.join(', ')})` : null);
+      return [...taskRows({ ...rest, doing, open, shownDone: done, hiddenDone: 0, head: headText }), ...(moreText === null ? [] : [[span(moreText)]])];
+    };
+    const forms = (o) => [true, false].map((named) => v2({ named, ...o }));
+    /** The block `tail` hangs under every dialog and is cut: footerEnd is the dialog's last row; dialogCapture reads the readable one as without the block. */
+    const cutUnder = (name, tail) => {
+      for (const [label, make] of Object.entries(dialogs)) {
+        const dialog = make();
+        assert.equal(at([...dialog, ...tail]), end(dialog), `${name} / ${label}`);
+      }
+      assert.deepEqual(capture([...QUESTION, ...tail]), readable, `${name}: dialogCapture reads the question`);
+      assert.equal(readable.state, 'ready');
+    };
+    /** The block `tail` is not cut under any dialog (footerEnd stays the last row) and dialogCapture does not read the question through it. */
+    const keptUnder = (name, tail) => {
+      for (const [label, make] of Object.entries(dialogs)) {
+        const rows = [...make(), ...tail];
+        assert.equal(at(rows), rows.length - 1, `${name} / ${label}`);
+      }
+      assert.ok(unread(capture([...QUESTION, ...tail])), `${name}: dialogCapture does not read the question`);
+    };
+    const keptBoth = (name, o) => forms(o).forEach((tail, i) => keptUnder(`${name} / ${i === 0 ? 'named' : 'unnamed'}`, tail));
+    const text = (rows) => rows.map(rowText);
+
+    test('(+) the fixture builder draws the shapes of the spike: header with and without in progress, "task" for one, the overflow row', () => {
+      assert.deepEqual(text(v2({ doing: 2, open: 1, done: 2, hid: { open: 3, done: 3 }, named: false })).filter((t) => t.trim()),
+        ['  5/11 tasks done · 2 in progress', '  ◼ Draft the outline', '  ◼ Check the sample data', '  ✔ Write the summary', '  ✔ Review the notes', '  ◻ Tidy the folders', '  … +6 tasks (3 open, 3 done)']);
+      assert.deepEqual(text(v2({ doing: 0, open: 2, done: 3, hid: { open: 3 }, named: false })).filter((t) => t.trim()).slice(0, 1), ['  3/8 tasks done']);
+      assert.deepEqual(text(v2({ doing: 0, open: 1, done: 0, named: false })).filter((t) => t.trim()), ['  0/1 task done', '  ◻ Draft the outline']);
+      assert.equal(text(v2({ doing: 2, open: 1, done: 2, hid: { done: 1 } })).at(-1), '  … +1 task (1 done)');
+    });
+
+    test('(+) 5 rows and the overflow row, with and without the in-progress part: named and unnamed, every anchor, the permission prompt, a question dialog that is read', () => {
+      const shapes = {
+        'with in progress': { doing: 2, open: 1, done: 2, hid: { open: 3, done: 3 } },
+        'without in progress': { doing: 0, open: 2, done: 3, hid: { open: 3 } },
+      };
+      for (const [name, o] of Object.entries(shapes)) {
+        for (const [i, tail] of forms(o).entries()) cutUnder(`${name} / ${i === 0 ? 'named' : 'unnamed'}`, tail);
+      }
+    });
+
+    test('(+) every overflow row seen in the spike, one by one (the parts above 0, in the order in progress, open, done; "task" for one)', () => {
+      const seen = {
+        '(1 in progress)': { hid: { doing: 1 } },
+        '(3 open)': { hid: { open: 3 } },
+        '(3 done)': { hid: { done: 3 } },
+        '(1 open, 3 done)': { hid: { open: 1, done: 3 } },
+        '(1 in progress, 4 done)': { hid: { doing: 1, done: 4 } },
+        '(1 in progress, 2 open, 3 done)': { hid: { doing: 1, open: 2, done: 3 } },
+        '+1 task (1 done)': { hid: { done: 1 } },
+        '+1 task (1 open)': { hid: { open: 1 } },
+        '(2 in progress, 2 open)': { hid: { doing: 2, open: 2 } },
+        'four-digit counts': { hid: { doing: 1, open: 1234, done: 4321 } },
+      };
+      for (const [name, o] of Object.entries(seen)) {
+        for (const [i, tail] of forms({ doing: 2, open: 1, done: 2, ...o }).entries()) cutUnder(`${name} / ${i === 0 ? 'named' : 'unnamed'}`, tail);
+      }
+    });
+
+    test('(+) the other shapes: all done, one task (0/1 task done, 1/1 task done), three rows and no overflow row at 12-13 rows, the header alone, no hidden tasks', () => {
+      const shapes = {
+        'all done, overflow': { doing: 0, open: 0, done: 5, hid: { done: 3 } },
+        'all done, no overflow': { doing: 0, open: 0, done: 4 },
+        '1/1 task done': { doing: 0, open: 0, done: 1 },
+        '0/1 task done, open': { doing: 0, open: 1, done: 0 },
+        '0/1 task done, in progress': { doing: 1, open: 0, done: 0 },
+        '3 rows, tasks hidden, no overflow row (in progress only)': { doing: 3, open: 0, done: 0, claim: { total: 9, done: 3, doing: 4 } },
+        '3 rows, tasks hidden, no overflow row (mixed)': { doing: 1, open: 1, done: 1, claim: { total: 10, done: 4, doing: 2 } },
+        '3 rows, no in-progress part': { doing: 0, open: 3, done: 0, claim: { total: 9, done: 3 } },
+        'header only': { doing: 0, open: 0, done: 0, claim: { total: 9, done: 3, doing: 4 } },
+        'header only, no in-progress part': { doing: 0, open: 0, done: 0, claim: { total: 9, done: 3 } },
+        'header only, all done': { doing: 0, open: 0, done: 0, claim: { total: 6, done: 6 } },
+        'header only, one task': { doing: 0, open: 0, done: 0, claim: { total: 1, done: 0 } },
+        'no hidden tasks, no overflow row': {},
+        'labels that look like block rows': { labels: ['3/9 tasks done', '… +3 tasks (3 done)', 'Tidy the folders (@robin)', 'Review the notes › blocked by #1', 'A label cut by Claude…'], hid: { done: 3 } },
+      };
+      for (const [name, o] of Object.entries(shapes)) {
+        for (const [i, tail] of forms(o).entries()) cutUnder(`${name} / ${i === 0 ? 'named' : 'unnamed'}`, tail);
+      }
+    });
+
+    test('(+) a taller pane has more blank rows above the block; padded rows, trailing blank rows and a trailing row of spaces', () => {
+      const o = { doing: 2, open: 1, done: 2, hid: { done: 3 } };
+      for (const blank of [3, 11, 20]) cutUnder(`${blank} blank rows`, v2({ named: true, blank, ...o }));
+      for (const blank of [1, 3, 11]) cutUnder(`${blank} blank rows, unnamed`, v2({ named: false, blank, ...o }));
+      const pad = (rows, cols) => rows.map((r) => [...r, span(' '.repeat(Math.max(0, cols - r.map((sp) => sp.t).join('').length)))]);
+      for (const [name, make] of Object.entries(dialogs)) {
+        const dialog = make();
+        const block = v2({ cols: 64, ...o });
+        assert.equal(at(pad([...dialog, ...block], 120)), end(dialog), `${name}: padded`);
+        assert.equal(at([...dialog, ...block, [], []]), end(dialog), `${name}: trailing blank rows`);
+        assert.equal(at([...dialog, ...block, [span(' '.repeat(64))]]), end(dialog), `${name}: a trailing row of spaces`);
+      }
+    });
+
+    test('(+) the 2.1.325 form is read as before, next to the new one (same dialogs, same anchors)', () => {
+      for (const tail of [taskRows(), taskRows({ named: false }), taskRows({ doing: 1, open: 0, shownDone: 4, hiddenDone: 12 }), taskRows({ hiddenOpen: 2, hiddenDone: 0 }),
+        taskRows({ doing: 0, open: 0, shownDone: 0, hiddenDone: 0, claim: { total: 5, done: 3, open: 2 } })]) cutUnder('2.1.325 block', tail);
+    });
+
+    test('(+) every reader sees the last row of the dialog or the prompt as the last row; the prompt, its sig and the bypass window do not change', () => {
+      for (const [name, make] of Object.entries(dialogs)) {
+        for (const tail of forms({ doing: 2, open: 1, done: 2, hid: { open: 1, done: 3 } })) {
+          const dialog = make();
+          const rows = [...dialog, ...tail];
+          assert.deepEqual(lastNonBlank(rows, 15), lastNonBlank(dialog, 15), name);
+          assert.equal(modeFromRows(rows), modeFromRows(dialog), name);
+          assert.deepEqual(promptFromRows(rows), promptFromRows(dialog), name);
+          assert.equal(promptSig(rows), promptSig(dialog), name);
+          assert.equal(bypassWindow(rows), false, name);
+        }
+      }
+      assert.equal(promptFromRows(PROMPT) !== null, true, 'control: the prompt parses');
+      for (const tail of forms()) assert.equal(capture([...PROMPT, ...tail]), null, 'a permission prompt is no dialog, with the block as without it');
+      const labelled = [...PROMPT, ...v2({ labels: ['Check the bypass settings'] })];
+      assert.equal(at(labelled), end(PROMPT), 'the block is cut for every other reader');
+      assert.equal(bypassWindow(labelled), true, 'the literal bottom of the screen mentions bypass, so the guard still sees it');
+    });
+
+    test('(−) a block that mixes the two forms is not cut: the 2.1.326 header with a 2.1.325 overflow row, and the 2.1.325 header with a 2.1.326 one', () => {
+      const old = (more, o = {}) => { const rows = taskRows({ hiddenDone: 3, ...o }); rows[rows.length - 1] = [span(more)]; return rows; };
+      keptBoth('new header, old overflow row (pending, completed, three spaces)', { hid: { open: 1, done: 3 }, more: '   … +1 pending, 3 completed' });
+      keptBoth('new header, old overflow row, completed only', { hid: { done: 3 }, more: '   … +3 completed' });
+      keptBoth('new header, old overflow row, in progress only', { hid: { doing: 1 }, more: '   … +1 in progress' });
+      keptUnder('old header, new overflow row (two spaces)', old('  … +3 tasks (3 done)'));
+      keptUnder('old header, new overflow row, unnamed', old('  … +3 tasks (3 done)', { named: false }));
+      keptUnder('old header, new overflow row with a state of the old words', old('  … +3 tasks (3 completed)'));
+      keptUnder('old header, overflow row of the old shape with the new words (open, done)', old('   … +1 open, 3 done'));
+      keptUnder('old header, overflow row of the old shape with the new word done', old('   … +3 done'));
+      keptUnder('old header, overflow row of the old words with two spaces', old('  … +3 completed'));
+    });
+
+    test('(−) the 2.1.326 header: "1/2 task done", "0/1 tasks done", "1/1 tasks done", done + in progress above the total, "0 in progress", T = 0, other shapes', () => {
+      const rowsFor = { doing: 1, open: 0, done: 1 };
+      keptBoth('1/2 task done', { ...rowsFor, head: '  1/2 task done · 1 in progress' });
+      keptBoth('0/1 tasks done', { doing: 0, open: 1, done: 0, head: '  0/1 tasks done' });
+      keptBoth('1/1 tasks done', { doing: 0, open: 0, done: 1, head: '  1/1 tasks done' });
+      keptBoth('3/9 task done', { doing: 0, open: 6, done: 3, head: '  3/9 task done' });
+      keptBoth('0 in progress, with rows', { doing: 0, open: 2, done: 1, head: '  1/3 tasks done · 0 in progress' });
+      for (const [name, head] of Object.entries({
+        'header alone: 3 done + 2 in progress of 4': '  3/4 tasks done · 2 in progress',
+        'header alone: done above the total': '  5/4 tasks done',
+        'header alone: 0 in progress': '  1/3 tasks done · 0 in progress',
+        'header alone: 0/0 tasks': '  0/0 tasks done',
+        'header alone: 0/0 task': '  0/0 task done',
+        'header alone: 1/2 task': '  1/2 task done',
+        'header alone: 0/1 tasks': '  0/1 tasks done',
+        'header alone: indented by one space': ' 3/9 tasks done',
+        'header alone: indented by three spaces': '   3/9 tasks done',
+        'header alone: not indented': '3/9 tasks done',
+        'header alone: a comma instead of the middle dot': '  3/9 tasks done, 1 in progress',
+        'header alone: in progress and open parts': '  3/9 tasks done · 1 in progress · 5 open',
+        'header alone: words instead of the slash': '  3 of 9 tasks done',
+        'header alone: five digits': '  10000/10000 tasks done',
+        'header alone: a negative number': '  -1/3 tasks done',
+      })) keptBoth(name, { doing: 0, open: 0, done: 0, head });
+    });
+
+    test('(−) the 2.1.326 overflow row: "+2 task", "+1 tasks", a sum that is not N, a leading zero, parts out of order or twice or "0 open", old words, a wrong indent, a wrong shape', () => {
+      const o = { doing: 1, open: 1, done: 2 };
+      const cases = {
+        '+2 task (...)': { hid: { open: 1, done: 1 }, more: '  … +2 task (1 open, 1 done)' },
+        '+1 tasks (...)': { hid: { done: 1 }, more: '  … +1 tasks (1 done)' },
+        'N above the sum': { hid: { open: 1, done: 3 }, more: '  … +5 tasks (1 open, 3 done)' },
+        'N below the sum': { hid: { open: 1, done: 3 }, more: '  … +3 tasks (1 open, 3 done)' },
+        'N with a leading zero': { hid: { open: 1, done: 3 }, more: '  … +04 tasks (1 open, 3 done)' },
+        'N of zero': { hid: { done: 3 }, more: '  … +0 tasks (3 done)' },
+        'done before open': { hid: { open: 1, done: 3 }, more: '  … +4 tasks (3 done, 1 open)' },
+        'open before in progress': { hid: { doing: 1, open: 1 }, more: '  … +2 tasks (1 open, 1 in progress)' },
+        'done before in progress': { hid: { doing: 1, done: 1 }, more: '  … +2 tasks (1 done, 1 in progress)' },
+        'open twice': { hid: { open: 2 }, more: '  … +2 tasks (1 open, 1 open)' },
+        'in progress twice': { hid: { doing: 2 }, more: '  … +2 tasks (1 in progress, 1 in progress)' },
+        'done twice': { hid: { done: 2 }, more: '  … +2 tasks (1 done, 1 done)' },
+        '0 open': { hid: { done: 3 }, more: '  … +3 tasks (0 open, 3 done)' },
+        '0 in progress': { hid: { done: 3 }, more: '  … +3 tasks (0 in progress, 3 done)' },
+        '0 done': { hid: { open: 3 }, more: '  … +3 tasks (3 open, 0 done)' },
+        'pending and completed': { hid: { open: 1, done: 3 }, more: '  … +4 tasks (1 pending, 3 completed)' },
+        'completed only': { hid: { done: 3 }, more: '  … +3 tasks (3 completed)' },
+        'pending only': { hid: { open: 3 }, more: '  … +3 tasks (3 pending)' },
+        'open and completed': { hid: { open: 1, done: 3 }, more: '  … +4 tasks (1 open, 3 completed)' },
+        'pending and done': { hid: { open: 1, done: 3 }, more: '  … +4 tasks (1 pending, 3 done)' },
+        'three spaces': { hid: { open: 1, done: 3 }, more: '   … +4 tasks (1 open, 3 done)' },
+        'one space': { hid: { open: 1, done: 3 }, more: ' … +4 tasks (1 open, 3 done)' },
+        'four spaces': { hid: { open: 1, done: 3 }, more: '    … +4 tasks (1 open, 3 done)' },
+        'no parentheses': { hid: { open: 1, done: 3 }, more: '  … +4 tasks 1 open, 3 done' },
+        'empty parentheses': { hid: { open: 1, done: 3 }, more: '  … +4 tasks ()' },
+        'text after the parentheses': { hid: { open: 1, done: 3 }, more: '  … +4 tasks (1 open, 3 done) soon' },
+        'parts joined by a space': { hid: { open: 1, done: 3 }, more: '  … +4 tasks (1 open 3 done)' },
+        'a word that is not a state': { hid: { open: 1, done: 3 }, more: '  … +4 tasks (1 open, 3 finished)' },
+        'no word after the number': { hid: { open: 1, done: 3 }, more: '  … +4 (1 open, 3 done)' },
+        'ASCII dots instead of the ellipsis': { hid: { open: 1, done: 3 }, more: '  ... +4 tasks (1 open, 3 done)' },
+      };
+      for (const [name, c] of Object.entries(cases)) keptBoth(name, { ...o, ...c });
+    });
+
+    test('(−) sums that do not add up: with an overflow row (each state, both ways), and more rows of a state than the header counts with no overflow row', () => {
+      const base = { doing: 1, open: 1, done: 2, hid: { doing: 1, open: 2, done: 3 } }; // rows 1 / 1 / 2, hidden 1 / 2 / 3: in progress 2, open 3, done 5, total 10
+      forms(base).forEach((tail, i) => cutUnder(`control: the true numbers / ${i}`, tail));
+      const wrong = {
+        'total one too high (open)': { claim: { total: 11 } },
+        'total one too low (open)': { claim: { total: 9 } },
+        'done one too high': { claim: { done: 6, total: 11 } },
+        'done one too low': { claim: { done: 4, total: 9 } },
+        'in progress one too high': { claim: { doing: 3, total: 11 } },
+        'in progress one too low': { claim: { doing: 1, total: 9 } },
+        'no in-progress part though tasks are in progress': { claim: { doing: 0, total: 8 } },
+        'hidden in progress one too many': { more: '  … +7 tasks (2 in progress, 2 open, 3 done)' },
+        'hidden open one too few': { more: '  … +5 tasks (1 in progress, 1 open, 3 done)' },
+        'hidden done one too many': { more: '  … +7 tasks (1 in progress, 2 open, 4 done)' },
+      };
+      for (const [name, c] of Object.entries(wrong)) keptBoth(name, { ...base, ...c });
+      // no overflow row (the 12-13 row pane): a state may show FEWER rows than the header counts, never more
+      const noMore = {
+        'more in-progress rows than the header counts': { doing: 3, open: 1, done: 1, claim: { doing: 2, total: 5 } },
+        'more open rows than the header counts': { doing: 1, open: 3, done: 1, claim: { total: 4 } },
+        'more done rows than the header counts': { doing: 1, open: 1, done: 3, claim: { done: 2, total: 4 } },
+        'a row for a state the header counts as 0': { doing: 1, open: 0, done: 0, claim: { total: 1, done: 0, doing: 0 } },
+      };
+      for (const [name, o] of Object.entries(noMore)) keptBoth(name, o);
+      keptUnder('2.1.325: fewer rows than the header counts and no overflow row stays exact', taskRows({ hiddenDone: 0, claim: { done: 4, total: 6 } }));
+      keptUnder('2.1.325: more in-progress rows than the header counts', taskRows({ hiddenDone: 0, doing: 2, open: 0, shownDone: 1, claim: { doing: 1, total: 3, open: 1 } }));
+    });
+
+    test('(−) the places: a rule row with two blank rows or none under it, a text row, an unknown glyph, a second row under a task, a notice, the block not at the bottom, an overflow row with no task row', () => {
+      const o = { doing: 2, open: 1, done: 2, hid: { open: 1, done: 3 } };
+      const note = [span('  A notice from the shell')];
+      const headAt = (rows) => rows.findIndex((r) => /tasks? done/.test(rowText(r)));
+      const edit = (change, named = true) => { const rows = v2({ named, ...o }); change(rows); return rows; };
+      keptUnder('a rule row followed by two blank rows', v2({ gap: 2, ...o }));
+      keptUnder('a rule row followed by no blank row', v2({ gap: 0, ...o }));
+      keptUnder('an unnamed block with no blank row above the header', v2({ named: false, blank: 0, ...o }));
+      keptUnder('a rule row indented by two spaces', v2({ rule: 'indented', ...o }));
+      keptUnder('a text row instead of the blank row between the rule and the header', edit((rows) => { rows[headAt(rows) - 1] = note; }));
+      keptUnder('a text row instead of the rule row', edit((rows) => { rows[headAt(rows) - 2] = note; }));
+      keptUnder('a text row between the dialog end and an unnamed block', edit((rows) => rows.splice(headAt(rows), 0, note, []), false));
+      keptUnder('a row with an unknown glyph', edit((rows) => rows.splice(headAt(rows) + 2, 0, [span('  ● Another thing')])));
+      keptUnder('a task row indented by one space', edit((rows) => { rows[headAt(rows) + 1] = [span(' ◼ Draft the outline')]; }));
+      keptUnder('a task row indented by three spaces', edit((rows) => { rows[headAt(rows) + 1] = [span('   ◼ Draft the outline')]; }));
+      keptUnder('a glyph row without a label', edit((rows) => { rows[headAt(rows) + 1] = [span('  ◼ ')]; }));
+      keptUnder('a second row under a task', edit((rows) => rows.splice(headAt(rows) + 2, 0, [span('    rest of the label')])));
+      keptUnder('a notice after the last row of the block', [...v2(o), note]);
+      keptUnder('a notice between the tasks', edit((rows) => rows.splice(headAt(rows) + 3, 0, note)));
+      keptUnder('two overflow rows', [...v2(o), [span('  … +3 tasks (3 done)')]]);
+      keptUnder('the overflow row is not the last row', (() => { const rows = v2(o); rows.push(rows.splice(-2, 1)[0]); return rows; })());
+      keptUnder('an overflow row and no task row', v2({ doing: 0, open: 0, done: 0, hid: { done: 3 } }));
+      keptUnder('an overflow row under the header alone, in progress', v2({ doing: 0, open: 0, done: 0, hid: { doing: 1, done: 2 } }));
+      keptUnder('a real block, a later message and a real input box (the block is not at the bottom)', [...v2(o), [span('⏺ A later message.')], ...rowsOf('transcript line', ...BOX, PHRASE.auto)]);
+      keptUnder('a subagent list below the block', [...v2(o), ...subagentRows({ agents: 2 })]);
+      keptUnder('the block below a subagent list', [...subagentRows({ agents: 2 }), ...v2(o)]);
+      for (const tail of forms(o)) {
+        const rows = [...rowsOf('transcript line', ...BOX, PHRASE.plan), ...tail];
+        assert.equal(at(rows), rows.length - 1, 'the block under a mode line is no block');
+        assert.equal(modeFromRows(rows), 'unknown', 'the block is the last row: not a mode line, as before');
+      }
+      const noAnchor = [...rowsOf('transcript line', 'a message', 'Esc to cancel · Tab to amend'), ...v2(o)];
+      assert.equal(at(noAnchor), noAnchor.length - 1, 'Esc to cancel with no prompt above it is no anchor');
+    });
   });
 });
