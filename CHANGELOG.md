@@ -14,8 +14,9 @@ Session window (desktop app):
   End, the commands, Send and the question form's Decline say so and send nothing (your own Esc still works). In the
   seconds after a rating, while Claude shows "Press [1] to tell us more", nika types nothing into Claude's input, so
   Send waits and your text is kept. The follow-up question whether Anthropic may look at the session transcript, and
-  every survey question nika does not read exactly, stay in the terminal (the panel says "Terminal only"). Untried: a
-  click through nika against a real Claude (the rows and the digit come from one spike on Claude Code 2.1.325). See
+  every survey question nika does not read exactly, stay in the terminal (the panel says "Terminal only"). Checked live
+  (LC16 L4, a real Claude Code 2.1.326): Dismiss (`0`) through nika. The ratings 1, 2 and 3 were never pressed in a live check; their
+  rows and digits come from one spike on Claude Code 2.1.325. See
   `docs/design/spec.md` §9.5 and `docs/security.md` T58.
 - **The message box and Claude's input box follow each other.** Type in the terminal and the text shows up in the message
   box once you stop typing for a moment (1.5 seconds). Type in the message box and the text appears in Claude's input a
@@ -116,9 +117,10 @@ Session window (desktop app):
   nika takes the size at most 12 times a minute per window (giving it back is never limited), then the chip reads "Fit · your terminal's size" with a
   title that says why. There is no new chip colour: with a terminal on the window, "Fit · fills the panel" has a longer title and panel line about the
   dots. A change of the chip that follows your own click into or out of the window is not announced to a screen reader a second time. The new
-  `linux-verify` checks F9a and F9b (a control-mode client as the terminal) pass in the CI job. Untried: how WebKit reports focus and blur in the
-  app's window on macOS and on Linux (if events are missed, a once-a-second check of `document.hasFocus()` catches them), and the redraw count per
-  switch with a real Claude.
+  `linux-verify` checks F9a and F9b (a control-mode client as the terminal) pass in the CI job. Focus and blur were
+  checked live with a real Claude Code 2.1.326 (LC16 L5, LC19 S1), with Chromium's focus events. Not checked: how WebKit reports focus and blur in
+  the desktop app's window on macOS and on Linux (if events are missed, a once-a-second check of `document.hasFocus()` catches them), and the
+  redraw count per switch.
 - **While the session window has focus, nika squeezes the other panes of the tmux window and gives them back when you leave.** Until now a
   smaller panel left a window with several panes at its size and the text small. Now, with focus, nika sizes the window to the panel
   whatever the other panes run (a shell, an editor, another agent): the zoom hides them and tmux shrinks them with the window. When the
@@ -128,9 +130,9 @@ Session window (desktop app):
   window without focus; its title is now "Other panes share this tmux window. With focus nika sizes the window to this panel; without
   focus it only zooms the pane and scales the text." and its hint "Click into this window to fill the panel; the other panes get their
   size and layout back when you leave it." A shell or an editor in a hidden pane sees a narrow window while you work here and may keep
-  wrapped lines; each switch sends a resize signal to every pane (at most 12 takes a minute per window, as before). Untried: the new
-  `linux-verify` check F15a runs for the first time on CI; tmux 3.2 (the lowest supported) and versions other than 3.6a and 3.8 are not
-  checked.
+  wrapped lines; each switch sends a resize signal to every pane (at most 12 takes a minute per window, as before). The new
+  `linux-verify` check F15a has run on CI and passed (the run for `caf99a3`). Not checked: tmux 3.2 (the lowest supported) and versions
+  other than 3.6a and 3.8.
 - **Clicking into the session window changes the pane once, and faster.** One click into nika used to resize the pane five times in four
   seconds, because nika measured its panel again every time a line, a chip or a panel appeared, and each resize made the next one. Now nika
   measures the panel when you click in, when you resize the window and when the text size changes, and not while the screen changes under
@@ -147,8 +149,9 @@ Session window (desktop app):
   read no mode and refused to scroll (it needs about 30 rows with a 7-line task list). When that happens after a resize, nika asks once for 33
   rows with the columns in your panel's proportion and scales the text to your panel (about 8 to 9 px for a panel of 21 to 24 rows) for that
   window (33 rows or more, see the next entry); where the footer fits, the text stays at full size. The chip's panel says why, and **Fit again** tries
-  full-size text. Untried: these timings and the room size against a real Claude in the app's window (your live check); the 30-row figure is read from captures
-  of Claude 2.1.319 and 2.1.325, not from Claude's code.
+  full-size text. The timings and the room size were
+  checked live with a real Claude Code 2.1.326 (LC16 L5, LC17, LC18 R1, LC19 S1 and S4a), in Chromium against the app's server, not in the desktop
+  app's own window. The 30-row figure is read from captures of Claude 2.1.319 and 2.1.325, not from Claude's code.
 - **More of Claude's conversation in the terminal view.** The view stops above Claude's input box with a thin line, and under that line 4 to 5
   rows of your panel stayed empty. nika now asks for those rows too, in the same single resize, so Claude's conversation fills the panel down to
   the line. The text keeps its size, and Claude's input box and footer stay hidden but are still read for the draft and the mode. The extra rows
@@ -156,8 +159,8 @@ Session window (desktop app):
   has the pane, the text is a little bigger instead (0.53 against 0.49 for a 171 × 45 pane in a 145 × 22 panel), because it counts only the
   rows nika draws. Turn **Type into pane** on, or open a prompt or a menu, and every row shows again, with the top 4 or so rows of conversation
   above the panel's edge until your next click into the window or Fit again (the view stays at the bottom; scroll up to see them). The fit
-  chip's panel now says "nika gave the pane more rows" and "Fit again tries full-size text". Untried: the extra rows against a real Claude in
-  the app's window (your live check).
+  chip's panel now says "nika gave the pane more rows" and "Fit again tries full-size text". The extra rows were checked live with
+  a real Claude Code 2.1.326 (LC16 L5, LC17, LC18 R1, LC19 S1 and S4a), in Chromium against the app's server, not in the desktop app's own window.
 - **The mode chip stays confirmed when a tall task list pushes Claude's mode line off the screen.** After its own resize nika now waits up to
   1.2 seconds for that line and, when it does not come back, asks once for more rows, as it already does for a missing input box.
 - **The `/` palette lists yours first, and all of them.** The project's commands come first, then your personal ones, then those of the
@@ -201,8 +204,9 @@ Session window (desktop app):
   motion. A jump of several pages, or Home or End from far away, slides in by half the view from the side you scrolled toward. Only
   Claude's conversation moves: its input box, the footer and the task list stay where they are. Nothing slides for output that streams
   in, after Send or any key you type, or when nika resizes the pane, and with "Reduce motion" on in your system settings the view jumps
-  as before. Untried: the slide against a real Claude in the app's window (your live check); for the first instant of a one-page slide
-  the side of the view away from your scroll shows the terminal background until the text arrives.
+  as before. The slide was checked live with a real Claude
+  Code 2.1.326 (LC17 K4, LC19 S2), in Chromium against the app's server, not in the desktop app's own window. For the first instant of a
+  one-page slide the side of the view away from your scroll shows the terminal background until the text arrives.
 - **Answer Claude's questions and plan approvals from the session window.** When Claude asks you something (up to eight
   questions in tabs, then a review) or asks you to approve a plan, the window now shows a form above the message box instead of
   only "needs you". It shows one question at a time, following Claude's own tabs: pick an option (or several), or type your own
@@ -230,8 +234,8 @@ Session window (desktop app):
   question closes. The text in the terminal view keeps its size: scroll the view up to see the rest of the taller pane. The chip's panel
   says why, and nothing is announced. Questions only: a plan approval, and a question with a word Claude shortened with "…", still show
   the old note, and so does any time your terminal or another window has the size (focus in a terminal, Fit off, another nika window).
-  Untried: this against a real Claude in the app's window (your live check), and how tmux shows a window taller than a terminal that also
-  shows it.
+  The grow was checked live with a real Claude Code 2.1.326 (LC16 L5, LC17, LC18 R1, LC19 S1 and S4a), in Chromium against the app's server,
+  not in the desktop app's own window. Not checked: how tmux shows a window taller than a terminal that also shows it.
 - **Long text in the keys route is typed in pieces.** Text of 701 to 1024 characters is sent in chunks of at most 700 characters
   about 300 ms apart, because Claude turns a burst of more than 800 characters into a pasted block and loses part of the text.
 - **One row per conversation after `/compact`.** Claude continues a compacted conversation in the background under a new session

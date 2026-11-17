@@ -2730,7 +2730,7 @@ the bottom after Send and nika's resizes never slide; the capture poll, the fit 
 Claude's view at its bottom. A frame that is not a pure shift (a re-render, a dialog that opened) is drawn at once, as before. Nothing is armed or computed with `prefers-reduced-motion: reduce`, and the stylesheet has `animation: none`
 for it as a second guard. No announcement, colour, icon or setting is added; the existing "Scrolled up in Claude's view" and "Back at the live bottom" announcements are unchanged. The logic with no DOM is `public/glide.js` (`frameOf`,
 `findShift`, `createGlideArm`, `paneWriteDisarms`, `glideFrom`, `matrixY`); the wiring is `startGlide`, `endGlide` and the arm calls in `public/session.js`. One visual to know: the new frame is drawn at once and the rows slide in from where the
-shared rows were, so for the first instant the half of the conversation area away from the scroll direction shows the terminal background and fills as the rows arrive (to be judged in the live check).
+shared rows were, so for the first instant the half of the conversation area away from the scroll direction shows the terminal background and fills as the rows arrive. The glide was checked live with a real Claude Code 2.1.326 (LC17 K4, LC19 S2), in Chromium against the app's server; it was not checked in the desktop app's own window.
 
 | Case | Now |
 |---|---|
