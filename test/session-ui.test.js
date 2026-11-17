@@ -4507,6 +4507,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     'function fitStrip()',
     // F16 (design F16 5.2)
     'function growing()', 'function growTick()',
+    // FX2 (RV16 M3): a commit measured under a panel, and the one fresh commit when the panel closes
+    'function boxShortened()', 'function fitPanelClosed()',
   ];
   /** An element that also answers contains() (the fake El has no tree search): the panel's focus and dismissal rules ask it. */
   class Box extends El {
@@ -4549,14 +4551,16 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     wrap.append(chip, pop);
     const histToggle = box('button');
     const outside = box('button');
-    const els = { term, 'term-rows': rows, 'term-cut': cutEl, 'fit-probe': probe, 'fit-chip': chip, 'fit-wrap': wrap, 'fit-pop': pop, 'fit-pop-h': popH, 'fit-pop-why': popWhy, 'fit-pop-hint': popHint, 'fit-pop-note': popNote, 'fit-pop-close': close, 'fit-again': again, 'hist-toggle': histToggle };
+    const els = { term, 'term-rows': rows, 'term-cut': cutEl, 'fit-probe': probe, 'fit-chip': chip, 'fit-wrap': wrap, 'fit-pop': pop, 'fit-pop-h': popH, 'fit-pop-why': popWhy, 'fit-pop-hint': popHint, 'fit-pop-note': popNote, 'fit-pop-close': close, 'fit-again': again, 'hist-toggle': histToggle,
+      // FX2: the panels that take height from the terminal box (the page reads their `hidden`); all shut
+      'prompt-btns': { hidden: true }, 'dialog-form': { hidden: true }, 'survey-panel': { hidden: true }, 'attn-note': { hidden: true } };
     const docOn = new Map(); // the document's listeners by type: the page adds pointerdown while the panel is open and removes it when it closes
     // F9: what the page reads for its focus: document.visibilityState and document.hasFocus(); `throws` makes hasFocus() throw
     const page = { visible: true, focus: false, throws: false };
     focusState.el = null;
     const ctx = {
       paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null, cut: null, waiters: [], sent: 0 },
-      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null }, SC: { planner: null, scrolled: false },
+      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false }, SC: { planner: null, scrolled: false },
       // F16: the grow's state, the pure rules, what the form is told, the page's dialog and a clock the test sets (growTick reads Date.now())
       GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal,
       W: { dialog: null, pane: 'ok' }, renderMode: () => log.df.push(fns.growing()), Date: { now: () => clk.now },
@@ -4592,7 +4596,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     let fns = null;
     ctx.HOLD = createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout, timeout: (pending, c) => fns.holdTimeout(pending, c), ended: () => fns.holdEnded() });
     // F11: `realDraw` runs the page's own drawMirror (it sets M.cut and shows the strip) instead of the spy
-    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick${realDraw ? ', drawMirror' : ''} })`, ctx);
+    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed${realDraw ? ', drawMirror' : ''} })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
       ...fns, ctx, log, clk, page, term, rows, cutEl, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
@@ -7490,6 +7494,217 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.deepEqual(findSinks(src), []);
     assert.doesNotMatch(src, /innerHTML|insertAdjacentHTML|\.style\b|setAttribute|document\.|fetch\(|call\(|eval\(/);
     assert.equal([...code(JS['session.js']).matchAll(/--fit-scale/g)].length, 1, 'the scale is still set in one place');
+  });
+  // ---- FX2 (RV16 M3, live check LC17 K2): a commit taken while a panel shortens the box is measured again when the panel closes ---------------
+  // growRig: a 100 x 30 panel (box 827 x 562, cell 8 x 18). With a panel shown the box is 16 rows (20 + 18 x 16 px high); the panel's id is the page's own.
+  const FX2_PANELS = ['dialog-form', 'prompt-btns', 'survey-panel', 'attn-note'];
+  const SHORT_H = 20 + 18 * 16;
+  const FULL_H = 20 + 18 * 30;
+  /** Counts the commits: fitMeasure assigns FIT.frame once per commit (a ResizeObserver look and a poll measure without assigning). */
+  const watchCommits = (r) => {
+    const w = { n: 0 };
+    let frame = r.ctx.FIT.frame;
+    Object.defineProperty(r.ctx.FIT, 'frame', { get: () => frame, set: (v) => { frame = v; w.n += 1; }, configurable: true, enumerable: true });
+    return w;
+  };
+  const openPanel = (r, id) => { r.ctx.$(id).hidden = false; r.term.clientHeight = SHORT_H; };
+  const closePanel = (r, id) => { r.ctx.$(id).hidden = true; r.term.clientHeight = FULL_H; };
+  /** A focused page, a started fit, `id` shown and a window focus (a commit point) taken under it: the commit measured the short box. */
+  const focusedUnder = async (id, over = {}) => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 16 }), answerAt('fitted', { cols: 100, rows: 30 }), answerAt('fitted', { cols: 100, rows: 30 })], ...over });
+    r.page.focus = true;
+    openPanel(r, id);
+    const w = watchCommits(r);
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    return { r, w };
+  };
+
+  test('(+) FX2: a focus taken while the question form is shown measures the short box; when the form closes the page commits once more and asks the full panel (30 rows), not the 16', async () => {
+    const { r, w } = await focusedUnder('dialog-form');
+    assert.equal(w.n, 1, 'the focus is a commit (F9)');
+    assert.equal(r.ctx.FIT.short, true, 'remembered: measured under a panel');
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 16 }, 'the base dropped, as LC17 K2 saw');
+    assert.deepEqual(rowsOfPuts(r), [30, 16]);
+    closePanel(r, 'dialog-form');
+    r.log.ro(); // the box got taller: the look asks nothing and measures nothing (F10)
+    await r.clk.advance(300);
+    assert.equal(w.n, 1, 'a height change alone is no commit');
+    assert.deepEqual(rowsOfPuts(r), [30, 16]);
+    r.growTick(); // the next capture
+    assert.equal(w.n, 2, 'one fresh commit');
+    assert.equal(r.ctx.FIT.short, false);
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 }, 'the base is the panel again');
+    await r.clk.advance(300);
+    assert.deepEqual(rowsOfPuts(r), [30, 16, 30], 'the pane is asked the panel\'s rows');
+    for (let i = 0; i < 3; i += 1) {
+      r.growTick();
+      r.handleCapture({ status: 304, body: null });
+    }
+    await r.clk.advance(1000);
+    assert.equal(w.n, 2, 'only once');
+    assert.deepEqual(rowsOfPuts(r), [30, 16, 30]);
+  });
+
+  test('(+) FX2: the same for the prompt panel, the feedback survey and the attention note (every panel that takes height from the box)', async () => {
+    for (const id of FX2_PANELS.slice(1)) {
+      const { r, w } = await focusedUnder(id);
+      assert.equal(r.ctx.FIT.short, true, id);
+      assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 16 }, id);
+      closePanel(r, id);
+      r.growTick();
+      assert.equal(w.n, 2, `${id}: one fresh commit`);
+      assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 }, id);
+      await r.clk.advance(300);
+      assert.deepEqual(rowsOfPuts(r), [30, 16, 30], id);
+    }
+  });
+
+  test('(+) FX2: the size the form\'s grow asks back is counted from the new base: the commit comes before the grow looks (the way back is 30, never the 16 of the short box)', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 16 }), answerAt('fitted', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 30 })] });
+    r.page.focus = true;
+    openPanel(r, 'dialog-form');
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    await firstStep(r); // a cut question under the form: the first grow step
+    await r.clk.advance(0);
+    assert.equal(r.ctx.GR.phase, 'stepping');
+    paneAt(r, 60);
+    showDialog(r, WHOLE);
+    r.fitCaptured();
+    assert.equal(r.ctx.GR.phase, 'held');
+    showDialog(r, null); // Claude's question is gone; the form stays painted a moment longer (its answered echo)
+    r.fitCaptured(); // the close clock starts
+    await r.clk.advance(1000); // the wait ends...
+    closePanel(r, 'dialog-form'); // ...in the look in which the form goes
+    r.handleCapture({ status: 304, body: null });
+    await r.clk.advance(300);
+    const puts = rowsOfPuts(r);
+    assert.equal(puts.at(-1), 30, 'the pane ends at the panel\'s rows');
+    const grown = Math.max(...puts);
+    assert.equal(grown > 30, true, 'the question was grown: ' + JSON.stringify(puts));
+    assert.equal(puts.lastIndexOf(16) < puts.indexOf(grown), true, 'the old short base is not asked after the grow: ' + JSON.stringify(puts));
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 });
+  });
+
+  test('(+) FX2: a panel that is replaced by another one (the form by the prompt panel) is still a panel: no commit until none is shown', async () => {
+    const { r, w } = await focusedUnder('dialog-form');
+    r.ctx.$('prompt-btns').hidden = false;
+    r.ctx.$('dialog-form').hidden = true;
+    r.growTick();
+    assert.equal(w.n, 1);
+    assert.equal(r.ctx.FIT.short, true, 'the flag stays while any panel is shown');
+    closePanel(r, 'prompt-btns');
+    r.growTick();
+    assert.equal(w.n, 2);
+  });
+
+  test('(+) FX2: any commit records it, not only the focus: the first frame of a lease and Fit again under a panel, and a commit with none clears it', async () => {
+    const r = rig();
+    r.ctx.$('prompt-btns').hidden = false;
+    r.wireFit(); // measures at once
+    assert.equal(r.ctx.FIT.short, true);
+    r.ctx.$('prompt-btns').hidden = true;
+    r.fitCommit();
+    assert.equal(r.ctx.FIT.short, false);
+    r.ctx.$('attn-note').hidden = false;
+    r.fitCommit();
+    assert.equal(r.ctx.FIT.short, true);
+    const none = rig();
+    none.term.clientWidth = 0;
+    none.term.clientHeight = 0; // a hidden tab: nothing measured, so nothing recorded
+    none.ctx.$('dialog-form').hidden = false;
+    none.fitCommit();
+    assert.equal(none.ctx.FIT.short, false);
+  });
+
+  test('(−) FX2: the form closes and no commit was taken while it was shown (it opened after the last commit): no extra commit', async () => {
+    const r = await growRig({ more: [] });
+    r.page.focus = true;
+    const w = watchCommits(r);
+    openPanel(r, 'dialog-form');
+    r.log.ro(); // the box got shorter: no commit
+    r.growTick();
+    closePanel(r, 'dialog-form');
+    r.log.ro();
+    for (let i = 0; i < 3; i += 1) r.growTick();
+    await r.clk.advance(1000);
+    assert.equal(w.n, 0);
+    assert.equal(r.ctx.FIT.short, false);
+    assert.deepEqual(rowsOfPuts(r), [30]);
+  });
+
+  test('(−) FX2: the form closes while the window is blurred (or hidden): no commit; the focus that comes later is the commit, and it measures the full panel', async () => {
+    for (const away of [(r) => { r.page.focus = false; }, (r) => { r.page.visible = false; }]) {
+      const { r, w } = await focusedUnder('dialog-form');
+      away(r);
+      closePanel(r, 'dialog-form');
+      r.growTick();
+      assert.equal(w.n, 1, 'nothing while the window is away');
+      assert.equal(r.ctx.FIT.short, false, 'the flag ends with the panel');
+      r.page.focus = true;
+      r.page.visible = true;
+      r.log.events.focus({ target: r.ctx.window });
+      assert.equal(w.n, 2, 'the window focus is the commit');
+      assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 });
+      r.growTick();
+      assert.equal(w.n, 2);
+    }
+  });
+
+  test('(−) FX2: Fit off (the chip says off) or no chip yet: no commit when the panel closes', async () => {
+    for (const state of ['blocked', null]) {
+      const { r, w } = await focusedUnder('dialog-form');
+      r.ctx.FIT.state = state;
+      closePanel(r, 'dialog-form');
+      r.growTick();
+      assert.equal(w.n, 1, String(state));
+      assert.equal(r.ctx.FIT.short, false, `${state}: the flag ends anyway`);
+    }
+    for (const state of ['zoomed', 'terminal', 'other']) { // the fit is on, only the size is not nika's: the base and the text scale still follow the panel
+      const { r, w } = await focusedUnder('dialog-form');
+      r.ctx.FIT.state = state;
+      closePanel(r, 'dialog-form');
+      r.growTick();
+      assert.equal(w.n, 2, state);
+    }
+  });
+
+  test('(−) FX2: no commit with no planner, a gone or lost pane, or while a panel is still shown', async () => {
+    const a = await focusedUnder('dialog-form');
+    closePanel(a.r, 'dialog-form');
+    a.r.ctx.FIT.planner = null;
+    a.r.fitPanelClosed();
+    assert.equal(a.w.n, 1, 'no planner');
+    assert.equal(a.r.ctx.FIT.short, false);
+    for (const stop of [(r) => { r.ctx.M.gone = true; }, (r) => { r.ctx.M.fatal = true; }]) {
+      const { r, w } = await focusedUnder('dialog-form');
+      stop(r);
+      closePanel(r, 'dialog-form');
+      r.growTick();
+      assert.equal(w.n, 1, 'growTick stops first');
+    }
+    const open = await focusedUnder('dialog-form');
+    open.r.fitPanelClosed();
+    open.r.growTick();
+    assert.equal(open.w.n, 1, 'the form is still shown');
+    assert.equal(open.r.ctx.FIT.short, true);
+  });
+
+  test('(−) FX2: the ask is made once and no timer of its own is added: no new commit point in the code (F10), and the look is in growTick only', () => {
+    const src = SRC;
+    assert.deepEqual([...src.matchAll(/\bfitPanelClosed\(/g)].length, 2, 'the declaration and the one call');
+    assert.match(fnOf('function growTick()'), /if \(!FIT\.planner \|\| !FIT\.base \|\| M\.gone \|\| M\.fatal\) return;\s*fitPanelClosed\(\);\s*const was = /);
+    assert.match(fnOf('function fitCommit()'), /if \(!frame\) return;\s*FIT\.short = boxShortened\(\);/);
+    assert.match(fnOf('function fitPanelClosed()'), /if \(!FIT\.short \|\| boxShortened\(\)\) return;\s*FIT\.short = false;\s*if \(!FIT\.planner \|\| FIT\.state === null \|\| FIT\.state === 'blocked' \|\| !fitFocused\(\)\) return;\s*fitCommit\(\);/);
+    const body = code(fnOf('function fitPanelClosed()') + fnOf('function boxShortened()'));
+    assert.doesNotMatch(body, /setTimeout|addEventListener|ResizeObserver|call\(|fetch\(|document\.|innerHTML/);
+    assert.deepEqual(findSinks(body), []);
+    for (const id of ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note']) {
+      assert.match(fnOf('function boxShortened()'), new RegExp(`'${id}'`));
+      assert.match(HTML, new RegExp(`id="${id}"[^>]* hidden`), `${id} is in session.html and starts hidden`);
+    }
+    assert.equal([...code(JS['session.js']).matchAll(/window\.addEventListener\('focus'/g)].length, 1, 'no second focus listener');
   });
 });
 

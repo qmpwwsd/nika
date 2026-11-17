@@ -55,6 +55,9 @@ const PLAIN_RULE = /^ *\u2500+$/;
 const GLYPH = /[\u2610\u2612\u2714]/;
 const ELLIPSIS = '\u2026';
 const BAR = '\u2502 '; // Claude draws it, dim, in front of every row of a wide or multi-line question (spike S-F13, 2.1.325); nika leaves it out
+// The review step draws the same bar in front of its question rows and their wrapped rest (` \u2502 \u25cf question`, ` \u2502   rest`; LC17 K1b, 2.1.326), never in
+// front of an answer row. It is the unbarred row with `\u2502 ` put in after the indent, so taking it out gives the unbarred row back.
+const BAR_ROW = /^( {0,2})\u2502 (.*)$/;
 
 const spaced = (text) => text.replace(/\u00a0/g, ' ').trimEnd();
 
@@ -277,7 +280,13 @@ function readQuestion(c) {
   return { question, multi, options, textRow, chat: chat.n, button, focus: marks.length === 1 ? marks[0] : null, exempt };
 }
 
-/** The review step: `Review your answers`, the optional warning, the answered pairs, the question and the two options. */
+/**
+ * The review step: `Review your answers`, the optional warning, the answered pairs, the question and the two options. A pair's question rows (the
+ * `\u25cf` row and its wrapped rest) either all start with Claude's bar or none does (some: `layout`, like the question step); different questions of the
+ * step may differ (Claude bars a wide or multi-line question and not a short one; spike S-T326 item 9). The bar is removed before reading, so the same text
+ * has the same sig with or without it. An answer row never carries it: a barred answer row is a `layout`, and so is a barred
+ * option row below (it is not matched as one).
+ */
 function readReview(c) {
   const { texts, bad, s, last } = c;
   let x = s + 1;
@@ -291,15 +300,20 @@ function readReview(c) {
   const raw = [];
   let part = 'q';
   for (; x <= last && texts[x].trim() !== 'Ready to submit your answers?'; x += 1) {
-    const t = texts[x];
-    if (!t.trim()) continue;
+    if (!texts[x].trim()) continue;
+    const bm = BAR_ROW.exec(texts[x]);
+    const t = bm === null ? texts[x] : bm[1] + bm[2]; // the row as it reads without the bar
     const q = PAIR_Q.exec(t);
     const a = raw.length > 0 && part === 'q' ? PAIR_A.exec(t) : null;
-    if (q !== null) { raw.push({ q: [q[1]], a: [] }); part = 'q'; }
-    else if (a !== null) { raw.at(-1).a.push(a[1]); part = 'a'; }
-    else if (raw.length > 0 && /^ {3,}[^\s\u25cf\u2192]/.test(t)) raw.at(-1)[part].push(t.trim()); // the rest of a wrapped question or answer
-    else bad.add('layout');
+    if (q !== null) { raw.push({ q: [q[1]], a: [], bars: [bm !== null] }); part = 'q'; }
+    else if (a !== null) { raw.at(-1).a.push(a[1]); part = 'a'; if (bm !== null) bad.add('layout'); }
+    else if (raw.length > 0 && /^ {3,}[^\s\u25cf\u2192]/.test(t)) { // the rest of a wrapped question or answer
+      raw.at(-1)[part].push(t.trim());
+      if (part === 'q') raw.at(-1).bars.push(bm !== null);
+      else if (bm !== null) bad.add('layout');
+    } else bad.add('layout');
   }
+  if (raw.some((p) => p.bars.some(Boolean) && !p.bars.every(Boolean))) bad.add('layout'); // within one question: every row barred or none
   if (x > last) { bad.add('layout'); return null; }
   const choices = [];
   for (x += 1; x <= last; x += 1) if (texts[x].trim()) choices.push(texts[x]);

@@ -1453,7 +1453,8 @@ function jumpToLive() {
 // F11: hide and strip, the hidden rows under the strip and its height in px as read at the last commit point; sentCols, the columns of the request on its way (an answer
 // with those columns is nika's own size); scaledAt, the pane size { cols, rows } the text scale was last worked out for (null before the first).
 // F16: base, the size the fit asks without the grow ({ cols, rows }, the last commit's or room step's; null before the first).
-const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null };
+// FX2 (RV16 M3): short, the last commit measured the box while a panel that takes height from it was shown (fitPanelClosed takes one fresh commit when it closes).
+const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false };
 // F16: the grow of a cut-off question (fit-ui.js growStep): more rows for the pane while the question is open, the size back when it closes
 let GR = GROW_IDLE;
 // F10, design F10 4: after nika's own resize the last good frame stays drawn until a capture at the new size shows Claude's input box, for 1.2 s at most
@@ -1542,6 +1543,7 @@ function fitCommit() {
   fitMeasure();
   const frame = FIT.frame;
   if (!frame) return;
+  FIT.short = boxShortened(); // FX2: a box measured with a panel shown is shorter than the resting layout; fitPanelClosed commits again when the panel goes
   if (FIT.room && prev && (frame.iw !== prev.iw || frame.ih !== prev.ih || Math.abs(frame.width - prev.width) >= prev.cellW)) FIT.room = false;
   FIT.hide = hiddenRows(M.body?.rows, M.cut);
   FIT.strip = FIT.hide > 0 ? fitStrip() : 0;
@@ -1551,6 +1553,28 @@ function fitCommit() {
   const want = growAsk(ask, GR); // F16: while a cut-off question is open the grown rows stay asked
   FIT.planner?.size(want.cols, want.rows);
   fitScale();
+}
+
+/**
+ * FX2 (RV16 M3, live check LC17 K2): whether a panel that takes height from the terminal box is shown now: the prompt panel, the question form, the feedback
+ * survey or the attention note (the roots' own `hidden`, which the panels and renderAttn set). A commit taken then measures a box shorter than the resting layout.
+ */
+function boxShortened() {
+  return ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note'].some((id) => $(id).hidden === false);
+}
+
+/**
+ * FX2: a commit taken while such a panel was shown (FIT.short, set by fitCommit; a focus is a commit point, F9) measured the short box, so FIT.base dropped and
+ * the pane stayed below the panel after the panel closed, until the next commit. growTick looks here after every drawn capture and every 304, before the grow
+ * asks the size back, so that the size back counts from the new base. Once no panel is shown the flag ends; and when the window still has focus and the fit is
+ * on (a chip other than "off"), the panel is measured again, once. This is no commit point of its own (F10: a height change alone is never one): it needs a
+ * commit that was measured short, and a panel that closed while the window was blurred waits for the focus commit.
+ */
+function fitPanelClosed() {
+  if (!FIT.short || boxShortened()) return;
+  FIT.short = false;
+  if (!FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitFocused()) return;
+  fitCommit();
 }
 
 /**
@@ -1591,6 +1615,7 @@ function growing() {
  */
 function growTick() {
   if (!FIT.planner || !FIT.base || M.gone || M.fatal) return;
+  fitPanelClosed(); // FX2: a panel that a commit was measured under has closed: the base is measured again before the grow looks at it
   const was = GR.phase === 'stepping' || GR.phase === 'held';
   const before = growing();
   const { G, ask } = growStep(GR, { now: Date.now(), dialog: W.dialog, fitted: FIT.state === 'fitted', paneRows: M.rows, baseRows: FIT.base.rows, baseCols: FIT.base.cols });

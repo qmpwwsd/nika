@@ -1329,3 +1329,148 @@ describe('the bar and the pane-wide rows of a long question (F13-B)', () => {
     assert.notEqual(sigOf(readC(make({ question: barred(['Which step comes first?']) }))), sigOf(barredOne));
   });
 });
+
+// ---- 0.5, FX2 (live check LC17 K1b, Claude 2.1.326): the review step draws the bar in front of its question rows -----------------------------
+// The shape recorded in K1b: a space, a dim bar and a space in front of the `●` row (` │ ● <question>`) and of its wrapped rest (` │   <rest>`), the
+// answer row `   → <answer>` without it. The text below is made up; no captured text is copied.
+describe('the bar in front of the review step\'s question rows (FX2)', () => {
+  const C = 100;
+  const bar = (t) => [span(' '), span('│', { d: true }), span(' '), span(t)];
+  const Q1 = ['Which colour should the lighthouse lamp use during the first week of the festival,', 'given that the guide mentions amber twice?'];
+  const Q2 = ['How many keepers should stand watch on each night shift?'];
+  const Q3 = ['Which flag goes up first when the fog clears over the harbour, and who raises it,', 'given that the crew rota changes every week and the old signal book is out of date,', 'so the keepers must agree beforehand?'];
+  /** The rows of the pairs: each question's rows barred or not (`flags`, per question), then its answer row and the rest of the answer (indent 5). */
+  const pairRows = (items, flags = items.map(() => true)) => items.flatMap(({ q, a }, n) => [
+    ...q.map((t, j) => (flags[n] ? bar(j === 0 ? `● ${t}` : `  ${t}`) : [span(j === 0 ? ` ● ${t}` : `   ${t}`)])),
+    ...[].concat(a).map((t, j) => [span(j === 0 ? `   → ${t}` : `     ${t}`, { fg: 114 })]),
+  ]);
+  const ITEMS = [{ q: Q1, a: 'amber' }, { q: Q2, a: 'two' }];
+  const review = (pairs, o = {}) => rowsFrom({ ...reviewParts({ cols: C, pairs: [], ...o }), pairs }, { cols: C });
+  const readC = (rows) => readDialogScreen(rows, C);
+  const widest = (rows) => Math.max(...rows.map(text).filter((t) => !/^─+$/.test(t)).map((t) => t.length)); // the rules are exactly as wide as the pane
+  /** The rows with the row `at` replaced by `make(row)`. */
+  const swap = (rows, at, make) => rows.map((r, n) => (n === at ? make(r) : r));
+
+  test('(+) the captured shape: barred question rows (a wrapped one and a one-row one), unbarred answer rows, read as the pairs the text says', () => {
+    const rows = review(pairRows(ITEMS));
+    assert.equal(rowAt(rows, (t) => t.startsWith(' │ ● Which colour')) >= 0, true, 'the fixture has the bar in front of the pair rows');
+    assert.equal(rowAt(rows, (t) => t.startsWith(' │   given that the guide')) >= 0, true, 'and in front of the wrapped rest');
+    assert.equal(rowAt(rows, (t) => t.startsWith('   → amber')) >= 0, true, 'but not in front of an answer');
+    assert.equal(widest(rows) < C, true, 'no row reaches the pane width');
+    const S = readC(rows);
+    assert.equal(S.unreadable, undefined);
+    assert.deepEqual(S.pairs, [{ question: `${Q1[0]} ${Q1[1]}`, answer: 'amber' }, { question: Q2[0], answer: 'two' }]);
+    assert.deepEqual(S.tabs.map((t) => t.answered), [true, true]);
+    assert.equal(S.focus, 1);
+  });
+
+  test('(+) the same text without the bars reads as the same step with the same sig (as in the question step); other text has another sig', () => {
+    const barred = readC(review(pairRows(ITEMS)));
+    const plain = readC(review(pairRows(ITEMS, [false, false])));
+    assert.equal(plain.unreadable, undefined);
+    assert.deepEqual(barred, plain);
+    assert.equal(sigOf(barred), sigOf(plain));
+    assert.notEqual(sigOf(barred), sigOf(readC(review(pairRows([{ q: Q1, a: 'green' }, { q: Q2, a: 'two' }])))), 'the sig still depends on the text');
+  });
+
+  test('(+) a question wrapped onto three barred rows, and a wrapped answer under a barred question, join with one space', () => {
+    const S = readC(review(pairRows([{ q: Q3, a: ['the signal book', 'on the quay'] }, { q: Q2, a: 'two' }])));
+    assert.equal(S.unreadable, undefined);
+    assert.equal(S.pairs[0].question, Q3.join(' '));
+    assert.equal(S.pairs[0].answer, 'the signal book on the quay');
+  });
+
+  test('(+) the full capture path: barred review rows give a ready review with the pairs, and the sig of the unbarred drawing', () => {
+    const rows = review(pairRows(ITEMS));
+    const got = dialogCapture(parseCapture(ansiOf(rows, C), C), C);
+    assert.equal(got.state, 'ready');
+    assert.equal(got.at, 'review');
+    assert.deepEqual(got.pairs.map((p) => p.answer), ['amber', 'two']);
+    assert.equal(got.pairs[0].question, `${Q1[0]} ${Q1[1]}`);
+    assert.equal(got.sig, dialogCapture(parseCapture(ansiOf(review(pairRows(ITEMS, [false, false])), C), C), C).sig);
+    assert.equal(dialogOnScreen(rows), true);
+  });
+
+  test('(+) the warning row with a tab still open and a barred pair read together', () => {
+    const S = readC(review(pairRows([{ q: Q1, a: 'amber' }]), { warn: true, answered: [0] }));
+    assert.equal(S.unreadable, undefined);
+    assert.equal(S.warn, true);
+    assert.equal(S.pairs.length, 1);
+  });
+
+  // Round 1 (a rule change from new evidence, spike S-T326 item 9, not a weakened test): Claude bars the long question of a review and not the short one, so the bar is
+  // all-or-none per question. The two assertions of the old test that mixed ACROSS questions ([true, false], [false, true]) described a refusal that is now accepted
+  // behaviour; they became the (+) test below. What mixes inside ONE question stays refused.
+  test('(+) a short unbarred question and a long barred one in the same review (either order) read both pairs, with the texts of the rows, as without any bar', () => {
+    const SHORT = { q: Q2, a: 'two' };
+    const LONG = { q: Q1, a: 'amber' };
+    for (const [items, flags] of [[[SHORT, LONG], [false, true]], [[LONG, SHORT], [true, false]]]) {
+      const rows = review(pairRows(items, flags));
+      assert.equal(rowAt(rows, (x) => x.startsWith(' ● How many keepers')) >= 0 || rowAt(rows, (x) => x.startsWith(' │ ● How many keepers')) >= 0, true);
+      const S = readC(rows);
+      assert.equal(S.unreadable, undefined, JSON.stringify(flags));
+      assert.deepEqual(S.pairs, items.map(({ q, a }) => ({ question: q.join(' '), answer: a })));
+      assert.equal(sigOf(S), sigOf(readC(review(pairRows(items, [false, false])))), 'the sig does not depend on which question has the bar');
+      assert.equal(sigOf(S), sigOf(readC(review(pairRows(items, [true, true])))));
+      const got = dialogCapture(parseCapture(ansiOf(rows, C), C), C);
+      assert.equal(got.state, 'ready');
+      assert.deepEqual(got.pairs.map((p) => p.answer), items.map((i) => i.a));
+    }
+    const three = readC(review(pairRows([{ q: Q3, a: 'x' }, SHORT, LONG], [true, false, true]), { tabs: ['A', 'B', 'C'], answered: [0, 1, 2] }));
+    assert.equal(three.unreadable, undefined, 'three questions: barred, unbarred, barred');
+    assert.deepEqual(three.pairs.map((p) => p.answer), ['x', 'two', 'amber']);
+  });
+
+  test('(−) a mix of barred and unbarred rows inside ONE question is a layout: the rest of a question, the first row of one, the middle of three, also in a mixed review', () => {
+    const rows = review(pairRows(ITEMS));
+    const rest = rowAt(rows, (t) => t.startsWith(' │   given that the guide'));
+    assert.equal(readC(swap(rows, rest, (r) => [span(`   ${text(r).slice(5)}`)])).unreadable, 'layout', 'a barred first row with an unbarred rest');
+    assert.equal(readC(swap(rows, rest - 1, (r) => [span(` ● ${text(r).slice(5)}`)])).unreadable, 'layout', 'an unbarred first row with a barred rest');
+    const three = review(pairRows([{ q: Q3, a: 'x' }, { q: Q2, a: 'two' }]));
+    const mid = rowAt(three, (t) => t.startsWith(' │   given that the crew rota'));
+    assert.equal(readC(swap(three, mid, (r) => [span(`   ${text(r).slice(5)}`)])).unreadable, 'layout', 'the middle row of three');
+    const mixed = review(pairRows([{ q: Q2, a: 'two' }, { q: Q1, a: 'amber' }], [false, true]));
+    assert.equal(readC(mixed).unreadable, undefined, 'control: a short unbarred and a long barred question read');
+    const mrest = rowAt(mixed, (t) => t.startsWith(' │   given that the guide'));
+    assert.equal(readC(swap(mixed, mrest, (r) => [span(`   ${text(r).slice(5)}`)])).unreadable, 'layout', 'the long question: barred first row, unbarred rest');
+    assert.equal(readC(swap(mixed, mrest - 1, (r) => [span(` ● ${text(r).slice(5)}`)])).unreadable, 'layout', 'the long question: unbarred first row, barred rest');
+    const short = rowAt(mixed, (t) => t.startsWith(' ● How many keepers'));
+    assert.equal(readC(swap(mixed, short, (r) => bar(`● ${text(r).slice(3)}`))).unreadable, undefined, 'a one-row question may carry the bar (every one of its rows)');
+    const wrappedShort = review(pairRows([{ q: Q3, a: 'x' }, { q: Q1, a: 'amber' }], [false, true]));
+    const wrest = rowAt(wrappedShort, (t) => t.startsWith('   given that the crew rota'));
+    assert.equal(readC(swap(wrappedShort, wrest, (r) => bar(`  ${text(r).slice(3)}`))).unreadable, 'layout', 'an unbarred question of three rows with one barred row, next to a barred question');
+  });
+
+  test('(−) a bar in front of an answer row or the rest of an answer is a layout; so is a bar row with no text', () => {
+    const rows = review(pairRows(ITEMS));
+    const at = rowAt(rows, (t) => t.startsWith('   → amber'));
+    assert.equal(readC(swap(rows, at, () => bar('  → amber'))).unreadable, 'layout', 'a barred answer row (the bar after the indent, as for a question row)');
+    assert.equal(readC(swap(rows, at, () => bar('→ amber'))).unreadable, 'layout', 'a barred answer row with the bar in the place of its indent');
+    const wrapped = review(pairRows([{ q: Q1, a: ['the signal book', 'on the quay'] }, { q: Q2, a: 'two' }]));
+    assert.equal(readC(wrapped).unreadable, undefined, 'control: the wrapped answer without a bar reads');
+    const rest = rowAt(wrapped, (t) => t.startsWith('     on the quay'));
+    assert.equal(readC(swap(wrapped, rest, () => bar('  on the quay'))).unreadable, 'layout', 'a barred answer continuation');
+    assert.equal(readC(swap(rows, at + 1, () => [span(' │')])).unreadable, 'layout', 'a bar with no text is not a barred row');
+  });
+
+  test('(−) a bar in front of the Submit answers row is not read as a pair; nor is one in front of the question line or the Cancel row', () => {
+    const rows = review(pairRows(ITEMS));
+    const barredAt = (find) => swap(rows, rowAt(rows, find), (r) => [span(' │ '), ...r]);
+    assert.equal(readC(rows).focus, 1, 'control');
+    assert.equal(readC(barredAt((t) => t.includes('1. Submit answers'))).unreadable, 'layout', 'the Submit answers row');
+    assert.equal(readC(barredAt((t) => t.includes('Ready to submit'))).unreadable, 'layout', 'the question line');
+    assert.equal(readC(barredAt((t) => t.includes('2. Cancel'))), null, 'the Cancel row: no review is on screen any more');
+    const plain = review(pairRows(ITEMS, [false, false]));
+    const submit = rowAt(plain, (t) => t.includes('1. Submit answers'));
+    assert.equal(readC(swap(plain, submit, (r) => [span(' │ '), ...r])).unreadable, 'layout', 'the same without any bar on the pairs');
+  });
+
+  test('(−) a barred review row as wide as the pane stays refused (the review has no wrapped-row exemption)', () => {
+    const rows = review(pairRows([{ q: ['Which colour?'], a: 'amber' }]), { warn: true, answered: [0] });
+    const at = rowAt(rows, (t) => t.startsWith(' │ ● Which colour?'));
+    const filled = swap(rows, at, () => bar(`● ${'a'.repeat(C - 5)}`));
+    assert.equal(widest(filled), C);
+    assert.equal(readC(filled).unreadable, 'wide');
+    assert.equal(readC(swap(rows, at, () => bar(`● ${'a'.repeat(C - 6)}`))).unreadable, undefined, 'control: one cell narrower reads');
+  });
+});
