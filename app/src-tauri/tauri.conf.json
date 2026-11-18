@@ -1,6 +1,6 @@
 {
   "productName": "nika",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "identifier": "io.github.qmpwwsd.nika",
   "build": {
     "frontendDist": "ui"
