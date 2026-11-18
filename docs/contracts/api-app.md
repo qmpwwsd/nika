@@ -650,7 +650,7 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
   choices; `text` marks the last option, Claude's free-text one (`Tell Claude what to change`, which nika never answers). The plan text is not
   in the field.
 - `top` (0.5.1, E; every `ready` state, not in `unreadable`): the index in `rows` of the row a crop of the terminal view starts at, an integer. Question and review step: the rule
-  row directly above the tab strip. Plan approval: the single plain rule row under the plan's closing dashed rule (the plan text stays above it). Display only: it is in no `sig` or
+  row directly above the tab strip (row 0 when the dialog fills the pane; **0.5.2, R1:** the page may crop at 0 for a question or review step, and leaves out the blank rows right above the crop line; a plan is cropped from row 1). Plan approval: the single plain rule row under the plan's closing dashed rule (the plan text stays above it). Display only: it is in no `sig` or
   identity, no key is decided on it and no route reads it back; the page uses it only for a dialog it reads exactly and never with bypass in the guard's window.
 - `sig` is the first 16 hex characters of sha256 over the parsed step (the strip headers, the current tab, the question, the labels and
   descriptions; or every review pair; or the visible plan rows and the choices), never over raw rows: it does not change with the focus, a tick
@@ -669,7 +669,7 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
   row; exactly one row (any content) between the options row and the input box's top rule; the box an empty prompt-mode box (ghost text allowed) with the cursor in it; the
   pane not in vim NORMAL (the pane's memory: `-- INSERT --` was seen on it and is not shown now). `kind` is always `rating` in 0.5 (the field is reserved for a later kind, see
   Consent below). `sig` is the first 16 hex characters of sha256 over the trimmed question row, the trimmed options row and the up to 3 non-blank rows above the question: it
-  identifies this occurrence and does not change with the cursor or the free row. `top` (0.5.1, E) is the index in `rows` of the question row: display only, the page crops the terminal view there; it is not in `sig` and nothing reads it back.
+  identifies this occurrence and does not change with the cursor or the free row. `top` (0.5.1, E) is the index in `rows` of the question row (0.5.2, R1: the page may crop at 0 for a survey too): display only, the page crops the terminal view there; it is not in `sig` and nothing reads it back.
 - `{ "state": "terminal", "reason": "consent" | "bypass" | "unreadable" | "input" | "normal" }`: a survey is on screen and nika does not offer it (the page says to answer it in the
   terminal), checked in this order, the first that holds decides. `consent`: a row starts the transcript question (`Can Anthropic look at your session transcript`, an optional `●`
   before it), anywhere on the screen, also next to a rating. `bypass`: one of the last 15 non-blank rows mentions bypass (`bypassWindow`). `unreadable`: the rows are not exactly the
@@ -1349,6 +1349,11 @@ above). Everything below is the page's behaviour, written here because it decide
   **One more moment since FX2 (0.5, 2026-11-17; page side, no server change):** every commit records whether the prompt panel, the question form, the feedback survey or the attention note was shown when it
   measured (a focus under the form measures a box shorter than the resting one). When the last of them closes, the window has focus and the chip's state is neither absent nor `blocked`, the page takes one
   fresh commit at the next drawn capture or 304, before the grow below asks its size back; with no focus the record ends and the later window `focus` commits. A height change alone is still no commit.
+  **One more rule since FX4 (0.5.2, 2026-11-17; page side, no server change):** while one of those four panels is shown, a commit does not measure the terminal box's height (the box hugs its rows, so it says nothing
+  about the room): it keeps the measured width, cell size and window size and takes the held frame's height moved by the change of the window's inner height, so the columns and rows asked are the
+  size the pane had without the panel (a taller window still grows the pane, a shorter one lowers it by its own change only), and the last commit's hidden rows and strip stay in the ask. With no frame ever
+  measured without a panel the page keeps FX2 alone. The same `ResizeObserver` also observes the terminal column, so a window that gets taller under a panel still counts as a change of the window's inner height;
+  a change of the box's height alone is still no commit. The size asked stays inside the route's ranges and nothing else about the request changes.
   **One look that is not a moment (FX3, 0.5, 2026-11-17):** when the grow asks the base size back, the page measures the panel once more, without a commit and without a request: with the window focused, the chip neither absent nor `blocked`, no panel shown, and the
   same columns and strictly more rows than the held base, the measurement becomes the base (and the held frame). The way back is the one request that follows, as before.
 - **The asked size.** The body is still exactly `{ cols, rows, open, focus }` in the route's ranges (40–400 × 10–200); the server does not know that the page asked

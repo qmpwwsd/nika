@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { INPUT_TEXT, CROP_TEXT, PROMPT_LABEL_CUT, PROMPT_QUESTION_CUT, panelOf, cropOf } from '../public/crop.js';
+import { INPUT_TEXT, CROP_TEXT, PROMPT_LABEL_CUT, PROMPT_QUESTION_CUT, panelOf, cropOf, trimTop, layoutOf } from '../public/crop.js';
 import { clean } from '../src/text.js';
 import { promptFromRows, promptTopRow } from '../src/mode.js';
 
@@ -198,8 +198,8 @@ describe('cropOf: where the mirror ends for a panel (1.5, 3.1)', () => {
     assert.equal(cropOf(body({ dialog: DIALOG('question', { top: 5, sig: '' }) }), q, { passOn: false, dialogSig: '' }), null);
   });
 
-  test('(−) a top outside 1 .. rows-1: 0, negative, fractional, text, not a number, past the last row, or missing', () => {
-    for (const top of [0, -1, -5, 0.5, 1.5, '5', '12', NaN, Infinity, null, undefined, 30, 31, 99, 2 ** 40, true, [], [5]]) {
+  test('(−) a top outside 0 .. rows-1 for every kind: negative, fractional, text, not a number, past the last row, or missing (0 has its own per-kind cases below)', () => {
+    for (const top of [-1, -5, 0.5, 1.5, '5', '12', NaN, Infinity, null, undefined, 30, 31, 99, 2 ** 40, true, [], [5]]) {
       const label = String(top);
       assert.equal(cropOf(body({ prompt: { ...PROMPT, top } }), { kind: 'prompt', bypass: false }, OK), null, `prompt ${label}`);
       assert.equal(cropOf(body({ dialog: DIALOG('review', { top }) }), { kind: 'review', bypass: false }, OK), null, `review ${label}`);
@@ -253,6 +253,134 @@ describe('cropOf: where the mirror ends for a panel (1.5, 3.1)', () => {
     assert.equal(JSON.stringify(b), before);
     assert.notEqual(a, b.prompt);
     assert.deepEqual(Object.keys(a).sort(), ['kind', 'top']);
+  });
+});
+
+// ---- 0.5.2 R1 (design 051c section 1): the crop may start at row 0 for a question, review or survey, and leaves out blank rows above it -------------
+describe('cropOf: row 0 for the kinds whose panel holds everything, and the blank-row trim (R1)', () => {
+  const Q = { kind: 'question', bypass: false };
+  const R = { kind: 'review', bypass: false };
+  const S = { kind: 'survey', bypass: false };
+  const P = { kind: 'prompt', bypass: false };
+  const PL = { kind: 'plan', bypass: false };
+  const BLANK = [{ t: '   ' }];
+  const NBSP = [{ t: ' ' }, { t: '\u00a0\u00a0' }];
+  const INK = (i) => [{ t: `row ${i}` }];
+  /** 30 rows, every one with ink, except the listed rows, which are blank. */
+  const rowsWith = (blank, mark = BLANK) => Array.from({ length: 30 }, (_, i) => (blank.includes(i) ? mark : INK(i)));
+
+  test('(+) top 0 is a crop for a question, a review and a survey: the strip alone shows', () => {
+    assert.deepEqual(cropOf(body({ dialog: DIALOG('question', { top: 0 }) }), Q, OK), { top: 0, kind: 'question' });
+    assert.deepEqual(cropOf(body({ dialog: DIALOG('review', { top: 0 }) }), R, OK), { top: 0, kind: 'review' });
+    assert.deepEqual(cropOf(body({ survey: { ...SURVEY, top: 0 } }), S, OK), { top: 0, kind: 'survey' });
+  });
+
+  test('(+) the last row is still the end of the range, and row 1 still crops, for these kinds', () => {
+    assert.deepEqual(cropOf(body({ dialog: DIALOG('review', { top: 29 }) }), R, OK), { top: 29, kind: 'review' });
+    assert.deepEqual(cropOf(body({ dialog: DIALOG('question', { top: 1 }) }), Q, OK), { top: 1, kind: 'question' });
+  });
+
+  test('(−) top 0 is no crop for a permission prompt and for a plan: the command and the plan text are only in the mirror', () => {
+    assert.equal(cropOf(body({ prompt: { ...PROMPT, top: 0 } }), P, OK), null);
+    assert.equal(cropOf(body({ dialog: DIALOG('plan', { top: 0 }) }), PL, OK), null);
+    assert.deepEqual(cropOf(body({ prompt: { ...PROMPT, top: 1 } }), P, OK), { top: 1, kind: 'prompt' }, 'row 1 still crops a prompt');
+    assert.deepEqual(cropOf(body({ dialog: DIALOG('plan', { top: 1 }) }), PL, OK), { top: 1, kind: 'plan' }, 'row 1 still crops a plan');
+  });
+
+  test('(−) top 0 does not switch off any other guard: bypass, Type into pane, an unready dialog, a foreign sig, a survey that is not ready', () => {
+    const z = (over) => body({ dialog: DIALOG('question', { top: 0, ...over }) });
+    assert.equal(cropOf(z({ bypass: true }), Q, OK), null, 'the dialog says bypass');
+    assert.equal(cropOf(z({}), { ...Q, bypass: true }, OK), null, 'the panel says bypass');
+    assert.equal(cropOf(z({}), Q, { passOn: true, dialogSig: SIG }), null, 'Type into pane');
+    assert.equal(cropOf(z({ state: 'unreadable' }), Q, OK), null, 'unreadable');
+    assert.equal(cropOf(z({ state: 'reading' }), Q, OK), null, 'reading');
+    assert.equal(cropOf(z({ sig: 'ffffffffffffffff' }), Q, OK), null, 'a sig that is not the form\'s');
+    assert.equal(cropOf(body({ survey: { state: 'terminal', reason: 'bypass', top: 0 } }), S, OK), null, 'a terminal-only survey');
+  });
+
+  test('(+) trimTop: blank rows right above the crop go; the crop line moves up to just under the last row with ink', () => {
+    assert.equal(trimTop(rowsWith([1, 2]), 3), 1, 'rows 1 and 2 blank: the strip sits under row 0');
+    assert.equal(trimTop(rowsWith([2]), 3), 2);
+    assert.equal(trimTop(rowsWith([0, 1, 2]), 3), 0, 'every row above is blank: the strip alone');
+    assert.equal(trimTop(rowsWith([1, 2], NBSP), 3), 1, 'spaces and no-break spaces are blank');
+    assert.equal(trimTop(rowsWith([1, 2], []), 3), 1, 'a row with no spans at all is blank');
+  });
+
+  test('(+) cropOf trims for a question, a review and a survey', () => {
+    const rows = rowsWith([1, 2, 3, 4]);
+    assert.deepEqual(cropOf(body({ rows, dialog: DIALOG('review', { top: 5 }) }), R, OK), { top: 1, kind: 'review' });
+    assert.deepEqual(cropOf(body({ rows, dialog: DIALOG('question', { top: 5 }) }), Q, OK), { top: 1, kind: 'question' });
+    assert.deepEqual(cropOf(body({ rows, survey: { ...SURVEY, top: 5 } }), S, OK), { top: 1, kind: 'survey' });
+    assert.deepEqual(cropOf(body({ rows: rowsWith([0, 1, 2, 3, 4]), dialog: DIALOG('review', { top: 5 }) }), R, OK), { top: 0, kind: 'review' }, 'all blank above: row 0');
+    assert.deepEqual(cropOf(body({ rows: rowsWith([0]), dialog: DIALOG('review', { top: 1 }) }), R, OK), { top: 0, kind: 'review' }, 'top 1 with a blank row 0');
+  });
+
+  test('(−) trimTop never passes a row with ink, and a top with ink right above it is unchanged', () => {
+    const rows = rowsWith([3, 4]);
+    assert.equal(trimTop(rows, 5), 3, 'it stops at row 2, which has ink');
+    assert.equal(trimTop(rows, 3), 3, 'row 2 has ink: unchanged');
+    assert.equal(trimTop(rowsWith([]), 6), 6, 'no blank row anywhere: unchanged');
+    assert.equal(trimTop(rowsWith([0]), 0), 0, 'row 0 stays the floor');
+    assert.equal(trimTop([[{ t: 'a' }], BLANK, BLANK, BLANK], 4), 1);
+  });
+
+  test('(−) trimTop is not fooled by what is not a row: a missing row is blank, a row that is not a list of spans is blank, rows that are not a list leave the top alone', () => {
+    assert.equal(trimTop([INK(0), undefined, null, 'text', { t: 'x' }, [null, 5, { t: 5 }, { t: '' }]], 6), 1, 'only a span with a text that has ink counts');
+    for (const rows of [undefined, null, 'abc', {}, 5]) assert.equal(trimTop(rows, 4), 4, JSON.stringify(rows));
+  });
+
+  test('(−) a permission prompt and a plan are never trimmed: blank rows above their top stay (the rows keep what 0.5.1 showed)', () => {
+    const rows = rowsWith([1, 2]);
+    assert.deepEqual(cropOf(body({ rows, prompt: { ...PROMPT, top: 3 } }), P, OK), { top: 3, kind: 'prompt' });
+    assert.deepEqual(cropOf(body({ rows, dialog: DIALOG('plan', { top: 3 }) }), PL, OK), { top: 3, kind: 'plan' });
+  });
+
+  test('(−) the trim never turns a refused crop into one: a top outside the range stays null with blank rows around it', () => {
+    const rows = rowsWith([0, 1, 2, 3]);
+    assert.equal(cropOf(body({ rows, dialog: DIALOG('review', { top: 30 }) }), R, OK), null);
+    assert.equal(cropOf(body({ rows, dialog: DIALOG('review', { top: -1 }) }), R, OK), null);
+    assert.equal(cropOf(body({ rows, dialog: DIALOG('review', { top: 2.5 }) }), R, OK), null);
+    assert.equal(cropOf(body({ rows, dialog: DIALOG('review', { top: 4 }) }), R, { passOn: true, dialogSig: SIG }), null, 'Type into pane');
+  });
+
+  test('(−) the capture\'s rows are not changed by the trim', () => {
+    const rows = rowsWith([1, 2]);
+    const before = JSON.stringify(rows);
+    cropOf(body({ rows, dialog: DIALOG('review', { top: 3 }) }), R, OK);
+    assert.equal(JSON.stringify(rows), before);
+  });
+});
+
+// ---- 0.5.2 R2 (design 051c section 2): the terminal column's layout ----------------------------------------------------------------------------
+describe('layoutOf: the terminal column\'s layout while a panel is up (R2)', () => {
+  const up = (crop) => ({ measured: true, panelShown: true, crop });
+
+  test('(+) a question, review or survey crop under a shown panel is the crop layout', () => {
+    for (const kind of ['question', 'review', 'survey']) assert.equal(layoutOf(up({ top: 0, kind })), 'crop', kind);
+  });
+
+  test('(+) a prompt crop, a plan crop, and a panel with no crop (bypass, Type into pane, unreadable, Reading) are the panel layout', () => {
+    assert.equal(layoutOf(up({ top: 3, kind: 'prompt' })), 'panel');
+    assert.equal(layoutOf(up({ top: 3, kind: 'plan' })), 'panel');
+    assert.equal(layoutOf(up(null)), 'panel');
+    assert.equal(layoutOf(up(undefined)), 'panel');
+  });
+
+  test('(−) no frame measured with no panel up: no layout, whatever else is true', () => {
+    for (const measured of [false, undefined, null, 1, 'true']) assert.equal(layoutOf({ ...up({ top: 0, kind: 'review' }), measured }), null, String(measured));
+  });
+
+  test('(−) no panel shown: no layout, even with a crop object', () => {
+    for (const panelShown of [false, undefined, null, 1, 'true']) assert.equal(layoutOf({ ...up({ top: 0, kind: 'review' }), panelShown }), null, String(panelShown));
+  });
+
+  test('(−) a crop of another kind, or not an object, is the panel layout, never the crop layout', () => {
+    for (const crop of [{ kind: 'other' }, { kind: '' }, { kind: 'constructor' }, { kind: '__proto__' }, { top: 0 }, 5, 'review', true]) assert.equal(layoutOf(up(crop)), 'panel', JSON.stringify(crop));
+  });
+
+  test('(−) nothing at all, or a value that is not an object, gives no layout and never throws', () => {
+    for (const v of [undefined, null, {}, 5, 'x', []]) assert.equal(layoutOf(v), null, JSON.stringify(v));
+    assert.equal(layoutOf(), null);
   });
 });
 

@@ -44,14 +44,16 @@ const NOISE = new RegExp(`[${range([...CONTROLS, [0x200e, 0x200f], [0x202a, 0x20
 
 const TERMINAL_NOTE = 'This mentions bypass, so nika leaves it to you: answer it in the terminal.';
 const KEPT_NOTE = "nika can't read Claude's dialog right now. Wait a moment, or answer in the terminal.";
+const RETRY_NOTE = 'Once the terminal is back as it was, nika can try again.';
 const DECLINE_TITLE = 'Presses Esc in the pane: Claude stops and waits for you';
 const LEAD_NOTE = 'Start with a word: Claude can read a first digit as an option.';
 const GENERIC = "nika couldn't send this answer. Check it and try again.";
+// [line, lock, retry]: `lock` keeps the form off until the sig changes; `retry` (0.5.2 R4) lets the user end the lock with Try again, which sends nothing
 const L409 = {
   'no-dialog': ['The question is gone.', false],
   'dialog-changed': ['The question changed; check the session.', true],
-  'dialog-touched': ['This question was changed in the terminal. Finish it there.', true],
-  'dialog-focus': ["Claude's selection was moved in the terminal. Finish it there.", true],
+  'dialog-touched': ['This question was changed in the terminal. Change it back there and press Try again, or finish it there.', true, true],
+  'dialog-focus': ["Claude's selection was moved in the terminal. Move it back there and press Try again, or finish it there.", true, true],
   'text-mode': ["nika can't type your answer: Claude's text field isn't ready for typing. Type it in the terminal.", true],
   'text-mismatch': ["Your answer didn't arrive exactly as typed, so nika stopped before sending it. Fix it in the terminal.", true],
   'not-taken': ["Claude didn't take the key. Check the session, then try again.", false],
@@ -75,17 +77,18 @@ const DONE = {
 
 /**
  * What a route answer means for the form: { ok, phase ('answered' | 'failed'), lock (stay off until the sig changes), message (the problem line,
- * '' = none), kind ('warn' | 'error'), gone (the pane is gone), word (the chip word of an answered step), announce (null for a move), sent }. Only the status, the
+ * '' = none), kind ('warn' | 'error'), gone (the pane is gone), word (the chip word of an answered step), announce (null for a move), sent, retry (the lock
+ * ends when the user presses Try again: 409 dialog-focus and dialog-touched only) }. Only the status, the
  * `error` code, `done` and `sent` are read; no text of the response is ever shown (design W1 6.4).
  */
 export function dialogOutcome({ status, code, done, sent, name = 'the agent' } = {}) {
   const keys = Number.isInteger(sent) && sent > 0 && sent <= 99 ? sent : 0;
   if (status === 200 && done === 'moved') { // a step move (0.5.1): nothing is answered and nothing is announced; the next capture draws the new step and says it
-    return { ok: true, phase: 'moving', lock: true, message: '', kind: '', gone: false, word: '', announce: null, sent: keys };
+    return { ok: true, phase: 'moving', lock: true, retry: false, message: '', kind: '', gone: false, word: '', announce: null, sent: keys };
   }
   if (status === 200) {
     const d = Object.hasOwn(DONE, done) ? DONE[done] : DONE.next;
-    return { ok: true, phase: 'answered', lock: true, message: '', kind: '', gone: false, word: d.word, announce: d.say(name), sent: keys };
+    return { ok: true, phase: 'answered', lock: true, retry: false, message: '', kind: '', gone: false, word: d.word, announce: d.say(name), sent: keys };
   }
   let row = [GENERIC, false];
   if (status === 409 && Object.hasOwn(L409, code)) row = L409[code];
@@ -93,10 +96,10 @@ export function dialogOutcome({ status, code, done, sent, name = 'the agent' } =
   else if (status === 429) row = ['Too many keys at once; try again.', false];
   else if (status === 404) row = ['The session is gone.', false];
   else if (status === 0 || status >= 500) row = ["nika couldn't reach tmux.", false];
-  const [line, lock] = row;
+  const [line, lock, retry = false] = row;
   const message = line && keys ? `${line} nika had pressed ${keys} ${keys === 1 ? 'key' : 'keys'} in the pane before it stopped.` : line;
   const already = status === 409 && code === 'already-answered'; // someone answered it (a second window): it is answered, not failed
-  return { ok: false, phase: already ? 'answered' : 'failed', lock, message, kind: message ? problemKind(status) : '', gone: status === 404, word: already ? 'Answered' : '', announce: '', sent: keys };
+  return { ok: false, phase: already ? 'answered' : 'failed', lock, retry: retry === true && status === 409, message, kind: message ? problemKind(status) : '', gone: status === 404, word: already ? 'Answered' : '', announce: '', sent: keys };
 }
 
 // ---- the capture's `dialog`, cleaned ---------------------------------------------------------------------------------------------
@@ -233,6 +236,28 @@ export function answerBody(d, a) {
 
 // ---- the words --------------------------------------------------------------------------------------------------------------------
 
+/**
+ * R3 (0.5.2): the review as rows, one per question tab. The capture lists the answered questions only, in tab order, with no tab index, so the k-th answered tab gets
+ * the k-th pair; that map is trusted only when the pairs are as many as the answered tabs and Claude's warning is on exactly when a tab is open. Otherwise (`mapped`
+ * false) the rows are the pairs alone, with no step, header or Change. A row: { step (tab index, or null), header, question and answer (null when not answered) }.
+ */
+export function reviewModel(d) {
+  const tabs = Array.isArray(d?.tabs) ? d.tabs : [];
+  const pairs = (Array.isArray(d?.pairs) ? d.pairs : []).filter((p) => p !== null && typeof p === 'object' && typeof p.question === 'string' && typeof p.answer === 'string');
+  const answered = tabs.filter((t) => t?.answered === true).length;
+  const mapped = tabs.length > 0 && pairs.length === answered && (d?.warn === true) === (answered < tabs.length);
+  if (!mapped) return { mapped: false, total: pairs.length, answered: pairs.length, rows: pairs.map((p) => ({ step: null, header: '', question: p.question, answer: p.answer })) };
+  let k = 0;
+  const rows = tabs.map((t, i) => {
+    const header = typeof t.header === 'string' ? t.header : '';
+    if (t.answered !== true) return { step: i, header, question: null, answer: null };
+    const p = pairs[k];
+    k += 1;
+    return { step: i, header, question: p.question, answer: p.answer };
+  });
+  return { mapped: true, total: tabs.length, answered, rows };
+}
+
 /** The narrow strip text: "Question 2 of 4 . Tools", or "Review". */
 export const stepText = (d) => (d.at === 'review' ? 'Review' : `Question ${d.current + 1} of ${d.tabs.length}${MID}${d.tabs[d.current].header}`);
 
@@ -241,8 +266,10 @@ export function announcement(d, { name = 'the agent', first = true } = {}) {
   const where = d.bypass ? TERMINAL_NOTE : null;
   if (d.at === 'plan') return `${name} asks you to approve a plan. ${where ?? 'Read it in the terminal view; choices above the message box.'}`;
   if (d.at === 'review') {
-    const n = d.pairs.length;
-    return `Review your answers: ${n} ${n === 1 ? 'answer' : 'answers'}${where ? `. ${where}` : ', above the message box.'}`;
+    const m = reviewModel(d);
+    const n = m.answered;
+    const what = m.mapped ? `${n} of ${m.total} answered` : `${n} ${n === 1 ? 'answer' : 'answers'}`;
+    return `Review your answers: ${what}${where ? `. ${where}` : ', above the message box.'}`;
   }
   if (!first && d.tabs.length >= 2) return `Question ${d.current + 1} of ${d.tabs.length}: ${d.question}${where ? ` ${where}` : ''}`;
   const place = d.tabs.length >= 2 ? ` Question ${d.current + 1} of ${d.tabs.length}, above the message box.` : ' Above the message box.';
@@ -313,7 +340,7 @@ export function createDialogForm(io) {
   const now = io.now ?? (() => Date.now());
   const after = io.after ?? ((fn, ms) => setTimeout(fn, ms));
   const cancel = io.cancel ?? ((t) => clearTimeout(t));
-  let F = null; // the form on screen: { dialog, sig, phase, word, busy, busyEl, locked, kept, terminal, chipSig, reason, notes, parts }
+  let F = null; // the form on screen: { dialog, sig, phase, word, busy, busyEl, locked, retry, kept, terminal, chipSig, reason, notes, parts }
   let last = null; // the arguments of the last render: the replay after a request and the timer use them
   let reading = null; // { since, timer, expired, drawn }: a dialog nika cannot read yet, with no form shown before it
   let visible = false;
@@ -352,6 +379,7 @@ export function createDialogForm(io) {
     root.setAttribute('data-inert', String(!live)); // the option rows dim whenever the form cannot take an answer, not only while one is on its way
     f.terminalNote.hidden = !f.terminal;
     f.keptNote.hidden = !f.kept;
+    f.retryNote.hidden = !(f.retry && f.locked && !f.busy);
     const p = f.parts;
     for (const el of p.inputs) {
       el.disabled = f.terminal; // read-only: the options are shown, not offered
@@ -396,10 +424,24 @@ export function createDialogForm(io) {
       f.phase = out.phase;
       f.word = out.word;
       f.locked = out.lock;
+      f.retry = out.retry === true;
       paint();
     }
     if (out.gone) io.setGone();
     if (last !== null) render(last); // a step that arrived while the request ran is drawn now
+  }
+
+  /** R4 (0.5.2): the user put Claude's dialog back in the terminal: the form takes answers again. Nothing is sent; the route checks the dialog before every key. */
+  function retry(f) {
+    if (F !== f || f.busy || !f.retry) return;
+    f.retry = false;
+    f.locked = false;
+    f.phase = 'live';
+    f.word = '';
+    io.clearProblem();
+    paint();
+    f.parts.heading?.focus({ preventScroll: true });
+    io.announce('The form takes answers again.');
   }
 
   const declineEl = (f, cls, label, extra = {}) => h('button', { type: 'button', class: cls, title: DECLINE_TITLE, ...extra, onclick: (e) => act(f, answerBody(f.dialog, { cancel: true }), e.currentTarget) }, label);
@@ -528,19 +570,51 @@ export function createDialogForm(io) {
     };
   }
 
+  /**
+   * R3 (0.5.2): one card per question (reviewModel), each with a Change button (Answer for a question not answered yet) that moves Claude's dialog to that step and answers
+   * nothing. When the tabs and the pairs do not line up the cards are the pairs alone, with Claude's own warning line and no button; a one-question dialog has no button
+   * either, because the move is refused for it (answerBody needs two tabs; ruling 3), so the strip, which owns #dlg-steps-desc, is there exactly when the buttons are. The
+   * buttons carry data-step, not data-tab, so build() puts the focus on the new step's heading after the move. paint() treats them as steps (aria-disabled unless the form is live).
+   */
   function reviewBody(f) {
     const d = f.dialog;
+    const m = reviewModel(d);
     const heading = h('h3', { class: 'ask-q', id: 'dlg-q', tabindex: '-1', text: 'Review your answers' });
-    const list = h('dl', { class: 'dlg-review' }, ...d.pairs.flatMap((p) => [h('dt', { text: p.question }), h('dd', { text: p.answer })]));
-    const primary = h('button', { type: 'button', class: 'btn primary dlg-send', onclick: () => act(f, answerBody(f.dialog, { submit: true }), primary) }, 'Submit answers');
-    const decline = declineEl(f, 'btn ghost dlg-decline', 'Decline');
     const nodes = [];
     const strip = d.tabs.length >= 2 ? stripEls(d, (j) => onStep(f, j)) : null;
     if (strip !== null) nodes.push(...strip.nodes);
     nodes.push(heading);
-    if (d.warn) nodes.push(h('p', { class: 'dlg-warn' }, icon('warn'), h('span', { text: 'You have not answered all questions' })));
-    nodes.push(list, h('div', { class: 'dlg-btns' }, primary, decline));
-    return { nodes, heading, inputs: [], texts: [], choices: [], steps: strip?.steps ?? [], pinned: [], primary, decline, canSend: () => true };
+    if (m.mapped) {
+      const all = m.answered === m.total;
+      nodes.push(h('p', { class: 'dlg-rv-n', 'data-all': String(all) }, icon(all ? 'check' : 'warn'),
+        h('span', { text: all ? `${m.answered} of ${m.total} answered` : `${m.answered} of ${m.total} answered${MID}${m.total - m.answered} not answered` })));
+    } else if (d.warn) {
+      nodes.push(h('p', { class: 'dlg-warn' }, icon('warn'), h('span', { text: 'You have not answered all questions' })));
+    }
+    const canMove = m.mapped && d.tabs.length >= 2; // the move needs two tabs, see answerBody
+    const changes = []; // [step, button]
+    const rows = m.rows.map((r) => {
+      const done = r.answer !== null;
+      const kids = [];
+      if (m.mapped) kids.push(h('p', { class: 'dlg-rv-h' }, icon(done ? 'check' : 'warn'), h('span', { text: r.header }), h('span', { class: 'sr-only', text: done ? ', answered' : ', not answered' })));
+      if (done) {
+        kids.push(h('p', { class: 'dlg-rv-q', title: r.question, text: r.question }));
+        kids.push(h('p', { class: 'dlg-rv-a' }, h('span', { class: 'sr-only', text: 'Answer: ' }), h('span', { text: r.answer })));
+      } else {
+        kids.push(h('p', { class: 'dlg-rv-a dlg-rv-none', text: 'Not answered' }));
+      }
+      if (canMove) {
+        const b = h('button', { type: 'button', class: 'btn dlg-rv-chg', 'data-step': String(r.step), 'aria-describedby': 'dlg-steps-desc', onclick: () => onStep(f, r.step) },
+          done ? 'Change' : 'Answer', h('span', { class: 'sr-only', text: done ? ` answer ${r.step + 1}: ${r.header}` : ` question ${r.step + 1}: ${r.header}` }));
+        changes.push([r.step, b]);
+        kids.push(b);
+      }
+      return h('li', { class: 'dlg-rv-row', 'data-state': done ? 'done' : 'none' }, ...kids);
+    });
+    const primary = h('button', { type: 'button', class: 'btn primary dlg-send', onclick: () => act(f, answerBody(f.dialog, { submit: true }), primary) }, 'Submit answers');
+    const decline = declineEl(f, 'btn ghost dlg-decline', 'Decline');
+    nodes.push(h('ol', { class: 'dlg-rv', 'aria-label': 'Your answers' }, ...rows), h('div', { class: 'dlg-btns dlg-rv-btns' }, primary, decline));
+    return { nodes, heading, inputs: [], texts: [], choices: [], steps: [...(strip?.steps ?? []), ...changes], pinned: [], primary, decline, canSend: () => true };
   }
 
   function planBody(f) {
@@ -582,14 +656,15 @@ export function createDialogForm(io) {
       keep.clear();
       keepFor = headers;
     }
-    const f = { dialog, sig: dialog.sig, phase: 'live', word: '', busy: false, busyEl: null, moving: false, locked: false, kept: false, terminal: dialog.bypass, chipSig: '' };
+    const f = { dialog, sig: dialog.sig, phase: 'live', word: '', busy: false, busyEl: null, moving: false, locked: false, retry: false, kept: false, terminal: dialog.bypass, chipSig: '' };
     f.chipHolder = h('span', { class: 'dlg-chiph' });
     f.reason = h('span', { class: 'ask-reason' });
     f.terminalNote = h('p', { class: 'dlg-note', hidden: true }, icon('info'), h('span', { text: TERMINAL_NOTE }));
     f.keptNote = h('p', { class: 'dlg-note', hidden: true }, icon('info'), h('span', { text: KEPT_NOTE }));
+    f.retryNote = h('p', { class: 'dlg-note dlg-retry', hidden: true }, icon('info'), h('span', { text: RETRY_NOTE }), h('button', { type: 'button', class: 'btn', onclick: () => retry(f) }, 'Try again'));
     f.parts = dialog.kind === 'plan' ? planBody(f) : dialog.at === 'review' ? reviewBody(f) : questionBody(f);
     F = f;
-    root.replaceChildren(h('div', { class: 'ask-h' }, f.chipHolder, kindTag(dialog.kind), f.reason), f.terminalNote, f.keptNote, ...f.parts.nodes);
+    root.replaceChildren(h('div', { class: 'ask-h' }, f.chipHolder, kindTag(dialog.kind), f.reason), f.terminalNote, f.keptNote, f.retryNote, ...f.parts.nodes);
     root.setAttribute('aria-labelledby', dialog.kind === 'plan' ? 'dlg-kind' : 'dlg-q');
     root.removeAttribute('aria-label');
     show(true);

@@ -12,6 +12,8 @@ import {
   remeasure, askSize, frameReady, roomStep, refitFrom, createRedrawHold, HOLD_MS, HOLD_POLL_MS, ROOM_ROWS, REFIT_MS,
   HIDE_MAX, hiddenRows, fillSize, drawnScale,
   GROW_STEP_MIN, GROW_CAP, GROW_CONFIRM_MS, GROW_SETTLE_MS, GROW_WAIT_MS, GROW_CLOSE_MS, GROW_IDLE, growNext, cutQuestion, growAsk, scaleRows, growStep, growRebase, // F16
+  inked, // 0.5.2 R1
+  panelFrame, // 0.5.2 R2
 } from '../public/fit-ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -3314,5 +3316,98 @@ describe('F16: frameReady, createRedrawHold and fitPanelView for the grow', () =
     const line = hintOf(fit('fitted'), { ...IDLE, grow: true });
     assert.equal([...line].every((ch) => ch.codePointAt(0) < 128), true);
     assert.doesNotMatch(line, /#|\/|\\|~/);
+  });
+});
+
+describe('0.5.2 R1: inked, a row with ink (shared by hiddenRows and crop.js trimTop)', () => {
+  test('(+) a row has ink when some span holds a character other than a space or a no-break space', () => {
+    assert.equal(inked([{ t: 'a' }]), true);
+    assert.equal(inked([{ t: '  ' }, { t: ' x ' }]), true, 'one inked span is enough');
+    assert.equal(inked([{ t: '\u2500' }]), true, 'a rule character is ink');
+  });
+
+  test('(−) blank rows: spaces, no-break spaces, empty text, no spans', () => {
+    assert.equal(inked([{ t: '   ' }]), false);
+    assert.equal(inked([{ t: ' ' }, { t: '\u00a0\u00a0' }]), false);
+    assert.equal(inked([{ t: '' }]), false);
+    assert.equal(inked([]), false);
+  });
+
+  test('(−) what is not a row of spans has no ink: no list, a span that is not an object or has no text', () => {
+    for (const row of [undefined, null, 'abc', 5, {}, { t: 'x' }]) assert.equal(inked(row), false, JSON.stringify(row));
+    for (const span of [null, undefined, 5, 'x', { t: 5 }, { s: {} }, { t: null }]) assert.equal(inked([span]), false, JSON.stringify(span));
+  });
+});
+
+describe('0.5.2 R2: panelFrame, the terminal box as it would be without nika\'s panel (design 051c 2.3)', () => {
+  // cell 8 x 16 px; the box has 12 px padding left and right and 10 px top and bottom: 100 x 30 cells is 824 x 500 px
+  const held = { width: 824, height: 500, cellW: 8, cellH: 16, iw: 1200, ih: 800, cols: 100, rows: 30 };
+  // what fitProbe reads under a panel: the box hugs 3 rows of text, so its height says nothing; the window has not moved
+  const probe = (over = {}) => ({ width: 824, height: 68, cellW: 8, cellH: 16, iw: 1200, ih: 800, cols: 100, rows: 3, ...over });
+
+  test('(+) an unchanged window gives the held height and rows, however short the hugged box is', () => {
+    assert.deepEqual(panelFrame(probe(), held), { width: 824, height: 500, cellW: 8, cellH: 16, iw: 1200, ih: 800, cols: 100, rows: 30 });
+    assert.equal(panelFrame(probe({ height: 1 }), held).rows, 30);
+  });
+
+  test('(+) a taller window moves the height by the window\'s own change: 160 px more is 10 rows more at a 16 px cell', () => {
+    const f = panelFrame(probe({ ih: 960 }), held);
+    assert.equal(f.height, 660);
+    assert.equal(f.rows, 40);
+    assert.equal(f.ih, 960, 'the frame carries the window it was taken in, so the next commit counts from it');
+  });
+
+  test('(+) a shorter window lowers the rows by its own change only: 160 px less is 10 rows less', () => {
+    const f = panelFrame(probe({ ih: 640 }), held);
+    assert.equal(f.height, 340);
+    assert.equal(f.rows, 20);
+  });
+
+  test('(+) a narrower or wider box changes the columns and not the rows (the plan case: narrow, then wide)', () => {
+    const narrow = panelFrame(probe({ width: 24 + 8 * 60 }), held);
+    assert.deepEqual([narrow.cols, narrow.rows, narrow.width], [60, 30, 504]);
+    const wide = panelFrame(probe({ width: 24 + 8 * 100 }), narrow);
+    assert.deepEqual([wide.cols, wide.rows], [100, 30], 'the rows survive both commits');
+  });
+
+  test('(+) a new cell height works the rows out of the held pixel height', () => {
+    const f = panelFrame(probe({ cellH: 20 }), held);
+    assert.equal(f.rows, 24, '(500 - 20) / 20');
+    assert.equal(f.cellH, 20);
+  });
+
+  test('(+) the answer is a fresh object, the probe\'s other fields come along, and neither argument is changed', () => {
+    const n = probe({ extra: 7 });
+    const before = JSON.stringify([n, held]);
+    const f = panelFrame(n, held);
+    assert.equal(f.extra, 7);
+    assert.notEqual(f, n);
+    assert.equal(JSON.stringify([n, held]), before);
+  });
+
+  test('(−) a probe or a held frame that is not a frame gives null', () => {
+    for (const bad of [null, undefined, 5, 'x']) {
+      assert.equal(panelFrame(bad, held), null, `next ${bad}`);
+      assert.equal(panelFrame(probe(), bad), null, `held ${bad}`);
+    }
+  });
+
+  test('(−) a number that is not a positive finite one gives null: the window, the width, a cell side, the held height', () => {
+    for (const bad of [NaN, Infinity, -1, 0, '800', null, undefined]) {
+      assert.equal(panelFrame(probe({ ih: bad }), held), null, `next.ih ${bad}`);
+      assert.equal(panelFrame(probe({ width: bad }), held), null, `next.width ${bad}`);
+      assert.equal(panelFrame(probe({ cellW: bad }), held), null, `next.cellW ${bad}`);
+      assert.equal(panelFrame(probe({ cellH: bad }), held), null, `next.cellH ${bad}`);
+      assert.equal(panelFrame(probe(), { ...held, ih: bad }), null, `held.ih ${bad}`);
+      assert.equal(panelFrame(probe(), { ...held, height: bad }), null, `held.height ${bad}`);
+    }
+  });
+
+  test('(−) a window much shorter than the held height never gives a negative or zero height: null (panelSize takes no height of 0); a few pixels left give the minimum rows', () => {
+    assert.equal(panelFrame(probe({ ih: 800 - 10000 + 1 }), held), null, 'ih would be 1, height -9499 -> 0');
+    assert.equal(panelFrame(probe({ ih: 800 - 500 }), held), null, 'exactly the held height gone: 0 px');
+    const tiny = panelFrame(probe({ ih: 800 - 495 }), held);
+    assert.equal(tiny.height, 5);
+    assert.equal(tiny.rows, 10, 'the route\'s lowest row count');
   });
 });

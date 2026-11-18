@@ -19,6 +19,7 @@ import {
   createRedrawHold as createRedrawHoldReal, remeasure as remeasureReal, askSize as askSizeReal, roomStep as roomStepReal, refitFrom as refitFromReal, HOLD_MS as HOLD_MS_REAL, REFIT_MS as REFIT_MS_REAL, FOCUS_SETTLE_MS as FOCUS_SETTLE_REAL, BLUR_SETTLE_MS as BLUR_SETTLE_REAL,
   hiddenRows as hiddenRowsReal, fillSize as fillSizeReal, drawnScale as drawnScaleReal, // F11
   GROW_IDLE as GROW_IDLE_REAL, growStep as growStepReal, growRebase as growRebaseReal, growAsk as growAskReal, scaleRows as scaleRowsReal, cutQuestion as cutQuestionReal, // F16
+  panelFrame as panelFrameReal, // 0.5.2 R2
 } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
 import { createGlideArm as createGlideArmReal, frameOf as frameOfReal, glideFrom as glideFromReal, matrixY as matrixYReal, paneWriteDisarms as paneWriteDisarmsReal, GLIDE_MS as GLIDE_MS_REAL } from '../public/glide.js';
@@ -28,7 +29,7 @@ import { SESSION_ID as SESSION_ID_REAL, PANE_ID as PANE_ID_REAL } from '../publi
 import { cleanDialog as cleanDialogReal, createDialogForm as createDialogFormReal } from '../public/dialog-form.js';
 import { cleanSurvey as cleanSurveyReal } from '../public/survey-panel.js';
 import { installDom, El, withClass, focus as focusState } from './fake-dom.js';
-import { panelOf as panelOfReal, cropOf as cropOfReal, INPUT_TEXT as INPUT_TEXT_REAL, CROP_TEXT as CROP_TEXT_REAL } from '../public/crop.js';
+import { panelOf as panelOfReal, cropOf as cropOfReal, layoutOf as layoutOfReal, INPUT_TEXT as INPUT_TEXT_REAL, CROP_TEXT as CROP_TEXT_REAL } from '../public/crop.js';
 import { subagentGroups as subagentGroupsReal } from '../public/dash-model.js';
 import { timeEl as timeElReal } from '../public/dom.js';
 import { dataUrlOf as dataUrlOfReal, sizeLabel as sizeLabelReal, MAX_THUMBS as MAX_THUMBS_REAL, IMAGE_MIME as IMAGE_MIME_REAL } from '../public/image-viewer.js';
@@ -1615,7 +1616,7 @@ describe('Task 14b: wiring of the page rules', () => {
   const attnRig = ({ mac = false, kind = 'attn', prompt = null, pane = 'ok' } = {}) => {
     const note = { hidden: true };
     const text = { textContent: '' };
-    const ctx = { $: (id) => (id === 'attn-note' ? note : text), DF: null, SV: null, W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Asking to run a command' }, attnNote: attnNoteReal, passKeyLabel, MAC: mac };
+    const ctx = { $: (id) => (id === 'attn-note' ? note : text), DF: null, SV: null, W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Asking to run a command' }, attnNote: attnNoteReal, passKeyLabel, MAC: mac, renderLayout() {} /* 0.5.2 R2 */ };
     mk(['function renderAttn()'], ctx).renderAttn();
     return { note, text };
   };
@@ -3011,7 +3012,7 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     const out = { calls: [], strip: { hidden: true }, term: { scrollTop: 0, scrollHeight: 500 } };
     const ctx = {
       M: { body, draft, frozen, cut: 'unset', crop: null, stripKind: null }, P: { on: pass }, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal,
-      W: { pane: 'ok', dialog: null }, panelNow: () => null, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL, // 0.5.1 E: no panel up, so the crop stays out of these tests
+      W: { pane: 'ok', dialog: null }, panelNow: () => null, cropOf: cropOfReal, renderLayout() {}, /* 0.5.2 R2: the column layout has its own tests */ INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL, // 0.5.1 E: no panel up, so the crop stays out of these tests
       applyMirror: (container, model, cursor) => out.calls.push({ container, rows: model.length, last: model.at(-1)?.[0]?.text, cursor }),
       $: (id) => (id === 'term-cut' ? out.strip : id === 'term' ? out.term : id),
     };
@@ -3093,7 +3094,7 @@ describe('0.5: drawing the mirror with the cut (design W6, section 5)', () => {
     assert.equal(draw({ draft: readable(), pass: true }).term.scrollTop, 500, 'with Type into pane on too (Claude\'s box is at the bottom)');
     const paused = (() => {
       const out = { calls: [], strip: { hidden: true }, term: { scrollTop: 123, scrollHeight: 500 } };
-      const ctx = { M: { body: BODY, draft: readable(), frozen: true, cut: null, crop: null, stripKind: null }, P: { on: false }, W: { pane: 'ok', dialog: null }, panelNow: () => null, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, applyMirror() {}, $: (id) => (id === 'term-cut' ? out.strip : id === 'term' ? out.term : id) };
+      const ctx = { M: { body: BODY, draft: readable(), frozen: true, cut: null, crop: null, stripKind: null }, P: { on: false }, W: { pane: 'ok', dialog: null }, panelNow: () => null, cropOf: cropOfReal, renderLayout() {}, /* 0.5.2 R2: the column layout has its own tests */ INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL, cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, applyMirror() {}, $: (id) => (id === 'term-cut' ? out.strip : id === 'term' ? out.term : id) };
       vm.runInNewContext(`${DRAW}; drawMirror`, ctx)();
       return out.term.scrollTop;
     })();
@@ -4634,6 +4635,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     'function growing()', 'function growTick()',
     // FX2 (RV16 M3): a commit measured under a panel, and the one fresh commit when the panel closes
     'function boxShortened()', 'function fitPanelClosed()',
+    // 0.5.2 R2: the column's layout (data-lay), read by fitCommit and fitScale through LAY
+    'function renderLayout()',
     // FX3 (LC18 R4b): the size back is counted from a base that is looked at when the grow asks for it
     'function fitBaseFresh()',
   ];
@@ -4657,7 +4660,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
    */
   const rig = ({ pane = '%12', box: size = { w: 827, h: 562 }, cell = { w: 800, h: 18 }, replies = [], observer = true, realDraw = false, strip = 27 } = {}) => {
     const clk = fakeClock();
-    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [], placed: [], kicks: [], noted: [], drawn: [], lives: [], scrolled: [], rowsOn: {}, classOps: [], cutRows: [], df: [] };
+    const log = { calls: [], said: [], props: [], ro: null, observed: null, events: {}, gone: 0, overlays: [], placed: [], kicks: [], noted: [], drawn: [], lives: [], scrolled: [], rowsOn: {}, classOps: [], cutRows: [], df: [], layout: [], watched: [] };
     // F10: the page measures the border box (getBoundingClientRect), here the same numbers as the client box; scrollTop / scrollHeight show the re-pin
     const term = { clientWidth: size.w, clientHeight: size.h, scrollTop: 0, scrollHeight: 0, rectExtra: { w: 0, h: 0 }, getBoundingClientRect: () => ({ width: term.clientWidth + term.rectExtra.w, height: term.clientHeight + term.rectExtra.h }), style: { setProperty: (k, v) => log.props.push([k, v]) } };
     // F10: the mirror's rows element: the refit class (classList), the custom property (style.setProperty, never a style attribute) and the animationend listener
@@ -4678,16 +4681,20 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     wrap.append(chip, pop);
     const histToggle = box('button');
     const outside = box('button');
+    const col = { attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); log.layout.push(`+${k}=${v}`); }, removeAttribute(k) { delete this.attrs[k]; log.layout.push(`-${k}`); } };
     const els = { term, 'term-rows': rows, 'term-cut': cutEl, 'fit-probe': probe, 'fit-chip': chip, 'fit-wrap': wrap, 'fit-pop': pop, 'fit-pop-h': popH, 'fit-pop-why': popWhy, 'fit-pop-hint': popHint, 'fit-pop-note': popNote, 'fit-pop-close': close, 'fit-again': again, 'hist-toggle': histToggle,
       // FX2: the panels that take height from the terminal box (the page reads their `hidden`); all shut
-      'prompt-btns': { hidden: true }, 'dialog-form': { hidden: true }, 'survey-panel': { hidden: true }, 'attn-note': { hidden: true } };
+      'prompt-btns': { hidden: true }, 'dialog-form': { hidden: true }, 'survey-panel': { hidden: true }, 'attn-note': { hidden: true },
+      // 0.5.2 R2: the terminal column, which carries data-lay
+      'sess-term': col };
     const docOn = new Map(); // the document's listeners by type: the page adds pointerdown while the panel is open and removes it when it closes
     // F9: what the page reads for its focus: document.visibilityState and document.hasFocus(); `throws` makes hasFocus() throw
     const page = { visible: true, focus: false, throws: false };
     focusState.el = null;
     const ctx = {
       paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null, cut: null, crop: null, stripKind: null, waiters: [], sent: 0 },
-      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false }, SC: { planner: null, scrolled: false },
+      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false }, SC: { planner: null, scrolled: false },
+      LAY: { v: null }, PANEL_IDS: ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note'], layoutOf: layoutOfReal, panelFrame: panelFrameReal, // 0.5.2 R2
       // F16: the grow's state, the pure rules, what the form is told, the page's dialog and a clock the test sets (growTick reads Date.now())
       GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal,
       W: { dialog: null, pane: 'ok' }, renderMode: () => log.df.push(fns.growing()), Date: { now: () => clk.now },
@@ -4708,7 +4715,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       placeMenuX: (m, btn) => log.placed.push(['place', m === pop, btn === chip, pop.hidden]),
       clearMenuPlacement: (m) => log.placed.push(['clear', m === pop, pop.hidden]),
       setTimeout: clk.setTimeout, clearTimeout: clk.clearTimeout,
-      ResizeObserver: observer ? class { constructor(cb) { log.ro = cb; } observe(el) { log.observed = el; } } : undefined,
+      ResizeObserver: observer ? class { constructor(cb) { log.ro = cb; } observe(el) { log.watched.push(el); if (log.observed === null) log.observed = el; } } : undefined, /* R2 fix round: every observed element is kept */
       document: {
         fonts: { ready: Promise.resolve() },
         get visibilityState() { return page.visible ? 'visible' : 'hidden'; },
@@ -4724,10 +4731,10 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     let fns = null;
     ctx.HOLD = createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout, timeout: (pending, c) => fns.holdTimeout(pending, c), ended: () => fns.holdEnded() });
     // F11: `realDraw` runs the page's own drawMirror (it sets M.cut and shows the strip) instead of the spy
-    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()', 'function cropFor(body, cut)', 'function paintStrip(kind)'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed, fitBaseFresh${realDraw ? ', drawMirror' : ''} })`, ctx);
+    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()', 'function cropFor(body, cut)', 'function paintStrip(kind)'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed, fitBaseFresh, renderLayout${realDraw ? ', drawMirror' : ''} })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
-      ...fns, ctx, log, clk, page, term, rows, cutEl, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
+      ...fns, ctx, log, clk, page, term, rows, cutEl, col, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
       listeners: (type) => docOn.get(type)?.size ?? 0,
     };
   };
@@ -5388,6 +5395,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       scaleFor: scaleForReal, setGone() {}, serverMessage: () => '', setPaneState() {}, setInputEnabled() {}, showOverlay() {},
       hiddenRows: hiddenRowsReal, drawnScale: drawnScaleReal, // F11 (requirement change: the scale is worked out by drawnScale, which is scaleFor when no rows are hidden)
       scaleRows: scaleRowsReal, GR: GROW_IDLE_REAL, growTick() {}, // F16 (requirement change: fitScale counts the rows through scaleRows, fitCaptured and the 304 end with growTick)
+      LAY: { v: null }, // 0.5.2 R2: fitScale reads the column layout (no panel up here)
     };
     const src = `${fnOf('function handleCapture(r)')}\n${fnOf('function fitScale()')}\n${fnOf('function fitCaptured()')}; handleCapture`;
     if (fitCaptured) ctx.fitCaptured = fitCaptured;
@@ -7168,7 +7176,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const ctx = {
       P: { on: false, buf: '', timer: 0 }, paneId: '%12', composer: () => ({ disabled: false, focus() {} }), endArrows() {}, flushPass() {}, A: { name: 'agent' }, announce() {},
       M: { gone: false, frozen: false, body, draft: cleanDraftReal(body.draft), cut: 39, crop: null, stripKind: 'input' }, $: (id) => els[id], // the strip shows the input look
-      W: { pane: 'ok', dialog: null }, panelNow: () => null, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL,
+      W: { pane: 'ok', dialog: null }, panelNow: () => null, cropOf: cropOfReal, renderLayout() {}, /* 0.5.2 R2: the column layout has its own tests */ INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL,
       cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, applyMirror: (c, model) => log.drawn.push(model.length),
       fitCommit: () => { log.commit += 1; }, fitScale: () => { log.scale += 1; }, FIT: { planner: { size: () => { log.size += 1; } } },
     };
@@ -7638,8 +7646,9 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     Object.defineProperty(r.ctx.FIT, 'frame', { get: () => frame, set: (v) => { frame = v; w.n += 1; }, configurable: true, enumerable: true });
     return w;
   };
-  const openPanel = (r, id) => { r.ctx.$(id).hidden = false; r.term.clientHeight = SHORT_H; };
-  const closePanel = (r, id) => { r.ctx.$(id).hidden = true; r.term.clientHeight = FULL_H; };
+  // 0.5.2 R2: the page's panelsChanged (renderAttn for the note) asks renderLayout in the same task as the panel's `hidden`, so data-lay follows at once
+  const openPanel = (r, id) => { r.ctx.$(id).hidden = false; r.renderLayout(); r.term.clientHeight = SHORT_H; };
+  const closePanel = (r, id) => { r.ctx.$(id).hidden = true; r.renderLayout(); r.term.clientHeight = FULL_H; };
   /** A focused page, a started fit, `id` shown and a window focus (a commit point) taken under it: the commit measured the short box. */
   const focusedUnder = async (id, over = {}) => {
     const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 16 }), answerAt('fitted', { cols: 100, rows: 30 }), answerAt('fitted', { cols: 100, rows: 30 })], ...over });
@@ -7651,44 +7660,76 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     return { r, w };
   };
 
-  test('(+) FX2: a focus taken while the question form is shown measures the short box; when the form closes the page commits once more and asks the full panel (30 rows), not the 16', async () => {
+  // 0.5.2 R2 (requirement change, not a weakened test): with the column layout on (openPanel runs renderLayout, as the page's panelsChanged does) a commit taken under a
+  // panel builds the frame without it (fit-ui.js panelFrame), so the base never drops to the 16 rows of the short box: every `16` below is the pane's 30, and the puts have no drop.
+  test('(+) FX2 + R2: a focus taken while the question form is shown is still a commit, but it builds the frame without the form (30 rows, never the 16 of the short box); when the form closes the page commits once more and the size stays 30', async () => {
     const { r, w } = await focusedUnder('dialog-form');
     assert.equal(w.n, 1, 'the focus is a commit (F9)');
     assert.equal(r.ctx.FIT.short, true, 'remembered: measured under a panel');
-    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 16 }, 'the base dropped, as LC17 K2 saw');
-    assert.deepEqual(rowsOfPuts(r), [30, 16]);
+    assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 }, 'the base does not drop (LC17 K2 saw 16 before R2)');
+    assert.deepEqual(rowsOfPuts(r), [30, 30], 'the start, and the focus put (focus: true) with the same rows; before R2 the second was 16');
+    assert.equal(r.log.calls.at(-1).json.focus, true);
     closePanel(r, 'dialog-form');
     r.log.ro(); // the box got taller: the look asks nothing and measures nothing (F10)
     await r.clk.advance(300);
     assert.equal(w.n, 1, 'a height change alone is no commit');
-    assert.deepEqual(rowsOfPuts(r), [30, 16]);
+    assert.deepEqual(rowsOfPuts(r), [30, 30]);
     r.growTick(); // the next capture
     assert.equal(w.n, 2, 'one fresh commit');
     assert.equal(r.ctx.FIT.short, false);
     assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 }, 'the base is the panel again');
     await r.clk.advance(300);
-    assert.deepEqual(rowsOfPuts(r), [30, 16, 30], 'the pane is asked the panel\'s rows');
+    assert.deepEqual(rowsOfPuts(r), [30, 30], 'the same size: the planner asks nothing new (before R2 the close asked 30 again after the 16)');
     for (let i = 0; i < 3; i += 1) {
       r.growTick();
       r.handleCapture({ status: 304, body: null });
     }
     await r.clk.advance(1000);
     assert.equal(w.n, 2, 'only once');
-    assert.deepEqual(rowsOfPuts(r), [30, 16, 30]);
+    assert.deepEqual(rowsOfPuts(r), [30, 30]);
   });
 
-  test('(+) FX2: the same for the prompt panel, the feedback survey and the attention note (every panel that takes height from the box)', async () => {
+  test('(+) FX2 + R2: the same for the prompt panel, the feedback survey and the attention note (every panel that takes height from the box)', async () => {
     for (const id of FX2_PANELS.slice(1)) {
       const { r, w } = await focusedUnder(id);
       assert.equal(r.ctx.FIT.short, true, id);
-      assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 16 }, id);
+      assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 }, `${id}: no drop (R2)`);
       closePanel(r, id);
       r.growTick();
       assert.equal(w.n, 2, `${id}: one fresh commit`);
       assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 }, id);
       await r.clk.advance(300);
-      assert.deepEqual(rowsOfPuts(r), [30, 16, 30], id);
+      assert.deepEqual(rowsOfPuts(r), [30, 30], id);
     }
+  });
+
+  // FX2 as it was before R2, kept as the case R2 leaves alone: no frame was measured with no panel up (the boot probe could not measure, and the first good probe came
+  // under the form), so the column keeps today's layout, the short box is measured, and the commit after the panel closes asks the full panel again.
+  test('(−) FX2 still holds with no frame measured with no panel up: no data-lay, the short box (16 rows) is the base, and the commit after the panel closes asks the 30 again', async () => {
+    const r = rig({ box: { w: 0, h: 0 }, replies: [answerAt('fitted', { cols: 100, rows: 16 }), answerAt('fitted', { cols: 100, rows: 30 })] });
+    r.wireFit(); // the boot probe measures nothing
+    assert.equal(r.ctx.FIT.frame, null);
+    r.page.focus = true;
+    openPanel(r, 'dialog-form');
+    r.term.clientWidth = 827; // the box can be measured now, and the form is up
+    r.ctx.M.cols = 100;
+    r.ctx.M.rows = 30;
+    r.ctx.M.body = shot(100, 30).body;
+    r.fitCaptured(); // the first capture of the lease: a commit, under the form
+    await r.clk.advance(300);
+    assert.equal(r.ctx.FIT.free, false, 'measured with a panel up');
+    assert.equal(r.ctx.LAY.v, null);
+    assert.deepEqual(r.col.attrs, {}, 'no data-lay');
+    assert.equal(r.ctx.FIT.short, true);
+    assert.deepEqual(rowsOfPuts(r), [16]);
+    closePanel(r, 'dialog-form');
+    assert.equal(r.ctx.LAY.v, null, 'still no layout: nothing to remove');
+    r.growTick();
+    await r.clk.advance(300);
+    assert.equal(r.ctx.FIT.free, true, 'the commit after the panel closed is a free frame');
+    assert.deepEqual(rowsOfPuts(r), [16, 30]);
+    openPanel(r, 'dialog-form');
+    assert.equal(r.ctx.LAY.v, 'panel', 'and now the next panel gets the layout');
   });
 
   test('(+) FX2: the size the form\'s grow asks back is counted from the new base: the commit comes before the grow looks (the way back is 30, never the 16 of the short box)', async () => {
@@ -7715,6 +7756,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const grown = Math.max(...puts);
     assert.equal(grown > 30, true, 'the question was grown: ' + JSON.stringify(puts));
     assert.equal(puts.lastIndexOf(16) < puts.indexOf(grown), true, 'the old short base is not asked after the grow: ' + JSON.stringify(puts));
+    assert.equal(puts.includes(16), false, 'R2: the short box (16 rows) is never asked at all: ' + JSON.stringify(puts));
     assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: 30 });
   });
 
@@ -7826,16 +7868,361 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     const src = SRC;
     assert.deepEqual([...src.matchAll(/\bfitPanelClosed\(/g)].length, 2, 'the declaration and the one call');
     assert.match(fnOf('function growTick()'), /if \(!FIT\.planner \|\| !FIT\.base \|\| M\.gone \|\| M\.fatal\) return;\s*fitPanelClosed\(\);\s*const was = /);
-    assert.match(fnOf('function fitCommit()'), /if \(!frame\) return;\s*FIT\.short = boxShortened\(\);/);
+    assert.match(fnOf('function fitCommit()'), /if \(!frame\) return;\s*FIT\.short = held \|\| boxShortened\(\);/); // 0.5.2 R2: a commit taken under a panel's layout is short too, whatever the panels say now
     assert.match(fnOf('function fitPanelClosed()'), /if \(!FIT\.short \|\| boxShortened\(\)\) return;\s*FIT\.short = false;\s*if \(!FIT\.planner \|\| FIT\.state === null \|\| FIT\.state === 'blocked' \|\| !fitFocused\(\)\) return;\s*fitCommit\(\);/);
     const body = code(fnOf('function fitPanelClosed()') + fnOf('function boxShortened()'));
     assert.doesNotMatch(body, /setTimeout|addEventListener|ResizeObserver|call\(|fetch\(|document\.|innerHTML/);
     assert.deepEqual(findSinks(body), []);
-    for (const id of ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note']) {
-      assert.match(fnOf('function boxShortened()'), new RegExp(`'${id}'`));
-      assert.match(HTML, new RegExp(`id="${id}"[^>]* hidden`), `${id} is in session.html and starts hidden`);
-    }
+    // 0.5.2 R2: the four ids moved into PANEL_IDS (boxShortened and renderLayout both read it)
+    assert.match(fnOf('function boxShortened()'), /return PANEL_IDS\.some\(\(id\) => \$\(id\)\.hidden === false\);/);
+    assert.match(SRC, /const PANEL_IDS = Object\.freeze\(\['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note'\]\);/);
+    for (const id of ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note']) assert.match(HTML, new RegExp(`id="${id}"[^>]* hidden`), `${id} is in session.html and starts hidden`);
     assert.equal([...code(JS['session.js']).matchAll(/window\.addEventListener\('focus'/g)].length, 1, 'no second focus listener');
+  });
+
+  // ---- 0.5.2 R2 (design 051c section 2): the column layout (data-lay) and the Fit guard: a commit under a panel builds the frame without it ------------------
+  // growRig: a 100 x 30 panel (box 827 x 562, cell 8 x 18, window 1200 x 800). Under a panel with data-lay the terminal box hugs its rows: here 48 px (the strip alone),
+  // which the page must never measure for the pane's size.
+  const HUG_H = 48;
+  const HELD_H = 562; // the rig's default box: the frame measured at the boot, with no panel up
+  const putsOf = (r) => r.log.calls.filter((c) => c.method === 'PUT').map((c) => [c.json.cols, c.json.rows]);
+  /** A focused page, a started fit, `id` shown, the layout on, and the terminal box collapsed to the strip. */
+  const hugged = async (id = 'dialog-form', over = {}) => {
+    const r = await growRig(over);
+    r.page.focus = true;
+    openPanel(r, id);
+    r.term.clientHeight = HUG_H;
+    return r;
+  };
+
+  test('(+) R2: data-lay follows the panel and the crop: a review, question or survey crop is "crop"; no crop, a prompt or plan crop, and the attention note are "panel"; hiding the panel removes it in the same call', async () => {
+    const r = await growRig();
+    assert.deepEqual(r.col.attrs, {}, 'no panel: no data-lay');
+    for (const kind of ['review', 'question', 'survey']) {
+      r.ctx.M.crop = { top: 0, kind };
+      openPanel(r, 'dialog-form');
+      assert.equal(r.col.attrs['data-lay'], 'crop', kind);
+      closePanel(r, 'dialog-form');
+      assert.deepEqual(r.col.attrs, {}, `${kind}: gone with the panel`);
+    }
+    for (const crop of [null, { top: 3, kind: 'prompt' }, { top: 3, kind: 'plan' }]) {
+      r.ctx.M.crop = crop;
+      openPanel(r, 'dialog-form');
+      assert.equal(r.col.attrs['data-lay'], 'panel', JSON.stringify(crop));
+      closePanel(r, 'dialog-form');
+    }
+    r.ctx.M.crop = null;
+    for (const id of FX2_PANELS) {
+      openPanel(r, id);
+      assert.equal(r.col.attrs['data-lay'], 'panel', id);
+      closePanel(r, id);
+      assert.equal('data-lay' in r.col.attrs, false, `${id}: removed in the same call`);
+    }
+  });
+
+  test('(+) R2: renderLayout writes only when the layout changes (a draw every 250 ms rewrites nothing), and a crop that comes or goes under a shown panel moves it between crop and panel', async () => {
+    const r = await growRig();
+    openPanel(r, 'dialog-form');
+    r.renderLayout();
+    r.renderLayout();
+    assert.deepEqual(r.log.layout, ['+data-lay=panel']);
+    r.ctx.M.crop = { top: 2, kind: 'question' };
+    r.renderLayout();
+    r.renderLayout();
+    assert.deepEqual(r.log.layout, ['+data-lay=panel', '+data-lay=crop']);
+    r.ctx.M.crop = null;
+    r.renderLayout();
+    closePanel(r, 'dialog-form');
+    assert.deepEqual(r.log.layout, ['+data-lay=panel', '+data-lay=crop', '+data-lay=panel', '-data-lay']);
+  });
+
+  test('(−) R2: with no frame measured at all (the boot probe failed and nothing was measured since) a shown panel gets no data-lay', async () => {
+    const r = rig({ box: { w: 0, h: 0 } });
+    r.wireFit();
+    assert.equal(r.ctx.FIT.frame, null);
+    openPanel(r, 'dialog-form');
+    assert.equal(r.ctx.LAY.v, null);
+    assert.deepEqual(r.col.attrs, {});
+  });
+
+  test('(−) R2: a frame measured while a panel was up is not a base: no data-lay until a commit with no panel up has measured one', async () => {
+    const r = rig({ replies: [answerAt('fitted', { cols: 100, rows: 16 })] });
+    r.ctx.$('dialog-form').hidden = false; // the panel is up before the first measure, and before renderLayout has run for it
+    r.wireFit(); // measures at once, under the form
+    assert.equal(r.ctx.FIT.free, false);
+    r.renderLayout();
+    assert.equal(r.ctx.LAY.v, null, 'a measured frame, but not a free one');
+    assert.deepEqual(r.col.attrs, {});
+    r.ctx.$('dialog-form').hidden = true;
+    r.fitCommit(); // a commit with no panel up
+    assert.equal(r.ctx.FIT.free, true);
+    r.ctx.$('dialog-form').hidden = false;
+    r.renderLayout();
+    assert.equal(r.ctx.LAY.v, 'panel');
+  });
+
+  test('(+) R2: fitMeasure records whether the frame was measured with no panel up: true with none shown, false with any one of the four', () => {
+    const none = rig();
+    none.fitMeasure();
+    assert.equal(none.ctx.FIT.free, true);
+    for (const id of FX2_PANELS) {
+      const r = rig();
+      r.ctx.$(id).hidden = false;
+      r.fitMeasure();
+      assert.equal(r.ctx.FIT.free, false, id);
+    }
+    const blank = rig({ box: { w: 0, h: 0 } });
+    blank.ctx.FIT.free = true;
+    blank.fitMeasure();
+    assert.equal(blank.ctx.FIT.free, true, 'a box that cannot be measured changes nothing, the flag included');
+  });
+
+  test('(+) R2 guard, window focus: under a panel the put carries the rows the pane had without it (30) and focus: true, never what the hugged box would give; the close commit asks nothing new', async () => {
+    const r = await hugged();
+    const w = watchCommits(r);
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    assert.equal(w.n, 1, 'the focus is a commit point (F9)');
+    assert.deepEqual(putsOf(r), [[100, 30], [100, 30]]);
+    assert.equal(r.log.calls.at(-1).json.focus, true);
+    assert.deepEqual(norm(r.ctx.FIT.panel), { cols: 100, rows: 30 });
+    assert.equal(r.ctx.FIT.frame.height, HELD_H, 'the frame is the box without the panel, not the 48 px one');
+    assert.equal(r.ctx.FIT.short, true);
+    closePanel(r, 'dialog-form');
+    r.growTick(); // FX2: one fresh commit once the panel is gone
+    await r.clk.advance(300);
+    assert.equal(w.n, 2);
+    assert.equal(r.ctx.FIT.short, false);
+    assert.deepEqual(putsOf(r), [[100, 30], [100, 30]], 'the same size: the planner sends nothing new');
+  });
+
+  test('(+) R2 guard, ResizeObserver with a width change: the columns follow the width and the rows stay (the plan: narrow, then wide never lowers the pane)', async () => {
+    const r = await hugged();
+    r.ctx.window.innerWidth = 1000;
+    r.term.clientWidth = 24 + 8 * 60 + 3;
+    r.log.ro();
+    await r.clk.advance(300);
+    r.ctx.window.innerWidth = 1200;
+    r.term.clientWidth = 827;
+    r.log.ro();
+    await r.clk.advance(300);
+    assert.deepEqual(putsOf(r), [[100, 30], [60, 30], [100, 30]]);
+    assert.deepEqual(norm(r.ctx.FIT.panel), { cols: 100, rows: 30 });
+  });
+
+  test('(+) R2 guard, a taller window under a panel grows the pane by its own change (Q4: and a shorter one lowers it by that change only)', async () => {
+    const tall = await hugged();
+    tall.ctx.window.innerHeight = 800 + 180; // 180 px = 10 rows of 18 px
+    tall.log.ro();
+    await tall.clk.advance(300);
+    assert.deepEqual(putsOf(tall), [[100, 30], [100, 40]]);
+    const short = await hugged();
+    short.ctx.window.innerHeight = 800 - 180;
+    short.log.ro();
+    await short.clk.advance(300);
+    assert.deepEqual(putsOf(short), [[100, 30], [100, 20]]);
+    short.ctx.window.innerHeight = 800; // the window comes back: the rows come back
+    short.log.ro();
+    await short.clk.advance(300);
+    assert.deepEqual(putsOf(short).at(-1), [100, 30]);
+  });
+
+  test('(+) R2 guard, Fit again under a panel: the room ends, and the ask is the frame without the panel', async () => {
+    const r = await hugged();
+    r.ctx.FIT.room = true;
+    r.openFitPop();
+    r.again.click();
+    await r.clk.advance(300);
+    assert.equal(r.ctx.FIT.room, false);
+    assert.deepEqual(putsOf(r).at(-1), [100, 30]);
+    assert.equal(r.ctx.FIT.frame.height, HELD_H);
+  });
+
+  test('(+) R2 guard, the first capture of a lease and a page restored from the back/forward cache start with the rows the pane had without the panel', async () => {
+    const first = rig();
+    first.wireFit(); // the boot commit: a free frame, 30 rows
+    first.page.focus = true;
+    openPanel(first, 'dialog-form');
+    first.term.clientHeight = HUG_H;
+    first.ctx.M.cols = 100;
+    first.ctx.M.rows = 30;
+    first.ctx.M.body = shot(100, 30).body;
+    first.fitCaptured();
+    await first.clk.advance(0);
+    assert.deepEqual(calls(first), [PUT(100, 30, true, true)], 'the start under the form (the page is focused)');
+    const back = await hugged();
+    const sent = back.log.calls.length;
+    back.log.events.pagehide();
+    back.log.events.pageshow({ persisted: true });
+    await back.clk.advance(0);
+    assert.deepEqual(calls(back).slice(sent).filter((c) => c.method === 'PUT'), [PUT(100, 30, true, true)], 'restart: open: true, the pre-panel rows, never the 48 px box');
+  });
+
+  test('(+) R2 guard, the hidden rows of the last commit stay in a commit under the dialog (where the cut is null): the ask keeps the rows they add, not the bare frame', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 25 })] });
+    r.wireFit();
+    r.page.focus = true;
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    assert.deepEqual([r.ctx.FIT.hide, r.ctx.FIT.strip], [6, 27]);
+    const before = rowsOfPuts(r);
+    assert.deepEqual(before, [26], 'the start: 20 rows above the strip + 6 hidden');
+    openPanel(r, 'dialog-form');
+    r.term.clientHeight = HUG_H;
+    r.handleCapture(fshot(145, 25, 19, { draft: UNREADABLE })); // under the dialog Claude's input box is not readable: no cut
+    assert.equal(r.ctx.M.cut, null);
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    assert.deepEqual([r.ctx.FIT.hide, r.ctx.FIT.strip], [6, 27], 'not read again under the panel');
+    assert.deepEqual(rowsOfPuts(r), [26, 27], 'the focus put asks 20 rows above the strip + 6 hidden + the border row the first answer taught (d = 1): 27; the bare frame would give 21 + 1');
+  });
+
+  test('(+) R2 guard, the text keeps its size under a panel: a focus under the dialog leaves --fit-scale where it was', async () => {
+    const r = rig({ realDraw: true, replies: [answerAt('fitted', { cols: 100, rows: 33 })] });
+    r.wireFit();
+    r.page.focus = true;
+    r.handleCapture(fshot(100, 33, 30)); // 3 rows hidden under the strip
+    await r.clk.advance(0);
+    assert.equal(r.ctx.FIT.hide, 3);
+    const before = r.ctx.FIT.scale;
+    assert.equal(before > 30 / 33 + 0.001, true, `the premise: the rows above the strip fit the box (${before})`);
+    openPanel(r, 'dialog-form');
+    r.term.clientHeight = HUG_H;
+    r.handleCapture(fshot(100, 33, 30, { draft: UNREADABLE }));
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    assert.equal(r.ctx.FIT.scale, before, 'not 30/33: the hidden rows still count');
+    assert.equal(r.ctx.M.cut, null);
+  });
+
+  test('(+) R2 guard, the strip keeps the height of the last commit under a panel that leaves it drawn (the attention note): offsets read now do not move the text', async () => {
+    const r = fillRig({ replies: [answerAt('fitted', { cols: 145, rows: 25 })] });
+    r.wireFit();
+    r.page.focus = true;
+    r.handleCapture(fshot(171, 45));
+    await r.clk.advance(0);
+    r.handleCapture(fshot(145, 25, 19)); // the pane at the size asked; a readable draft, so the strip stays
+    assert.equal(r.ctx.$('term-cut').hidden, false, 'the premise: the strip is drawn');
+    assert.deepEqual([r.ctx.FIT.hide, r.ctx.FIT.strip], [6, 27]);
+    const before = r.ctx.FIT.scale;
+    openPanel(r, 'attn-note');
+    r.term.clientHeight = HUG_H;
+    r.ctx.$('term-cut').offsetHeight = 54; // read now it would be a strip of 60 px (up to 4 cells counts as read), which would shrink the text to 0.98
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    assert.deepEqual([r.ctx.FIT.hide, r.ctx.FIT.strip], [6, 27], 'kept');
+    assert.equal(r.ctx.FIT.scale, before, 'the text keeps its size');
+    closePanel(r, 'attn-note');
+    r.growTick(); // the one fresh commit after the panel closes reads the strip again
+    assert.equal(r.ctx.FIT.strip, 60);
+  });
+
+  // ---- 0.5.2 R2 fix round (orchestrator ruling 2, item 1): under data-lay #term hugs its rows, so only the column follows the window's height -------------------------
+  /** What the browser does: a ResizeObserver callback runs only for an element that was observed. Returns whether it ran. */
+  const resized = (r, el) => { if (!r.log.watched.includes(el)) return false; r.log.ro(); return true; };
+
+  test('(+) R2 fix round: wireFit gives the one observer both the terminal box and the column (#term and #sess-term), and adds no commit trigger of its own', () => {
+    const r = rig();
+    r.wireFit();
+    assert.deepEqual(r.log.watched, [r.term, r.col]);
+    assert.equal(r.log.observed, r.term, 'the terminal box first, as before');
+    const src = code(JS['session.js']);
+    assert.match(src, /const ro = new ResizeObserver\(fitResize\);\s*ro\.observe\(\$\('term'\)\);[^\n]*\n\s*ro\.observe\(\$\('sess-term'\)\);/);
+    assert.equal([...src.matchAll(/new ResizeObserver\(/g)].length, 1, 'one observer: one callback per frame for both elements');
+    assert.equal([...src.matchAll(/addEventListener\('resize'/g)].length, 1, 'the one window resize listener is the Fit popover\'s');
+    assert.doesNotMatch(src.slice(src.indexOf("window.addEventListener('resize'"), src.indexOf("window.addEventListener('resize'") + 160), /fitResize|fitCommit|fitMeasure/);
+  });
+
+  test('(+) R2 fix round: under a panel with the layout hugging, a taller window changes the column and not #term: the column\'s observer fires and the pane asks for more rows; a shorter one asks for fewer', async () => {
+    const tall = await hugged();
+    assert.equal(tall.col.attrs['data-lay'], 'panel');
+    tall.ctx.window.innerHeight = 800 + 180; // #term stays at 48 px: it hugs; the column follows the window
+    assert.equal(resized(tall, tall.col), true, 'the column is observed');
+    await tall.clk.advance(300);
+    assert.deepEqual(putsOf(tall), [[100, 30], [100, 40]]);
+    const short = await hugged();
+    short.ctx.window.innerHeight = 800 - 180;
+    assert.equal(resized(short, short.col), true);
+    await short.clk.advance(300);
+    assert.deepEqual(putsOf(short), [[100, 30], [100, 20]]);
+  });
+
+  test('(−) R2 fix round: a change of the column with the same window, width and cells (a banner, a header wrap) commits nothing, with or without a panel; the mirror stays pinned', async () => {
+    for (const panel of [false, true]) {
+      const r = panel ? await hugged() : await growRig();
+      r.page.focus = true;
+      const w = watchCommits(r);
+      r.term.scrollHeight = 777;
+      assert.equal(resized(r, r.col), true, 'the column is observed');
+      await r.clk.advance(1000);
+      assert.equal(w.n, 0, `panel ${panel}: no commit`);
+      assert.deepEqual(putsOf(r), [[100, 30]], `panel ${panel}: nothing asked`);
+      assert.equal(r.term.scrollTop, 777, `panel ${panel}: pinned`);
+    }
+  });
+
+  test('(−) R2 guard: a change of the hugged box alone (same width, same window) is no commit: nothing measured, nothing asked, the mirror stays pinned to the bottom', async () => {
+    const r = await hugged();
+    const w = watchCommits(r);
+    r.term.scrollHeight = 777;
+    r.term.clientHeight = 96; // the form got a line longer
+    r.log.ro();
+    await r.clk.advance(1000);
+    assert.equal(w.n, 0);
+    assert.equal(r.term.scrollTop, 777, 'pinned');
+    assert.deepEqual(putsOf(r), [[100, 30]]);
+  });
+
+  test('(−) R2 guard: a probe that cannot be measured under a panel (a hidden tab) keeps the held frame and asks the same size', async () => {
+    const r = await hugged();
+    const frame = r.ctx.FIT.frame;
+    r.term.clientWidth = 0;
+    r.term.clientHeight = 0;
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    assert.equal(r.ctx.FIT.frame, frame);
+    assert.deepEqual(putsOf(r).map((x) => x[1]), [30, 30]);
+    assert.equal(r.ctx.FIT.short, true);
+  });
+
+  test('(+) R2: a commit under a layout that is stale (the panel was hidden an instant ago, the observer has not run) is still short: the commit after the panel closes is taken', async () => {
+    const r = await hugged();
+    r.ctx.$('dialog-form').hidden = true; // panelsChanged has not run yet
+    assert.equal(r.ctx.LAY.v, 'panel');
+    const w = watchCommits(r);
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    assert.equal(w.n, 1);
+    assert.equal(r.ctx.FIT.short, true, 'held: the box it saw was the hugged one');
+    r.renderLayout();
+    r.term.clientHeight = FULL_H;
+    r.growTick();
+    assert.equal(w.n, 2, 'one fresh commit, with the full box');
+    assert.equal(r.ctx.FIT.short, false);
+  });
+
+  test('(+) R2: the page asks for the layout where the design puts it: after every drawn capture (before the pin), at every panel change, and with the attention note', () => {
+    assert.match(fnOf('function drawMirror()'), /paintStrip\(M\.crop\?\.kind \?\? \(M\.cut !== null \? 'input' : null\)\);\s*renderLayout\(\);[^\n]*\n\s*const term = \$\('term'\);\s*if \(!M\.frozen\) term\.scrollTop = term\.scrollHeight;/);
+    assert.match(fnOf('function panelsChanged()'), /renderBar\(\);\s*renderLayout\(\);[^\n]*\n\s*if \(!M\.body\) return;/);
+    assert.match(fnOf('function renderAttn()'), /attnNote\(A\.name, A\.attention, passKeyLabel\(MAC\)\);\s*renderLayout\(\);[^\n]*\n\}/);
+    assert.match(fnOf('function renderLayout()'), /layoutOf\(\{ measured: FIT\.frame !== null && FIT\.free === true, panelShown: boxShortened\(\), crop: M\.crop \}\)/);
+    assert.match(fnOf('function fitMeasure()'), /FIT\.free = !boxShortened\(\);/);
+    assert.match(fnOf('function fitCommit()'), /const held = LAY\.v !== null && prev !== null;[^\n]*\n\s*if \(held\) \{\s*const next = panelFrame\(fitProbe\(\), prev\);/);
+    assert.match(fnOf('function fitCommit()'), /if \(!held\) \{[^\n]*\n\s*FIT\.hide = hiddenRows\(M\.body\?\.rows, M\.cut\);\s*FIT\.strip = FIT\.hide > 0 \? fitStrip\(\) : 0;\s*\}/);
+    assert.match(fnOf('function fitScale()'), /const held = LAY\.v !== null;[^\n]*\n\s*const hide = held \? FIT\.hide : hiddenRows\(M\.body\?\.rows, M\.cut\);/);
+    assert.match(fnOf('function fitScale()'), /strip: hide > 0 \? \(held \? FIT\.strip : fitStrip\(\) \|\| FIT\.strip\) : 0/);
+    assert.equal([...code(JS['session.js']).matchAll(/\bfitMeasure\(\)/g)].length, 3, 'the declaration and the two callers, fitCommit and fitBaseFresh: no new place measures the box');
+    assert.deepEqual([...code(JS['session.js']).matchAll(/\bFIT\.frame = /g)].length, 2, 'fitMeasure and the panel branch of fitCommit are the only places that hold a frame');
+    assert.match(JS['session.js'], /import \{ panelSize, panelFrame, createFitPlanner,/);
+    assert.match(JS['session.js'], /import \{ panelOf, cropOf, layoutOf, INPUT_TEXT, CROP_TEXT \} from '\.\/crop\.js';/);
+  });
+
+  test('(−) R2: the new page code keeps constraint 6: no markup sink, no style attribute, one data-lay attribute written through setAttribute and removeAttribute', () => {
+    const src = ['function renderLayout()', 'function fitCommit()', 'function fitScale()'].map(fnOf).join('\n');
+    assert.deepEqual(findSinks(src), []);
+    assert.doesNotMatch(src, /innerHTML|insertAdjacentHTML|setAttribute\('style'|\.style\.cssText|document\.|fetch\(|call\(|eval\(/);
+    assert.deepEqual([...fnOf('function renderLayout()').matchAll(/(setAttribute|removeAttribute)\('data-lay'/g)].map((m) => m[1]), ['removeAttribute', 'setAttribute']);
+    assert.equal([...code(JS['session.js']).matchAll(/--fit-scale/g)].length, 1, 'the scale is still set in one place');
   });
 
   // ---- FX3 (live check LC18 R4b): the size back at the end of a grow is counted from a base measured fresh ---------------------------------------
@@ -9460,7 +9847,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     const note = { hidden: true };
     const ctx = {
       $: (id) => (id === 'attn-note' ? note : { textContent: '' }), DF: form === undefined ? null : form, SV: null, W: { pane, prompt }, A: { kind, name: 'builder-1', attention: 'Claude has a question' },
-      attnNote: attnNoteReal, passKeyLabel, MAC: false,
+      attnNote: attnNoteReal, passKeyLabel, MAC: false, renderLayout() {}, // 0.5.2 R2: the attention note asks for the column layout
     };
     mk(['function renderAttn()'], ctx).renderAttn();
     return note;
@@ -10927,9 +11314,9 @@ describe('0.5.1 E: the mirror ends above Claude\'s dialog while nika\'s panel an
     const drawn = [];
     const ctx = {
       M: { body, draft: dr, frozen: false, cut, crop: null, stripKind: null }, P: { on: pass }, W: { pane, dialog: wdialog },
-      cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL,
+      cutAt: cutAtReal, cutCursor: cutCursorReal, toRenderModel: toRenderModelReal, cropOf: cropOfReal, renderLayout: () => { ctx.layouts += 1; }, /* 0.5.2 R2: counted, drawMirror and panelsChanged both ask for the layout */ INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL,
       applyMirror: (container, model, cursor) => drawn.push({ rows: model.length, last: model.at(-1)?.[0]?.text, cursor }),
-      panelNow: () => ctx.panel, panel, bars: 0, renderBar: () => { ctx.bars += 1; },
+      panelNow: () => ctx.panel, panel, bars: 0, layouts: 0, renderBar: () => { ctx.bars += 1; },
       $: (id) => els[id] ?? id,
     };
     const fns = vm.runInNewContext(`${['function drawMirror()', 'function paintStrip(kind)', 'function cropFor(body, cut)', 'function panelsChanged()'].map(fnOf).join('\n')}; ({ drawMirror, paintStrip, cropFor, panelsChanged })`, ctx);
@@ -10996,7 +11383,8 @@ describe('0.5.1 E: the mirror ends above Claude\'s dialog while nika\'s panel an
     const cases = {
       'sig mismatch': scene('question', { wdialog: READY('question', { sig: 'fedcba9876543210' }) }),
       'no top': scene('question', { body: BODY({ dialog: READY('question', { top: undefined }) }) }),
-      'top 0': scene('question', { body: BODY({ dialog: READY('question', { top: 0 }) }) }),
+      'top 0 for a prompt (R1: a question, review or survey may crop at 0, a prompt may not)': scene('prompt', { body: BODY({ prompt: { ...SCENES.prompt.body.prompt, top: 0 } }) }),
+      'top 0 for a plan': scene('plan', { body: BODY({ dialog: READY('plan', { top: 0 }) }) }),
       'top past the rows': scene('question', { body: BODY({ dialog: READY('question', { top: 14 }) }) }),
       'pane gone': scene('question', { pane: 'gone' }),
     };
@@ -11007,6 +11395,55 @@ describe('0.5.1 E: the mirror ends above Claude\'s dialog while nika\'s panel an
       assert.equal(r.ctx.M.crop, null, label);
       assert.equal(r.els['term-cut'].hidden, true, label);
     }
+  });
+
+  test('(+) R1: a question, a review and a survey crop at row 0: no row is drawn, the cursor is dropped, and the strip shows the panel look with that kind\'s words', () => {
+    const at0 = {
+      question: { dialog: READY('question', { top: 0 }) },
+      review: { dialog: READY('review', { top: 0 }) },
+      survey: { survey: { state: 'ready', kind: 'rating', sig: SIG, top: 0 } },
+    };
+    for (const [kind, parts] of Object.entries(at0)) {
+      const r = rig({ body: BODY(parts), panel: SCENES[kind].panel, wdialog: SCENES[kind].w.dialog });
+      r.drawMirror();
+      assert.equal(r.drawn.length, 1, kind);
+      assert.equal(r.drawn[0].rows, 0, `${kind}: the strip alone`);
+      assert.equal(r.drawn[0].cursor, null, `${kind}: the cursor sat under the strip`);
+      assert.equal(r.els['term-cut'].hidden, false, kind);
+      assert.equal(r.els['term-cut'].attrs['data-kind'], 'panel', kind);
+      assert.equal(r.els['term-cut-ic'].attrs.href, '#i-dialog', kind);
+      assert.equal(r.els['term-cut-t'].textContent, CROP_TEXT_REAL[kind], kind);
+      assert.deepEqual(norm(r.ctx.M.crop), { top: 0, kind }, kind);
+      assert.equal(r.ctx.M.cut, null, `${kind}: M.cut is still only the input-box cut`);
+    }
+  });
+
+  test('(−) R1: the same row-0 captures with Type into pane on show every row and the cursor, with no crop and no strip', () => {
+    for (const kind of ['question', 'review']) {
+      const r = rig({ body: BODY({ dialog: READY(kind, { top: 0 }) }), panel: SCENES[kind].panel, wdialog: SCENES[kind].w.dialog, pass: true });
+      r.drawMirror();
+      assert.equal(r.drawn[0].rows, 14, kind);
+      assert.deepEqual(norm(r.drawn[0].cursor), { x: 2, y: 12, visible: true }, kind);
+      assert.equal(r.ctx.M.crop, null, kind);
+      assert.equal(r.els['term-cut'].hidden, true, kind);
+    }
+  });
+
+  test('(+) R1: blank rows right above a review\'s top are left out of the view: the strip sits under the last row with ink', () => {
+    const rows = Array.from({ length: 14 }, (_, i) => (i === 3 || i === 4 ? row('   ') : row(`row ${i}`)));
+    const r = rig({ body: BODY({ rows, dialog: READY('review', { top: 5 }) }), panel: SCENES.review.panel, wdialog: SCENES.review.w.dialog });
+    r.drawMirror();
+    assert.equal(r.drawn[0].rows, 3, 'rows 0, 1 and 2');
+    assert.equal(r.drawn[0].last, 'row 2');
+    assert.deepEqual(norm(r.ctx.M.crop), { top: 3, kind: 'review' });
+  });
+
+  test('(−) R1: the blank-row trim leaves a permission prompt alone (the same blank rows stay above its crop)', () => {
+    const rows = Array.from({ length: 14 }, (_, i) => (i === 3 || i === 4 ? row('   ') : row(`row ${i}`)));
+    const r = rig({ body: BODY({ rows, prompt: SCENES.prompt.body.prompt }), panel: SCENES.prompt.panel });
+    r.drawMirror();
+    assert.equal(r.drawn[0].rows, 5);
+    assert.deepEqual(norm(r.ctx.M.crop), { top: 5, kind: 'prompt' });
   });
 
   test('(+) the strip goes back to the input look when the crop goes while the box is cut, and hides when nothing is cut', () => {
@@ -11163,6 +11600,56 @@ describe('0.5.1 stylesheet block (C, E, H, I): tokens only, appended at the end 
     assert.match(BLOCK, /\.tl\.cut > \.ic\s*\{[^}]*flex:\s*none/);
     assert.match(BLOCK, /\.tl\.cut > span\s*\{[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis/);
     assert.match(BLOCK, /\.tl\.cut\[data-kind="panel"\]\s*\{[^}]*border-top:\s*1px solid var\(--a11\)[^}]*color:\s*var\(--a11\)/);
+  });
+});
+
+describe('0.5.2 R2: the column layout (stylesheet)', () => {
+  const MARK = '/* 0.5.2 R2:';
+  const START = CSS.indexOf(MARK);
+  const BLOCK = strip(CSS.slice(START));
+  const RULES = [...BLOCK.matchAll(/([^{}]+)\{([^}]*)\}/g)].map((m) => [m[1].trim().replace(/\s+/g, ' '), m[2].trim().replace(/\s+/g, ' ')]);
+  const rule = (sel) => RULES.find(([x]) => x === sel)?.[1];
+
+  test('(+) the rules sit at the end of session.css under their own heading, once, and every var() in them is an existing token', () => {
+    assert.ok(START > CSS.indexOf(NEW_CSS_MARK), 'after the 0.5.1 block');
+    assert.equal(CSS.indexOf(MARK, START + 1), -1, 'one heading');
+    assert.equal(RULES.length, 8);
+    const defined = new Set([...TOKENS.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+    assert.deepEqual([...new Set([...BLOCK.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]))].filter((n) => !defined.has(n)), []);
+  });
+
+  test('(+) the box hugs its rows (it takes no free space, gives way first, keeps a 120 px floor), a crop may shrink it to the strip alone, and the mirror inside does not stretch', () => {
+    assert.equal(rule('.termcol[data-lay] > .termbox'), 'flex: 0 1000 auto; min-height: 120px;');
+    assert.equal(rule('.termcol[data-lay="crop"] > .termbox'), 'min-height: calc(var(--fs-small) * 1.35 + 32px);');
+    assert.equal(rule('.termcol[data-lay] #term'), 'flex: 0 1 auto;');
+  });
+
+  test('(+) the composer takes the rest as a column; its children keep their size; the panel scrolls inside itself and the left-over sits under it, above the message box (Q1)', () => {
+    assert.equal(rule('.termcol[data-lay] > .composer'), 'flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;');
+    assert.equal(rule('.termcol[data-lay] > .composer > *'), 'flex: none; min-width: 0;');
+    assert.equal(rule('.termcol[data-lay] > .composer > .ask:not([hidden])'), 'position: relative; flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin-bottom: auto;');
+    assert.equal(rule('.termcol[data-lay] > .composer > .attn-note:not([hidden])'), 'margin-bottom: auto;');
+  });
+
+  test('(+) only a crop lifts the form\'s height cap; the other layout keeps min(45vh, 420px)', () => {
+    assert.equal(rule('.termcol[data-lay="crop"] > .composer > .ask.dlg'), 'max-height: none;');
+    assert.match(strip(CSS), /\.ask\.dlg\s*\{[^}]*max-height:\s*min\(45vh, 420px\)/);
+    assert.deepEqual(RULES.filter(([, body]) => /max-height/.test(body)).map(([sel]) => sel), ['.termcol[data-lay="crop"] > .composer > .ask.dlg']);
+  });
+
+  test('(−) every selector needs the attribute: with no data-lay nothing of today\'s layout changes; no !important, no overflow on the composer (the palette opens out of it), position only where a scroller needs it, no colour', () => {
+    assert.deepEqual(RULES.filter(([sel]) => !sel.startsWith('.termcol[data-lay')).map(([sel]) => sel), []);
+    assert.doesNotMatch(BLOCK, /!important|#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|color-mix\(|:has\(|@import|url\(/);
+    assert.deepEqual(RULES.filter(([, body]) => /position\s*:/.test(body)).map(([sel]) => sel), ['.termcol[data-lay] > .composer > .ask:not([hidden])'], 'the one scroller (ui.test.js: every scroll container is a containing block)');
+    assert.deepEqual(RULES.filter(([sel]) => /(^|[\s>])\.term(\s|$)/.test(sel)).map(([sel]) => sel), [], 'no second .term rule (the padding test of fit-ui.js reads the one)');
+    assert.equal(/overflow/.test(rule('.termcol[data-lay] > .composer')), false);
+    assert.equal(/overflow/.test(rule('.termcol[data-lay] > .composer > *')), false);
+    assert.doesNotMatch(BLOCK, /\.inbox|\.pal\b|#term-over|\.term-over/);
+  });
+
+  test('(−) the attribute has two values only and the page writes exactly those', () => {
+    assert.deepEqual([...BLOCK.matchAll(/data-lay(?:="([a-z]+)")?/g)].map((m) => m[1]).filter(Boolean), ['crop', 'crop']);
+    assert.deepEqual([...code(JS['session.js']).matchAll(/'data-lay'/g)].length, 2);
   });
 });
 

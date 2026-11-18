@@ -6,6 +6,8 @@
 // an identity or a guard, and a missing, odd or out-of-range one only means "no crop" (the whole screen shows, as before).
 // Keep this file ASCII: write every symbol as an escape.
 
+import { inked } from './fit-ui.js'; // a leaf too (no imports), so no cycle
+
 /** The strip's text while only the input box is cut (the message box below mirrors it). */
 export const INPUT_TEXT = 'Input box \u00b7 mirrored in the message box below';
 
@@ -21,12 +23,38 @@ export const CROP_TEXT = Object.freeze({
 const FORM_KINDS = new Set(['question', 'review', 'plan']);
 
 /**
+ * R1 (0.5.2, design 051c section 1): the crops whose panel holds everything the user needs (the question, the review, the feedback survey). Their crop may
+ * start at row 0, so the strip alone shows, and it leaves out the blank rows right above it. A permission prompt's command and a plan's text are only in the
+ * mirror: their crop starts at row 1 or lower and is never trimmed.
+ */
+const ROOM_KINDS = new Set(['question', 'review', 'survey']);
+
+/** R1: the crop line moved up past the blank rows right above it, never below row 0, so the strip sits under the last row with ink. Rows that are not a list leave `top` alone. */
+export function trimTop(rows, top) {
+  if (!Array.isArray(rows)) return top;
+  let t = top;
+  while (t > 0 && !inked(rows[t - 1])) t -= 1;
+  return t;
+}
+
+/**
  * The lengths src/mode.js cuts a permission prompt's text at: an option label at 80 characters (`clean(p.join(' '), 80)`) and the question at 200
  * (`clean(question, 200)`). clean() in src/text.js slices and appends nothing, so a cut text looks like any other: it is only known by being exactly
  * that long. A test (test/crop.test.js) reads src/mode.js and fails when these two numbers stop matching it.
  */
 export const PROMPT_LABEL_CUT = 80;
 export const PROMPT_QUESTION_CUT = 200;
+
+/**
+ * R2 (0.5.2, design 051c 2.2): the terminal column's layout: 'crop' while a question, review or survey crop is drawn under a shown panel, 'panel' while any other
+ * panel or the attention note is shown, null otherwise or before the Fit has a frame measured with no panel up (`measured` false: the box keeps the flex layout and
+ * the Fit measures as before). Only the value true counts for `measured` and `panelShown`; `crop` is cropOf's answer.
+ */
+export function layoutOf(v) {
+  if (v?.measured !== true || v.panelShown !== true) return null;
+  const crop = v.crop;
+  return crop !== null && typeof crop === 'object' && ROOM_KINDS.has(crop.kind) ? 'crop' : 'panel';
+}
 
 /**
  * Which of nika's own panels is up, or null. `v` is { promptShown, prompt, formShown, formLive, dialog, surveyShown, survey }: what the page has
@@ -66,7 +94,8 @@ function promptCut(p) {
  * No crop when: there is no panel, or it carries bypass, or Type into pane is on; the capture's own bypass flag is set (the prompt's, the dialog's);
  * the dialog is not ready, is not of the panel's kind, or its sig is not the form's (a dialog read for another screen); the survey is not ready;
  * the prompt's question or an option label is as long as the server's cut (promptCut: the tail of what the user approves would be hidden);
- * or the source's `top` is not a whole number from 1 to the last row (0 would leave an empty view, so the whole screen shows instead).
+ * or the source's `top` is not a whole number from 0 (a question, review or survey; 1 for a prompt or plan) to the last row. For the first three the blank
+ * rows right above `top` are left out of the view (trimTop), so the answer's `top` can be lower than the source's.
  */
 export function cropOf(body, panel, { passOn = false, dialogSig = null } = {}) {
   if (!panel || panel.bypass === true || passOn) return null;
@@ -82,5 +111,7 @@ export function cropOf(body, panel, { passOn = false, dialogSig = null } = {}) {
   }
   const top = source?.top;
   const n = Array.isArray(body?.rows) ? body.rows.length : 0;
-  return Number.isInteger(top) && top >= 1 && top < n ? { top, kind } : null;
+  const room = ROOM_KINDS.has(kind);
+  if (!Number.isInteger(top) || top < (room ? 0 : 1) || top >= n) return null;
+  return { top: room ? trimTop(body.rows, top) : top, kind };
 }

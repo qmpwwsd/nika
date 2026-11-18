@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.2 — 2026-11-18
+
+Session window (desktop app):
+
+- **Claude's question stays out of the terminal view.** While nika's form answers a question, its Review or the feedback question,
+  the terminal view shows only the yellow line, also when Claude's dialog fills the terminal from its first row. Blank rows above
+  the line are left out. A plan's text and a permission prompt's command still show; Type into pane shows the whole screen.
+- **No more empty space above the form.** While a form or panel is up, the terminal view keeps only the rows it shows and the
+  form gets the rest of the window; leftover space sits between the form and the message box. The pane's size is worked out as if
+  the form were not there, so the form never shrinks Claude's terminal, and a taller window still grows it. The plan approval
+  now stays readable after the window is made narrow and then wide again.
+- **A clearer Review step.** One card per question, named by its step, with the question and your answer in bold under it, a
+  "Not answered" state with its own icon and colour, a count such as "2 of 3 answered", and a **Change** button on each card
+  that opens that question in Claude's dialog (with two questions or more).
+- **Try again.** When nika refuses an answer because Claude's selection or answer was moved in the terminal, the form shows
+  **Try again** once you have put it back, instead of staying locked until a reload. nika sends nothing until you answer again.
+
 ## 0.5.1 — 2026-11-17
 
 Session window (desktop app):

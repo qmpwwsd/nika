@@ -69,6 +69,19 @@ export function remeasure(prev, next) {
 }
 
 /**
+ * R2 (0.5.2, design 051c 2.3): the terminal box as it would be without nika's panel, while a panel is up and the box only holds what the mirror draws.
+ * `next` is fitProbe's frame now, `held` the frame of the last commit. Width, cells and the window come from `next`; the height is `held`'s, moved by the change of
+ * the window's inner height, so a panel never lowers the rows and a taller window still raises them. null when either is not a frame, a number is not a positive
+ * finite one, or the height would be 0 or less (panelSize takes no height of 0): the caller then keeps the held frame.
+ */
+export function panelFrame(next, held) {
+  if (!isFrame(next) || !isFrame(held) || ![held.height, held.ih, next.ih, next.width, next.cellW, next.cellH].every(finite)) return null;
+  const height = Math.max(0, held.height + (next.ih - held.ih));
+  const size = panelSize({ width: next.width, height, cellW: next.cellW, cellH: next.cellH });
+  return size && { ...next, ...size, height };
+}
+
+/**
  * F10: the size the page asks the route for. `frame` is the held frame ({ cols, rows }); without `room`, or when it already has ROOM_ROWS rows or more, that
  * is the frame. With `room` it is ROOM_ROWS rows and as many columns as keep the panel's proportion once the border row `d` is taken off (0 or 1, else 0),
  * so the scaled text fills the panel's width too: never fewer than the frame's columns, never more than the route's 400.
@@ -80,8 +93,8 @@ export function askSize(frame, room, d) {
   return { cols: Math.max(cols, Math.min(COLS[1], Math.floor((cols * (ROOM_ROWS - border)) / rows))), rows: ROOM_ROWS };
 }
 
-// F11: a row has ink when some span of it holds a character other than a space or U+00A0
-const inked = (row) => Array.isArray(row) && row.some((span) => span !== null && typeof span === 'object' && typeof span.t === 'string' && /[^ \u00a0]/.test(span.t));
+// F11: a row has ink when some span of it holds a character other than a space or U+00A0 (0.5.2 R1: exported, crop.js trims the blank rows above a crop with it)
+export const inked = (row) => Array.isArray(row) && row.some((span) => span !== null && typeof span === 'object' && typeof span.t === 'string' && /[^ \u00a0]/.test(span.t));
 
 /**
  * F11: the rows Claude draws from the cut row down (its input box and footer, which the mirror hides under a one-row strip): the last row with ink + 1 - cut.

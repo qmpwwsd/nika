@@ -363,7 +363,9 @@ Accepted, with the reason.
      shows it declines the dialog without the form's `sig` check (ruling 2026-11-15). The same single-user race as residual b: the user pressed
      the key on purpose, and `Escape` is the one key the passthrough has always sent.
   4. *The form stays locked.* After 409 `dialog-touched` or `dialog-focus` every control, Decline included, stays off until a new `sig`,
-     `dialog: null` or a reload (ruling 2026-11-15: the problem line sends the user to the terminal to finish it). Not a security gap, but the
+     `dialog: null`, a reload or, since 0.5.2 (R4, owner decision 2026-11-17), the user presses **Try again** (ruling 2026-11-15: the problem line sends
+     the user to the terminal to finish it). Try again sends nothing and only turns the controls on; the mitigation is unchanged, because no key goes out
+     without the route's fresh check of the screen, the focus and the text, which refuses a dialog that is still off. Not a security gap, but the
      user cannot decline from nika until then.
   5. *A longer wait than the lock.* A dialog request holds the pane lock for up to 24 rounds, each a fresh capture and a settle of at most 4 x 150 ms;
      a fit, scroll, attachment send or draft write waits at most 5 s and then answers 409. `STEPS_MAX` (24) is a backstop that no consistent

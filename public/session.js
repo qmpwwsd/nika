@@ -22,10 +22,10 @@ import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
-import { panelSize, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS, GROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion } from './fit-ui.js';
+import { panelSize, panelFrame, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS, GROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 import { createGlideArm, frameOf, glideFrom, matrixY, paneWriteDisarms, GLIDE_MS } from './glide.js';
-import { panelOf, cropOf, INPUT_TEXT, CROP_TEXT } from './crop.js';
+import { panelOf, cropOf, layoutOf, INPUT_TEXT, CROP_TEXT } from './crop.js';
 import { createAttachTray } from './attach.js';
 import { createImageViewer, dataUrlOf, sizeLabel, MAX_THUMBS, IMAGE_MIME } from './image-viewer.js';
 import { createDialogForm, cleanDialog } from './dialog-form.js';
@@ -908,6 +908,7 @@ function renderBar() {
 /** A panel's `hidden` changed (its own module did it, between two captures): the bar follows in the same task, before the next paint. */
 function panelsChanged() {
   renderBar();
+  renderLayout(); // R2: the column's layout follows the panels in the same task (a shown panel hugs the terminal box)
   if (!M.body) return;
   const next = cropFor(M.body, M.cut);
   if (next?.top !== M.crop?.top || next?.kind !== M.crop?.kind) drawMirror(); // a panel came or went between two captures (the form's "Reading" timer, a 304): the mirror follows now
@@ -1002,6 +1003,7 @@ function renderAttn() {
   const panel = W.pane === 'ok' && (W.prompt !== null || DF?.shown() === true);
   note.hidden = A.kind !== 'attn' || panel;
   if (!note.hidden) $('attn-text').textContent = attnNote(A.name, A.attention, passKeyLabel(MAC));
+  renderLayout(); // R2: the attention note is a panel too (it is not in the MutationObserver list, so it asks here)
 }
 
 function optionRow(o) {
@@ -1554,6 +1556,7 @@ function drawMirror() {
   const end = M.crop?.top ?? M.cut;
   applyMirror($('term-rows'), toRenderModel(body, { cutAt: end }), cutCursor(body.cursor, end));
   paintStrip(M.crop?.kind ?? (M.cut !== null ? 'input' : null));
+  renderLayout(); // R2: the column's layout follows the crop, before the pin below, so the pin applies to the new layout
   const term = $('term');
   if (!M.frozen) term.scrollTop = term.scrollHeight;
 }
@@ -1725,7 +1728,10 @@ function jumpToLive() {
 // with those columns is nika's own size); scaledAt, the pane size { cols, rows } the text scale was last worked out for (null before the first).
 // F16: base, the size the fit asks without the grow ({ cols, rows }, the last commit's or room step's; null before the first).
 // FX2 (RV16 M3): short, the last commit measured the box while a panel that takes height from it was shown (fitPanelClosed takes one fresh commit when it closes).
-const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false };
+// R2 (0.5.2): free, the last frame fitMeasure took was measured with no panel shown (the base that a panel's commits build on, fit-ui.js panelFrame); false until then.
+const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false };
+const PANEL_IDS = Object.freeze(['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note']); // FX2 and R2: what shortens the terminal box
+const LAY = { v: null }; // R2: #sess-term[data-lay]: 'crop' | 'panel' | null (crop.js layoutOf)
 // F16: the grow of a cut-off question (fit-ui.js growStep): more rows for the pane while the question is open, the size back when it closes
 let GR = GROW_IDLE;
 // F10, design F10 4: after nika's own resize the last good frame stays drawn until a capture at the new size shows Claude's input box, for 1.2 s at most
@@ -1772,6 +1778,7 @@ function fitMeasure() {
   if (frame) {
     FIT.frame = frame;
     FIT.panel = { cols: frame.cols, rows: frame.rows };
+    FIT.free = !boxShortened(); // R2: only a frame measured with no panel up is the base that a panel's commits build on
   }
   return FIT.panel;
 }
@@ -1795,10 +1802,11 @@ function fitScale() {
   if (!p || !M.cols) return;
   FIT.scaledAt = { cols: M.cols, rows: M.rows };
   // F11: the rows actually drawn count (the rows above the cut and the strip), not the hidden ones; with no strip it is F10's scale
-  const hide = hiddenRows(M.body?.rows, M.cut);
+  const held = LAY.v !== null; // R2: the dialog covers Claude's input box only for a while, so under a panel the last commit's hidden rows and strip count and the text keeps its size
+  const hide = held ? FIT.hide : hiddenRows(M.body?.rows, M.cut);
   // F16: while the pane is taller because of the grow, the text keeps the size it has without it (the mirror overflows, pinned to the bottom); FIT.hide: the base counts the rows hidden at the commit
   const rows = scaleRows({ paneRows: M.rows, G: GR, fitted: FIT.state === 'fitted', baseRows: FIT.base?.rows, d: FIT.d, hide: FIT.hide });
-  const s = drawnScale({ frame: FIT.frame ?? p, cols: M.cols, rows, hide, strip: hide > 0 ? fitStrip() || FIT.strip : 0 });
+  const s = drawnScale({ frame: FIT.frame ?? p, cols: M.cols, rows, hide, strip: hide > 0 ? (held ? FIT.strip : fitStrip() || FIT.strip) : 0 });
   if (s === FIT.scale) return;
   FIT.scale = s;
   $('term').style.setProperty('--fit-scale', String(s));
@@ -1811,13 +1819,24 @@ function fitScale() {
  */
 function fitCommit() {
   const prev = FIT.frame;
-  fitMeasure();
+  const held = LAY.v !== null && prev !== null; // R2: a panel is up (data-lay needs a frame measured with none); the box holds only what the mirror draws, so it is not measured
+  if (held) {
+    const next = panelFrame(fitProbe(), prev); // the box without the panel: this width, the last height moved by the window's height change
+    if (next) {
+      FIT.frame = next;
+      FIT.panel = { cols: next.cols, rows: next.rows };
+    }
+  } else {
+    fitMeasure();
+  }
   const frame = FIT.frame;
   if (!frame) return;
-  FIT.short = boxShortened(); // FX2: a box measured with a panel shown is shorter than the resting layout; fitPanelClosed commits again when the panel goes
+  FIT.short = held || boxShortened(); // FX2: a box measured with a panel shown is shorter than the resting layout; fitPanelClosed commits again when the panel goes
   if (FIT.room && prev && (frame.iw !== prev.iw || frame.ih !== prev.ih || Math.abs(frame.width - prev.width) >= prev.cellW)) FIT.room = false;
-  FIT.hide = hiddenRows(M.body?.rows, M.cut);
-  FIT.strip = FIT.hide > 0 ? fitStrip() : 0;
+  if (!held) { // R2: under a panel the hidden rows of the last commit stay; the dialog covers Claude's input box only for a while
+    FIT.hide = hiddenRows(M.body?.rows, M.cut);
+    FIT.strip = FIT.hide > 0 ? fitStrip() : 0;
+  }
   const ask = fillSize(frame, FIT.room, FIT.d, FIT.hide, FIT.strip);
   FIT.base = ask;
   GR = growRebase(GR, ask.cols, ask.rows); // F16: a given-up question gets one new try at a new base size
@@ -1831,7 +1850,21 @@ function fitCommit() {
  * survey or the attention note (the roots' own `hidden`, which the panels and renderAttn set). A commit taken then measures a box shorter than the resting layout.
  */
 function boxShortened() {
-  return ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note'].some((id) => $(id).hidden === false);
+  return PANEL_IDS.some((id) => $(id).hidden === false);
+}
+
+/**
+ * R2 (0.5.2, design 051c 2.2): the terminal column's layout follows the panels and the crop: #sess-term[data-lay] is 'crop' (a question, review or survey crop under a
+ * shown panel: the terminal box hugs its rows and may shrink to the strip), 'panel' (any other panel or the note: it hugs the mirror) or absent (today's flex layout, also
+ * while no frame was measured with no panel up). Called after every drawn capture, panel change and attention note; it writes only when the value changes.
+ */
+function renderLayout() {
+  const v = layoutOf({ measured: FIT.frame !== null && FIT.free === true, panelShown: boxShortened(), crop: M.crop });
+  if (v === LAY.v) return;
+  LAY.v = v;
+  const col = $('sess-term');
+  if (v === null) col.removeAttribute('data-lay');
+  else col.setAttribute('data-lay', v);
 }
 
 /**
@@ -2195,7 +2228,11 @@ function wireFit() {
     sized: fitSized, // F10: the pane size of each answer starts the redraw hold
   });
   wireFitPop();
-  if (typeof ResizeObserver === 'function') new ResizeObserver(fitResize).observe($('term')); // the app's zoom changes the box too
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(fitResize);
+    ro.observe($('term')); // the app's zoom changes the box too
+    ro.observe($('sess-term')); // R2: under a panel #term hugs its rows, so only the column follows the window's height; fitResize still commits only on remeasure
+  }
   document.fonts?.ready.then(fitResize, () => {});
   $('term-rows').addEventListener('animationend', (e) => {
     if (e?.animationName === 'nika-refit') endRefit();
