@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.3 (unreleased)
+
+Session window (desktop app):
+
+- **Multi-question forms can be submitted again on Claude Code 2.1.328.** Claude 2.1.328 no longer draws the "Ready to submit
+  your answers?" row on its Review step, so nika could not read any Review: after the last answer the form said "The question
+  changed" and Submit had to be pressed in the terminal. nika now also finds the end of the answers at Claude's
+  `1. Submit answers` row, so the Review shows as the form again and **Submit answers** works from the page, on Claude 2.1.326
+  and 2.1.328 alike.
+
 ## 0.5.2 — 2026-11-18
 
 Session window (desktop app):

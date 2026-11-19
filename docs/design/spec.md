@@ -2835,6 +2835,8 @@ same with or without it, so the review shows as the form (heading, pairs, **Subm
 Claude's own `Submit answers` and `Ready to submit your answers?` rows stays `unreadable / layout` and keeps the banner (`claude-tui.md` §13.2). Re-checked live in LC18: the review of two long questions showed as a form (`at: review`, two pairs) and Submit from the page reached Claude.
 A question row as wide as the pane where its rest row continues it under the same bar (found in the live check LC19, 2026-11-17: questions of about 330 and 300 characters at 106 and 147 columns) is read too, as on the question step; the last row of a question, an answer row, the heading and the `Ready…` row as wide as the pane stay `unreadable / wide` (FXR).
 
+**The review step without the Ready row (Claude 2.1.328; nika 0.5.3, QP1).** Claude Code 2.1.328 draws the review with no `Ready to submit your answers?` row, so up to 0.5.2 every review read `unreadable / layout`: after the last answer the page said "The question changed" and Submit had to be pressed in the terminal. nika now ends the answered pairs at the Ready row, or, when there is none, at Claude's `1. Submit answers` row at column 0, and the review shows as the form again; the same pairs give the same `sig` in both versions (`claude-tui.md` §13.2).
+
 **States.** Every state has its own colour, icon and word.
 
 | State | When | Chip: colour, icon, word | Controls |
