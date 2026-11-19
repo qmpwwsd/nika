@@ -4815,15 +4815,18 @@ const FIT_OK = (b) => ({ status: 200, body: { fit: { state: 'fitted', reason: nu
 
 /** A fit factory that records what the router builds it with (`opts`) and what the routes call; `answers[name]` (a value or a function) replaces a method's result. */
 function fakeFit(answers = {}) {
-  const f = { calls: [], opts: null, answers };
+  // 0.5.3 (P2): `modes` = what setMode was given, in order; `order` = setMode and every other call in one list (setMode is kept out of `calls`, which the older cases compare whole)
+  const f = { calls: [], modes: [], order: [], opts: null, answers };
   const method = (name, fallback) => async (...args) => {
     f.calls.push([name, ...args]);
+    f.order.push([name, ...args]);
     const given = f.answers[name];
     return typeof given === 'function' ? given(...args) : given ?? fallback(...args);
   };
   f.factory = (opts) => {
     f.opts = opts;
     return {
+      setMode: async (m) => { f.modes.push(m); f.order.push(['setMode', m]); },
       hold: method('hold', (id, b) => FIT_OK(b)),
       release: method('release', () => ({ status: 200, body: { released: true } })),
       releaseWindow: method('releaseWindow', () => false),
@@ -6487,5 +6490,123 @@ describe('a dead pane (remain-on-exit) gets no keys and no capture', () => {
     const again = await request(a, '%6', ['GET', 'capture']);
     assert.equal(again.status, 200);
     assert.equal(again.body.mode, 'unknown');
+  });
+});
+
+// --- the Fit mode setting (0.5.3, P2): the routes hand it to the controller; a request never carries it -------------------------------
+
+describe('the Fit mode: settings PUT and the fit PUT hand it to the controller (design-052d 2.1, 2.2)', () => {
+  const settingsFile = (world) => path.join(configDir(world.env), 'config.json');
+  /** A hand edit: config.json is rewritten with another fit.mode, without the API. */
+  const handEdit = (world, mode) => {
+    const cfg = JSON.parse(fs.readFileSync(settingsFile(world), 'utf8'));
+    cfg.fit = { mode };
+    fs.writeFileSync(settingsFile(world), JSON.stringify(cfg));
+  };
+  const put = (a, json) => a.call('PUT', '/api/app/settings', { json });
+  async function rigFit(settings = {}) {
+    const world = await makeWorld(settings);
+    const fit = fakeFit();
+    const a = await boot({ world, deps: makeDeps({ createFit: fit.factory }) });
+    return { world, fit, a };
+  }
+
+  // M-4
+  test('(\u2212) M-4 PUT settings with a bad fit is 400 invalid, setMode is not called and the saved mode stays', async () => {
+    const { world, fit, a } = await rigFit({ fit: { mode: 'terminal' } });
+    for (const json of [
+      { fit: { mode: 'x' } }, { fit: { mode: '' } }, { fit: { mode: null } }, { fit: { mode: 'FILL' } }, { fit: { mode: 1 } }, { fit: { mode: ['off'] } },
+      { fit: { extra: 1 } }, { fit: { mode: 'fill', extra: 1 } }, { fit: 'fill' }, { fit: null }, { fit: [] },
+    ]) {
+      const r = await put(a, json);
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], JSON.stringify(json));
+    }
+    assert.deepEqual(fit.modes, []);
+    assert.equal((await a.call('GET', '/api/app/settings')).body.fit.mode, 'terminal');
+    assert.equal(JSON.parse(fs.readFileSync(settingsFile(world), 'utf8')).fit.mode, 'terminal');
+  });
+
+  // M-5
+  test('(+) M-5 PUT settings with each mode calls setMode once with it, answers with the saved fit, and GET shows it; an unrelated save hands over the saved mode again', async () => {
+    const { world, fit, a } = await rigFit();
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.fit, { mode: 'auto' }, 'the default');
+    for (const mode of ['fill', 'terminal', 'off', 'auto']) {
+      const before = fit.modes.length;
+      const r = await put(a, { fit: { mode } });
+      assert.equal(r.status, 200, r.raw);
+      assert.deepEqual(r.body.fit, { mode });
+      assert.deepEqual(fit.modes.slice(before), [mode], mode);
+      assert.deepEqual((await a.call('GET', '/api/app/settings')).body.fit, { mode });
+      assert.equal(JSON.parse(fs.readFileSync(settingsFile(world), 'utf8')).fit.mode, mode);
+    }
+    await put(a, { fit: { mode: 'fill' } });
+    assert.equal((await put(a, { ui: { theme: 'dark' } })).status, 200);
+    assert.equal(fit.modes.at(-1), 'fill', 'the mode of the saved config, which a hand edit would also have changed');
+  });
+
+  test('(+) with the real controller behind the router, saving off answers the next fit PUT with the off state and no tmux call; saving auto brings tmux back', async () => {
+    const world = await makeWorld();
+    const calls = [];
+    const exec = async (...args) => { calls.push(args); return { stdout: '', stderr: '' }; };
+    const a = await boot({ world, ctxOver: { exec }, deps: makeDeps() });
+    assert.equal((await put(a, { fit: { mode: 'off' } })).status, 200);
+    a.clock.t += 2000;
+    const r = await fitPane(a, '%6', { json: FIT_BODY });
+    assert.deepEqual([r.status, r.body], [200, { fit: { state: 'off', reason: null, mode: 'off' } }]);
+    assert.deepEqual(calls, [], 'not a single tmux call');
+    assert.equal((await put(a, { fit: { mode: 'auto' } })).status, 200);
+    a.clock.t += 2000;
+    const back = await fitPane(a, '%6', { json: FIT_BODY });
+    assert.deepEqual([back.status, back.body.error], [404, 'not_found'], 'tmux (an empty listing) decides again');
+    assert.deepEqual(calls, [[TMUX, ['-u', ...FIT_LIST.slice(2)]]]);
+  });
+
+  // M-6
+  test('(+) M-6 a fit PUT with open true reads config.json again and hands the mode to the controller before hold; open false does not', async () => {
+    const { world, fit, a } = await rigFit();
+    handEdit(world, 'terminal');
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.deepEqual(fit.order, [['setMode', 'terminal'], ['hold', '%6', FIT_SEEN]], 'setMode first, then hold');
+    handEdit(world, 'fill');
+    a.clock.t += 2000;
+    assert.equal((await fitPane(a, '%6', { json: { ...FIT_BODY, open: false } })).status, 200);
+    assert.deepEqual(fit.modes, ['terminal'], 'a heartbeat does not read the file');
+    assert.deepEqual(fit.order.at(-1), ['hold', '%6', { ...FIT_SEEN, open: false }]);
+    a.clock.t += 2000;
+    assert.equal((await fitPane(a, '%6', { json: { ...FIT_BODY, focus: true } })).status, 200);
+    assert.deepEqual(fit.modes, ['terminal', 'fill'], 'the next open request picks the new edit up');
+    handEdit(world, 'bogus'); // garbage reads as auto, with a warning that is not shown here
+    a.clock.t += 2000;
+    await fitPane(a, '%6', { json: FIT_BODY });
+    assert.deepEqual(fit.modes, ['terminal', 'fill', 'auto']);
+  });
+
+  test('(\u2212) a refused fit PUT (400, 404, 429) reads no file and sets no mode', async () => {
+    const { world, fit, a } = await rigFit();
+    handEdit(world, 'off');
+    assert.equal((await fitPane(a, '%6', { json: { cols: 1, rows: 1, open: true } })).status, 400);
+    assert.equal((await fitPane(a, '%5', { json: FIT_BODY })).status, 404, 'a shell pane');
+    assert.equal((await fitPane(a, '%99', { json: FIT_BODY })).status, 404, 'a pane tmux does not list');
+    assert.deepEqual(fit.order, []);
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.deepEqual(fit.modes, ['off', 'off', 'off', 'off']);
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 429);
+    assert.equal(fit.modes.length, 4, 'the refused request set nothing');
+    assert.equal((await fitPane(a, '%6', { method: 'DELETE' })).status, 200);
+    assert.equal(fit.modes.length, 4, 'DELETE sets nothing');
+  });
+
+  // M-7
+  test('(\u2212) M-7 a fit PUT body that carries a mode is 400 before the pane check and the controller is not called', async () => {
+    const { fit, a } = await rigFit();
+    for (const body of [
+      { ...FIT_BODY, focus: true, mode: 'fill' }, { ...FIT_BODY, mode: 'fill' }, { ...FIT_BODY, mode: 'off' }, { ...FIT_BODY, focus: false, mode: null }, { ...FIT_BODY, fit: { mode: 'fill' } },
+    ]) {
+      for (const id of ['%6', '%5']) {
+        const r = await fitPane(a, id, { json: body });
+        assert.deepEqual([r.status, r.body.error, r.body.message], [400, 'invalid', FIT_MESSAGE], `${id} ${JSON.stringify(body)}`);
+      }
+    }
+    assert.deepEqual(fit.order, []);
   });
 });

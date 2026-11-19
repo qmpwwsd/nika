@@ -45,5 +45,7 @@ export const CLAUDE_COMMAND = /^(?:claude|node|\d+\.\d+\.\d+[\w.+-]*)$/;
 /** `default` = no `--permission-mode` flag; `bypassPermissions` is never accepted (T4). */
 export const PERMISSION_MODES = ['default', 'manual', 'acceptEdits', 'plan', 'auto', 'dontAsk'];
 export const PANE_PLACEMENTS = ['beside', 'under-last'];
+/** The Fit mode setting (0.5.3, P2): `auto` is today's Fit, `fill` always sizes the window to the panel, `terminal` never resizes it, `off` holds nothing. The default is the first. */
+export const FIT_MODES = ['auto', 'fill', 'terminal', 'off'];
 /** The labels a spawned agent can carry (0.5, W9), in the order the spawn sheet lists them. The page keeps a copy in public/dash-model.js and a test compares the two. */
 export const KINDS = ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent'];

@@ -13,7 +13,7 @@ import { collect, findSession, findSessions } from './model.js';
 import { createServer } from './server.js';
 import { createAppApi } from './api-app.js';
 import { RELEASE_ALL_MS } from './fit.js';
-import { addProject, keyFor } from './store.js';
+import { addProject, keyFor, loadConfig } from './store.js';
 import { listPanes } from './collect/tmux.js';
 import { readHistory, readSubagentHistory } from './collect/history.js';
 import { listPlugins } from './collect/plugins.js';
@@ -300,6 +300,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
       };
       server = createServer({ config: cfg, exec, token: crypto.randomBytes(24).toString('base64url'), now, version: VERSION, app: createAppApi({ secret, ctx, deps }) });
       fit = ctx.fit;
+      fit.setMode((await loadConfig(env)).config.fit.mode); // 0.5.3 (P2): the saved Fit mode, before the first request (recover() runs in every mode)
       await bounded(fit.recover()); // give back what a crash left (design W7 section 6): before the first request and before `ready`
       if (phase === 'done') return; // stdin closed while it ran: finish() has closed the server
       try {

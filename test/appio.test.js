@@ -12,6 +12,7 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { serveApp, createPicker, statusLine } from '../src/appio.js';
 import { loadConfig } from '../src/store.js';
+import { configDir } from '../src/paths.js';
 import { createAttachments, MAX_BYTES } from '../src/attachments.js';
 import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
 
@@ -1510,6 +1511,68 @@ describe('the attachment store: started after ready, stopped at finish (0.5, W2)
       assert.equal(h.err().includes('attachments'), false);
     } finally {
       await h.close();
+    }
+  });
+});
+
+// --- the Fit mode at start (0.5.3, P2): the saved mode reaches the controller before the first request -----------------------------
+
+describe('the Fit mode: start() hands the saved mode to the controller (design-052d 2.1)', () => {
+  const saveFit = (h, fit) => {
+    fs.mkdirSync(configDir(h.env), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(configDir(h.env), 'config.json'), JSON.stringify({ fit }));
+  };
+
+  // the first request is a heartbeat (open false): an open true request re-reads config.json in the route, which would hide whether start() handed the mode over
+  const BEAT = { json: { cols: 120, rows: 40, open: false } };
+
+  test('(+) a saved mode off: the lease a crash left is still restored at start, and the first heartbeat is answered off with no fit tmux call', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: NONCE, w: 120, h: 40 });
+    const h = harness({ exec: tmux });
+    saveFit(h, { mode: 'off' });
+    plant(h);
+    try {
+      await h.up();
+      assert.deepEqual([tmux.st.w, tmux.st.h, tmux.st.tag], [100, 30, ''], 'recover() runs in every mode');
+      assert.deepEqual(filesOf(h), []);
+      const calls = tmux.st.calls.length;
+      const r = await h.call('PUT', '/api/app/pane/%256/fit', BEAT);
+      assert.deepEqual([r.status, r.body], [200, { fit: { state: 'off', reason: null, mode: 'off' } }]);
+      assert.equal(tmux.st.calls.length, calls, 'not a fit tmux call');
+      assert.deepEqual(filesOf(h), []);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('(+) a saved mode terminal: the first heartbeat zooms nothing here (one pane) and resizes nothing; the answer says terminal', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: '', w: 100, h: 30 });
+    const h = harness({ exec: tmux });
+    saveFit(h, { mode: 'terminal' });
+    try {
+      await h.up();
+      const r = await h.call('PUT', '/api/app/pane/%256/fit', BEAT);
+      assert.deepEqual([r.status, r.body.fit.state, r.body.fit.mode, r.body.fit.pane], [200, 'terminal', 'terminal', { cols: 100, rows: 30 }], JSON.stringify(r.body));
+      assert.equal(tmux.st.calls.includes('size'), false, 'never a resize-window');
+      assert.deepEqual([tmux.st.w, tmux.st.h], [100, 30]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('(\u2212) no saved fit, or a mode that is not one of the four: Auto, so the first heartbeat sizes the window as before', async () => {
+    for (const fit of [undefined, { mode: 'max' }, { mode: 'OFF' }, 'off', { mode: null }]) {
+      const tmux = fitTmux(fakeExec(), { tag: '', w: 100, h: 30 });
+      const h = harness({ exec: tmux });
+      if (fit !== undefined) saveFit(h, fit);
+      try {
+        await h.up();
+        const r = await h.call('PUT', '/api/app/pane/%256/fit', BEAT);
+        assert.deepEqual([r.status, r.body.fit.state, r.body.fit.mode, r.body.fit.pane], [200, 'fitted', 'auto', { cols: 120, rows: 40 }], `${JSON.stringify(fit)} ${JSON.stringify(r.body)}`);
+        assert.deepEqual([tmux.st.w, tmux.st.h], [120, 40]);
+      } finally {
+        await h.close();
+      }
     }
   });
 });
