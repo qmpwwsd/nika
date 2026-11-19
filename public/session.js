@@ -1729,7 +1729,8 @@ function jumpToLive() {
 // F16: base, the size the fit asks without the grow ({ cols, rows }, the last commit's or room step's; null before the first).
 // FX2 (RV16 M3): short, the last commit measured the box while a panel that takes height from it was shown (fitPanelClosed takes one fresh commit when it closes).
 // R2 (0.5.2): free, the last frame fitMeasure took was measured with no panel shown (the base that a panel's commits build on, fit-ui.js panelFrame); false until then.
-const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false };
+// 0.5.4 P2: mode, the Fit mode the latest fit answer carried ('auto' | 'fill' | 'terminal' | 'off'; 'auto' before the first answer and after a 403); fitResizes reads it.
+const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false, mode: 'auto' };
 const PANEL_IDS = Object.freeze(['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note']); // FX2 and R2: what shortens the terminal box
 const LAY = { v: null }; // R2: #sess-term[data-lay]: 'crop' | 'panel' | null (crop.js layoutOf)
 // F16: the grow of a cut-off question (fit-ui.js growStep): more rows for the pane while the question is open, the size back when it closes
@@ -1877,7 +1878,7 @@ function renderLayout() {
 function fitPanelClosed() {
   if (!FIT.short || boxShortened()) return;
   FIT.short = false;
-  if (!FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitFocused()) return;
+  if (!FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitResizes() || !fitFocused()) return;
   fitCommit();
 }
 
@@ -1890,13 +1891,22 @@ function fitPanelClosed() {
  * this moment, not a new commit.
  */
 function fitBaseFresh() {
-  if (!FIT.base || !FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitFocused() || boxShortened()) return;
+  if (!FIT.base || !FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitResizes() || !fitFocused() || boxShortened()) return;
   const next = fitProbe();
   if (!next) return;
   const ask = fillSize(next, FIT.room, FIT.d, FIT.hide, FIT.strip);
   if (ask.cols !== FIT.base.cols || ask.rows <= FIT.base.rows) return;
   fitMeasure();
   FIT.base = ask;
+}
+
+/**
+ * 0.5.4 P2 (design-052d 2.3 step 5): whether nika resizes the tmux window right now. The room (F10), the grow (F16) and the fresh measures of FX2 and FX3 all ask
+ * for a size, so they run only while the server sizes the window: the mode is Auto or Fill and the state is not off. The mode is the latest answer's (FIT.mode,
+ * set before the chip), so also the one answer that still says `fitted` while the mode is terminal or off (a switch in flight) takes no step.
+ */
+function fitResizes() {
+  return FIT.state !== 'off' && FIT.mode !== 'terminal' && FIT.mode !== 'off';
 }
 
 /**
@@ -1940,8 +1950,16 @@ function growTick() {
   fitPanelClosed(); // FX2: a panel that a commit was measured under has closed: the base is measured again before the grow looks at it
   const was = GR.phase === 'stepping' || GR.phase === 'held';
   const before = growing();
-  const { G, ask } = growStep(GR, { now: Date.now(), dialog: W.dialog, fitted: FIT.state === 'fitted', paneRows: M.rows, baseRows: FIT.base.rows, baseCols: FIT.base.cols });
-  GR = G;
+  const resizes = fitResizes();
+  let ask = null;
+  if (!resizes && GR.phase !== 'idle') { // 0.5.4 P2 (SF-1): the mode became Terminal or Off while a grow ran: nika no longer sizes the window, so the grow ends here and asks nothing, not even the way back
+    GR = GROW_IDLE;
+    FIT.room = false;
+  } else {
+    const step = growStep(GR, { now: Date.now(), dialog: W.dialog, fitted: FIT.state === 'fitted' && resizes, paneRows: M.rows, baseRows: FIT.base.rows, baseCols: FIT.base.cols });
+    GR = step.G;
+    ask = step.ask;
+  }
   if (ask) {
     if (ask.back === true) fitBaseFresh(); // FX3: the way back is counted from a base that is looked at now
     const want = growAsk(FIT.base, GR); // the grown rows, or the base size after a give-up or a close
@@ -1975,6 +1993,7 @@ function fitSized(pane) {
 /** The chip sink of the planner: the latest state is kept, and a view that comes during a hold waits for the frame (null hides the chip at once). */
 function fitChip(view, opts) {
   FIT.state = view ? view.state : null;
+  if (!view) FIT.mode = 'auto'; // 0.5.4 P2: no chip, no answer to know a mode from (a 403): the page is back to its start
   if (view && HOLD.active) {
     FIT.held = { view, opts };
     return;
@@ -2047,7 +2066,7 @@ function endRefit() {
 function holdTimeout(pending, ctx) {
   const frame = FIT.frame;
   const ask = frame ? fillSize(frame, true, FIT.d, FIT.hide, FIT.strip) : null; // F11: the room fill size, with the hidden rows of the last commit
-  if (pending && frame && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, modeBefore: ctx.modeBefore, want: ctx.want, body: pending.body, draft: pending.draft, gain: ask.rows > FIT.sentRows })) {
+  if (pending && frame && fitResizes() && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, modeBefore: ctx.modeBefore, want: ctx.want, body: pending.body, draft: pending.draft, gain: ask.rows > FIT.sentRows })) {
     FIT.room = true;
     FIT.base = ask; // F16: the grow counts from the size the fit asks without it
     const want = growAsk(ask, GR);
@@ -2063,7 +2082,7 @@ function holdTimeout(pending, ctx) {
 }
 
 /**
- * The fit chip, a button (F1): hidden until the server has answered, then one of five states, each with its own colour (data-k), icon and
+ * The fit chip, a button (F1): hidden until the server has answered, then one of eight looks, each with its own colour (data-k), icon and
  * words; the reason is the title and the announcement. The button is named by the label alone (the words and the chevron are decoration).
  * Called on a change of state, so it is announced once (not when `opts.quiet` is true: the planner says so for a change that followed a change of the
  * window's focus, F9; the chip, its title and its name still change); an open panel is drawn again in place. With no view the wrapper hides, the panel
@@ -2085,7 +2104,7 @@ function renderFit(view, opts) {
     if (inside) $('hist-toggle').focus();
     return;
   }
-  el.setAttribute('data-k', view.state);
+  el.setAttribute('data-k', view.look); // 0.5.4 P2: the look (the state for the Auto chips; fill, term-set and off-set name the mode they came from)
   el.setAttribute('title', view.title);
   el.setAttribute('aria-label', view.label);
   el.replaceChildren(icon(view.icon), h('span', { text: view.text }), icon('chev', 'ic chev'));
@@ -2226,6 +2245,7 @@ function wireFit() {
     fitAgain: fitAgainEvent,
     focused: fitFocused, // F9: the focus every request carries
     sized: fitSized, // F10: the pane size of each answer starts the redraw hold
+    mode: (m) => { FIT.mode = m; }, // 0.5.4 P2: the mode of every fit answer, before the chip (the room and the grow read it; a chip draws only on a change of key)
   });
   wireFitPop();
   if (typeof ResizeObserver === 'function') {

@@ -4578,6 +4578,117 @@ describe('F4-T2: the terminal chip has its own plum hue (tokens.css --fit-term*)
   });
 });
 
+// ---- 0.5.4 P2 (design-052d 2.4): the three looks that name the Fit mode: fill, term-set and off-set (tokens.css --fit-fill*, --fit-set*, --fit-off*; session.html i-fit-pin, i-term-pin, i-fit-off) ----
+describe('0.5.4 P2: the chip looks fill, term-set and off-set have their own tokens, icons and rules (M-21)', () => {
+  const css = strip(CSS);
+  const { THEME, ratio } = colourKit();
+  const TRIPLES = { fill: ['--fit-fill', '--fit-fill-soft', '--fit-fill-line'], 'term-set': ['--fit-set', '--fit-set-soft', '--fit-set-line'], 'off-set': ['--fit-off', '--fit-off-soft', '--fit-off-line'] };
+  const NAMES = Object.values(TRIPLES).flat();
+  const rule = (k) => new RegExp(`(?:^|[\\s}])\\.fit\\[data-k="${k}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+  const symbol = (n) => new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(HTML)?.[1] ?? null;
+
+  test('(+) the sprite draws i-fit-pin, i-term-pin and i-fit-off once each, in the 16 x 16 stroke style (the .ic class draws the stroke), each different from the other chip icons', () => {
+    const own = ['fit-pin', 'term-pin', 'fit-off'].map((n) => {
+      assert.equal(HTML.split(`<symbol id="i-${n}"`).length - 1, 1, n);
+      const body = symbol(n);
+      assert.ok(body, `i-${n}`);
+      assert.match(body, /<(path|circle|rect)\b/);
+      assert.doesNotMatch(body, /\b(fill|stroke|style)=/, `${n}: the dot is drawn by the stroke alone`);
+      return body;
+    });
+    const older = ['fit', 'zoom', 'off', 'window', 'term', 'hist-off', 'hist-on'].map(symbol);
+    assert.ok(older.every(Boolean));
+    assert.equal(new Set([...own, ...older]).size, 10, 'ten different drawings');
+  });
+
+  test('(+) each new icon is its base icon plus a mark: the pins keep i-fit / i-term and add a dot at the top right, the off icon keeps i-fit and adds the diagonal from (2,14) to (14,2)', () => {
+    const [fit, term] = [symbol('fit'), symbol('term')];
+    const [pin, tpin, off] = [symbol('fit-pin'), symbol('term-pin'), symbol('fit-off')];
+    for (const part of fit.match(/<(path|circle|rect)\b[^>]*>/g)) assert.ok(pin.includes(part) && off.includes(part), `i-fit's ${part}`);
+    for (const part of term.match(/<(path|circle|rect)\b[^>]*>/g)) assert.ok(tpin.includes(part), `i-term's ${part}`);
+    for (const dotted of [pin, tpin]) {
+      const dot = /<circle\b[^>]*\bcx="(\d+(?:\.\d+)?)"[^>]*\bcy="(\d+(?:\.\d+)?)"[^>]*\br="(\d*\.?\d+)"/.exec(dotted);
+      assert.ok(dot, 'a dot');
+      assert.ok(Number(dot[1]) >= 10 && Number(dot[2]) <= 6 && Number(dot[3]) <= 1.5, `top right and small: ${dot.slice(1)}`);
+    }
+    assert.match(off, /M2 14L14 2|M2 14 14 2|M2 14l12-12/, 'the diagonal');
+    assert.doesNotMatch(fit + term, /M2 14L14 2|M2 14 14 2/, 'the older icons have none');
+  });
+
+  test('(+) every icon chipView can name, in every state and mode, is in the sprite', () => {
+    const icons = new Set();
+    for (const state of ['fitted', 'zoomed', 'blocked', 'other', 'terminal', 'off']) {
+      for (const mode of ['auto', 'fill', 'terminal', 'off']) icons.add(chipViewReal({ fit: { state, reason: state === 'zoomed' ? 'panel-smaller' : null, panes: 3, userZoom: false, mode } }).icon);
+    }
+    assert.deepEqual([...icons].sort(), ['fit', 'fit-off', 'fit-pin', 'off', 'term', 'term-pin', 'window', 'zoom'].sort());
+    for (const icon of icons) assert.match(HTML, new RegExp(`<symbol id="i-${icon}" viewBox="0 0 16 16">`), icon);
+  });
+
+  test('(+) the nine tokens are plain 6-digit hex in the light block and in both dark blocks, the dark blocks agree, and each is tuned per theme', () => {
+    for (const [name, v] of Object.entries(THEME)) for (const n of NAMES) assert.match(v[n] ?? '', /^#[0-9a-f]{6}$/i, `${n} in ${name}`);
+    for (const n of NAMES) assert.equal(THEME.dark[n], THEME.darkPinned[n], n);
+    for (const n of NAMES) assert.notEqual(THEME.light[n], THEME.dark[n], `${n} is tuned per theme`);
+    assert.equal(new Set(NAMES.map((n) => THEME.light[n])).size, 9, 'nine different light values');
+  });
+
+  for (const name of Object.keys(THEME)) {
+    for (const [look, [text, soft, line]] of Object.entries(TRIPLES)) {
+      test(`(+) M-21 contrast (${name}, ${look}): the chip text is 4.5:1 on its soft fill and on the surfaces it can sit on; the edge is 3:1`, () => {
+        const v = THEME[name];
+        for (const ground of [v[soft], v['--surface'], v['--bg'], v['--surface-2'], v['--surface-3'], v['--attn-row']]) {
+          assert.ok(ratio(v[text], ground) >= 4.5, `${text} on ${ground}: ${ratio(v[text], ground).toFixed(2)}`);
+        }
+        for (const ground of [v['--bg'], v['--surface'], v['--surface-2'], v['--surface-3'], v['--attn-row']]) { // round 4 (N-2): the same grounds as the text loop above, minus the chip's own fill
+          assert.ok(ratio(v[line], ground) >= 3, `${line} on ${ground}: ${ratio(v[line], ground).toFixed(2)}`);
+        }
+      });
+    }
+  }
+
+  test('(+) M-21 the contrast check can fail: a text colour that is too pale on its fill is caught (the helper is not a rubber stamp)', () => {
+    assert.ok(ratio('#cfe9e3', '#dcf3ee') < 4.5);
+    assert.ok(ratio('#0b6b5c', '#dcf3ee') >= 4.5);
+  });
+
+  test('(+) each look reads its three tokens for text, fill and edge; off-set has a solid edge on a grey fill while blocked stays dashed and transparent', () => {
+    for (const [look, [text, soft, line]] of Object.entries(TRIPLES)) {
+      const r = rule(look);
+      assert.match(r, new RegExp(`(^|[\\s;])color:\\s*var\\(${text}\\)`), look);
+      assert.match(r, new RegExp(`background:\\s*var\\(${soft}\\)`), look);
+      assert.match(r, new RegExp(`border-color:\\s*var\\(${line}\\)`), look);
+      assert.doesNotMatch(r, /dashed/, `${look} is solid`);
+    }
+    assert.match(rule('blocked'), /dashed/);
+    assert.doesNotMatch(rule('blocked'), /background:/, 'blocked has no ground of its own');
+  });
+
+  test('(+) the eight looks have eight different text colours (every look its own colour, never colour alone: icon and words differ too)', () => {
+    const colours = ['fitted', 'zoomed', 'blocked', 'other', 'terminal', 'fill', 'term-set', 'off-set'].map((k) => /(?:^|[\s;])color:\s*(var\(--[a-z-]+\))/.exec(rule(k))?.[1]);
+    assert.ok(colours.every(Boolean), `${colours}`);
+    assert.equal(new Set(colours).size, 8, colours.join(' '));
+  });
+
+  test('(\u2212) the earlier five looks keep their colours', () => {
+    assert.match(rule('fitted'), /(^|[\s;])color:\s*var\(--accent\)/);
+    assert.match(rule('zoomed'), /(^|[\s;])color:\s*var\(--idle\)/);
+    assert.match(rule('blocked'), /(^|[\s;])color:\s*var\(--text-muted\)/);
+    assert.match(rule('other'), /(^|[\s;])color:\s*var\(--fit-other\)/);
+    assert.match(rule('terminal'), /(^|[\s;])color:\s*var\(--fit-term\)/);
+  });
+
+  test('(\u2212) the new tokens are used by their chip rule only, defined once per theme block in tokens.css, which stays ASCII with no color-mix() or :has()', () => {
+    const users = ['session.css', 'app.css', 'tokens.css'].flatMap((f) => (read(f).match(/var\(--fit-(?:fill|set|off)[a-z-]*\)/g) ?? []).map((u) => `${f} ${u}`));
+    assert.deepEqual(users, NAMES.map((n) => `session.css var(${n})`), 'only session.css, in the order of the rules');
+    const rules = read('session.css').split('\n').filter((l) => /var\(--fit-(?:fill|set|off)/.test(l)).map((l) => l.slice(0, l.indexOf(' {')));
+    assert.deepEqual(rules, ['.fit[data-k="fill"]', '.fit[data-k="term-set"]', '.fit[data-k="off-set"]']);
+    for (const n of NAMES) assert.equal([...TOKENS.matchAll(new RegExp(`${n}:`, 'g'))].length, 3, `${n}: the light block and the two dark blocks`);
+    const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
+    assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
+  });
+});
+
+
 describe('W7-T3: the fit in the session window (wiring)', () => {
   const SRC = code(JS['session.js']);
   const fnOf = (head) => {
@@ -4639,6 +4750,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     'function renderLayout()',
     // FX3 (LC18 R4b): the size back is counted from a base that is looked at when the grow asks for it
     'function fitBaseFresh()',
+    // 0.5.4 P2: whether nika resizes the window now (the gates of the room, the grow, FX2 and FX3)
+    'function fitResizes()',
   ];
   /** An element that also answers contains() (the fake El has no tree search): the panel's focus and dismissal rules ask it. */
   class Box extends El {
@@ -4693,7 +4806,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     focusState.el = null;
     const ctx = {
       paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null, cut: null, crop: null, stripKind: null, waiters: [], sent: 0 },
-      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false }, SC: { planner: null, scrolled: false },
+      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false, mode: 'auto' }, SC: { planner: null, scrolled: false },
       LAY: { v: null }, PANEL_IDS: ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note'], layoutOf: layoutOfReal, panelFrame: panelFrameReal, // 0.5.2 R2
       // F16: the grow's state, the pure rules, what the form is told, the page's dialog and a clock the test sets (growTick reads Date.now())
       GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal,
@@ -4731,7 +4844,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     let fns = null;
     ctx.HOLD = createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout, timeout: (pending, c) => fns.holdTimeout(pending, c), ended: () => fns.holdEnded() });
     // F11: `realDraw` runs the page's own drawMirror (it sets M.cut and shows the strip) instead of the spy
-    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()', 'function cropFor(body, cut)', 'function paintStrip(kind)'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed, fitBaseFresh, renderLayout${realDraw ? ', drawMirror' : ''} })`, ctx);
+    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()', 'function cropFor(body, cut)', 'function paintStrip(kind)'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed, fitBaseFresh, fitResizes, renderLayout${realDraw ? ', drawMirror' : ''} })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
       ...fns, ctx, log, clk, page, term, rows, cutEl, col, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
@@ -5078,8 +5191,9 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   // -- no new colour, icon or CSS rule
   test('(−) F9: no new token, colour, sprite symbol or CSS rule: the new chip keys are the earlier states, with their icons, and the five state rules are the only ones', () => {
     const css = strip(CSS);
-    const rules = [...css.matchAll(/(?:^|[\s}])\.fit\[data-k="([a-z]+)"\]\s*\{/g)].map((m) => m[1]);
-    assert.deepEqual(rules, ['fitted', 'zoomed', 'blocked', 'other', 'terminal'], 'the chip rules: five states, none added');
+    // 0.5.4 P2 (requirement change, design-052d 2.4): the three looks that name the Fit mode (fill, term-set, off-set) have rules of their own, after the five of F9 (the pattern takes a hyphen now)
+    const rules = [...css.matchAll(/(?:^|[\s}])\.fit\[data-k="([a-z-]+)"\]\s*\{/g)].map((m) => m[1]);
+    assert.deepEqual(rules, ['fitted', 'zoomed', 'blocked', 'other', 'terminal', 'fill', 'term-set', 'off-set'], 'the chip rules: the five states of F9, then the three looks of 0.5.4 P2');
     for (const b of [{ state: 'fitted', reason: 'terminal' }, { state: 'terminal', reason: 'switching', panes: 1 }, { state: 'terminal', reason: null, panes: 3 }]) {
       const v = chipViewReal({ fit: b });
       assert.ok(rules.includes(v.state), `${v.key}: its state has a rule`);
@@ -6037,8 +6151,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
    * The page with a mirror drawn at 171 x 45 (the terminal's size), the fit started and its first answer given: `pane` is the pane size nika's
    * resize made, so a redraw hold runs (`plain`: the drawn frame showed a readable input box). The replies after it are `more`.
    */
-  const heldRig = async ({ box = PANEL_145X22, pane = { cols: 145, rows: 21 }, plain = true, state = 'fitted', more = [], focus = false, before = {} } = {}) => {
-    const r = rig({ box, replies: [answerAt(state, pane), ...more] });
+  const heldRig = async ({ box = PANEL_145X22, pane = { cols: 145, rows: 21 }, plain = true, state = 'fitted', more = [], focus = false, before = {}, first = answerAt(state, pane) } = {}) => {
+    const r = rig({ box, replies: [first, ...more] });
     r.page.focus = focus;
     r.wireFit();
     r.ctx.M.cols = 171;
@@ -7298,8 +7412,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   /** What the drawn capture says about the dialog: the page's own W.dialog and the raw body the hold judges. */
   const showDialog = (r, dialog) => { r.ctx.W.dialog = dialog; r.ctx.M.body = { ...r.ctx.M.body, dialog }; };
   /** The page with a 100 x 30 panel and pane, the fit started and its first answer given (`state`); `more` are the answers to the next requests. */
-  const growRig = async ({ state = 'fitted', more = [] } = {}) => {
-    const r = rig({ replies: [answerAt(state, { cols: 100, rows: 30 }), ...more] });
+  const growRig = async ({ state = 'fitted', more = [], first = answerAt(state, { cols: 100, rows: 30 }) } = {}) => {
+    const r = rig({ replies: [first, ...more] });
     r.wireFit();
     r.ctx.M.cols = 100;
     r.ctx.M.rows = 30;
@@ -7869,7 +7983,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.deepEqual([...src.matchAll(/\bfitPanelClosed\(/g)].length, 2, 'the declaration and the one call');
     assert.match(fnOf('function growTick()'), /if \(!FIT\.planner \|\| !FIT\.base \|\| M\.gone \|\| M\.fatal\) return;\s*fitPanelClosed\(\);\s*const was = /);
     assert.match(fnOf('function fitCommit()'), /if \(!frame\) return;\s*FIT\.short = held \|\| boxShortened\(\);/); // 0.5.2 R2: a commit taken under a panel's layout is short too, whatever the panels say now
-    assert.match(fnOf('function fitPanelClosed()'), /if \(!FIT\.short \|\| boxShortened\(\)\) return;\s*FIT\.short = false;\s*if \(!FIT\.planner \|\| FIT\.state === null \|\| FIT\.state === 'blocked' \|\| !fitFocused\(\)\) return;\s*fitCommit\(\);/);
+    // 0.5.4 P2 (requirement change, design-052d 2.3 step 5): the guard also stops when nika does not resize the window (fitResizes: the mode terminal or off, or the state off)
+    assert.match(fnOf('function fitPanelClosed()'), /if \(!FIT\.short \|\| boxShortened\(\)\) return;\s*FIT\.short = false;\s*if \(!FIT\.planner \|\| FIT\.state === null \|\| FIT\.state === 'blocked' \|\| !fitResizes\(\) \|\| !fitFocused\(\)\) return;\s*fitCommit\(\);/);
     const body = code(fnOf('function fitPanelClosed()') + fnOf('function boxShortened()'));
     assert.doesNotMatch(body, /setTimeout|addEventListener|ResizeObserver|call\(|fetch\(|document\.|innerHTML/);
     assert.deepEqual(findSinks(body), []);
@@ -8426,6 +8541,311 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     seen(busy.r, { state: 'unreadable', kind: 'ask', reason: 'wide' });
     assert.equal(busy.root.hidden, true, 'no form');
     assert.equal(busy.note.hidden, true, 'the note is the registry\'s word `attn` (LC18 kept it at busy by hand)');
+  });
+
+  // ---- 0.5.4 P2 (design-052d 2.3, 2.4): the Fit mode in the session window: the chip's looks (M-20) and the gates of the room and the grow (M-22) ----
+  const DOT_ = '\u00b7';
+  /** An answer of the server with a mode (the test's own, so the mode is explicit); `off` has no pane. */
+  const answerM = (state, mode, pane = { cols: 100, rows: 30 }, reason = null, panes = 1) => ({ status: 200, body: { fit: { state, reason, pane, panes, userZoom: false, mode } } });
+  const OFF_ANSWER = { status: 200, body: { fit: { state: 'off', reason: null, mode: 'off' } } };
+  const chipNow = (r) => ({ k: r.chip.getAttribute('data-k'), mode: r.ctx.FIT.mode, state: r.ctx.FIT.state, text: r.chip.kids[1]?.textContent, href: r.chip.kids[0]?.kids[0]?.getAttribute('href') });
+
+  test('(+) M-20 renderFit draws each new look: data-k is the view\'s look, the icon is its sprite symbol, the words, the label and the title are the view\'s, and it is announced once', () => {
+    const cases = [
+      [answerM('fitted', 'fill'), 'fill', '#i-fit-pin', `Fit ${DOT_} always fills`, 'Fit: always fills the panel'],
+      [answerM('fitted', 'fill', undefined, 'terminal'), 'fill', '#i-fit-pin', `Fit ${DOT_} always fills`, 'Fit: always fills the panel'],
+      [answerM('zoomed', 'fill', undefined, 'panel-smaller'), 'zoomed', '#i-zoom', `Fit ${DOT_} zoomed, text scaled`, 'Fit: zoomed, text scaled'],
+      [answerM('terminal', 'terminal', undefined, null, 1), 'term-set', '#i-term-pin', `Fit ${DOT_} terminal's size (set)`, "Fit: your terminal's size, from Settings"],
+      [answerM('terminal', 'terminal', undefined, null, 3), 'term-set', '#i-term-pin', `Fit ${DOT_} terminal's size (set)`, "Fit: your terminal's size, from Settings"],
+      [OFF_ANSWER, 'off-set', '#i-fit-off', `Fit ${DOT_} off in Settings`, 'Fit: off in Settings'],
+    ];
+    for (const [reply, look, href, text, label] of cases) {
+      const r = rig();
+      const view = chipViewReal(reply.body);
+      r.renderFit(view);
+      assert.equal(r.chip.getAttribute('data-k'), look, label);
+      assert.equal(r.chip.kids[0].kids[0].getAttribute('href'), href, label);
+      assert.equal(r.chip.kids[1].textContent, text, label);
+      assert.equal(r.chip.getAttribute('aria-label'), label);
+      assert.equal(r.chip.getAttribute('title'), view.title);
+      assert.equal(r.wrap.hidden, false);
+      assert.deepEqual(r.log.said, [view.say]);
+    }
+  });
+
+  test('(+) M-20 the Auto looks keep data-k = their state (the older chips look as before)', () => {
+    for (const state of ['fitted', 'zoomed', 'blocked', 'other', 'terminal']) {
+      const r = rig();
+      r.renderFit(chipViewReal(answerM(state, 'auto', undefined, state === 'zoomed' ? 'panel-smaller' : null).body));
+      assert.equal(r.chip.getAttribute('data-k'), state);
+    }
+  });
+
+  test('(+) M-20 the panel of a new look draws the Settings hint with no action, and the panel of zoomed under fill draws Fit again; a redraw in place follows the chip', () => {
+    const r = rig();
+    r.renderFit(chipViewReal(answerM('fitted', 'fill').body));
+    r.openFitPop();
+    assert.equal(r.popH.textContent, 'Fit: always fills the panel');
+    assert.equal(r.popHint.hidden, false);
+    assert.equal(r.popHint.textContent, "Change it in nika's Settings, under Session window.");
+    assert.equal(r.again.hidden, true);
+    r.renderFit(chipViewReal(answerM('zoomed', 'fill', undefined, 'panel-smaller').body));
+    assert.equal(r.popHint.textContent, 'Fit again tries once more.');
+    assert.equal(r.again.hidden, false);
+    assert.equal(r.again.textContent, 'Fit again');
+    r.renderFit(chipViewReal(OFF_ANSWER.body));
+    assert.equal(r.popH.textContent, 'Fit: off in Settings');
+    assert.equal(r.popHint.textContent, "Change it in nika's Settings, under Session window.");
+    assert.equal(r.again.hidden, true);
+  });
+
+  test('(+) M-20 through the planner: the chip and FIT.mode follow the answers of fill, terminal, off and back to auto, one heartbeat each', async () => {
+    const r = await chipped([answerM('fitted', 'fill'), answerM('terminal', 'terminal', undefined, null, 3), OFF_ANSWER, answerM('fitted', 'auto')]);
+    assert.deepEqual(chipNow(r), { k: 'fill', mode: 'fill', state: 'fitted', text: `Fit ${DOT_} always fills`, href: '#i-fit-pin' });
+    await r.clk.advance(5000);
+    assert.deepEqual(chipNow(r), { k: 'term-set', mode: 'terminal', state: 'terminal', text: `Fit ${DOT_} terminal's size (set)`, href: '#i-term-pin' });
+    await r.clk.advance(5000);
+    assert.deepEqual(chipNow(r), { k: 'off-set', mode: 'off', state: 'off', text: `Fit ${DOT_} off in Settings`, href: '#i-fit-off' });
+    await r.clk.advance(5000);
+    assert.deepEqual(chipNow(r), { k: 'fitted', mode: 'auto', state: 'fitted', text: `Fit ${DOT_} fills the panel`, href: '#i-fit' });
+    assert.equal(r.log.calls.length, 4, 'the page keeps asking in every mode, Off included: one request per beat');
+  });
+
+  test('(+) M-20 FIT.mode follows an answer whose chip key did not change (fitted:terminal in Auto, then the same with mode terminal for one request): the gates see the new mode at once', async () => {
+    const r = await chipped([answerM('fitted', 'auto', undefined, 'terminal'), answerM('fitted', 'terminal', undefined, 'terminal')]);
+    assert.equal(r.ctx.FIT.mode, 'auto');
+    await r.clk.advance(5000);
+    assert.deepEqual([r.ctx.FIT.mode, r.ctx.FIT.state, r.chip.getAttribute('data-k')], ['terminal', 'fitted', 'fitted'], 'the chip looks as Auto (ruling 1); the mode is the answer\'s');
+  });
+
+  test('(\u2212) M-20 a 403 hides the chip and puts FIT.mode back to auto with the state null', async () => {
+    const r = await chipped([answerM('fitted', 'fill'), { status: 403, body: { error: 'forbidden' } }]);
+    assert.equal(r.ctx.FIT.mode, 'fill');
+    await r.clk.advance(5000);
+    assert.deepEqual([r.ctx.FIT.mode, r.ctx.FIT.state, r.wrap.hidden], ['auto', null, true]);
+  });
+
+  test('(\u2212) M-20 a refusal, and a 200 that is not a fit answer, leave FIT.mode and the chip as they were', async () => {
+    const r = await chipped([answerM('fitted', 'fill'), { status: 502, body: { error: 'tmux_failed' } }, { status: 200, body: null }]);
+    await r.clk.advance(5000);
+    await r.clk.advance(5000);
+    assert.ok(r.log.calls.length >= 3, 'the two bad answers were asked for: ' + r.log.calls.length);
+    assert.deepEqual(chipNow(r), { k: 'fill', mode: 'fill', state: 'fitted', text: `Fit ${DOT_} always fills`, href: '#i-fit-pin' });
+  });
+
+  test('(+) M-20 the code: FIT starts with mode auto, the planner is given a mode sink, fitChip puts the mode back to auto with the chip, and the chip\'s data-k is the view\'s look', () => {
+    assert.match(SRC, /const FIT = \{[^\n]*\bmode: 'auto'[^\n]*\};/);
+    assert.match(fnOf('function wireFit()'), /mode: \(m\) => \{ FIT\.mode = m; \},/);
+    assert.match(fnOf('function fitChip(view, opts)'), /FIT\.state = view \? view\.state : null;\s*if \(!view\) FIT\.mode = 'auto';/);
+    assert.match(fnOf('function renderFit(view, opts)'), /el\.setAttribute\('data-k', view\.look\);/);
+    assert.doesNotMatch(fnOf('function renderFit(view, opts)'), /view\.state/);
+    assert.match(fnOf('function fitResizes()'), /return FIT\.state !== 'off' && FIT\.mode !== 'terminal' && FIT\.mode !== 'off';/);
+  });
+
+  test('(+) M-22 the code: the four places that ask for a size ask fitResizes first (the room entry, the grow input, FX2, FX3), and nothing else calls it', () => {
+    assert.match(fnOf('function holdTimeout(pending, ctx)'), /if \(pending && frame && fitResizes\(\) && roomStep\(\{/);
+    assert.match(fnOf('function growTick()'), /const resizes = fitResizes\(\);/);
+    assert.match(fnOf('function growTick()'), /fitted: FIT\.state === 'fitted' && resizes,/); // round 4: one call, used for the input and for the guard below
+    assert.match(fnOf('function fitBaseFresh()'), /FIT\.state === 'blocked' \|\| !fitResizes\(\) \|\| !fitFocused\(\) \|\| boxShortened\(\)\) return;/);
+    assert.match(fnOf('function fitPanelClosed()'), /FIT\.state === 'blocked' \|\| !fitResizes\(\) \|\| !fitFocused\(\)\) return;/);
+    assert.equal([...SRC.matchAll(/\bfitResizes\(\)/g)].length, 5, 'the declaration and the four places');
+    assert.doesNotMatch(fnOf('function fitResizes()'), /setTimeout|addEventListener|call\(|fetch\(|document\.|innerHTML/);
+  });
+
+  // -- fitResizes: the one place that says whether nika resizes the window right now
+  test('(+) M-22 fitResizes is true for Auto and Fill whatever the state, and for no state yet', () => {
+    const r = rig();
+    for (const [state, mode] of [['fitted', 'auto'], ['fitted', 'fill'], ['zoomed', 'fill'], ['terminal', 'auto'], ['blocked', 'auto'], ['other', 'auto'], [null, 'auto']]) {
+      r.ctx.FIT.state = state;
+      r.ctx.FIT.mode = mode;
+      assert.equal(r.fitResizes(), true, `${state} + ${mode}`);
+    }
+  });
+
+  test('(\u2212) M-22 fitResizes is false for the mode terminal or off, whatever the state (the one answer that still says fitted, ruling 1), and for the state off', () => {
+    const r = rig();
+    for (const [state, mode] of [['fitted', 'terminal'], ['fitted', 'off'], ['terminal', 'terminal'], ['off', 'off'], ['off', 'auto'], ['off', 'fill'], ['zoomed', 'terminal'], [null, 'terminal']]) {
+      r.ctx.FIT.state = state;
+      r.ctx.FIT.mode = mode;
+      assert.equal(r.fitResizes(), false, `${state} + ${mode}`);
+    }
+  });
+
+  // -- M-22: the room and the grow resize the window, so they run only while the server resizes it: Auto and Fill
+  test('(\u2212) M-22 grow: a cut question asks for no rows while the mode is terminal or off, also for the one answer that still says fitted (ruling 1), and for the states terminal and off', async () => {
+    const cases = [
+      ['fitted + terminal', answerM('fitted', 'terminal')],
+      ['fitted + off', answerM('fitted', 'off')],
+      ['terminal + terminal', answerM('terminal', 'terminal')],
+      ['off', OFF_ANSWER],
+    ];
+    for (const [name, first] of cases) {
+      const r = await growRig({ first });
+      await firstStep(r);
+      await r.clk.advance(2000);
+      r.handleCapture({ status: 304, body: null });
+      assert.deepEqual(rowsOfPuts(r), [30], `${name}: only the first request, no grow step`);
+      assert.equal(r.ctx.GR.phase, 'idle', name);
+    }
+  });
+
+  test('(+) M-22 grow: the same cut question asks the first step in Auto and in Fill (the room and the grow run as in Auto under fill)', async () => {
+    for (const mode of ['auto', 'fill']) {
+      const r = await growRig({ first: answerM('fitted', mode), more: [answerM('fitted', mode, { cols: 100, rows: 60 })] });
+      await firstStep(r);
+      assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 60, false)], mode);
+      assert.equal(r.ctx.GR.phase, 'stepping', mode);
+    }
+  });
+
+  // -- SF-1 (review-P2b, round 4): a grow that already runs when the mode becomes Terminal or Off ends at once and asks nothing, not even the way back
+  /** Auto grew the panel to 100 x 60 and the question is whole (the grow is `held`); `next` answers the next beat. */
+  const grownRig = async (next) => {
+    const r = await growRig({ first: answerM('fitted', 'auto'), more: [answerM('fitted', 'auto', { cols: 100, rows: 60 }), next] });
+    await firstStep(r);
+    await r.clk.advance(0); // the answer to the step
+    assert.deepEqual(rowsOfPuts(r), [30, 60], 'Auto asked the grown rows');
+    paneAt(r, 60);
+    showDialog(r, WHOLE);
+    r.fitCaptured();
+    assert.equal(r.ctx.GR.phase, 'held');
+    return r;
+  };
+  // closeQuestion (above, FX3): the question closes and a second of quiet passes (1.3 s: less than a beat)
+
+  test('(\u2212) SF-1: a grow that runs (held at 100 x 60) when the next beat answers mode terminal or off sends no request when the question closes, not even the way back', async () => {
+    const cases = [
+      ['terminal', answerM('terminal', 'terminal'), 'terminal'],
+      ['fitted + terminal (the one answer of ruling 1)', answerM('fitted', 'terminal', { cols: 100, rows: 60 }), 'terminal'],
+      ['fitted + off (the one answer of ruling 1)', answerM('fitted', 'off', { cols: 100, rows: 60 }), 'off'],
+      ['off', OFF_ANSWER, 'off'],
+    ];
+    for (const [name, next, mode] of cases) {
+      const r = await grownRig(next);
+      await r.clk.advance(5000); // the beat that carries the switch
+      assert.equal(r.ctx.FIT.mode, mode, `${name}: the switch has arrived`);
+      const sent = r.log.calls.length;
+      await closeQuestion(r);
+      assert.equal(r.log.calls.length, sent, `${name}: no request after the switch`);
+      assert.deepEqual([r.ctx.GR.phase, r.ctx.FIT.room], ['idle', false], name);
+    }
+  });
+
+  test('(+) SF-1: the same scenario with a beat that keeps Auto or Fill sends the way back once, as before (the grow still gives the window back where the server sizes it)', async () => {
+    for (const mode of ['auto', 'fill']) {
+      const r = await grownRig(answerM('fitted', mode, { cols: 100, rows: 60 }));
+      await r.clk.advance(5000);
+      assert.equal(r.ctx.FIT.mode, mode, mode);
+      const sent = r.log.calls.length;
+      await closeQuestion(r);
+      assert.deepEqual(calls(r).slice(sent).map((c) => [c.method, c.json.rows]), [['PUT', 30]], `${mode}: the base rows, once`);
+      assert.equal(r.ctx.GR.phase, 'idle', mode);
+    }
+  });
+
+  test('(+) SF-1: once nothing resizes, the first look ends a grow in any phase (stepping, held, spent): GR is idle, FIT.room is off, nothing is sent; (\u2212) an idle grow keeps FIT.room', async () => {
+    const make = {
+      stepping: async () => { const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] }); await firstStep(r); await r.clk.advance(0); return r; },
+      held: async () => { const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] }); await firstStep(r); await r.clk.advance(0); paneAt(r, 60); showDialog(r, WHOLE); r.fitCaptured(); return r; },
+      spent: async () => {
+        const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 30 })] }); // the ask is answered, but the pane stays 30 rows
+        await firstStep(r);
+        await r.clk.advance(0);
+        for (let i = 0; i < 24; i += 1) { await r.clk.advance(250); r.handleCapture({ status: 304, body: null }); }
+        return r;
+      },
+    };
+    for (const [phase, build] of Object.entries(make)) {
+      for (const mode of ['terminal', 'off']) {
+        const r = await build();
+        assert.equal(r.ctx.GR.phase, phase, `${phase}: the grow is in that phase first`);
+        r.ctx.FIT.room = true;
+        r.ctx.FIT.mode = mode; // the latest answer's mode, as fitChip leaves it
+        const sent = r.log.calls.length;
+        r.growTick();
+        assert.deepEqual([r.ctx.GR.phase, r.ctx.FIT.room, r.log.calls.length], ['idle', false, sent], `${phase} + ${mode}`);
+      }
+    }
+    const idle = await growRig();
+    idle.ctx.FIT.room = true;
+    idle.ctx.FIT.mode = 'terminal';
+    idle.growTick();
+    assert.deepEqual([idle.ctx.GR.phase, idle.ctx.FIT.room], ['idle', true], 'an idle grow: the room flag is not this guard\'s');
+  });
+
+  test('(+) SF-1: the guard that ends a grow also redraws what shows it: the open panel drops its grow line and the form is told the step is over', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    r.openFitPop();
+    await firstStep(r);
+    assert.equal(r.popHint.hidden, false, 'the grow line is up');
+    assert.equal(r.growing(), true);
+    const drawn = r.log.df.length;
+    r.ctx.FIT.mode = 'terminal';
+    r.growTick();
+    assert.equal(r.popHint.hidden, true, 'the grow line is gone');
+    assert.deepEqual(r.log.df.slice(drawn), [false], 'the form is told the step is over');
+    assert.equal(r.growing(), false);
+  });
+
+  test('(+) SF-1 the code: growTick asks fitResizes once, ends a grow that is not idle when nothing resizes (GR = GROW_IDLE, FIT.room = false) and then does not ask growStep', () => {
+    const body = fnOf('function growTick()');
+    assert.match(body, /if \(!resizes && GR\.phase !== 'idle'\) \{[^}]*GR = GROW_IDLE;[^}]*FIT\.room = false;[^}]*\} else \{[^}]*growStep\(GR,/);
+    assert.equal([...body.matchAll(/\bfitResizes\(\)/g)].length, 1);
+    assert.equal([...body.matchAll(/\bgrowStep\(/g)].length, 1);
+  });
+
+  test('(\u2212) M-22 room: the hold that ran out takes no room step while the mode is terminal or off (the one answer that still says fitted), and (+) takes it in Auto and in Fill', async () => {
+    for (const mode of ['terminal', 'off']) {
+      const r = await heldRig({ first: answerM('fitted', mode, { cols: 145, rows: 21 }), more: [answerM('fitted', mode, { cols: 210, rows: 32 })] });
+      r.handleHeld(shot(145, 21)); // Claude's frame is cut: no input box
+      await r.clk.advance(HOLD_MS * 2);
+      assert.deepEqual([r.log.calls.length, r.ctx.FIT.room], [1, false], mode);
+      assert.equal(r.log.noted.length, 1, `${mode}: the latest capture is drawn as it is`);
+    }
+    for (const mode of ['auto', 'fill']) {
+      const r = await heldRig({ first: answerM('fitted', mode, { cols: 145, rows: 21 }), more: [answerM('fitted', mode, { cols: 210, rows: 32 })] });
+      r.handleHeld(shot(145, 21));
+      await r.clk.advance(HOLD_MS);
+      assert.deepEqual(calls(r), [PUT(145, 22, true), PUT(210, 33, false)], mode);
+      assert.equal(r.ctx.FIT.room, true, mode);
+    }
+  });
+
+  // -- FX2 and FX3 (design 2.3 step 5): the fresh commit after a panel closes and the fresh base are skipped when nothing resizes
+  /** A focused page, the first answer given, the question form shown while a window focus is taken, then closed and one capture looked at: how many commits there were. */
+  const commitsAfterPanel = async (first) => {
+    const r = await growRig({ first, more: [first, first, first, first] });
+    r.page.focus = true;
+    openPanel(r, 'dialog-form');
+    const w = watchCommits(r);
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    closePanel(r, 'dialog-form');
+    r.growTick();
+    return w.n;
+  };
+
+  test('(+) FX2 + M-22: in Auto and in Fill the panel that closes gets its one fresh commit (2 commits: the focus and the close)', async () => {
+    assert.equal(await commitsAfterPanel(answerM('fitted', 'auto')), 2);
+    assert.equal(await commitsAfterPanel(answerM('fitted', 'fill')), 2);
+  });
+
+  test('(\u2212) FX2 + M-22: with the mode terminal or off, or the state off, the panel that closes gets no fresh commit (only the focus commit)', async () => {
+    assert.equal(await commitsAfterPanel(answerM('terminal', 'terminal')), 1, 'terminal');
+    assert.equal(await commitsAfterPanel(answerM('fitted', 'terminal')), 1, 'fitted + terminal (one answer)');
+    assert.equal(await commitsAfterPanel(answerM('fitted', 'off')), 1, 'fitted + off (one answer)');
+    assert.equal(await commitsAfterPanel(OFF_ANSWER), 1, 'off');
+  });
+
+  test('(+) FX3 + M-22: fitBaseFresh replaces a base that is smaller than the box in Auto and in Fill, and (\u2212) leaves it alone with the mode terminal or off and for the state off', async () => {
+    const cases = [['auto', answerM('fitted', 'auto'), true], ['fill', answerM('fitted', 'fill'), true], ['terminal', answerM('terminal', 'terminal'), false], ['fitted + terminal', answerM('fitted', 'terminal'), false], ['fitted + off', answerM('fitted', 'off'), false], ['off', OFF_ANSWER, false]];
+    for (const [name, first, fresh] of cases) {
+      const r = await growRig({ first });
+      r.page.focus = true;
+      r.ctx.FIT.base = { cols: 100, rows: 16 }; // a base that a commit measured under a layout that has gone
+      r.fitBaseFresh();
+      assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: fresh ? 30 : 16 }, name);
+    }
   });
 });
 

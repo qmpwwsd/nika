@@ -37,16 +37,17 @@ function runModule(file, ctx, tail) {
   return vm.runInNewContext(`${src}\n${tail}`, ctx);
 }
 
-function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = false } = {}) {
+function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = false, fit = { mode: 'auto' } } = {}) {
   const base = {
     ui: { theme: 'system', singleKeyShortcuts: true }, models: { orchestrator: 'opus', reasoner: 'opus', builder: 'claude-sonnet-5-5', scout: 'haiku' },
     remoteControl: { enabled: false, prefix: '' }, permissionMode: 'default', panePlacement: 'beside', limits: { maxAgents: 3 },
-    rules: { localTemplate: null }, perProject: {}, compaction, ...(attachments ? { attachments } : {}), // an older server sends no attachments group
+    rules: { localTemplate: null }, perProject: {}, compaction, ...(attachments ? { attachments } : {}), ...(fit ? { fit } : {}), // an older server sends no attachments group, and (before 0.5.4) no fit group
   };
   const radios = {
     theme: ['system', 'light', 'dark'].map((v) => Object.assign(new El('input'), { value: v })),
     perm: ['default', 'manual', 'acceptEdits', 'plan', 'auto', 'dontAsk'].map((v) => Object.assign(new El('input'), { value: v })),
     place: ['beside', 'under-last'].map((v) => Object.assign(new El('input'), { value: v })),
+    fit: ['auto', 'fill', 'terminal', 'off'].map((v) => Object.assign(new El('input'), { value: v })), // 0.5.4 P2
   };
   const nodes = new Map();
   // a real input's value is always a string, whatever was assigned to it
@@ -126,7 +127,7 @@ function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = 
   };
   runModule('settings.js', ctx, '({ hooks })');
   const r = {
-    node, buttons, calls, toasts, announced, state, form, pct, release, rxFields, RX,
+    node, buttons, calls, toasts, announced, state, form, pct, release, rxFields, RX, radios,
     keep: node('#set-keep-days'),
     sw: node('#set-compact'),
     win: node('#set-compact-win'),
@@ -139,6 +140,7 @@ function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = 
     typeKeep: (v) => { r.keep.value = v; form.fire('input'); },
     blur: () => pct.fire('blur'),
     toggle: (on) => { r.sw.checked = on; form.fire('change'); },
+    pickFit: (v) => { for (const x of radios.fit) x.checked = x.value === v; form.fire('change'); }, // 0.5.4 P2
     pick: (v) => { r.win.value = v; form.fire('change'); },
     submit: () => form.fire('submit'),
     line: () => (r.result.hidden ? null : r.result.textContent),
@@ -487,7 +489,7 @@ describe('Auto-compact: Save', () => {
       const [put] = s.puts();
       assert.deepEqual(put.json.compaction, { enabled: true, pct: 90, window }, value);
       assert.equal(typeof put.json.compaction.pct, 'number');
-      assert.deepEqual(Object.keys(put.json).sort(), ['attachments', 'compaction', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
+      assert.deepEqual(Object.keys(put.json).sort(), ['attachments', 'compaction', 'fit', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']); // 0.5.4 P2: fit is one more group
     }
   });
 
@@ -637,7 +639,8 @@ describe('index.html: the Attachments section', () => {
     assert.ok(sec, 's-attach exists');
     const at = (s) => HTML.indexOf(s);
     assert.ok(at('id="s-panes"') < at('id="s-attach"') && at('id="s-attach"') < at('id="s-tpl"'));
-    assert.match(HTML, /data-jump="s-panes">Panes and limits<\/a><a href="#settings" data-jump="s-attach">Attachments<\/a><a href="#settings" data-jump="s-tpl">Rules template<\/a>/);
+    // 0.5.4 P2 (requirement change): the Session window link sits between Panes and limits and Attachments (its own test follows below)
+    assert.match(HTML, /data-jump="s-fit">Session window<\/a><a href="#settings" data-jump="s-attach">Attachments<\/a><a href="#settings" data-jump="s-tpl">Rules template<\/a>/);
     assert.match(sec, /<section class="set-sec" id="s-attach" aria-labelledby="s-attach-h">\s*<h2 id="s-attach-h">Attachments<\/h2>/);
   });
 
@@ -909,4 +912,177 @@ describe('Settings: Save focuses the first invalid field in the page', () => {
       });
     }
   }
+});
+
+// ---- 0.5.4 P2 (design-052d 2.2): the Session window section of Settings: the Fit mode (M-23, M-24) ------------------------------------
+// The copy is written out here from the design on purpose (the tests must not read it back from the page).
+const FIT_MODES_LIST = ['auto', 'fill', 'terminal', 'off'];
+const FIT_CARDS = [
+  ['auto', 'fit', 'Auto', 'Fills the panel when it can. When your terminal shows the same tmux window, the window you click into gets the size.'],
+  ['fill', 'fit-pin', 'Always fill the panel', 'Sizes the tmux window to the panel while a session window is open, also while you work in your terminal. Your terminal shows dots around it, and other panes in that window shrink.'],
+  ['terminal', 'term-pin', "Your terminal's size", "Never resizes a tmux window. nika zooms Claude's pane when the window has others and scales the text to the panel."],
+  ['off', 'fit-off', 'Off', 'nika changes nothing in tmux. The session window shows the pane at its own size, with the text scaled down when it is larger than the panel.'],
+];
+const FIT_HELP = 'Open session windows follow a change within 5 seconds. When a session window closes, nika puts back what it changed in tmux.';
+
+describe('index.html: the Session window section (0.5.4 P2, M-23)', () => {
+  const sec = /<section class="set-sec" id="s-fit"[\s\S]*?<\/section>/.exec(HTML)?.[0];
+  const SESSION_HTML = read('session.html');
+  const symbolOf = (src, n) => new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(src)?.[1] ?? null;
+
+  test('(+) the section sits right after Panes and limits and before Attachments; the index links in the same order', () => {
+    assert.ok(sec, 's-fit exists');
+    const at = (s) => HTML.indexOf(s);
+    assert.ok(at('id="s-panes"') < at('id="s-fit"') && at('id="s-fit"') < at('id="s-attach"'));
+    assert.match(HTML, /data-jump="s-panes">Panes and limits<\/a><a href="#settings" data-jump="s-fit">Session window<\/a><a href="#settings" data-jump="s-attach">Attachments<\/a>/);
+    assert.match(sec, /<section class="set-sec" id="s-fit" aria-labelledby="s-fit-h">\s*<h2 id="s-fit-h">Session window<\/h2>\s*<p>How a session window fits Claude's pane to its panel\. For every project\.<\/p>/);
+  });
+
+  test('(+) a fieldset with a visible legend, described by the help, holds the four radios named fit, in the order of the modes', () => {
+    assert.match(sec, /<fieldset aria-describedby="set-fit-help"><legend>Fit Claude's pane<\/legend>/);
+    assert.deepEqual([...sec.matchAll(/<input type="radio" name="fit" value="([a-z]+)">/g)].map((m) => m[1]), FIT_MODES_LIST);
+    assert.equal([...sec.matchAll(/<input\b/g)].length, 4, 'nothing else to fill in');
+  });
+
+  test('(+) each card is a radio-card with its own icon (hidden from screen readers), its own title and its own words', () => {
+    const cards = [...sec.matchAll(/<label class="radio-card">([\s\S]*?)<\/label>/g)].map((m) => m[1]);
+    assert.equal(cards.length, 4);
+    FIT_CARDS.forEach(([value, icon, title, words], i) => {
+      assert.equal(cards[i], `<input type="radio" name="fit" value="${value}"><span><b><svg class="ic" aria-hidden="true"><use href="#i-${icon}"/></svg> ${title}</b><span>${words}</span></span>`, value);
+    });
+    assert.equal(new Set(FIT_CARDS.map((c) => c[1])).size, 4, 'four icons');
+    assert.equal(new Set(FIT_CARDS.map((c) => c[2])).size, 4, 'four titles');
+  });
+
+  test('(+) the help sits under the group with the id the fieldset names; it is a help line, not an error', () => {
+    assert.match(sec, new RegExp(`<p class="help" id="set-fit-help">${FIT_HELP.replace(/[.]/g, '\\.')}</p>`));
+    assert.equal([...HTML.matchAll(/\bid="set-fit-help"/g)].length, 1);
+  });
+
+  test('(+) the sprite of index.html has i-fit, i-fit-pin, i-term-pin and i-fit-off once each, in the stroke style, and they are the drawings session.html has', () => {
+    const names = ['fit', 'fit-pin', 'term-pin', 'fit-off'];
+    const drawn = names.map((n) => {
+      assert.equal(HTML.split(`<symbol id="i-${n}"`).length - 1, 1, n);
+      const body = symbolOf(HTML, n);
+      assert.ok(body, n);
+      assert.doesNotMatch(body, /\b(fill|stroke|style)=/, n);
+      assert.equal(body, symbolOf(SESSION_HTML, n), `${n}: one drawing on both pages`);
+      return body;
+    });
+    assert.equal(new Set(drawn).size, 4, 'four different drawings');
+  });
+
+  test('(\u2212) the page keeps its ids unique, and the new section has no inline style, script or handler', () => {
+    const ids = [...HTML.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(ids.filter((id, i) => ids.indexOf(id) !== i), []);
+    assert.doesNotMatch(sec, /\bstyle=|<script|\bon[a-z]+=/);
+    assert.equal([...sec].every((ch) => ch.codePointAt(0) < 128), true, 'ASCII');
+  });
+});
+
+describe('Session window: the Fit mode setting (M-23, M-24)', () => {
+  const checked = (s) => s.radios.fit.filter((r) => r.checked).map((r) => r.value);
+
+  test('(+) M-23 populate: each saved mode checks its own card and no other, and the Save bar stays hidden', async () => {
+    for (const mode of FIT_MODES_LIST) {
+      const s = rig({ fit: { mode } });
+      await s.enter();
+      assert.deepEqual(checked(s), [mode], mode);
+      assert.equal(s.bar().hidden, true, mode);
+    }
+  });
+
+  test('(+) M-24 populate: a saved config with no fit group (an older server) checks Auto, the Save bar stays hidden, and the first save carries fit: { mode: auto }', async () => {
+    const s = rig({ fit: null });
+    assert.equal('fit' in s.state.settings, false, 'the premise: no fit group');
+    await s.enter();
+    assert.deepEqual(checked(s), ['auto']);
+    assert.equal(s.bar().hidden, true);
+    s.type('90');
+    s.submit();
+    await settle();
+    assert.deepEqual(s.puts()[0].json.fit, { mode: 'auto' });
+  });
+
+  test('(+) M-23 choosing a card shows the Save bar once, and Save sends exactly fit: { mode } next to the other groups, unchanged', async () => {
+    const s = rig();
+    await s.enter();
+    s.pickFit('fill');
+    assert.equal(s.bar().hidden, false);
+    assert.deepEqual(s.announced, ['Unsaved changes. Save or discard them at the bottom.']);
+    s.pickFit('terminal');
+    assert.equal(s.announced.length, 1, 'said once, while the bar is up');
+    s.submit();
+    await settle();
+    assert.equal(s.puts().length, 1);
+    const [put] = s.puts();
+    assert.deepEqual(put.json.fit, { mode: 'terminal' });
+    assert.deepEqual(Object.keys(put.json.fit), ['mode']);
+    assert.equal(put.json.panePlacement, 'beside');
+    assert.deepEqual(put.json.limits, { maxAgents: 3 });
+    assert.equal(s.bar().hidden, true, 'saved');
+    assert.deepEqual(checked(s), ['terminal'], 'the saved card stays checked');
+  });
+
+  test('(+) M-23 each of the four modes can be saved, from each of the others', async () => {
+    for (const from of FIT_MODES_LIST) {
+      for (const to of FIT_MODES_LIST.filter((m) => m !== from)) {
+        const s = rig({ fit: { mode: from } });
+        await s.enter();
+        s.pickFit(to);
+        s.submit();
+        await settle();
+        assert.deepEqual(s.puts().map((p) => p.json.fit), [{ mode: to }], `${from} -> ${to}`);
+      }
+    }
+  });
+
+  test('(\u2212) M-23 choosing another card and then the saved one again hides the Save bar; nothing is sent, and Save does nothing', async () => {
+    const s = rig({ fit: { mode: 'fill' } });
+    await s.enter();
+    s.pickFit('off');
+    assert.equal(s.bar().hidden, false);
+    s.pickFit('fill');
+    assert.equal(s.bar().hidden, true);
+    s.submit();
+    await settle();
+    assert.deepEqual(s.puts(), []);
+  });
+
+  test('(\u2212) M-23 Discard puts the saved card back and hides the bar', async () => {
+    const s = rig({ fit: { mode: 'terminal' } });
+    await s.enter();
+    s.pickFit('off');
+    assert.equal(s.bar().hidden, false);
+    s.node('#set-discard').click();
+    assert.deepEqual(checked(s), ['terminal']);
+    assert.equal(s.bar().hidden, true);
+  });
+
+  test('(\u2212) M-23 a refused save keeps the chosen card and the bar, shows the server\'s message, and sends nothing twice', async () => {
+    const s = rig({ put: { status: 400, body: { message: 'fit.mode invalid, default used' } } });
+    await s.enter();
+    s.pickFit('fill');
+    s.submit();
+    await settle();
+    assert.deepEqual(checked(s), ['fill']);
+    assert.equal(s.bar().hidden, false);
+    assert.equal(s.node('#set-sum-text').textContent, 'fit.mode invalid, default used');
+    assert.equal(s.puts().length, 1);
+  });
+
+  test('(\u2212) M-23 a change of another field alone leaves the fit group as saved', async () => {
+    const s = rig({ fit: { mode: 'off' } });
+    await s.enter();
+    s.type('90');
+    s.submit();
+    await settle();
+    assert.deepEqual(s.puts()[0].json.fit, { mode: 'off' });
+  });
+
+  test('(+) the code: formValue reads the group and populate sets it, with Auto when the saved config has none', () => {
+    const src = code(read('settings.js'));
+    assert.match(src, /fit: \{ mode: radio\('fit'\) \},/);
+    assert.match(src, /setRadio\('fit', s\.fit\?\.mode \?\? 'auto'\);/);
+  });
 });

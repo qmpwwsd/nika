@@ -107,6 +107,7 @@ function formValue() {
     remoteControl: { enabled: $('#set-rc').checked, prefix: $('#set-rc-prefix').value.trim() },
     permissionMode: radio('perm'),
     panePlacement: radio('place'),
+    fit: { mode: radio('fit') }, // 0.5.4 P2: how a session window fits Claude's pane (auto, fill, terminal, off)
     limits: { maxAgents: Number($('#set-max').value) },
     attachments: { keepDays: Number($('#set-keep-days').value) },
     rules: { localTemplate: $('#set-tpl').value || null },
@@ -134,6 +135,7 @@ function populate() {
   $('#set-rc-prefix').disabled = !$('#set-rc').checked;
   setRadio('perm', s.permissionMode);
   setRadio('place', s.panePlacement);
+  setRadio('fit', s.fit?.mode ?? 'auto'); // 0.5.4 P2: an older server sends no fit group: that is Auto
   $('#set-max').value = s.limits?.maxAgents ?? 3;
   $('#set-keep-days').value = s.attachments?.keepDays ?? 7;
   renderTemplates(s.rules?.localTemplate ?? null);

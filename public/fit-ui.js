@@ -30,6 +30,8 @@ export const GROW_WAIT_MS = 6000; // F16: a step whose size the drawn frame neve
 export const GROW_CLOSE_MS = 1000; // F16: no question on screen for this long: it is closed and the size goes back
 /** F16: the grow's state at rest. phase: idle, stepping, held or spent; rows: the window rows asked (0 when none); askedAt: when the last step was asked; settleAt: when "still cut" counts (null: not started); cutSince: when a cut was first seen while idle; quietSince: when the question went off the screen; base: the base size a given-up grow gave up at, `<cols>x<rows>`. */
 export const GROW_IDLE = Object.freeze({ phase: 'idle', rows: 0, askedAt: 0, settleAt: null, cutSince: null, quietSince: null, base: '' });
+/** 0.5.4 P2: the Fit modes the server may name in an answer (src/ids.js FIT_MODES; a test pins the two lists together). Anything else reads as `auto`. */
+export const FIT_MODES = new Set(['auto', 'fill', 'terminal', 'off']);
 const COLS = [40, 400]; // the route's range (design 5)
 const ROWS = [10, 200];
 const PAD_X = 24; // .term padding: 12 px left and right
@@ -354,24 +356,51 @@ const STATE = {
   // F4: a terminal shows the tmux window, so nika leaves its size to the terminal and only scales the text (one pane or several: one chip)
   // F9: only a window without focus leaves its size to the terminal (a focused one gets the size, `fitted`), which the title says
   terminal: { icon: 'term', text: `Fit ${DOT} your terminal's size`, label: "Fit: your terminal's size", title: 'A terminal shows this tmux window and this window does not have focus, so nika leaves the size to the terminal and scales the text to this panel' },
+  // 0.5.4 P2 (design-052d 2.4): Settings turn the fit off. The server holds nothing then and answers with no pane; the chip says so in its own words, icon and look (off-set)
+  off: { icon: 'fit-off', text: `Fit ${DOT} off in Settings`, label: 'Fit: off in Settings', title: 'Settings turn Fit off: nika changes nothing in tmux and scales the text to this panel' },
 };
 
-/** What the chip shows for a PUT answer: { key, state, icon, text, label, title, say }, or null when the body is not a fit answer (the chip stays as it was). label is the button's name and the panel's heading. */
+// 0.5.4 P2 (design-052d 2.4): the two looks that name the mode they came from, each with its own icon and words (a look is the chip's data-k). A (state, mode) pair that has no row
+// here (and not `off`, which has its own state) keeps today's key and look for its state and reason, so an answer the server sends for one request at a switch never has no chip.
+const LOOK = {
+  fill: { icon: 'fit-pin', text: `Fit ${DOT} always fills`, label: 'Fit: always fills the panel' },
+  'term-set': { icon: 'term-pin', text: `Fit ${DOT} terminal's size (set)`, label: "Fit: your terminal's size, from Settings" },
+};
+const FILL_TITLE = 'Settings say always fill: nika sizes the tmux window to this panel while this session window is open, also when it does not have focus';
+const FILL_TERMINAL_TITLE = 'Settings say always fill: nika sizes the tmux window to this panel while this session window is open. Your terminal shows dots around it until you close this window or change the setting';
+const ZOOMED_FILL_TITLE = "nika could not keep this window's layout to put back later, so it only zoomed the pane and scales the text";
+const SETTING_TITLE = 'Settings say your terminal\'s size: nika never resizes this tmux window and scales the text to this panel';
+const SETTING_ZOOM_TITLE = 'Settings say your terminal\'s size: nika only zoomed this pane and never resizes the tmux window. Your terminal shows the pane zoomed too until this session window closes';
+
+/**
+ * What the chip shows for a PUT answer: { key, state, look, icon, text, label, title, say, mode }, or null when the body is not a fit answer (the chip stays as it was). label is the
+ * button's name and the panel's heading. 0.5.4 P2: `look` is the chip's data-k (the state for every Auto look, else fill, term-set or off-set), `mode` the Fit mode the answer
+ * carried (one of FIT_MODES; a missing or unknown value is `auto`, which keeps an older server and a newer page working).
+ */
 export function chipView(body) {
   const fit = body?.fit;
   const state = fit?.state;
   if (typeof state !== 'string' || !Object.hasOwn(STATE, state)) return null;
+  const mode = FIT_MODES.has(fit.mode) ? fit.mode : 'auto';
   const reason = typeof fit.reason === 'string' && fit.reason !== 'panel-smaller' && Object.hasOwn(TITLE, fit.reason) ? fit.reason : '';
   const v = STATE[state];
   // F9: the one reason `terminal` takes is `switching` (the page has focus, but nika took the size back too often in the last minute), and the one `fitted` takes
   // is `terminal` (the page has focus and a terminal shows the window too); any other reason on either is ignored, and the comparison is exact
   const term = state === 'terminal' && fit.reason === 'switching';
   // F4: with several panes (and not the user's own zoom) nika zoomed the pane, which the title says; `panes` and `userZoom` are read as data and never shown
-  const zoom = state === 'terminal' && !term && Number.isInteger(fit.panes) && fit.panes > 1 && fit.userZoom !== true;
+  const several = Number.isInteger(fit.panes) && fit.panes > 1 && fit.userZoom !== true;
+  const zoom = state === 'terminal' && !term && several;
   const shared = state === 'fitted' && fit.reason === 'terminal';
+  const made = (key, look, w, title) => ({ key, state, look, icon: w.icon, text: w.text, label: w.label, title, say: `${w.label}. ${title}`, mode });
+  // 0.5.4 P2 (design-052d 2.4): `off` has its own key whatever the mode says; fill and terminal name themselves where design 2.4 has a row. Under terminal the reason `switching` plays no part
+  // (focus is ignored there), and the pane count only decides between the two sentences.
+  if (state === 'off') return made('off:', 'off-set', v, v.title);
+  if (mode === 'fill' && state === 'fitted') return made(shared ? 'fitted:fill-terminal' : 'fitted:fill', 'fill', LOOK.fill, shared ? FILL_TERMINAL_TITLE : FILL_TITLE);
+  if (mode === 'fill' && state === 'zoomed') return made('zoomed:fill', 'zoomed', v, ZOOMED_FILL_TITLE);
+  if (mode === 'terminal' && state === 'terminal') return made(several ? 'terminal:setting-zoom' : 'terminal:setting', 'term-set', LOOK['term-set'], several ? SETTING_ZOOM_TITLE : SETTING_TITLE);
   const sub = state === 'blocked' ? reason : term ? 'switching' : zoom ? 'zoom' : shared ? 'terminal' : '';
   const title = state === 'blocked' && reason ? TITLE[reason] : term ? TERMINAL_SWITCHING : zoom ? TERMINAL_ZOOM : shared ? FITTED_TERMINAL : v.title;
-  return { key: `${state}:${sub}`, state, icon: v.icon, text: v.text, label: v.label, title, say: `${v.label}. ${title}` };
+  return made(`${state}:${sub}`, state, v, title);
 }
 
 // ---- the panel behind the chip (F1, design F12 2.3) ----------------------------------------------------------------------------
@@ -383,6 +412,7 @@ const ROOM_HINT = "Claude's input box and footer did not fit this panel's rows, 
 // F16: the panel of a fitted view while a cut-off question has more rows (replaces the view's hint and the room hint; no action of its own)
 const GROW_HINT = "Claude's question is taller than this panel, so nika gave the pane more rows while it is open. Scroll the terminal up to see all of it; the size goes back when the question closes.";
 const FITTING = 'Fitting\u2026';
+const SETTINGS_HINT = 'Change it in nika\'s Settings, under Session window.';
 // Looked up by the key of a chipView, never by a word of the server. `action` is the button's text: only where open: true can change
 // something (the server refuses it again for user-zoom, size-option and foreign-tag, and those recover once the user acts in tmux).
 const PANEL = {
@@ -404,20 +434,31 @@ const PANEL = {
   'terminal:': { hint: 'Click into this window and nika sizes the tmux window to this panel; your terminal gets its size back when you click into it again. With no terminal on the window for 30 seconds, nika also sizes it to this panel by itself.' },
   'terminal:zoom': { hint: 'Your terminal shows this pane zoomed too, until this session window closes. Click into this window and nika sizes the tmux window to this panel.' },
   'terminal:switching': { hint: 'nika sizes the tmux window to this panel again within a minute while this window keeps focus.' },
+  // 0.5.4 P2 (design-052d 2.4): nothing on this page can change the mode and the session window has no Settings link, so the hint says where it is and there is no action
+  'fitted:fill': { hint: SETTINGS_HINT },
+  'fitted:fill-terminal': { hint: SETTINGS_HINT },
+  'terminal:setting': { hint: SETTINGS_HINT },
+  'terminal:setting-zoom': { hint: SETTINGS_HINT },
+  'off:': { hint: SETTINGS_HINT },
+  // the layout could not be kept, so the pane is only zoomed: Fit again tries once more (the same open: true the user's ask sends everywhere)
+  'zoomed:fill': { hint: 'Fit again tries once more.', action: 'Fit again' },
 };
+// 0.5.4 P2: the keys whose pane nika resized, so the room (F10) and the grow (F16) lines and Fit again apply: Auto's two and, since the room and the grow run as in Auto under fill
+// (design-052d 2.1), fill's two
+const FITTED_KEYS = new Set(['fitted:', 'fitted:terminal', 'fitted:fill', 'fitted:fill-terminal']);
 
 /**
  * What the chip's panel shows: { heading, why, hint, code, action, note } for a chipView and the panel's own state `ui` ({ pending, note }),
  * or null when `view` is not one. heading and why are the view's label and title; hint, code (a command shown as text) and action
  * ({ text }, "Fitting..." while pending) come from a fixed table by the view's key, and a key it does not know has none of them.
- * F10: `ui.room` (exactly true) turns the hint into ROOM_HINT and the action into Fit again for `fitted:` and `fitted:terminal`; every other key ignores it.
- * F16: `ui.grow` (exactly true) turns the hint into GROW_HINT for the same two keys, over the room hint; the action is the room's alone; every other key ignores it.
+ * F10: `ui.room` (exactly true) turns the hint into ROOM_HINT and the action into Fit again for `fitted:` and `fitted:terminal` (0.5.4 P2: and `fitted:fill`, `fitted:fill-terminal`); every other key ignores it.
+ * F16: `ui.grow` (exactly true) turns the hint into GROW_HINT for the same keys, over the room hint; the action is the room's alone; every other key ignores it.
  */
 export function fitPanelView(view, ui) {
   if (view === null || typeof view !== 'object' || typeof view.key !== 'string') return null;
   const row = Object.hasOwn(PANEL, view.key) ? PANEL[view.key] : {};
-  const room = ui?.room === true && (view.key === 'fitted:' || view.key === 'fitted:terminal');
-  const grow = ui?.grow === true && (view.key === 'fitted:' || view.key === 'fitted:terminal');
+  const room = ui?.room === true && FITTED_KEYS.has(view.key);
+  const grow = ui?.grow === true && FITTED_KEYS.has(view.key);
   const action = room ? 'Fit again' : row.action;
   return {
     heading: typeof view.label === 'string' ? view.label : '',
@@ -453,6 +494,8 @@ const same = (a, b) => a !== null && b !== null && a.cols === b.cols && a.rows =
  * - 409, 429, 502, a lost request or any other refusal waits for the next heartbeat. 403 stops everything for good.
  * - close() (the page leaves, the pane is gone) gives the window back with one release; start() after it is a new lease, and restart()
  *   (the page is back from the back/forward cache) is a new lease that opens like a page load.
+ * - 0.5.4 P2: `io.mode(mode)` (optional) is told the Fit mode (one of FIT_MODES) of every 200 answer that is a fit answer, before the chip of that answer and also when the chip is not
+ *   redrawn (the key is the same): the page keeps its room and grow rules to Auto and Fill with it. A refusal and a body of another shape tell nothing.
  * - F10: `io.sized({ cols, rows })` (optional) is told the pane size of every 200 answer that carries one (`fit.pane`, integers 1 to 10000), before the chip of
  *   that answer, so the page can hold the chip until the new frame is drawn. A stale answer, a refusal and a body of another shape tell nothing.
  * - F9, the focused window wins the pane's size: every body carries `focus`, the boolean `io.focused()` answers (anything but the boolean true, a throw
@@ -555,6 +598,9 @@ export function createFitPlanner(io) {
     const quiet = !asked && P.acked !== null && focus !== P.acked;
     P.acked = focus;
     const view = chipView(r.body);
+    if (view) { // 0.5.4 P2: the page learns the mode of every fit answer, also when the chip key is the same (the gates of the room and the grow read it), before the chip
+      try { io.mode?.(view.mode); } catch { /* the planner goes on without the page's mode */ }
+    }
     let changed = false;
     if (view && view.key !== P.key) {
       P.key = view.key;

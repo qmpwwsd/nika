@@ -782,6 +782,7 @@ function settingsRig({ settings, put = { status: 200 }, templates = ['mine.md'],
     theme: ['system', 'light', 'dark'].map((v) => Object.assign(new El('input'), { value: v })),
     perm: ['default', 'manual', 'acceptEdits', 'plan', 'auto', 'dontAsk'].map((v) => Object.assign(new El('input'), { value: v })),
     place: ['beside', 'under-last'].map((v) => Object.assign(new El('input'), { value: v })),
+    fit: ['auto', 'fill', 'terminal', 'off'].map((v) => Object.assign(new El('input'), { value: v })), // 0.5.4 P2: settings.js reads the Fit mode group
   };
   const nodes = new Map();
   const node = (sel) => {
@@ -844,7 +845,7 @@ describe('Settings holds defaults only', () => {
     s.submit();
     await settle();
     const put = s.calls.find((c) => c.method === 'PUT');
-    assert.deepEqual(Object.keys(put.json).sort(), ['attachments', 'compaction', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
+    assert.deepEqual(Object.keys(put.json).sort(), ['attachments', 'compaction', 'fit', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']); // 0.5.4 P2: fit is one more group
     assert.equal('plugins' in put.json, false);
     assert.equal('perProject' in put.json, false);
     assert.equal(put.json.limits.maxAgents, 5);
