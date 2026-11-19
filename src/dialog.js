@@ -281,7 +281,7 @@ function readQuestion(c) {
 }
 
 /**
- * The review step: `Review your answers`, the optional warning, the answered pairs, the question and the two options. A pair's question rows (the
+ * The review step: `Review your answers`, the optional warning, the answered pairs, the optional `Ready to submit your answers?` row (2.1.326 only) and the two options. A pair's question rows (the
  * `\u25cf` row and its wrapped rest) either all start with Claude's bar or none does (some: `layout`, like the question step); different questions of the
  * step may differ (Claude bars a wide or multi-line question and not a short one; spike S-T326 item 9). The bar is removed before reading, so the same text
  * has the same sig with or without it. An answer row never carries it: a barred answer row is a `layout`, and so is a barred
@@ -299,7 +299,13 @@ function readReview(c) {
   if (warn) { x += 1; skip(); }
   const raw = [];
   let part = 'q';
-  for (; x <= last && texts[x].trim() !== 'Ready to submit your answers?'; x += 1) {
+  // The pairs end at the Ready row (2.1.326: the two options follow it), or, with no Ready row (2.1.328), at the first row that is the `1.` option at
+  // column 0. The raw row is tested, not the trimmed one: a pair's rest row starts with 3 or more spaces, so an answer that reads `1. Submit answers`
+  // stays an answer. Either way the two options are then checked as before.
+  let from = -1; // the row the option rows start at
+  for (; x <= last; x += 1) {
+    if (texts[x].trim() === 'Ready to submit your answers?') { from = x + 1; break; }
+    if (REVIEW_OPTION.exec(texts[x])?.[2] === '1') { from = x; break; }
     if (!texts[x].trim()) continue;
     const bm = BAR_ROW.exec(texts[x]);
     const t = bm === null ? texts[x] : bm[1] + bm[2]; // the row as it reads without the bar
@@ -314,9 +320,9 @@ function readReview(c) {
     } else bad.add('layout');
   }
   if (raw.some((p) => p.bars.some(Boolean) && !p.bars.every(Boolean))) bad.add('layout'); // within one question: every row barred or none
-  if (x > last) { bad.add('layout'); return null; }
+  if (from < 0) { bad.add('layout'); return null; }
   const choices = [];
-  for (x += 1; x <= last; x += 1) if (texts[x].trim()) choices.push(texts[x]);
+  for (x = from; x <= last; x += 1) if (texts[x].trim()) choices.push(texts[x]);
   const ms = choices.map((t) => REVIEW_OPTION.exec(t));
   if (choices.length !== 2 || ms.some((m) => m === null) || ms[0][2] !== '1' || ms[0][3] !== 'Submit answers' || ms[1][2] !== '2' || ms[1][3] !== 'Cancel') {
     bad.add('layout');

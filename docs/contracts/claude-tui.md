@@ -1230,6 +1230,14 @@ Ready to submit your answers?
   `<ticked labels in list order>, <the Other text>`. After Submit, Claude's result lines list the answers in the order they were given.
 - `Enter` on the review's `1. Submit answers` submits the dialog. `Enter` on a multi question's button row does **not**: it opens the review.
 
+**No Ready row (2.1.328, nika 0.5.3; seen in the live check LC-QP, 2026-11-19).** Claude Code 2.1.328 draws the review without the
+`Ready to submit your answers?` row and the blank row after it: the last answer pair, one blank row, then `❯ 1. Submit answers` and
+`  2. Cancel` at column 0. nika ends the answered pairs at the Ready row when there is one (2.1.326) or at the first row that is the
+`1.` option at column 0 (`REVIEW_OPTION`, tested on the raw row: an answer's rest row starts with 3 or more spaces, so an answer that
+reads `1. Submit answers` stays an answer), then checks the two option rows as before. The same pairs give the same `sig` in both
+versions. Before 0.5.3 every 2.1.328 review read `unreadable / layout`. The warning row of a partly answered 2.1.328 review was not
+seen live; nika reads it as on 2.1.326.
+
 **The review's bar (2.1.326, spike S-T326 item 9; first seen in the live check LC17; checked 2026-11-17).** Claude draws the `│ ` bar in the review too, and
 **per question**: on every row of a long question, on no row of a short one. A made-up review of a short and a long question (blank rows as Claude draws them):
 

@@ -93,7 +93,8 @@ function reviewRows(w) {
   const rows = [line('⏺ Reviewing.'), [], [span('─'.repeat(w.cols), DIM)], stripRow(w, 'submit', true), [], [span('Review your answers', { b: true, fg: 231 })], []];
   if (done.length < w.tabs.length) rows.push([span('⚠ You have not answered all questions', { fg: 220 })], []);
   for (const t of done) rows.push([span(` ● ${t.question}`)], [span(`   → ${answerOf(t)}`, { fg: 114 })]);
-  rows.push([], [span('Ready to submit your answers?', DIM)], [], line(`${ptr(w.rf === 1)} 1. Submit answers`), line(`${ptr(w.rf === 2)} 2. Cancel`));
+  // 2.1.328 draws no `Ready to submit your answers?` row (QP1): the options follow the answers after one blank row
+  rows.push([], ...(w.v328 ? [] : [[span('Ready to submit your answers?', DIM)], []]), line(`${ptr(w.rf === 1)} 1. Submit answers`), line(`${ptr(w.rf === 2)} 2. Cancel`));
   return rows;
 }
 
@@ -254,6 +255,7 @@ function key(w, name) {
  *   phase    'ask' | 'review' | 'plan' | 'prompt' | 'exit' | 'nudge' | 'idle' (a closed dialog leaves 'idle' and `result`)
  *   tabs     the form (TAB.project by default); i the current tab; focus the focused slot (1..k, k+1 the text row, 'button', k+2 chat)
  *   rf, pf   the review's and the plan's focus; plan { labels, prose, text }
+ *   v328     the Review is drawn the way Claude Code 2.1.328 does: no `Ready to submit your answers?` row (default: the 2.1.326 shape)
  *   vim      Claude's input is vim (INSERT shows while the text row has focus and vimMode is 'insert'); mem { vim, plain } is nika's memory
  *   cols     the pane width; state the registry state (default 'attn')
  *   lag      captures after a key that still show the screen from before it (a late redraw)
