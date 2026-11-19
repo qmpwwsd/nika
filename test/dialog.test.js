@@ -92,9 +92,9 @@ function askParts(o = {}) {
   };
 }
 
-/** The review step (S3 E, T0c 8.3). */
+/** The review step (S3 E, T0c 8.3). `v328`: the Claude Code 2.1.328 shape, with no `Ready to submit your answers?` row (QP1; synthetic, drawn from the described layout). */
 function reviewParts(o = {}) {
-  const { cols = COLS, tabs = ['Project', 'Tools'], answered = [0, 1], warn = false, focus = 1, bracket = false, mark = 'bg', current = 'submit' } = o;
+  const { cols = COLS, tabs = ['Project', 'Tools'], answered = [0, 1], warn = false, focus = 1, bracket = false, mark = 'bg', current = 'submit', v328 = false } = o;
   const pairs = o.pairs ?? [{ q: 'Which project should I open?', a: 'web-shop' }, { q: 'Which checks should I run?', a: 'lint, my custom check' }];
   return {
     above: ['⏺ Reviewing.', ''],
@@ -106,8 +106,8 @@ function reviewParts(o = {}) {
     warn: warn ? [[span('⚠ You have not answered all questions', { fg: 220 })], ''] : [],
     pairs: pairs.flatMap((p) => [[span(` ● ${p.q}`)], [span(`   → ${p.a}`, { fg: 114 })]]),
     gap3: [''],
-    ready: [[span('Ready to submit your answers?', DIM)]],
-    gap4: [''],
+    ready: v328 ? [] : [[span('Ready to submit your answers?', DIM)]],
+    gap4: v328 ? [] : [''],
     submit: [`${ptr(focus === 1)} 1. Submit answers`],
     cancel: [`${ptr(focus === 2)} 2. Cancel`],
   };
@@ -425,6 +425,45 @@ describe('readDialogScreen: the review step', () => {
 
   test('(+) bypass in an answer sets bypass', () => {
     assert.equal(read(rowsFrom(reviewParts({ pairs: [{ q: 'Which mode?', a: 'bypass permissions' }, { q: 'Which checks should I run?', a: 'lint' }] }))).bypass, true);
+  });
+
+  // QP1: Claude Code 2.1.328 draws the Review with no `Ready to submit your answers?` row; the options follow the answers.
+  test('(+) the 2.1.328 Review (no Ready row) reads like the 2.1.326 one, and both have one sig for the same pairs (QP1)', () => {
+    const old = read(rowsFrom(reviewParts()));
+    const rows = rowsFrom(reviewParts({ v328: true }));
+    assert.equal(rows.some((r) => text(r) === 'Ready to submit your answers?'), false, 'the fixture has no Ready row');
+    const S = read(rows);
+    assert.equal(S.unreadable, undefined);
+    assert.equal(S.at, 'review');
+    assert.deepEqual(S.pairs, [{ question: 'Which project should I open?', answer: 'web-shop' }, { question: 'Which checks should I run?', answer: 'lint, my custom check' }]);
+    assert.deepEqual(S, old, 'the same reading as the 2.1.326 shape');
+    assert.equal(sigOf(S), sigOf(old));
+    assert.equal(dialogOnScreen(rows), true);
+    assert.deepEqual(dialogCapture(rows, COLS), dialogCapture(rowsFrom(reviewParts()), COLS), 'the capture the page gets is the same too');
+    for (const [focus, want] of [[1, 1], [2, 2], [3, null]]) assert.equal(read(rowsFrom(reviewParts({ v328: true, focus }))).focus, want, `focus ${focus}`);
+    assert.equal(read(rowsFrom(reviewParts({ v328: true, bracket: true }))).at, 'review');
+  });
+
+  test('(+) the 2.1.328 Review with the warning row, and with nothing answered, reads (the warning row there is unverified live, LC-QP-R1)', () => {
+    const one = [{ q: 'Which checks should I run?', a: 'lint, my custom check' }];
+    const S = read(rowsFrom(reviewParts({ v328: true, warn: true, answered: [1], pairs: one })));
+    assert.deepEqual([S.at, S.warn, S.pairs.length, S.tabs[0].answered], ['review', true, 1, false]);
+    assert.equal(sigOf(S), sigOf(read(rowsFrom(reviewParts({ warn: true, answered: [1], pairs: one })))), 'the same sig as the 2.1.326 shape');
+    const none = read(rowsFrom(reviewParts({ v328: true, warn: true, answered: [], pairs: [] })));
+    assert.deepEqual([none.at, none.warn, none.pairs], ['review', true, []]);
+  });
+
+  test('(+) the 2.1.328 Review: a wrapped question or answer still joins its pair, and a bar before a question row is still taken out', () => {
+    const rows = rowsFrom(reviewParts({ v328: true }));
+    rows.splice(rowAt(rows, (t) => t.includes('\u2192 web-shop')) + 1, 0, [span('     storefront and payments')]);
+    rows.splice(rowAt(rows, (t) => t.includes('\u25cf Which project')) + 1, 0, [span('   today?')]);
+    const S = read(rows);
+    assert.deepEqual([S.pairs[0].question, S.pairs[0].answer], ['Which project should I open? today?', 'web-shop storefront and payments']);
+    const barred = rowsFrom(reviewParts({ v328: true }));
+    const at = rowAt(barred, (t) => t.includes('\u25cf Which project'));
+    barred[at] = [span(' \u2502 '), ...barred[at].map((s) => ({ ...s, t: s.t.replace(/^ /, '') }))];
+    assert.equal(read(barred).unreadable, undefined, 'a barred question row reads');
+    assert.deepEqual(read(barred).pairs, read(rowsFrom(reviewParts({ v328: true }))).pairs);
   });
 });
 
@@ -931,11 +970,52 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
 
   test('(−) layout: the review lacks its heading, the question, or has a pair without an answer, or a stray row', () => {
     assert.equal(dialogOnScreen(rowsFrom({ ...reviewParts(), heading: [] })), false, 'without the heading it is not recognised at all');
-    assert.equal(reason(rowsFrom({ ...reviewParts(), ready: [] })), 'layout');
+    // QP1, changed on purpose. Old: `assert.equal(reason(rowsFrom({ ...reviewParts(), ready: [] })), 'layout')`. This fixture is the 2.1.328 shape (no Ready
+    // row, the options after the answers), which now reads; the old intent (no Ready row and no column-0 options) is the next test.
+    assert.equal(read(rowsFrom({ ...reviewParts(), ready: [] })).at, 'review', 'no Ready row, options at column 0: the 2.1.328 shape');
     const noAnswer = reviewParts();
     assert.equal(reason(rowsFrom({ ...noAnswer, pairs: [[span(' ● Which project should I open?')]] })), 'layout');
     assert.equal(reason(rowsFrom({ ...noAnswer, pairs: [...noAnswer.pairs, [span('stray')]] })), 'layout');
     assert.equal(reason(rowsFrom({ ...noAnswer, submit: ['❯ 1. Send answers'] })), 'layout');
+  });
+
+  test('(\u2212) layout (QP1): a Review with no Ready row ends only at a column-0 `1.` option: the options indented, or no Submit answers option, are refused', () => {
+    const v = (o) => ({ ...reviewParts({ v328: true }), ...o });
+    assert.equal(read(rowsFrom(v())).at, 'review', 'control: the 2.1.328 shape reads');
+    assert.equal(reason(rowsFrom(v({ submit: ['    1. Submit answers'], cancel: ['    2. Cancel'] }))), 'layout', 'both options indented 4');
+    assert.equal(reason(rowsFrom(v({ submit: ['   1. Submit answers'] }))), 'layout', 'Submit answers indented 3 (an answer continuation, not an option)');
+    assert.equal(reason(rowsFrom(v({ submit: ['    \u276f 1. Submit answers'] }))), 'layout', 'Submit answers indented 4 with the pointer');
+    assert.equal(reason(rowsFrom(v({ submit: [] }))), 'layout', 'Cancel only (the 2.1.328 shape)');
+    assert.equal(reason(rowsFrom(v({ submit: [], cancel: ['\u276f 2. Cancel'] }))), 'layout', 'Cancel only, with the pointer');
+    assert.equal(reason(rowsFrom({ ...reviewParts(), submit: [] })), 'layout', 'Cancel only (the 2.1.326 shape, unchanged)');
+    assert.equal(reason(rowsFrom(v({ submit: ['\u276f 1. Send answers'] }))), 'layout', 'another label');
+    assert.equal(reason(rowsFrom({ ...reviewParts(), ready: [], submit: ['    1. Submit answers'], cancel: ['    2. Cancel'] })), 'layout', 'the old intent of the test above: no Ready row and the options indented');
+  });
+
+  test('(\u2212) layout (QP1): an answer continuation row that reads `1. Submit answers` with 3 leading spaces stays an answer, not the end of the pairs', () => {
+    for (const v328 of [true, false]) {
+      const rows = rowsFrom(reviewParts({ v328 }));
+      rows.splice(rowAt(rows, (t) => t.includes('\u2192 web-shop')) + 1, 0, [span('   1. Submit answers')]);
+      const S = read(rows);
+      assert.equal(S.at, 'review', `v328 ${v328}`);
+      assert.deepEqual(S.pairs[0], { question: 'Which project should I open?', answer: 'web-shop 1. Submit answers' }, `v328 ${v328}: the row is part of the answer`);
+      assert.equal(S.pairs.length, 2, `v328 ${v328}: the second pair is still read`);
+      assert.equal(S.focus, 1, `v328 ${v328}: the real option rows are the ones read`);
+    }
+  });
+
+  test('(\u2212) QP1: a column-0 `2.` row among the pairs is a stray row (reading goes on), not the end of the pairs', () => {
+    // Reading goes on past the stray row (it adds `layout`), so a clipped answer after it still reports `clipped`, which outranks `layout` in REASONS.
+    // A reader that ended the pairs at any column-0 option row would stop there and report `layout`.
+    const cut = `web-shop and more${String.fromCharCode(0x2026)}`;
+    for (const v328 of [true, false]) {
+      const rows = rowsFrom(reviewParts({ v328, pairs: [{ q: 'Which project should I open?', a: cut }, { q: 'Which checks should I run?', a: 'lint' }] }));
+      assert.equal(reason(rows), 'clipped', `v328 ${v328}: control, no stray row`);
+      rows.splice(rowAt(rows, (t) => t.includes(cut)) + 1, 0, [span('  2. Cancel')]);
+      assert.equal(reason(rows), 'clipped', `v328 ${v328}: the stray row is refused, and reading went on to the clipped answer`);
+      rows.splice(rowAt(rows, (t) => t.includes(cut)), 1, [span('   \u2192 web-shop')]);
+      assert.equal(reason(rows), 'layout', `v328 ${v328}: the stray row alone is a layout`);
+    }
   });
 
   test('(−) layout: a plan without its introduction, with a stray row between the rule and the prompt, or with the text option not last', () => {

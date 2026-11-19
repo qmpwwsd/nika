@@ -256,8 +256,8 @@ describe('answerDialog: a multi-select question', () => {
 });
 
 describe('answerDialog: the review step', () => {
-  const review = (answered) => {
-    const w = dialogWorld({ tabs: [TAB.project, TAB.tools], phase: 'review' });
+  const review = (answered, extra = {}) => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.tools], phase: 'review', ...extra });
     w.tabs[0].picked = 2;
     w.tabs[0].answered = answered.includes(0);
     w.tabs[1].checked = [1];
@@ -269,6 +269,43 @@ describe('answerDialog: the review step', () => {
     const w = review([0, 1]);
     ok(await w.answer({ submit: true }), 'submitted', 1);
     assert.deepEqual(w.keysLog(), ['Enter']);
+    assert.equal(w.result, 'submitted');
+    safe(w);
+  });
+
+  // QP1: Claude Code 2.1.328 draws the Review with no `Ready to submit your answers?` row (the fake's `v328` option)
+  test('(+) Submit on a 2.1.328 Review (no Ready row): one Enter on 1. Submit answers (done submitted)', async () => {
+    const w = review([0, 1], { v328: true });
+    assert.equal(w.read().at, 'review', 'the form is readable, so the page has a sig to post');
+    ok(await w.answer({ submit: true }), 'submitted', 1);
+    assert.deepEqual(w.keysLog(), ['Enter']);
+    assert.equal(w.result, 'submitted');
+    safe(w);
+    const warned = review([0], { v328: true });
+    ok(await warned.answer({ submit: true }), 'submitted', 1);
+    safe(warned);
+  });
+
+  test('(\u2212) the 2.1.328 Review: the focus on 2. Cancel is 409 dialog-focus, and a question body on it is 409 dialog-changed, nothing sent', async () => {
+    const w = review([0, 1], { v328: true });
+    w.rf = 2;
+    assert.deepEqual(code(await w.answer({ submit: true })), [409, 'dialog-focus']);
+    const q = review([0, 1], { v328: true });
+    assert.deepEqual(code(await q.answer({ picks: [1] })), [409, 'dialog-changed']);
+    assert.deepEqual([...w.log, ...q.log], []);
+  });
+
+  // The owner's case (QP1): a 2-question dialog on 2.1.328. The answer to the last question lands on the Review; nika must see it as the Review
+  // (done review), not as an unreadable screen (409 dialog-changed after 1 key).
+  test('(+) a 2-question dialog on 2.1.328: answer 1 (next), answer 2 lands on the Review (done review, not dialog-changed), then Submit', async () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.mode], v328: true });
+    ok(await w.answer({ picks: [2] }), 'next', 1);
+    assert.deepEqual([w.i, w.phase], [1, 'ask']);
+    ok(await w.answer({ picks: [1] }), 'review', 1);
+    assert.equal(w.phase, 'review');
+    assert.equal(w.read().at, 'review');
+    ok(await w.answer({ submit: true }), 'submitted', 1);
+    assert.deepEqual(w.keysLog(), ['text:2', 'text:1', 'Enter']);
     assert.equal(w.result, 'submitted');
     safe(w);
   });
