@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.3 (unreleased)
+## 0.5.3 — 2026-11-19
 
 Session window (desktop app):
 
