@@ -193,10 +193,11 @@
               <section class="set-sec" id="s-panes" aria-labelledby="s-panes-h">
                 <h2 id="s-panes-h">Panes and limits</h2>
                 <p>Defaults for every project. A project can set its own on its page (New agents).</p>
-                <fieldset><legend>Where new agent panes open</legend>
-                  <label class="radio-card"><input type="radio" name="place" value="beside"><span><b>Beside</b><span>A new pane to the right in the project's tmux window.</span></span></label>
-                  <label class="radio-card"><input type="radio" name="place" value="under-last"><span><b>Under the last agent</b><span>Stacks below the most recently started agent pane.</span></span></label>
+                <fieldset aria-describedby="set-place-help"><legend>Where new agent panes open</legend>
+                  <label class="radio-card"><input type="radio" name="place" value="beside"><span><b>Beside</b><span>Next to its orchestrator while both panes keep at least 80 columns. Otherwise in a tmux window named agents.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="place" value="under-last"><span><b>Under the last agent</b><span>Below the newest agent pane while both keep at least 15 rows. Otherwise in a tmux window named agents.</span></span></label>
                 </fieldset>
+                <p class="help" id="set-place-help">A new agent never makes a pane smaller than 80 &times; 15. An agents window holds agents only: nika re-tiles it as agents come and opens another when it is full. While a session window fits the orchestrator's tmux window, new agents go to the agents window.</p>
                 <div class="field"><label for="set-max">Agents per orchestrator</label>
                   <div class="inline"><span class="stepper"><button type="button" class="btn" data-step="-1" aria-label="One fewer" title="One fewer">−</button><input type="number" id="set-max" min="1" max="8" aria-describedby="set-max-help set-max-err"><button type="button" class="btn" data-step="1" aria-label="One more" title="One more">+</button></span></div>
                   <p class="help" id="set-max-help">1 to 8. How many agents each orchestrator can run at once; the agents you spawn from nika share one more such limit. One project runs at most 3 times this number, and never more than 24.</p><p class="err" id="set-max-err" hidden></p></div>

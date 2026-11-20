@@ -823,7 +823,8 @@ describe('spawn', () => {
     const r = await cli(['spawn', 'builder-1', 'sonnet', file], base(w, { exec }));
     assert.equal(r.code, 0, r.err);
     assert.match(r.out, /^pane: %\d+$/m);
-    assert.match(r.out, /^session: My-App$/m);
+    assert.match(r.out, /^session: My-App\nplacement: beside\n/m, '0.5.4 P1: the placement line follows the session line');
+    assert.doesNotMatch(r.out, /^note:/m, 'nothing was moved');
     assert.ok(r.out.trim().endsWith(`${path.join(reportsDir(w.project.key, w.env), 'builder-1.md')}`));
     assert.equal(fs.readFileSync(path.join(reportsDir(w.project.key, w.env), 'builder-1.brief.md'), 'utf8'), brief);
     const split = exec.tmux.of('split-window')[0];
@@ -849,7 +850,53 @@ describe('spawn', () => {
     assert.equal(r.code, 0, r.err);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(reportsDir(w.project.key, w.env), 'planner.agent.json'), 'utf8')),
       { model: 'opus', permissionMode: 'plan', rc: 'team-planner', role: 'agent', parent: null, depth: 1, compact: { window: 400000, pct: '84.2106' } });
-    assert.equal(exec.tmux.of('split-window')[0][3], '=My-App:');
+    assert.equal(exec.tmux.of('split-window')[0][3], '%1'); // 0.5.4 P1: the active pane of the session's current window (was `=My-App:`)
+  });
+
+  test('(+) S-9 (0.5.4 P1) an orchestrator 150 wide has no room beside: `placement: window`, a new tmux window named agents, nothing split', async () => {
+    const w = await world();
+    const exec = tmuxExec([{ ...PANE_1, winW: 150, w: 150 }]);
+    const r = await cli(['spawn', 'builder-1', 'sonnet', '-'], base(w, { exec, stdin: input(brief) }));
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /^session: My-App\nplacement: window\n/m);
+    assert.deepEqual([exec.tmux.of('split-window').length, exec.tmux.of('new-window').length], [0, 1]);
+    assert.equal(exec.tmux.of('new-window')[0].at(-1), 'builder-1');
+  });
+
+  test('(+) S-19 (0.5.4 P1) $TMUX_PANE names a sub-orchestrator in its own window: its agent is split there, never in the main orchestrator\'s window', async () => {
+    const w = await world();
+    const key = w.project.key;
+    const sub = { id: '%30', session: 'My-App', window: 2, windowName: 'zsh', command: 'claude', role: 'sub-orchestrator', agent: `${key}/sub-1`, depth: '2', parent: '%1', win: '@3', winActive: 0, winW: 300, w: 200 };
+    const exec = tmuxExec([{ ...PANE_1, agent: `${key}/orchestrator`, depth: '1' }, sub, { id: '%31', session: 'My-App', window: 2, windowName: 'zsh', command: 'zsh', win: '@3', w: 99 }]);
+    const r = await cli(['spawn', 'builder-1', 'sonnet', '-'], base(w, { env: { ...w.cliEnv, TMUX: 'x,1,0', TMUX_PANE: '%30' }, exec, stdin: input(brief) }));
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /^placement: beside$/m);
+    assert.deepEqual(exec.tmux.of('split-window')[0].slice(1, 4), ['-h', '-t', '%30']);
+    assert.equal(exec.tmux.panes.find((p) => p.id === '%1').w, 200, 'the main orchestrator keeps its size');
+  });
+
+  test('(+) --under with no room is placed by the setting and the CLI says so; with room there is no note (0.5.4 P1)', async () => {
+    const w = await world();
+    const tight = { id: '%5', session: 'My-App', window: 1, windowName: 'zsh', command: 'zsh', win: '@2', winW: 80, winH: 20 };
+    const moved = await cli(['spawn', 'a-one', 'sonnet', '-', '--under', '%5'], base(w, { exec: tmuxExec([PANE_1, tight]), stdin: input(brief) }));
+    assert.equal(moved.code, 0, moved.err);
+    assert.match(moved.out, /^session: My-App\nplacement: beside\nnote: that pane had no room, nika placed it by the setting\n/m);
+    const roomy = await cli(['spawn', 'a-two', 'sonnet', '-', '--under', '%5'], base(w, { exec: tmuxExec([PANE_1, { ...tight, winW: 100, winH: 40 }]), stdin: input(brief) }));
+    assert.match(roomy.out, /^placement: under$/m);
+    assert.doesNotMatch(roomy.out, /^note:/m);
+  });
+
+  test('(\u2212) --under naming a pane in a tmux session nika cannot target is refused (review M2): nothing is written, and no tmux call follows the first read', async () => {
+    for (const session of ['my work', 'a:b', 'x.y']) {
+      const w = await world();
+      const exec = tmuxExec([{ id: '%5', session, window: 1, windowName: 'zsh', command: 'zsh' }]);
+      const r = await cli(['spawn', 'a-one', 'sonnet', '-', '--under', '%5'], base(w, { exec, stdin: input(brief) }));
+      assert.notEqual(r.code, 0, session);
+      assert.match(r.err, /That pane is in a tmux session nika cannot target\./, session);
+      assert.deepEqual(exec.calls.map((c) => c[2]), ['list-panes'], `only the read: ${session}`);
+      assert.equal(JSON.stringify(exec.calls).includes(session), false, 'no argv carries the name');
+      assert.equal(fs.existsSync(path.join(w.root, 'state', 'nika', 'projects')), false, 'no report folder, brief or agent.json was written');
+    }
   });
 
   test('(−) without $TMUX and --session it is a usage error (2) and tmux is never called', async () => {
@@ -989,9 +1036,10 @@ describe('spawn --kind (0.5, W9)', () => {
     const lines = r.out.trim().split('\n');
     assert.match(lines[0], /^pane: %\d+$/);
     assert.equal(lines[1], 'session: My-App');
-    assert.equal(lines[2], 'kind: tester');
-    assert.equal(lines[3], `report: ${path.join(reportsDir(w.project.key, w.env), 'builder-1.md')}`);
-    assert.equal(lines.length, 4);
+    assert.equal(lines[2], 'placement: beside'); // 0.5.4 P1: the placement line sits between the session and the kind
+    assert.equal(lines[3], 'kind: tester');
+    assert.equal(lines[4], `report: ${path.join(reportsDir(w.project.key, w.env), 'builder-1.md')}`);
+    assert.equal(lines.length, 5);
     assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(reportsDir(w.project.key, w.env), 'builder-1.agent.json'), 'utf8'))).sort(), ['compact', 'depth', 'model', 'parent', 'permissionMode', 'rc', 'role'], 'the kind is not stored for claude');
   });
 

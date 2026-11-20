@@ -10,7 +10,8 @@ import { Readable, Writable } from 'node:stream';
 import { main } from '../src/cli.js';
 import { getOrchestrator, setOrchestrator } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX } from './tmux-fake.js';
-import { makeFixture, cleanup, SID } from './helpers.js';
+import { makeFixture, cleanup, SID, NOW, fakeExec } from './helpers.js';
+import { collect } from '../src/model.js';
 import { hideSession, hideGroup, HIDDEN_FILE } from '../src/hidden.js';
 import { keyFor } from '../src/store.js';
 
@@ -604,5 +605,62 @@ describe('renderStatus: the removed line (0.5.4)', async () => {
   test('(\u2212) addedTo is the one in src/store.js (the collector and the CLI share it)', async () => {
     const store = await import('../src/store.js');
     assert.equal(addedTo, store.addedTo);
+  });
+});
+
+describe('renderStatus: the pane cell is <window>:<pane> (0.5.4, P1)', async () => {
+  const { renderStatus } = await import('../src/cli.js');
+  const plainPaint = { busy: (s) => s, idle: (s) => s, other: (s) => s, ended: (s) => s, bold: (s) => s };
+  const snap = (pane) => ({
+    generatedAt: 0, since: '24h', sources: {}, skipped: { registry: 0 },
+    groups: [{ label: 'acme-api', key: 'a'.repeat(16), root: '/work/acme-api', counts: { busy: 1, idle: 0, other: 0, ended: 0 },
+      agents: [{ live: true, state: 'busy', name: 'builder-1', modelLabel: 'Sonnet 5.5', worktree: null, gitBranch: 'master', pane, lastActivity: 0 }] }],
+  });
+  const row = (pane) => renderStatus(snap(pane), { ended: false, full: false }, plainPaint).split('\n').find((l) => l.includes('builder-1'));
+
+  test('(+) a valid window index is shown before the pane id, and the column keeps its width of 9 for every row', () => {
+    assert.match(row({ id: '%14', windowIndex: '1' }), / 1:%14 {5}\S/);
+    assert.match(row({ id: '%14', windowIndex: '42' }), / 42:%14 {4}\S/);
+    assert.match(row({ id: '%14', windowIndex: '999999' }), / 999999:%\u2026 \S/, 'six digits are accepted; the 9-wide cell cuts what does not fit');
+    assert.match(row({ id: '%14' }), / %14 {7}\S/, 'no window index: the pane id alone, in the same width');
+    assert.equal(row(null).length, row({ id: '%14', windowIndex: '1' }).length, 'no pane: an empty cell of the same width');
+    assert.equal(row({ id: '%14' }).length, row({ id: '%14', windowIndex: '1' }).length);
+  });
+
+  test('(\u2212) a window index that is not 1 to 6 digits is left out, whatever else the snapshot says', () => {
+    for (const windowIndex of ['x', '1;2', '1234567', '', '-1', '1\n2', ' 1', 1, null, undefined, {}, ['1']]) {
+      assert.match(row({ id: '%14', windowIndex }), / %14 {7}\S/, JSON.stringify(windowIndex));
+      assert.doesNotMatch(row({ id: '%14', windowIndex }), /:%14/, JSON.stringify(windowIndex));
+    }
+  });
+});
+
+// `nika status` is `collect({ exec: makeExec() })` then `renderStatus` (src/cli.js, the status command). The binary cannot be driven with a fake `ps` (the collector calls
+// /bin/ps by absolute path), so this runs the same two functions: the real collector over the fixture with an injected exec, then the real renderer on its snapshot.
+describe('nika status: the window index comes from the collector, end to end (0.5.4, P1)', async () => {
+  const { renderStatus } = await import('../src/cli.js');
+  const plainPaint = { busy: (s) => s, idle: (s) => s, other: (s) => s, ended: (s) => s, bold: (s) => s };
+  const DAY = 86_400_000;
+  const statusLine = async (index, name) => {
+    const tmuxLines = [`%5\twork\t${index}\t[%5] build-7-1\tzsh`, '%6\twork\t2\tidle-pane\tclaude', '%7\twork\t3\t[%7] lazygit pane\tlazygit'];
+    const { snapshot } = await collect({ config: fx.config, exec: fakeExec({ tmuxLines }), now: NOW, sinceMs: 7 * DAY });
+    return renderStatus(snapshot, { ended: false, full: false }, plainPaint).split('\n').find((l) => l.includes(name));
+  };
+
+  test('(+) the live agent\'s row reads <window>:<pane> for the index tmux printed', async () => {
+    const cells = async (index) => (await statusLine(index, 'build-7-1')).trim().split(/\s+/);
+    assert.ok((await cells('1')).includes('1:%5'), 'window 1');
+    assert.ok((await cells('12')).includes('12:%5'), 'window 12');
+    assert.equal((await statusLine('12', 'build-7-1')).length, (await statusLine('1', 'build-7-1')).length, 'the column keeps its width');
+  });
+
+  test('(\u2212) a malformed index falls back to the pane id alone, in the same column width', async () => {
+    const good = await statusLine('1', 'build-7-1');
+    for (const index of ['x', '1;2', '1234567', '', '-1', ' 1']) {
+      const line = await statusLine(index, 'build-7-1');
+      assert.ok(line.trim().split(/\s+/).includes('%5'), JSON.stringify(index));
+      assert.doesNotMatch(line, /:%5/, JSON.stringify(index));
+      assert.equal(line.length, good.length, JSON.stringify(index));
+    }
   });
 });

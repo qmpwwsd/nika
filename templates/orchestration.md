@@ -67,7 +67,7 @@ delegation brief, or `-` to read it from stdin.
 facts, read-only), `writer` (writes docs and reports) or `agent` (none of these). Always pass it. Without it nika picks one from the
 model: the Builder model gives `coder`, the Reasoner model `designer`, the Scout model `scout`, any other model `agent`.
 
-- Pane placement: `{{panePlacement}}` (`beside` splits next to the orchestrator, `under-last` stacks under the newest agent pane).
+- Pane placement: `{{panePlacement}}` (`beside` opens next to the orchestrator and `under-last` under the newest agent pane, while both panes keep at least 80 columns and 15 rows; otherwise nika opens the agent in a tmux window named `agents`).
 - At most {{limits.maxAgents}} spawned agents are live at a time under each orchestrator (a sub-orchestrator counts as one), and a
   project as a whole runs at most three times that number, never more than 24; wait for one to finish before starting another.
 - Permission mode for spawned agents: `{{permissionMode}}`.

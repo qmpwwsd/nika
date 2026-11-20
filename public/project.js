@@ -1297,6 +1297,7 @@ function openSpawn(g, { parent = null, role = 'agent' } = {}) {
   $('#sp-place').replaceChildren(...[
     h('label', { class: 'check' }, h('input', { type: 'radio', name: 'sp-place', value: 'settings' }), `${PLACE_LABEL[mode] ?? 'Beside'} (${ownPlace ? 'set for this project' : 'from Settings'})`),
     under ? h('label', { class: 'check' }, h('input', { type: 'radio', name: 'sp-place', value: 'under' }), `Under ${under.name} (${under.pane.id})`) : null,
+    under ? h('p', { class: 'help', text: 'If that pane has no room, nika places the agent by the setting and says where.' }) : null,
   ].filter(Boolean)); // replaceChildren would turn null into the text "null"
   const want = pref.place === 'under' && under ? 'under' : 'settings';
   $(`input[name="sp-place"][value="${want}"]`).checked = true;
@@ -1396,7 +1397,11 @@ async function submitSpawn(e) {
     dlg.close();
     const href = sessionHref({ session: r.body.sessionId, pane: r.body.pane, project: g.project.key });
     const who = parent ? ` under ${trunc(parent.name, 40)}` : '';
-    toast(`Spawned ${role === 'orchestrator' ? 'sub-orchestrator ' : ''}${name}${who} in pane ${r.body.pane}`, href ? { action: { label: 'Open session', run: () => { location.href = href; } } } : {});
+    // where nika put the pane (0.5.4): the agents window when it went there, else a plain pane; a word the page does not know reads as a plain pane
+    const at = r.body.placement === 'tiled' ? ` in the tmux window "agents" (pane ${r.body.pane})`
+      : r.body.placement === 'window' ? ` in a new tmux window "agents" (pane ${r.body.pane})` : ` in pane ${r.body.pane}`;
+    const moved = r.body.moved === 'under' ? '. That pane had no room.' : '';
+    toast(`Spawned ${role === 'orchestrator' ? 'sub-orchestrator ' : ''}${name}${who}${at}${moved}`, href ? { action: { label: 'Open session', run: () => { location.href = href; } } } : {});
     await pollApp();
     render(true);
     return;

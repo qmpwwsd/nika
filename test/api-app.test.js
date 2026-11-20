@@ -4829,7 +4829,6 @@ function fakeFit(answers = {}) {
       setMode: async (m) => { f.modes.push(m); f.order.push(['setMode', m]); },
       hold: method('hold', (id, b) => FIT_OK(b)),
       release: method('release', () => ({ status: 200, body: { released: true } })),
-      releaseWindow: method('releaseWindow', () => false),
       releaseAll: method('releaseAll', () => 0),
       recover: method('recover', () => ({ released: 0, dropped: 0 })),
       size: () => 0,

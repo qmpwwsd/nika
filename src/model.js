@@ -10,7 +10,7 @@ import { resolveProject } from './collect/projects.js';
 import { mapLimit } from './util.js';
 import { clean } from './text.js';
 import { subagentLabel } from './labels.js';
-import { UUID } from './ids.js';
+import { UUID, WINDOW_INDEX } from './ids.js';
 import { MODEL_CATALOG, modelWindow } from './models.js';
 import { compactLaunch } from './compact.js';
 import { keyFor, loadConfig, defaults, addedTo } from './store.js';
@@ -318,7 +318,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         startedAt: reg?.startedAt ?? t?.startedAt ?? null,
         lastActivity: activity.length ? Math.max(...activity) : null,
         lastPrompt: clean(t?.lastPrompt, PROMPT_MAX),
-        pane: paneInfo ? { id: paneInfo.id, session: clean(paneInfo.session, 80), title: clean(paneInfo.title, 200), command: clean(paneInfo.command, 80) } : null,
+        pane: paneInfo ? { id: paneInfo.id, session: clean(paneInfo.session, 80), windowIndex: typeof paneInfo.windowIndex === 'string' && WINDOW_INDEX.test(paneInfo.windowIndex) ? paneInfo.windowIndex : null, title: clean(paneInfo.title, 200), command: clean(paneInfo.command, 80) } : null,
         bridgeUrl: bridgeUrl(reg?.bridgeSessionId ?? t?.bridgeSessionId),
         report: report ? { name: clean(report.name, 128), status: clean(report.status, 300), rc: report.rc, hasFile: Boolean(report.reportPath), sessionId: reportId } : null,
         subagents,

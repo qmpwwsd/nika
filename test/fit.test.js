@@ -771,21 +771,6 @@ describe('release', () => {
     assert.equal(w.sizeOpt, null);
   });
 
-  test('(+) releaseWindow releases the lease of that window and only that one', async () => {
-    const r = rig();
-    await r.put('%2', 220, 60);
-    await r.put('%4', 100, 30);
-    assert.equal(await r.fit.releaseWindow('@1'), true);
-    assert.equal(r.fit.size(), 1);
-    assert.equal(r.tag('@1'), '');
-    assert.notEqual(r.tag('@2'), '');
-    const at = r.at();
-    assert.equal(await r.fit.releaseWindow('@1'), false);
-    assert.equal(await r.fit.releaseWindow('@9'), false);
-    assert.equal(await r.fit.releaseWindow('../@1'), false);
-    assert.equal(r.at(), at, 'no tmux call for a window without a lease');
-  });
-
   test('(−) the user unzoomed: no unzoom (it would zoom again), the layout and size come back', async () => {
     const r = rig();
     await r.put('%2', 220, 60);
@@ -1928,8 +1913,8 @@ describe('M1: a heartbeat that arrives after the page closed does not fit the wi
     await r.fit.release('%2');
     r.clock.t += 500;
     assert.deepEqual(await r.put('%2', 220, 60, true), ans('fitted', null, 220, 60, 3));
-    // the note stays cleared: a release that is not the page's (spawn) is followed by a heartbeat that fits
-    assert.equal(await r.fit.releaseWindow('@1'), true);
+    // the note stays cleared: a release that is not the page's (here the app giving every window back) is followed by a heartbeat that fits
+    assert.equal(await r.fit.releaseAll(), 1);
     r.clock.t += 500;
     assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted');
   });
@@ -1942,13 +1927,13 @@ describe('M1: a heartbeat that arrives after the page closed does not fit the wi
     assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted');
   });
 
-  test('(+) the note belongs to the window and to the page\'s DELETE: another window, a lapse, a spawn release and an empty DELETE leave open:false alone', async () => {
+  test('(+) the note belongs to the window and to the page\'s DELETE: another window, a lapse, a release that is not the page\'s and an empty DELETE leave open:false alone', async () => {
     const r = rig();
     await r.put('%2', 220, 60);
     await r.put('%4', 100, 30);
     await r.fit.release('%2');
     assert.equal((await r.put('%4', 100, 30, false)).body.fit.state, 'fitted', 'another window');
-    assert.equal(await r.fit.releaseWindow('@2'), true);
+    assert.equal(await r.fit.releaseAll(), 1);
     assert.equal((await r.put('%4', 100, 30, false)).body.fit.state, 'fitted', 'a release that is not the page\'s');
     r.clock.t += 5000;
     assert.deepEqual(await r.fit.release('%3'), { status: 200, body: { released: false } });
@@ -1972,7 +1957,7 @@ describe('M1: a heartbeat that arrives after the page closed does not fit the wi
     assert.equal((await r.fit.release('%2')).status, 502);
     r.world.fail = null;
     r.clock.t += 500;
-    assert.equal(await r.fit.releaseWindow('@1'), true);
+    assert.equal(await r.fit.releaseAll(), 1);
     assert.equal((await r.put('%2', 220, 60, false)).body.fit.state, 'fitted');
   });
 });

@@ -32,7 +32,7 @@ describe('collect', () => {
     assert.equal(a.modelLabel, 'Sonnet 5.5');
     assert.equal(a.worktree, 'repo-wt');
     assert.equal(a.gitBranch, 'feat/x');
-    assert.deepEqual(a.pane, { id: '%5', session: 'work', title: '[%5] build-7-1', command: 'zsh' });
+    assert.deepEqual(a.pane, { id: '%5', session: 'work', windowIndex: '1', title: '[%5] build-7-1', command: 'zsh' }); // 0.5.4 P1: the window index joins the pane (was without windowIndex)
     assert.equal(a.bridgeUrl, 'https://claude.ai/code/session_01AbCdEf');
     assert.deepEqual(a.report, { name: 'build-7-1', status: 'STATUS: RUNNING 7.1 build', rc: null, hasFile: true, sessionId: SID.busy });
     assert.equal(a.resumeCmd, `cd ${shellQuote(fx.wt)} && claude --resume ${SID.busy}`);
@@ -961,7 +961,7 @@ describe('collect: a background session and the pane that shows it (0.5, W12)', 
     const a = row(CHILD);
     assert.equal(a.hostId, HOST);
     assert.deepEqual([a.live, a.state, a.pid, a.attention], [true, 'busy', 202, null], 'the child\'s own state, not the host\'s idle');
-    assert.deepEqual(a.pane, { id: '%9', session: 'work', title: 'acme-api', command: 'claude' });
+    assert.deepEqual(a.pane, { id: '%9', session: 'work', windowIndex: '4', title: 'acme-api', command: 'claude' }); // 0.5.4 P1: was without windowIndex
     assert.equal(a.role, 'orchestrator');
     assert.equal(a.name, 'acme-api');
     assert.equal(a.context, null, 'the child has no transcript here');
@@ -1107,5 +1107,33 @@ describe('collect: a background session and the pane that shows it (0.5, W12)', 
     const { row } = await scene({ child: { tmux: 'work:@5.%10' }, tmuxLines: ['%9\twork\t4\tacme-api\tclaude\torchestrator', '%10\twork\t5\tchild\tclaude\tagent\t\t2\t%9'] });
     assert.deepEqual([row(CHILD).pane.id, row(CHILD).role, row(CHILD).hostId], ['%10', 'agent', null]);
     assert.deepEqual([row(HOST).pane.id, row(HOST).role], ['%9', 'orchestrator']);
+  });
+});
+
+describe('collect: the pane carries its tmux window index (0.5.4, P1)', () => {
+  const lines = (index) => [`%5\twork\t${index}\t[%5] build-7-1\tzsh`, '%6\twork\t2\tidle-pane\tclaude', '%7\twork\t3\t[%7] lazygit pane\tlazygit'];
+  const paneOf = async (index) => byId(await snap(7 * DAY, fakeExec({ tmuxLines: lines(index) })), SID.busy).pane;
+
+  test('(+) a valid index reaches the snapshot as the string tmux printed, and the pane keeps exactly these five keys', async () => {
+    const s = await snap();
+    assert.equal(byId(s, SID.busy).pane.windowIndex, '1');
+    assert.equal(byId(s, SID.idle).pane.windowIndex, '2');
+    assert.deepEqual(Object.keys(byId(s, SID.busy).pane).sort(), ['command', 'id', 'session', 'title', 'windowIndex']);
+    for (const index of ['0', '7', '42', '999999', '000007']) assert.equal((await paneOf(index)).windowIndex, index, index);
+  });
+
+  test('(\u2212) an index that is not 1 to 6 ASCII digits is null, and the rest of the pane is unchanged', async () => {
+    for (const index of ['x', '1;2', '1234567', '', '-1', ' 1', '1 ', '1.5', '0x1', '\u0663', '1\u200b', 'split', '%5']) {
+      const pane = await paneOf(index);
+      assert.equal(pane.windowIndex, null, JSON.stringify(index));
+      assert.deepEqual([pane.id, pane.session, pane.command], ['%5', 'work', 'zsh'], JSON.stringify(index));
+    }
+  });
+
+  test('(\u2212) a listing row that stops before the window index, and one with a forged extra tab in the session name, give null, never a piece of another field', async () => {
+    const short = byId(await snap(7 * DAY, fakeExec({ tmuxLines: ['%5\twork', '%6\twork\t2\tidle-pane\tclaude'] })), SID.busy);
+    assert.deepEqual([short.pane.id, short.pane.windowIndex], ['%5', null]);
+    const forged = byId(await snap(7 * DAY, fakeExec({ tmuxLines: ['%5\twork\tsh\t1\t[%5] build-7-1\tzsh', '%6\twork\t2\tidle-pane\tclaude'] })), SID.busy);
+    assert.equal(forged.pane.windowIndex, null, 'the forged tab moves "sh" into the window field: not digits, so null');
   });
 });

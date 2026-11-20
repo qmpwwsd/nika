@@ -377,6 +377,19 @@ describe('the limit copy and the spawn sheet follow the project\'s values', () =
     assert.match(inherited.node('#sp-place').kids[0].textContent, /^Under the last agent \(from Settings\)$/);
   });
 
+  test('(+) 0.5.4 P1: the Under choice carries its help line; without an agent to go under there is no Under choice and no help', () => {
+    const r = rig();
+    r.g.agents = [{ live: true, role: 'agent', name: 'builder-1', pane: { id: '%7' }, lastActivity: 5, state: 'busy' }];
+    r.api.openSpawn(r.g);
+    const kids = r.node('#sp-place').kids;
+    assert.match(kids[1].textContent, /^Under builder-1 \(%7\)$/);
+    assert.equal(kids[2].className, 'help');
+    assert.equal(kids[2].textContent, 'If that pane has no room, nika places the agent by the setting and says where.');
+    const none = rig();
+    none.api.openSpawn(none.g);
+    assert.deepEqual(none.node('#sp-place').kids.map((k) => k.className), ['check']);
+  });
+
   test('(−) settings not loaded: the sheet still opens with the old fallbacks', () => {
     const r = rig({ loaded: null });
     r.api.openSpawn(r.g);
@@ -484,6 +497,25 @@ describe('index.html: Settings says a project can set its own', () => {
   test('(+) the Permission mode and Panes and limits sections point at the project page', () => {
     assert.match(html, /<p>What new agents may do without asking\. A project can set its own on its page \(New agents\), and you can override it per agent when you spawn one\.<\/p>/);
     assert.match(html, /<h2 id="s-panes-h">Panes and limits<\/h2>\s*<p>Defaults for every project\. A project can set its own on its page \(New agents\)\.<\/p>/);
+  });
+  test('(+) 0.5.4 P1: the placement choices and the help line under them say the 80 x 15 floor and the agents window', () => {
+    const copy = (value) => new RegExp(`<input type="radio" name="place" value="${value}"><span><b>[^<]+</b><span>([^<]+)</span>`).exec(html)?.[1];
+    assert.equal(copy('beside'), 'Next to its orchestrator while both panes keep at least 80 columns. Otherwise in a tmux window named agents.');
+    assert.equal(copy('under-last'), 'Below the newest agent pane while both keep at least 15 rows. Otherwise in a tmux window named agents.');
+    assert.match(html, /<\/fieldset>\s*<p class="help" id="set-place-help">A new agent never makes a pane smaller than 80 &times; 15\. An agents window holds agents only: nika re-tiles it as agents come and opens another when it is full\. While a session window fits the orchestrator's tmux window, new agents go to the agents window\.<\/p>/);
+    assert.doesNotMatch(html, /A new pane to the right in the project's tmux window|Stacks below the most recently started agent pane/);
+  });
+  test('(+) 0.5.4 P1 N2: the help line under the placement choices is tied to its fieldset (aria-describedby), as the Agents-per-orchestrator help is to its input', () => {
+    assert.equal(html.split('id="set-place-help"').length - 1, 1, 'one help element with that id');
+    assert.match(html, /<fieldset aria-describedby="set-place-help"><legend>Where new agent panes open<\/legend>/);
+    assert.match(html, /<p class="help" id="set-max-help">/, 'the neighbouring field keeps its own help');
+  });
+  test('(\u2212) 0.5.4 P1 N2: no other fieldset points at a help line that is not there, and the placement radios stay inside the described fieldset', () => {
+    for (const m of html.matchAll(/aria-describedby="([^"]+)"/g)) {
+      for (const id of m[1].split(/\s+/)) assert.equal(html.split(`id="${id}"`).length - 1, 1, `${id} is the id of exactly one element`);
+    }
+    const field = /<fieldset aria-describedby="set-place-help">[\s\S]*?<\/fieldset>/.exec(html)?.[0] ?? '';
+    assert.equal((field.match(/name="place"/g) ?? []).length, 2);
   });
   test('(−) Settings still offers no bypass mode', () => {
     assert.doesNotMatch(html, /name="perm" value="bypassPermissions"/);

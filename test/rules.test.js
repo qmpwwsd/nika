@@ -164,6 +164,14 @@ describe('built-in template', () => {
     assert.match(get(w, 'rules/orchestration.md'), /^## Sub-orchestrators$/m);
   });
 
+  test('(+) 0.5.4 P1: the Pane placement line names the 80 x 15 floor and the agents window; the old wording is gone', async () => {
+    const w = await world();
+    await go(w, await prev(w));
+    const text = get(w, 'rules/orchestration.md');
+    assert.match(text, /^- Pane placement: `beside` \(`beside` opens next to the orchestrator and `under-last` under the newest agent pane, while both panes keep at least 80 columns and 15 rows; otherwise nika opens the agent in a tmux window named `agents`\)\.$/m);
+    assert.doesNotMatch(text, /`beside` splits next to the orchestrator/);
+  });
+
   test('(+) settings flow into the rendered file: models, limit, placement, permission mode, Remote Control, plugins', async () => {
     const w = await world({ plugins: ['alpha@demo-market', 'beta_x@demo-market'] });
     await updateSettings({ models: { builder: 'sonnet' }, limits: { maxAgents: 5 }, panePlacement: 'under-last', permissionMode: 'plan', remoteControl: { enabled: true, prefix: 'demo' } }, w.env);

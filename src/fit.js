@@ -54,7 +54,7 @@ const LAYOUT = /^[\x20-\x7e]{1,8192}$/; // tmux's own `#{window_layout}`: printa
 const FILE_NAME = /^fit-([0-9a-f]{16})\.json$/;
 const FIT_FORMAT = ['#{pane_id}', '#{window_id}', '#{window_panes}', '#{window_zoomed_flag}', '#{pane_active}', '#{window_width}', '#{window_height}',
   '#{pane_width}', '#{pane_height}', '#{pane_current_command}', '#{@nika-fit}', '#{@nika-role}', '#{window_active_clients}'].join('\t');
-/** The `@nika-role` values of the panes nika's own spawn splits into a window (F2). Never `orchestrator`; any other text is no role. */
+/** The `@nika-role` values of the panes nika's own spawn puts into a fitted window (F2). Since 0.5.4 (P1) a spawn does not split a fitted window: it happens only through a race (the lease was taken after the spawn's listing) or a forged listing. Never `orchestrator`; any other text is no role. */
 const NIKA_PANES = new Set(['agent', 'sub-orchestrator']);
 const FILE_KEYS = ['v', 'nonce', 'window', 'pane', 'panes', 'zoomed0', 'active0', 'width0', 'height0', 'size0', 'layout0', 'layout1', 'cols', 'rows', 'resized', 'userZoom', 'at'];
 const BODY_MESSAGE = 'cols must be an integer 40–400, rows 10–200, open a boolean, focus a boolean when present';
@@ -192,7 +192,7 @@ const defaultSchedule = (fn, ms) => {
  * exec(cmd, argv) is the shared execFile wrapper; `lock(paneId, fn)` runs fn as the only control action on the pane (the
  * session controller's per-pane lock) and resolves with fn's result; `stateDir` is nika's state dir (the lease files live in
  * `<stateDir>/fit/`); `schedule(fn, ms)` starts the watch and returns its cancel function; `sleep(ms)` bounds releaseAll and recover.
- * hold(id, { cols, rows, open, focus }) and release(id) return { status, body } like the other controllers; releaseWindow(w) → boolean;
+ * hold(id, { cols, rows, open, focus }) and release(id) return { status, body } like the other controllers;
  * releaseAll() → number of leases released; recover() → { released, dropped }; size() → number of leases held.
  */
 export function createFit({
@@ -374,7 +374,7 @@ export function createFit({
   /**
    * null (all as nika left it), { act: 'drop' } (tag or window gone: ids may be reused, touch nothing), { act: 'release', mark? },
    * { act: 'refit' } (only nika's own agent panes came or went: give the window back and fit it again), { act: 'wait' } (a new pane has no role
-   * yet: nika's spawn tags it right after the split, so look again at the next tick), (F4) { act: 'view' } / { act: 'away' } (memory only, see VIEW
+   * yet: nika's spawn tags it right after the split, so look again at the next tick; since 0.5.4 (P1) a spawn splits a fitted window only through a race or a forged listing), (F4) { act: 'view' } / { act: 'away' } (memory only, see VIEW
    * and AWAY), or (F9) { act: 'give' } / { act: 'take' } (an in place move, see GIVE and TAKE). `at` is now().
    */
   function observe(lease, snap, at) {
@@ -413,7 +413,7 @@ export function createFit({
     if (added.length === 0 && removed.length === 0) return USER; // the same panes: an unzoom, a focus change or a count that does not add up
     if (removed.some((p) => lease.known.get(p) !== true)) return USER; // a pane that was not nika's agent went away (a gone pane has no tags to read)
     if (added.every((r) => NIKA_PANES.has(r.role))) return { act: 'refit' };
-    return lease.waitAt === null || at - lease.waitAt < WATCH_MS ? { act: 'wait' } : USER; // one tick of grace for the spawn to tag its split
+    return lease.waitAt === null || at - lease.waitAt < WATCH_MS ? { act: 'wait' } : USER; // one tick of grace for the spawn to tag its split (a split into a fitted window is rare since 0.5.4 (P1): a race or a forged listing)
   }
   async function dropLease(l) {
     unregister(l);
@@ -1102,14 +1102,6 @@ export function createFit({
     return { status: 200, body: { released: true } };
   }
 
-  /** For spawn: give a window back before a split lands in it. Rejects with tmux's error when the restore could not be read. */
-  async function releaseWindow(w) {
-    const lease = matches(WINDOW_ID, w) ? leases.get(w) : undefined;
-    if (!lease) return false;
-    await releaseQueued(lease);
-    return true;
-  }
-
   async function releaseAll() {
     if (leases.size === 0) return 0;
     let released = 0;
@@ -1141,5 +1133,5 @@ export function createFit({
     return out;
   }
 
-  return { hold, release, releaseWindow, releaseAll, recover, setMode, mode: () => mode, size: () => leases.size };
+  return { hold, release, releaseAll, recover, setMode, mode: () => mode, size: () => leases.size };
 }

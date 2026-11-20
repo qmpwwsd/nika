@@ -208,7 +208,9 @@ function rowEl(a, g, { scope, showProject = false, tree = null, showEnded = stat
   const items = [{ text: 'Copy resume command', run: () => copyText(a.resumeCmd, 'resume command') }];
   if (a.report?.hasFile) items.push({ text: 'Show report', run: () => showReport(a) });
   if (a.bridgeUrl && SHAPE.claudeUrl.test(a.bridgeUrl)) items.push({ text: 'Open in claude.ai ↗', href: a.bridgeUrl });
-  if (a.live && a.pane) items.push({ text: `Focus pane ${a.pane.id} in tmux`, run: () => focusPane(a.pane.id) });
+  // the tmux window index, when tmux gave one (1 to 6 digits), tells which window the pane is in (0.5.4)
+  const inWindow = typeof a.pane?.windowIndex === 'string' && /^\d{1,6}$/.test(a.pane.windowIndex) ? ` (window ${a.pane.windowIndex})` : '';
+  if (a.live && a.pane) items.push({ text: `Focus pane ${a.pane.id}${inWindow} in tmux`, run: () => focusPane(a.pane.id) });
   // app tier, registered projects: the orchestrator items (project.js); they and End session… each start a group, a rule above
   const orchItems = isApp ? hooks.rowItems?.(a, g, scope) ?? [] : [];
   if (orchItems.length) items.push({ ...orchItems[0], group: true }, ...orchItems.slice(1));

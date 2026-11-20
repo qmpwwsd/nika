@@ -3,6 +3,8 @@ export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 export const PANE_ID = /^%\d{1,6}$/;
 /** tmux `#{window_id}`; taken from tmux's own listing, never from a request (fit, ADR 0017). */
 export const WINDOW_ID = /^@\d{1,6}$/;
+/** tmux `#{window_index}` as the snapshot and the CLI show it: 1 to 6 ASCII digits (0.5.4); anything else is dropped, never cleaned up. */
+export const WINDOW_INDEX = /^\d{1,6}$/;
 /** Lease id and value of the window tag `@nika-fit`: 16 lowercase hex from nika's CSPRNG. */
 export const FIT_NONCE = /^[0-9a-f]{16}$/;
 /** First 16 hex chars of sha256(realpath of the project dir). */
