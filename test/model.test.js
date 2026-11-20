@@ -329,7 +329,7 @@ describe('collect', () => {
 describe('collect: key, role, attention (0.2 UI fields)', () => {
   const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'context', 'cwd', 'depth', 'gitBranch', 'hostId', 'id', 'label', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
     'parent', 'pid', 'report', 'resumeCmd', 'role', 'startedAt', 'state', 'subagents', 'title', 'version', 'worktree'];
-  const GROUP_KEYS = ['agents', 'counts', 'key', 'label', 'lastActivity', 'root'];
+  const GROUP_KEYS = ['agents', 'counts', 'hidden', 'key', 'label', 'lastActivity', 'root']; // 0.5.4 (RM): every group carries the number of rows left out (design-053-rm 4.2)
   const PANES = (role5, role6) => [`%5\twork\t1\t[%5] build-7-1\tzsh\t${role5}`, `%6\twork\t2\tMacBook.local\tclaude\t${role6}`];
 
   test('(+) every group has key = keyFor(repo root): 16 hex, one per group, worktrees share the repo key', async () => {

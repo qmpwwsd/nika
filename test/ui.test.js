@@ -146,7 +146,7 @@ describe('HTML pages under the strict CSP', () => {
     assert.match(src, /<nav\b/);
     assert.match(src, /id="announce"[^>]*aria-live="polite"/);
     assert.equal((src.match(/<h1\b/g) ?? []).length, 3, 'dashboard, project and settings');
-    assert.equal((src.match(/<dialog\b/g) ?? []).length, 9, 'setup drawer, spawn, rules, plugins, models, confirm, report, end, keyboard shortcuts');
+    assert.equal((src.match(/<dialog\b/g) ?? []).length, 10, 'setup drawer, spawn, rules, plugins, models, confirm, report, end, keyboard shortcuts, removed (0.5.4)');
   });
 
   test('(+) index.html: app-only controls are marked so the browser tier removes them', () => {
@@ -611,7 +611,8 @@ describe('tier separation in the page code', () => {
 
   test('(−) /api/app appears only in the app-tier modules (best-effort: strings in comments are ignored)', () => {
     // end-dialog.js serves the app tier only (the session window, and the dashboard's End item behind isApp)
-    for (const f of JS.filter((x) => !['api.js', 'project.js', 'settings.js', 'session.js', 'end-dialog.js'].includes(x))) {
+    // removed.js (0.5.4) is imported statically by both tiers for the removed line; every request in it checks isApp and appFetch refuses outside the app tier
+    for (const f of JS.filter((x) => !['api.js', 'project.js', 'settings.js', 'session.js', 'end-dialog.js', 'removed.js'].includes(x))) {
       assert.doesNotMatch(code(read(f)), /\/api\/app/, `${f} is loaded on the browser tier and must not name an app route`);
     }
   });

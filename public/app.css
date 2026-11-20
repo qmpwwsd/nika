@@ -510,3 +510,25 @@ dialog.dlg-plugins[open] { display: flex; flex-direction: column; }
   .bar-actions .btn .lbl { display: none; }
   .bar-actions .btn { width: var(--h-ctl); padding: 0; }
 }
+
+/* 0.5.4 RM: Remove from the list (design-053-rm 6). The removed state has its own colour (--rm*), its own icon (i-eye-off) and its own words. */
+.rm-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: var(--sp-4) var(--sp-4) 0; font-size: var(--fs-small); color: var(--text-muted); }
+.rm-line .ic { color: var(--rm); flex: none; }
+.rm-line .rm-text { overflow-wrap: anywhere; }
+#proj-agents > .rm-line { margin: var(--sp-3) 0 0; }
+dialog.dlg-removed { width: min(560px, calc(100vw - 32px)); }
+dialog.dlg-removed[open] { display: flex; flex-direction: column; }
+.dlg-removed h3 { margin: 0; font-size: var(--fs-body); color: var(--rm); }
+.rm-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.rm-item { display: flex; align-items: flex-start; gap: 12px; padding: 8px 10px; background: var(--rm-soft); border: 1px solid var(--rm-line); border-radius: var(--r-md); }
+.rm-item .btn { margin-left: auto; flex: none; }
+.rm-item .rm-text { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.rm-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text); }
+.rm-path { overflow-wrap: anywhere; font-size: var(--fs-small); color: var(--text-muted); }
+.rm-proj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-small); color: var(--text-muted); }
+.rm-meta { font-size: var(--fs-small); color: var(--text-muted); }
+.rm-more { margin: 8px 0 0; }
+@media (max-width: 400px) {
+  .rm-item { flex-wrap: wrap; }
+  .rm-item .btn { margin-left: 0; }
+}

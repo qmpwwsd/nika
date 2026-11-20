@@ -10,7 +10,8 @@ import { loadConfig, removeProject, updateSettings, getProjectConfig, updateProj
 import { openRegular, isRealDir } from './fsafe.js';
 import { configDir, stateDir } from './paths.js';
 import { clean } from './text.js';
-import { UUID, SUBAGENT_ID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME, IMAGE_REF } from './ids.js';
+import { UUID, SUBAGENT_ID, PANE_ID, PROJECT_KEY, CLAUDE_COMMAND, COMMAND_NAME, IMAGE_REF, segment } from './ids.js';
+import { hiddenRoutes } from './hidden-routes.js';
 import { readImage } from './collect/history.js';
 import { IMAGE_MEDIA } from './image.js';
 import { mapLimit } from './util.js';
@@ -54,17 +55,6 @@ const COPY_ERRORS = {
 const NO_COPY = { state: 'no-source', managed: false, dismissed: false, version: null, available: null, running: false };
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest();
 
-/** A path segment as a value of the given shape (the raw and the percent-decoded form are tried: `%5` or `%255`), else null. */
-function param(raw, shape) {
-  const candidates = [raw];
-  try {
-    candidates.unshift(decodeURIComponent(raw));
-  } catch {
-    // not a valid escape sequence: the raw form is all there is
-  }
-  return candidates.find((c) => shape.test(c)) ?? null;
-}
-
 /** `/` + a COMMAND_NAME, optionally followed by one space and arguments; at most COMMAND_MAX characters, no control characters. */
 function isCommandText(text) {
   if (typeof text !== 'string' || !text.startsWith('/') || [...text].length > COMMAND_MAX || CONTROL.test(text)) return false;
@@ -102,7 +92,8 @@ async function listTemplates(dir) {
  *                           Start asks before it reads a saved orchestrator; src/orchestrate.js), findSession(id) → { agent, group } | null
  *                           (src/model.js: one session by id whatever its age, live state included; throws EINDEX when the index is unreadable),
  *                           findSessions(ids) → Map id → { agent, group } (src/model.js: ended sessions by id, ONE transcript-index walk for
- *                           all of them, no ps and no tmux; throws EINDEX) }; handed to the modules as is
+ *                           all of them, no ps and no tmux; throws EINDEX), findGroup(key) -> group | null (src/model.js: one folder by key whatever
+ *                           the age of its sessions, an index-only walk; throws EINDEX; only the Remove of a folder asks it) }; handed to the modules as is
  * @param {object} o.deps    { version, collect() → snapshot, listPanes() → { panes, error }, readHistory, readSubagentHistory, listPlugins, rulesState,
  *                           preview, apply, spawnAgent, startOrchestrator, mirror, keys, picker (start/status for folders, startFiles/filesStatus for the
  *                           attachment file chooser), listCommands;
@@ -170,7 +161,7 @@ export function createAppApi({ secret, ctx, deps }) {
   };
 
   async function eligiblePane(raw) {
-    const id = param(raw, PANE_ID);
+    const id = segment(raw, PANE_ID);
     if (!id) return { failure: err(404, 'not_found', 'pane not found') };
     const e = await loadEligibility();
     if (isEligible(e, id)) return { id };
@@ -397,7 +388,7 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   route('GET', /^\/api\/app\/projects\/pick\/([^/]+)$/, 0, async ({ params }) => {
-    const reqId = param(params[0], UUID);
+    const reqId = segment(params[0], UUID);
     const st = reqId && deps.picker.status(reqId);
     if (!st) return err(404, 'not_found', 'no such picker request');
     if (st.state !== 'done') return { status: 200, body: { state: st.state } };
@@ -406,7 +397,7 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   route('DELETE', /^\/api\/app\/projects\/([^/]+)$/, CAP.small, async ({ params }) => {
-    const key = param(params[0], PROJECT_KEY);
+    const key = segment(params[0], PROJECT_KEY);
     if (!key || !(await removeProject(key, ctx.env))) return err(404, 'not_found', 'project is not registered');
     return { status: 200, body: { removed: true } };
   });
@@ -416,7 +407,7 @@ export function createAppApi({ secret, ctx, deps }) {
   const adopting = new Set(); // project keys with a PUT in flight: one adoption at a time per project (M3)
 
   route('PUT', /^\/api\/app\/projects\/([^/]+)\/orchestrator$/, CAP.small, async ({ params, body }) => {
-    const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
+    const { project, failure } = await projectOf({ project: segment(params[0], PROJECT_KEY) });
     if (failure) return failure;
     if (Object.keys(body).length !== 1 || typeof body.sessionId !== 'string' || !UUID.test(body.sessionId)) return err(400, 'invalid', 'body must be { sessionId: a session id }');
     // The checks below and the tagging read one state and act on it: two overlapping PUTs (two windows, a double click) could
@@ -469,7 +460,7 @@ export function createAppApi({ secret, ctx, deps }) {
 
   // forgets the id only: a live pane keeps its tags until it ends
   route('DELETE', /^\/api\/app\/projects\/([^/]+)\/orchestrator$/, CAP.small, async ({ params }) => {
-    const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
+    const { project, failure } = await projectOf({ project: segment(params[0], PROJECT_KEY) });
     if (failure) return failure;
     try {
       await setOrchestrator(project.key, null, ctx.env);
@@ -502,13 +493,13 @@ export function createAppApi({ secret, ctx, deps }) {
   // The body is exactly one field, so the dialogs and menus never overwrite each other: { plugins }, { models } (0.4),
   // { permissionMode }, { panePlacement } or { maxAgents } (0.4.0; a value, or null for "use Settings").
   route('GET', /^\/api\/app\/projects\/([^/]+)\/config$/, 0, async ({ params }) => {
-    const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
+    const { project, failure } = await projectOf({ project: segment(params[0], PROJECT_KEY) });
     return failure ?? { status: 200, body: await getProjectConfig(project.key, ctx.env) };
   });
 
   const ONE_FIELD = new Set(['models', 'permissionMode', 'panePlacement', 'maxAgents']);
   route('PUT', /^\/api\/app\/projects\/([^/]+)\/config$/, CAP.settings, async ({ params, body }) => {
-    const { project, failure } = await projectOf({ project: param(params[0], PROJECT_KEY) });
+    const { project, failure } = await projectOf({ project: segment(params[0], PROJECT_KEY) });
     if (failure) return failure;
     if (body.permissionMode === 'bypassPermissions') return err(400, 'invalid', 'bypassPermissions is never allowed'); // constraint 12: API and store both refuse
     const only = Object.keys(body).length === 1 ? Object.keys(body)[0] : null;
@@ -540,7 +531,7 @@ export function createAppApi({ secret, ctx, deps }) {
   // --- sessions and panes ---
 
   route('GET', /^\/api\/app\/session\/([^/]+)\/history$/, 0, async ({ params, query }) => {
-    const id = param(params[0], UUID);
+    const id = segment(params[0], UUID);
     if (!id) return err(404, 'not_found', 'no such session');
     return deps.readHistory(id, { before: query.get('before') ?? undefined, limit: query.get('limit') ?? undefined }, { claudeDir: ctx.claudeDir, cache: historyCache, now: ctx.now });
   });
@@ -548,9 +539,9 @@ export function createAppApi({ secret, ctx, deps }) {
   // 0.5, W8: a subagent's transcript, read like the session's own. The path is never in the request: the module finds the file in nika's own
   // listing of the session's subagents folder.
   route('GET', /^\/api\/app\/session\/([^/]+)\/subagents\/([^/]+)\/history$/, 0, async ({ params, query }) => {
-    const id = param(params[0], UUID);
+    const id = segment(params[0], UUID);
     if (!id) return err(404, 'not_found', 'no such session');
-    const agentId = param(params[1], SUBAGENT_ID);
+    const agentId = segment(params[1], SUBAGENT_ID);
     if (!agentId) return err(404, 'not_found', 'no such subagent');
     return deps.readSubagentHistory(id, agentId, { before: query.get('before') ?? undefined, limit: query.get('limit') ?? undefined }, { claudeDir: ctx.claudeDir, cache: historyCache, now: ctx.now });
   });
@@ -561,19 +552,19 @@ export function createAppApi({ secret, ctx, deps }) {
   const readImg = deps.readImage ?? readImage;
   const imageOpts = () => ({ claudeDir: ctx.claudeDir, cache: historyCache, now: ctx.now });
   route('GET', /^\/api\/app\/session\/([^/]+)\/image\/([^/]+)$/, 0, async ({ params }) => {
-    const id = param(params[0], UUID);
+    const id = segment(params[0], UUID);
     if (!id) return err(404, 'not_found', 'no such session');
-    const ref = param(params[1], IMAGE_REF);
+    const ref = segment(params[1], IMAGE_REF);
     if (!ref) return err(404, 'not_found', 'no such image');
     return readImg(id, null, ref, imageOpts());
   });
 
   route('GET', /^\/api\/app\/session\/([^/]+)\/subagents\/([^/]+)\/image\/([^/]+)$/, 0, async ({ params }) => {
-    const id = param(params[0], UUID);
+    const id = segment(params[0], UUID);
     if (!id) return err(404, 'not_found', 'no such session');
-    const agentId = param(params[1], SUBAGENT_ID);
+    const agentId = segment(params[1], SUBAGENT_ID);
     if (!agentId) return err(404, 'not_found', 'no such subagent');
-    const ref = param(params[2], IMAGE_REF);
+    const ref = segment(params[2], IMAGE_REF);
     if (!ref) return err(404, 'not_found', 'no such image');
     return readImg(id, agentId, ref, imageOpts());
   });
@@ -702,7 +693,7 @@ export function createAppApi({ secret, ctx, deps }) {
 
   // Not eligibility-gated: the pane may be gone already, and the user's tmux window must still come back.
   route('DELETE', /^\/api\/app\/pane\/([^/]+)\/fit$/, CAP.small, async ({ params }) => {
-    const id = param(params[0], PANE_ID);
+    const id = segment(params[0], PANE_ID);
     if (!id) return err(400, 'invalid', 'invalid pane id');
     if (!fitAllowed('DELETE', id)) return err(429, 'busy', `at most ${FIT_RATE} fit requests per second per pane`);
     return fit.release(id);
@@ -751,8 +742,8 @@ export function createAppApi({ secret, ctx, deps }) {
 
   // Not eligibility-gated, like the folder chooser's poll: the answer belongs to the request, and the pane may have gone while the dialog was open.
   route('GET', /^\/api\/app\/pane\/([^/]+)\/attachments\/pick\/([^/]+)$/, 0, async ({ params }) => {
-    const id = param(params[0], PANE_ID);
-    const reqId = param(params[1], UUID);
+    const id = segment(params[0], PANE_ID);
+    const reqId = segment(params[1], UUID);
     const answer = id && reqId && deps.picker.filesStatus(id, reqId);
     return answer ? { status: 200, body: answer } : err(404, 'not_found', 'no such chooser request'); // unknown and another pane's read alike
   });
@@ -764,7 +755,7 @@ export function createAppApi({ secret, ctx, deps }) {
   route('GET', /^\/api\/app\/pane\/([^/]+)\/attachments\/([^/]+)\/image$/, 0, async ({ params }) => {
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
-    const attId = param(params[1], ID);
+    const attId = segment(params[1], ID);
     if (!attId) return err(404, 'not_found', 'no such image');
     let found;
     try {
@@ -779,8 +770,8 @@ export function createAppApi({ secret, ctx, deps }) {
 
   // Not eligibility-gated: the pane may be gone, and the file must still go. false for an unknown, another pane's or an already sent id (no oracle).
   route('DELETE', /^\/api\/app\/pane\/([^/]+)\/attachments\/([^/]+)$/, CAP.small, async ({ params }) => {
-    const id = param(params[0], PANE_ID);
-    const att = param(params[1], ID);
+    const id = segment(params[0], PANE_ID);
+    const att = segment(params[1], ID);
     if (!id || !att) return err(400, 'invalid', 'invalid pane or attachment id');
     try {
       return { status: 200, body: { removed: (await deps.attachments.remove(id, att)) === true } };
@@ -896,6 +887,10 @@ export function createAppApi({ secret, ctx, deps }) {
     const { project, failure } = await projectOf(body);
     return failure ?? deps.apply(project, { hash: body.hash, overwriteForeign: body.overwriteForeign, gitignore: body.gitignore }, ctx);
   });
+
+  // --- removed sessions and folders (0.5.4, RM): nika's own view filter, never a process or a Claude file ---
+
+  routes.push(...hiddenRoutes({ ctx, cap: CAP.small, snapshot: async () => (await loadEligibility()).snapshot }));
 
   // --- dispatch ---
 

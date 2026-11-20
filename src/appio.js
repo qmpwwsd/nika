@@ -9,7 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findTmux, findClaude, parseSince, DEFAULT_SINCE } from './config.js';
 import { makeExec } from './exec.js';
-import { collect, findSession, findSessions } from './model.js';
+import { collect, findSession, findSessions, findGroup } from './model.js';
+import { readHidden } from './hidden.js';
 import { createServer } from './server.js';
 import { createAppApi } from './api-app.js';
 import { RELEASE_ALL_MS } from './fit.js';
@@ -276,9 +277,16 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
       const ctx = {
         env, exec, tmuxBin, claudeBin: findClaude(env), nikaArgv: [process.execPath, NIKA_BIN], claudeDir: config.claudeDir, now, started: new Map(),
         findSession: (id) => findSession(id, { config: cfg, exec, now: now(), cache: collectorCache }), // one session by id, whatever its age (the saved orchestrator)
+        findGroup: (key) => findGroup(key, { config: cfg, now: now(), cache: collectorCache }), // one folder by key whatever the age of its sessions (Remove of a folder older than the 7-day snapshot)
         findSessions: (ids) => findSessions(ids, { config: cfg, now: now(), cache: collectorCache }), // ended sessions by id in one transcript-index walk (the project list's saved orchestrators)
       };
+      // every row: pane eligibility, the saved orchestrator's state and the repo key of a pane read this one (deps.collect), so a removal never changes what nika controls (0.5.4, T69)
       const snapshot = () => collect({ config: cfg, exec, now: now(), sinceMs: parseSince(DEFAULT_SINCE), since: DEFAULT_SINCE, cache: collectorCache }).then((r) => r.snapshot);
+      // the tray's view: the same, with what the user removed from the lists left out (0.5.4, design-053-rm 4.4)
+      const viewSnapshot = async () => {
+        const t = now();
+        return (await collect({ config: cfg, exec, now: t, sinceMs: parseSince(DEFAULT_SINCE), since: DEFAULT_SINCE, cache: collectorCache, hidden: await readHidden(env, t) })).snapshot;
+      };
       const attachLog = attachOpts.log ?? ((line) => stderr.write(`${line}\n`)); // the store's lines and the routes' go to the same stderr
       attachments = createAttachments({ env, now, ...attachOpts, log: attachLog });
       const picker = createPicker({ send: say, env, attachments }); // the file chooser hands what it reads to the same store the routes use
@@ -323,7 +331,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         if (busy) return;
         busy = true;
         try {
-          const line = statusLine(await snapshot());
+          const line = statusLine(await viewSnapshot());
           if (phase === 'running') say(line);
         } catch {
           // a failed collect() skips this tick

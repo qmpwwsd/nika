@@ -203,10 +203,10 @@ describe('every page in public/: an icon or symbol control has a title', () => {
     });
   }
 
-  test('(+) the five Close buttons of the dialogs, the Auto-compact and agent-limit steppers and the new drawer\'s × are all in the audit and carry a title', () => {
+  test('(+) the Close buttons of the dialogs, the Auto-compact and agent-limit steppers and the new drawer\'s × are all in the audit and carry a title', () => {
     const html = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8');
     const close = [...html.matchAll(/<button\b[^>]*\bdata-close\b[^>]*>/g)].map((m) => m[0]).filter((b) => /aria-label="Close"/.test(b));
-    assert.equal(close.length, 6, 'spawn, rules, plugins, models, report and the Setup drawer');
+    assert.equal(close.length, 7, 'spawn, rules, plugins, models, report, the Setup drawer and the removed list (0.5.4)');
     for (const b of close) assert.match(b, /\btitle="Close"/);
     for (const [name, label] of [['data-fk="compact-dec"', '5 percent less'], ['data-fk="compact-inc"', '5 percent more'], ['data-step="-1"', 'One fewer'], ['data-step="1"', 'One more']]) {
       const b = new RegExp(`<button\\b[^>]*${name}[^>]*>`).exec(html)?.[0] ?? '';

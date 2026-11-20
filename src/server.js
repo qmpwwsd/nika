@@ -5,6 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { collect } from './model.js';
+import { readHidden, hiddenGeneration } from './hidden.js';
 import { parseSince, DEFAULT_SINCE } from './config.js';
 import { focusPane, readReport } from './actions.js';
 
@@ -42,6 +43,7 @@ const STATIC = new Map([
   ['/dash-model.js', ['dash-model.js', 'text/javascript; charset=utf-8']],
   ['/plugin-view.js', ['plugin-view.js', 'text/javascript; charset=utf-8']],
   ['/ctx.js', ['ctx.js', 'text/javascript; charset=utf-8']],
+  ['/removed.js', ['removed.js', 'text/javascript; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
 ]);
 const CSP = [
@@ -118,12 +120,17 @@ export function createServer({ config, exec, token, now = Date.now, version, app
 
   async function snapshot(since) {
     const t = now();
+    // read before the collect: a Remove or an Undo that finishes meanwhile moves the counter on, so this entry is a miss for the next request (0.5.4, design-053-rm 4.5)
+    const gen = hiddenGeneration();
     const hit = snapshots.get(since);
-    if (hit && t - hit.at < SNAPSHOT_TTL_MS) return hit.promise;
+    if (hit && hit.gen === gen && t - hit.at < SNAPSHOT_TTL_MS) return hit.promise;
     if (snapshots.size >= SINCE_CACHE_MAX) snapshots.clear();
-    const promise = collect({ config, exec, now: t, sinceMs: parseSince(since), since, cache: collectorCache })
-      .then((r) => r.snapshot);
-    snapshots.set(since, { at: t, promise });
+    // what the user removed from the lists in the app (0.5.4; both tiers); a config without env reads no file (readHidden)
+    const promise = (async () => {
+      const hidden = await readHidden(config.env, t);
+      return (await collect({ config, exec, now: t, sinceMs: parseSince(since), since, cache: collectorCache, hidden })).snapshot;
+    })();
+    snapshots.set(since, { at: t, gen, promise });
     promise.catch(() => snapshots.delete(since));
     return promise;
   }

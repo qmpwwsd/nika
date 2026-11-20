@@ -111,6 +111,18 @@ export function keyFor(realDir) {
   return crypto.createHash('sha256').update(realDir).digest('hex').slice(0, 16);
 }
 
+/**
+ * The test "is this group a project added to nika", by key or folder, the same as the app's sidebar (public/dash-model.js
+ * sidebarModel): a folder never added shows in the default view only while something runs there. It lives here since 0.5.4
+ * (moved from src/cli.js, which re-exports it): the collector uses the same test to leave a removed folder's rows out only while the
+ * folder is not a project.
+ */
+export function addedTo(projects) {
+  const keys = new Set(projects.map((p) => p.key));
+  const dirs = new Set(projects.map((p) => p.dir));
+  return (g) => keys.has(g.key) || dirs.has(g.root);
+}
+
 function projects(v, warn) {
   if (!Array.isArray(v) || v.length > PROJECTS_MAX) return undefined;
   const out = [];

@@ -49,3 +49,14 @@ export const PANE_PLACEMENTS = ['beside', 'under-last'];
 export const FIT_MODES = ['auto', 'fill', 'terminal', 'off'];
 /** The labels a spawned agent can carry (0.5, W9), in the order the spawn sheet lists them. The page keeps a copy in public/dash-model.js and a test compares the two. */
 export const KINDS = ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent'];
+
+/** A path segment as a value of the given shape (the raw and the percent-decoded form are tried: `%5` or `%255`), else null (0.5.4: moved here from api-app.js, same code). */
+export function segment(raw, shape) {
+  const candidates = [raw];
+  try {
+    candidates.unshift(decodeURIComponent(raw));
+  } catch {
+    // not a valid escape sequence: the raw form is all there is
+  }
+  return candidates.find((c) => shape.test(c)) ?? null;
+}

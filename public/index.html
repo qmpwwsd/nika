@@ -46,6 +46,7 @@
   <symbol id="i-m-dontask" viewBox="0 0 16 16"><rect x="3.2" y="7" width="9.6" height="7" rx="1.5"/><path d="M5.3 7V5.2a2.7 2.7 0 0 1 5.4 0V7M8 9.8v1.4"/></symbol>
   <symbol id="i-compact" viewBox="0 0 16 16"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5"/></symbol>
   <symbol id="i-compact-off" viewBox="0 0 16 16"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5M2.2 2.2l11.6 11.6"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 16 16"><path d="M1.5 8C3 5 5.3 3.5 8 3.5S13 5 14.5 8C13 11 10.7 12.5 8 12.5S3 11 1.5 8zM2.2 2.2l11.6 11.6"/><circle cx="8" cy="8" r="2"/></symbol>
   <symbol id="i-m-unknown" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M6.2 6.3a1.9 1.9 0 1 1 2.7 1.7c-.6.3-.9.7-.9 1.3v.3M8 11.5v.2"/></symbol>
 </svg>
 
@@ -300,6 +301,12 @@
 <dialog id="dlg-confirm" class="dlg-confirm" aria-labelledby="cf-h" aria-describedby="cf-d" data-app-only>
   <div class="dlg-head"><div><h2 id="cf-h" tabindex="-1"></h2><p id="cf-d"></p></div></div>
   <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn lg" data-close id="cf-cancel">Cancel</button><button type="button" class="btn danger lg" id="cf-ok"></button></div>
+</dialog>
+
+<dialog id="dlg-removed" class="dlg-removed" aria-labelledby="rm-h" aria-describedby="rm-d" data-app-only>
+  <div class="dlg-head"><div><h2 id="rm-h" tabindex="-1">Removed from the list</h2><p id="rm-d">Removed items are only hidden from nika's lists. Nothing was deleted, and sessions that still run keep running.</p></div><button type="button" class="btn icon ghost" data-close id="rm-x" data-fk="rm-x" aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-body" id="rm-body" aria-busy="false"></div>
+  <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn lg" data-close id="rm-close" data-fk="rm-close">Close</button></div>
 </dialog>
 
 <dialog id="end-dlg" class="dlg-confirm" aria-labelledby="end-h" aria-describedby="end-d" data-app-only>

@@ -11,7 +11,8 @@ import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
 import {
   CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
 } from './models-ui.js';
-import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
+import { buildGroups, agentNodes, swap, interacting, render, refresh } from './app.js';
+import { removeGroup, removedLineEl } from './removed.js';
 import {
   DETECTED_MAX, sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, effectiveAgents, resetEndedState, KINDS, KIND_TEXT, ROLE_KIND, kindFromModel,
 } from './dash-model.js';
@@ -459,7 +460,9 @@ function act(label, iconName, run, { primary = false, fk, reason = null, title =
 /** primary: true = "Start orchestrator" is the primary button, 'spawn' = "Spawn agent" is. `sub`: add Spawn sub-orchestrator (the project page's header only). */
 function groupActions(g, { primary = false, sub = false } = {}) {
   if (!g.project) {
-    return [h('button', { type: 'button', class: 'btn', 'data-fk': `add:${g.key}`, title: 'Add project', onclick: () => addProject() }, icon('plus'), h('span', { class: 'lbl', text: 'Add project' }))]; // the label is hidden below 900 px: the title is the tooltip
+    const add = h('button', { type: 'button', class: 'btn', 'data-fk': `add:${g.key}`, title: 'Add project', onclick: () => addProject() }, icon('plus'), h('span', { class: 'lbl', text: 'Add project' })); // the label is hidden below 900 px: the title is the tooltip
+    // 0.5.4 RM: a detected folder (not a nika project) can be taken off the list; the "(unknown)" folder has no root and stays
+    return g.root ? [add, menuEl(`More actions for ${g.label}`, [{ text: 'Remove from the list', fk: `rm:${g.key}`, run: () => removeGroup(g, { refresh }) }], `gm:${g.key}`)] : [add];
   }
   const st = orchState(g.project, g);
   const key = g.project.key;
@@ -500,7 +503,7 @@ function renderProject(force) {
   const key = state.route.key;
   const p = state.projects?.find((x) => x.key === key) ?? null;
   const g = buildGroups().find((x) => x.project?.key === key) ?? null;
-  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.plugins, state.models, state.me?.tmux, state.me?.claude, state.error, state.showEndedProject, [...state.open], [...state.expanded], key]);
+  const sig = JSON.stringify([p, g?.agents, g?.hidden, state.modes.map, state.settings, state.plugins, state.models, state.me?.tmux, state.me?.claude, state.error, state.showEndedProject, [...state.open], [...state.expanded], key]);
   if (!force && (sig === projSig || interacting())) return;
   projSig = sig;
   const body = $('#proj-body');
@@ -537,7 +540,7 @@ function renderProject(force) {
       { text: 'Remove from nika…', run: () => confirmRemove(p) },
     ], 'proj-menu'),
   ]);
-  swap($('#proj-agents'), [...(orchState(p, g).kind === 'gone' ? [goneAlert(p, pick)] : []), ...agentNodes(g, '', `pv:${key}`, { showEnded: state.showEndedProject === true })]);
+  swap($('#proj-agents'), [...(orchState(p, g).kind === 'gone' ? [goneAlert(p, pick)] : []), ...agentNodes(g, '', `pv:${key}`, { showEnded: state.showEndedProject === true }), removedLineEl(g.hidden, { where: 'project', refresh })]);
   placeSetup(p, g);
 }
 

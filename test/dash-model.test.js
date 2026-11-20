@@ -656,11 +656,13 @@ describe('dashboardNodes: the no-match line', () => {
       h: (tag, attrs, ...kids) => makeNode(tag, attrs, kids),
       icon: () => null,
       statusOf,
+      removedLineEl: () => null, // 0.5.4 RM: dashboardNodes ends with the removed line (null here: no count)
+      refresh: () => {},
     };
     const src = [fn(APP, 'export function sOf(').replace('export ', ''), fn(APP, 'function matches('), fn(APP, 'function groupMatches('),
       fn(APP, 'function emptyEl('), fn(APP, 'function dashboardNodes(')].join('\n');
     const { dashboardNodes } = vm.runInNewContext(`${src}\n({ dashboardNodes })`, ctx);
-    return Array.from(dashboardNodes());
+    return Array.from(dashboardNodes()).filter(Boolean); // like the real swap: the removed line (0.5.4) is null without a count
   };
   const emptyText = (nodes) => textOf(nodes.find((n) => n.attrs.class === 'empty'));
 

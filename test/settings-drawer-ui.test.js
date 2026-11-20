@@ -196,6 +196,7 @@ function rig({ narrow = false, matchMedia = true, rules = 'nika', sub = true } =
     toast: () => ({ remove() {} }), announce: () => {}, errText: (r) => r?.body?.message ?? `The server answered ${r?.status}.`, copyText: () => {},
     setBusy: () => {}, fieldError: () => {}, openDialog: ui.openDialog, closeMenu: ui.closeMenu, render: (force) => renders.push(force),
     buildGroups: () => [g], agentNodes: () => [h('ul')], swap, interacting: () => false, rulesEl: () => h('span', { class: 'rules' }),
+    removedLineEl: () => null, removeGroup: () => {}, refresh: () => {}, // 0.5.4 RM: project.js uses these from removed.js and app.js
     setTimeout, clearTimeout, AbortController, TextEncoder, window,
   };
   const api = vm.runInNewContext(`${PROJECT_SRC}\n({ renderProject, wireSetup, openSetup })`, ctx);

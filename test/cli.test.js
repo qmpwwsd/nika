@@ -10,7 +10,9 @@ import { Readable, Writable } from 'node:stream';
 import { main } from '../src/cli.js';
 import { getOrchestrator, setOrchestrator } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX } from './tmux-fake.js';
-import { makeFixture, cleanup } from './helpers.js';
+import { makeFixture, cleanup, SID } from './helpers.js';
+import { hideSession, hideGroup, HIDDEN_FILE } from '../src/hidden.js';
+import { keyFor } from '../src/store.js';
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'nika');
 const fx = makeFixture();
@@ -484,5 +486,123 @@ describe('orchestrate: the session registry (R1 F2, the CLI)', () => {
     const res = await r.run();
     assert.equal(res.code, 0, res.err);
     assert.equal(r.started(), 1);
+  });
+});
+
+// --- 0.5.4 (RM): `nika status` leaves out what the user removed from the lists in the app, and says how many --------------------------------------
+describe('status and removed rows (0.5.4)', () => {
+  const REMOVED_LINE = /^\u2026 (\d+) removed from the list \(Show removed in the nika app\)$/m;
+  const NOW = Date.now();
+  let n = 0;
+  /** A fresh state folder (the child's XDG_STATE_HOME) with the given session ids and folder keys removed; `file` writes the file as given instead. */
+  async function removed({ sessions = [], groups = [], file } = {}) {
+    n += 1;
+    const dir = path.join(fx.root, `state-rm-${n}`);
+    const extra = { XDG_STATE_HOME: dir };
+    if (file !== undefined) {
+      fs.mkdirSync(path.join(dir, 'nika'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'nika', HIDDEN_FILE), file);
+    }
+    for (const id of sessions) await hideSession(id, extra, { now: NOW - 1000 });
+    for (const key of groups) await hideGroup(key, extra, { now: NOW - 1000 });
+    return extra;
+  }
+  const rows = (snap) => snap.groups.flatMap((g) => g.agents.map((a) => a.id));
+  const json = async (extra) => JSON.parse((await run(['status', '--json', '--since', 'all'], extra)).stdout);
+
+  test('(+) a removed session is left out of --json and counted, per group and in total', async () => {
+    const base = await json();
+    assert.ok(rows(base).includes(SID.ended));
+    assert.equal(base.hidden, 0);
+    const snap = await json(await removed({ sessions: [SID.ended] }));
+    assert.ok(!rows(snap).includes(SID.ended));
+    assert.equal(snap.hidden, 1);
+    assert.equal(snap.groups.find((g) => g.label === 'repo').hidden, 1);
+  });
+
+  test('(+) the text view leaves the row out and prints one line: how many are removed and where to bring them back', async () => {
+    const base = await run(['status', '--since', 'all', '--ended']);
+    assert.match(base.stdout, /review-old/);
+    assert.doesNotMatch(base.stdout, REMOVED_LINE);
+    const r = await run(['status', '--since', 'all', '--ended'], await removed({ sessions: [SID.ended] }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /review-old/);
+    assert.equal(r.stdout.match(REMOVED_LINE)[1], '1');
+  });
+
+  test('(+) a removed folder that is not a project is left out as a whole', async () => {
+    const key = (await json()).groups.find((g) => g.label === 'plain').key;
+    const snap = await json(await removed({ groups: [key] }));
+    assert.deepEqual(snap.groups.map((g) => g.label), ['repo']);
+    assert.equal(snap.hidden, 1);
+  });
+
+  test('(+) a folder added to nika keeps its rows although the folder is removed (the child reads nika\'s project list: its config has env)', async () => {
+    // Claude records the real path of a folder; nika stores a project by its realpath, so the group's key is the project's key
+    const dir = path.join(fx.root, 'claude-rmproj');
+    const real = fs.realpathSync(fx.plain);
+    const file = path.join(dir, 'projects', '-rmproj', 'abababab-abab-4bab-8bab-abababababab.jsonl');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'user', cwd: real, timestamp: new Date(Date.UTC(2026, 10, 1)).toISOString() })}\n${JSON.stringify({ type: 'ai-title', aiTitle: 'Ended work' })}\n`);
+    const cfg = path.join(fx.root, 'nika-config-rm');
+    const added = await run(['projects', 'add', fx.plain], { NIKA_CONFIG_DIR: cfg });
+    assert.equal(added.code, 0, added.stderr);
+    const extra = { ...(await removed({ groups: [keyFor(real)] })), CLAUDE_CONFIG_DIR: dir };
+    const withProject = JSON.parse((await run(['status', '--json', '--since', 'all'], { ...extra, NIKA_CONFIG_DIR: cfg })).stdout);
+    assert.equal(withProject.groups.length, 1, 'the project keeps its group and its row');
+    assert.equal(withProject.hidden, 0);
+    const without = JSON.parse((await run(['status', '--json', '--since', 'all'], { ...extra, NIKA_CONFIG_DIR: path.join(fx.root, 'nika-config-rm-none') })).stdout);
+    assert.deepEqual(without.groups, [], 'the same folder, not a project: removed');
+    assert.equal(without.hidden, 1);
+  });
+
+  test('(\u2212) nothing removed: no line, and --json carries hidden 0', async () => {
+    const r = await run(['status', '--since', 'all', '--ended']);
+    assert.doesNotMatch(r.stdout, /removed from the list/);
+    assert.equal((await json()).hidden, 0);
+  });
+
+  test('(\u2212) a hidden.json that cannot be read hides nothing: every row, exit 0, one warning on stderr', async () => {
+    const r = await run(['status', '--since', 'all', '--ended'], await removed({ file: '{ not json' }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /review-old/);
+    assert.doesNotMatch(r.stdout, /removed from the list/);
+    assert.match(r.stderr, /hidden\.json is not valid JSON/);
+  });
+
+  test('(\u2212) a removed id nobody has changes nothing and counts nothing', async () => {
+    const snap = await json(await removed({ sessions: ['99999999-9999-4999-8999-999999999999'] }));
+    assert.equal(snap.hidden, 0);
+    assert.ok(rows(snap).includes(SID.ended));
+  });
+});
+
+describe('renderStatus: the removed line (0.5.4)', async () => {
+  const { renderStatus, addedTo } = await import('../src/cli.js');
+  const plainPaint = { busy: (s) => s, idle: (s) => s, other: (s) => s, ended: (s) => s, bold: (s) => s };
+  const snap = (extra) => ({ generatedAt: 0, since: '7d', sources: { registry: 'bad' }, skipped: { registry: 0 }, groups: [], ...extra });
+
+  test('(+) a count above zero adds the line after the folder lines and before the notes; one, singular and plural alike', () => {
+    const out = renderStatus(snap({ hidden: 3 }), { ended: false, full: false }, plainPaint);
+    assert.match(out, /^\u2026 3 removed from the list \(Show removed in the nika app\)$/m);
+    assert.ok(out.indexOf('removed from the list') < out.indexOf('note: registry'), 'before the notes');
+    assert.match(renderStatus(snap({ hidden: 1 }), { ended: false, full: false }, plainPaint), /^\u2026 1 removed from the list/m);
+  });
+
+  test('(+) with every row removed it still says "No agents" and then the line', () => {
+    const out = renderStatus(snap({ hidden: 2 }), { ended: false, full: false }, plainPaint);
+    assert.match(out, /^No agents in the last 7d\.$/m);
+    assert.match(out, /^\u2026 2 removed/m);
+  });
+
+  test('(\u2212) zero, a missing count and anything that is not a whole number print nothing', () => {
+    for (const hidden of [0, undefined, null, -1, 1.5, '3', NaN]) {
+      assert.doesNotMatch(renderStatus(snap({ hidden }), { ended: false, full: false }, plainPaint), /removed from the list/, String(hidden));
+    }
+  });
+
+  test('(\u2212) addedTo is the one in src/store.js (the collector and the CLI share it)', async () => {
+    const store = await import('../src/store.js');
+    assert.equal(addedTo, store.addedTo);
   });
 });

@@ -265,8 +265,9 @@ function flowRig({ project = {}, agents = [], answers = {}, me = { tmux: true, c
       return t;
     },
     announce: () => {}, errText: (r) => r?.body?.message ?? `The server answered ${r?.status}.`, copyText: () => {}, setBusy: () => {}, openDialog: () => {},
-    render: (force) => renders.push(force), buildGroups: () => [g], agentNodes: () => [new El('ul')], swap: (host, list) => host.replaceChildren(...list), interacting: () => false,
+    render: (force) => renders.push(force), buildGroups: () => [g], agentNodes: () => [new El('ul')], swap: (host, list) => host.replaceChildren(...list.filter(Boolean)), interacting: () => false, // filter(Boolean) like the real swap: renderProject now ends its agents list with the removed line, null without a count (0.5.4)
     rulesEl: () => new El('span'), setTimeout, clearTimeout, AbortController, TextEncoder, window: { addEventListener: () => {} },
+    removedLineEl: () => null, removeGroup: () => {}, refresh: () => {}, // 0.5.4 RM: project.js uses these from removed.js and app.js
   };
   const api = vm.runInNewContext(`${PROJECT_SRC}\n({ groupActions, rowItems, startOrchestrator, setPick, forgetPick, renderProject })`, ctx);
   return { api, ctx, g, proj, state, calls, toastLog, navs, renders, node, settle,
