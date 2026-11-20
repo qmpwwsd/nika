@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { readHistory, readSubagentHistory, readImage, createLimiter } from '../src/collect/history.js';
+import { readHistory, readSubagentHistory, readImage } from '../src/collect/history.js';
+import { createLimiter } from '../src/limiter.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-history-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -1715,5 +1716,113 @@ describe('readImage (0.5.1, C)', () => {
       await Promise.all([view(fx, `${o[1]}:0`), get(fx, { limit: 1 }), view(fx, `${o[1]}:0`), get(fx, { limit: 1 })]);
     }, { delayMs: 8 });
     assert.equal(stat.peakLong, 1);
+  });
+});
+
+// ---- 0.5.4 SF, item 7 (RV051 M2): one order for the read slots: image gate -> limited -> longLimited ---------------------------------------------------
+// The slots are module-level in history.js, so a run that deadlocks them stays deadlocked for the rest of this file: every wait below has a time limit
+// (it fails the test instead of hanging the run), and this describe is the last one of the file.
+
+describe('readImage: the slots and their one order (0.5.4 SF, item 7)', () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  /** `p`, or a rejection after `ms`: a test that would wait for ever fails instead. */
+  const within = async (p, ms, what) => {
+    let timer;
+    try {
+      return await Promise.race([p, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what}: still waiting after ${ms} ms`)), ms); })]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  /** Polls `cond` every millisecond and throws after `ms`: a poll that never ends would keep the process alive after `within` has failed the test, and the run would hang. */
+  const until = async (cond, ms = 5000) => { const end = Date.now() + ms; while (!cond()) { if (Date.now() > end) throw new Error(`until: still false after ${ms} ms`); await sleep(1); } };
+  const view = (fx, ref, agent = null) => readImage(A, agent, ref, { claudeDir: fx.claudeDir });
+  /** Makes every read of a transcript whose path holds one of `parts` wait until release(); `reached[part]` counts the reads that got that far. */
+  function holdReads(...parts) {
+    const realOpen = fsp.open;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const hold = { reached: Object.fromEntries(parts.map((x) => [x, 0])), release, restore: () => { fsp.open = realOpen; } };
+    fsp.open = async (file, ...rest) => {
+      const h = await realOpen.call(fsp, file, ...rest);
+      const part = parts.find((x) => String(file).includes(x));
+      if (!part) return h;
+      const realRead = h.read.bind(h);
+      h.read = async (...a) => { hold.reached[part] += 1; await gate; return realRead(...a); };
+      return h;
+    };
+    return hold;
+  }
+
+  test('(+) four queued picture reads do not delay a history page read: it runs while the pictures wait, and at most one picture read holds a limited slot', async () => {
+    const AG3 = 'a0000000000000003';
+    const fx = setup([say('a', 1), say('b', 2), say('c', 3)]);
+    addSub(fx, AG, [userWith([picture('png')], 1)]); // the pictures are read from this subagent's transcript, the page from the session's
+    addSub(fx, AG3, [say('s', 1)]); // two history page reads of this one are parked, each holding a limited slot: two of the four are left
+    const hold = holdReads(AG, AG3);
+    const done = [];
+    let others = [];
+    try {
+      others = [getSub(fx, AG3, { limit: 5 }), getSub(fx, AG3, { limit: 5 })];
+      others.push(...Array.from({ length: 4 }, () => view(fx, '0:0', AG).then((r) => { done.push(r.status); return r; })));
+      await within(until(() => hold.reached[AG] >= 1 && hold.reached[AG3] >= 2), 2000, 'the first picture read and the two parked page reads');
+      // 2 parked page reads + 1 picture read hold three slots, the other three pictures wait at the gate: one slot is left for this page read.
+      // With a picture read in each of the other two, or the gate behind `limited`, there would be none
+      const page = await within(get(fx, { limit: 5 }), 1000, 'a history page read queued behind four picture reads');
+      assert.equal(page.status, 200);
+      assert.deepEqual(done, [], 'no picture read had finished when the page read did');
+    } finally {
+      hold.release();
+      hold.restore();
+      await Promise.all(others);
+    }
+    assert.deepEqual(done, [200, 200, 200, 200], 'and every picture read completes once it is let go');
+  });
+
+  test('(+) the probe shape of the review (2 picture reads and 4 page reads that need the long slot) finishes', async () => {
+    const fx = setup([say('a', 1), userWith([pictureOf(2 * MIB)], 2), bulky(1_300_000, 3)]); // the last line is too long for the window: its page takes the long slot
+    const o = lineOffsets(fx.file);
+    const jobs = [view(fx, `${o[1]}:0`), get(fx, { limit: 1 }), get(fx, { limit: 1 }), get(fx, { limit: 1 }), get(fx, { limit: 1 }), view(fx, `${o[1]}:0`)];
+    const rs = await within(Promise.all(jobs), 8000, 'the probe shape (a slot deadlock)');
+    assert.deepEqual(rs.map((r) => r.status), [200, 200, 200, 200, 200, 200]);
+  });
+
+  test('(+) the probe shape, held at the worst moment: four page reads hold every limited slot and need the long slot, then two picture reads arrive; once the page reads are let go all of them finish', async () => {
+    const fx = setup([say('a', 1), bulky(1_300_000, 2)]); // the last line is too long for the window: each page read takes the long slot
+    addSub(fx, AG, [userWith([picture('png')], 1)]);
+    const mine = path.basename(fx.file);
+    const hold = holdReads(mine);
+    let all = [];
+    try {
+      const pages = Array.from({ length: 4 }, () => get(fx, { limit: 1 }));
+      await within(until(() => hold.reached[mine] >= 4), 2000, 'the four page reads');
+      const images = [view(fx, '0:0', AG), view(fx, '0:0', AG)];
+      await sleep(25); // the picture reads go as far as they can: with the long slot taken first, one of them would now hold it and wait for a limited slot
+      hold.release();
+      all = [...pages, ...images];
+      const rs = await within(Promise.all(all), 5000, 'the page reads and the picture reads (a slot deadlock)');
+      assert.deepEqual(rs.map((r) => r.status), [200, 200, 200, 200, 200, 200]);
+    } finally {
+      hold.release();
+      hold.restore();
+    }
+  });
+
+  test('(\u2212) picture reads still run one after another and still respect the long slot: never two long reads at once, with page reads in between', async () => {
+    const fx = setup([say('a', 1), userWith([pictureOf(2 * MIB)], 2), bulky(1_300_000, 3)]);
+    const o = lineOffsets(fx.file);
+    let rs;
+    const alone = await traced(async () => {
+      rs = await within(Promise.all(Array.from({ length: 6 }, () => view(fx, `${o[1]}:0`))), 8000, 'six picture reads');
+    }, { delayMs: 3 });
+    assert.ok(rs.every((r) => r.status === 200));
+    assert.equal(alone.peakOpen, 1, 'one picture read at a time');
+    let mixed;
+    const stat = await traced(async () => {
+      mixed = await within(Promise.all([...Array.from({ length: 6 }, () => view(fx, `${o[1]}:0`)), get(fx, { limit: 1 }), get(fx, { limit: 1 }), get(fx, { limit: 1 })]), 8000, 'six picture reads and three long page reads');
+    }, { delayMs: 3 });
+    assert.ok(mixed.every((r) => r.status === 200));
+    assert.equal(stat.peakLong, 1, 'one long read at a time');
+    assert.equal(stat.open, 0, 'every handle is closed');
   });
 });

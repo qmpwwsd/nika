@@ -18,7 +18,7 @@ import { NO_TMUX_SERVER } from './tmuxerr.js';
 import { compactLaunch, compactEnv, PCT_ENV } from './compact.js';
 import { isKind, kindFromModel } from './labels.js';
 import { PROJECT_KEY, AGENT_NAME, parseAgentTag, MODEL_ID, TMUX_SESSION, PANE_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
-import { AGENTS_WINDOW, MIN_COLS, MIN_ROWS, PLACE_FORMAT, parsePlaceRows, readPlaceListing, isStrictPaneListing, isAgentsWindow, place } from './place.js';
+import { AGENTS_WINDOW, MIN_COLS, MIN_ROWS, PLACE_FORMAT, parsePlaceRows, readPlaceListing, isStrictPaneListing, parentTags, isAgentsWindow, place } from './place.js';
 import { fail, binsMissing, tmux, tmuxFail, tagPane, earlyExit, sessionNameFor, reduceRc, permissionFlags, launchMode, tmuxLiteral } from './orchestrate.js';
 
 const BRIEF_MAX = 64 * 1024;
@@ -182,13 +182,16 @@ function resolveParent(v, project, tags, ctx) {
 
 const limitFail = (scope, running, max, message) => ({ status: 409, body: { error: 'limit', message, scope, running, max } });
 
+/** One placement line on stderr. It names the step and the reason only: never listing text, a tag, a name or a path. */
+const sayPlacement = (ctx, text) => (ctx.stderr ?? process.stderr).write(`nika: spawn placement${text}\n`);
+
 /**
  * After the split into an agents window (0.5.4, ADR 0021): list the window again, re-tile it only if the listing can be trusted as a whole
  * (readPlaceListing) and it still holds nothing but this project's agents (and the new pane), then read it back. Best effort: the agent
  * already runs, so a failure or a changed window only logs the step and tmux's exit code (never layout text, a name or a path) and never fails the spawn.
  */
 async function tileAgents(ctx, key, win, pane) {
-  const say = (text) => (ctx.stderr ?? process.stderr).write(`nika: spawn placement${text}\n`);
+  const say = (text) => sayPlacement(ctx, text);
   let step = 'relist';
   try {
     const listing = (await tmux(ctx, 'list-panes', '-t', win, '-F', PLACE_FORMAT)).stdout;
@@ -287,7 +290,10 @@ async function doSpawn(v, project, config, ctx) {
       return tmuxFail(err);
     }
     const last = panePlacement === 'under-last' ? await lastPane(dir) : null;
-    plan = place({ rows: readPlaceListing(listing).rows, key: project.key, parent: who.parent, under: v.under, last, placement: panePlacement });
+    const first = readPlaceListing(listing);
+    if (!first.trusted) sayPlacement(ctx, ': the session listing could not be trusted, so a new agents window opened'); // 0.5.4 SF (P1): like the second listing's line, so a quiet new window is explained
+    // 0.5.4 SF (item 14): whose tree each pane is in comes from the `-a` read above (its text, `paneRead`); no new tmux call
+    plan = place({ rows: first.rows, key: project.key, parent: who.parent, under: v.under, last, placement: panePlacement, parents: parentTags(paneRead) });
     // A split goes only to a pane that the collector's own `-a` read lists in this session (review M1, check c), and only when that read is trusted as a
     // whole (round 4, review R1-1): every non-empty line has all the format's fields and no pane id is on two lines. The collector's map alone is not
     // enough: its parse accepts a short line and lets a later row win, so a forged row for a foreign pane, in a value that the placement listing does not

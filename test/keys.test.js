@@ -96,6 +96,19 @@ describe('createKeys.send: text and named keys', () => {
     assert.equal(exec.calls.length, 0);
   });
 
+  test('(\u2212) 0.5.4 SF (item 11): a pane id with a leading zero (%050, %00, %0123) is refused with 400 and nothing reaches tmux; (+) %0, %5 and %999999 reach it', async () => {
+    const exec = fakeTmux();
+    const k = make(exec);
+    for (const pane of ['%050', '%00', '%0123']) {
+      const r = await k.send(pane, { text: 'a' });
+      assert.equal(r.status, 400, pane);
+      assert.equal(r.body.error, 'invalid', pane);
+    }
+    assert.equal(exec.calls.length, 0);
+    for (const pane of ['%0', '%5', '%999999']) assert.equal((await k.send(pane, { text: 'a' })).status, 200, pane);
+    assert.ok(exec.calls.length > 0);
+  });
+
   test('(−) text with any C0, DEL or C1 control is refused, nothing is sent', async () => {
     const exec = fakeTmux();
     const k = make(exec);

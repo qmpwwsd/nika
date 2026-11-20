@@ -407,6 +407,32 @@ describe('createFitPlanner: when a request goes out (design 8.2)', () => {
     assert.equal(r.log.sent.length, 1, 'a change that was undone is not sent');
   });
 
+  test('(+) 0.5.4 SF F-1: retarget remembers the size for the next request and sends nothing by itself; the next heartbeat carries it', async () => {
+    const r = rig();
+    r.planner.size(100, 60);
+    r.planner.start();
+    await r.answer(OK());
+    assert.deepEqual(r.log.sent.map((b) => b.rows), [60]);
+    r.planner.retarget(100, 30);
+    await r.clk.advance(DEBOUNCE_MS * 3);
+    assert.equal(r.log.sent.length, 1, 'no debounced request, no request now');
+    await r.clk.advance(BEAT_MS);
+    assert.deepEqual(r.log.sent.map((b) => b.rows), [60, 30], 'the heartbeat asks the retargeted rows');
+  });
+
+  test('(\u2212) 0.5.4 SF F-1: retarget with a size that is not valid keeps the size asked before, and a retarget before start() is what start() asks', async () => {
+    const r = rig();
+    r.planner.size(100, 60);
+    for (const [c, w] of [[0, 30], [100, 0], [100.5, 30], [100, '30'], [100, 99999], [undefined, undefined]]) r.planner.retarget(c, w);
+    r.planner.start();
+    await r.answer(OK());
+    assert.deepEqual(r.log.sent.map((b) => [b.cols, b.rows]), [[100, 60]]);
+    const q = rig();
+    q.planner.retarget(90, 25); // before start
+    q.planner.start();
+    assert.deepEqual(q.log.sent.map((b) => [b.cols, b.rows]), [[90, 25]]);
+  });
+
   test('(+) one request in flight, the latest size wins: sizes that arrive meanwhile become one request after the answer', async () => {
     const r = rig();
     r.planner.size(100, 30);

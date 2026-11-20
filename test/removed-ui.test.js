@@ -10,7 +10,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { El, installDom, focus } from './fake-dom.js';
-import { h, icon, timeEl } from '../public/dom.js';
+import { h, icon, timeEl, timeWordsEl, ago, agoWords } from '../public/dom.js';
 import { menuEl, sessionHref, SHAPE } from '../public/ui.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -69,7 +69,7 @@ function rig({ app = true, routes = {}, hold = [], headings = [], hiddenHeadings
     return present.has(sel) ? node(sel) : null;
   };
   const ctx = {
-    h, icon, timeEl, $, SHAPE, JSON, Number, Promise, Object, Array, Set, Map, Math, String, Boolean, Error, Date, isApp: app,
+    h, icon, timeWordsEl, $, SHAPE, JSON, Number, Promise, Object, Array, Set, Map, Math, String, Boolean, Error, Date, isApp: app,
     toast: (msg, o = {}) => {
       const el = new El('div');
       const t = { msg, ...o, el, removed: false };
@@ -466,6 +466,8 @@ describe('openRemovedList: the Show removed dialog', () => {
   const listOf = (r) => r.node('#rm-body');
   const buttons = (r) => listOf(r).all((n) => n.tag === 'button');
   const names = (r) => listOf(r).all((n) => n.className.split(' ').includes('rm-name')).map((n) => n.textContent);
+  // 0.5.4 SF (item 13b): after a successful Show again the dialog reads the list again, so the server's answers go in turn (the last one repeats)
+  const once = (...answers) => { let n = 0; return async () => answers[Math.min(n++, answers.length - 1)]; };
 
   test('(+) opens #dlg-removed, shows Loading while it waits, then Folders before Sessions with their rows', async () => {
     const r = rig({ routes: { [LIST]: { status: 200, body: FULL } }, hold: [LIST] });
@@ -541,7 +543,8 @@ describe('openRemovedList: the Show removed dialog', () => {
   });
 
   test('(+) Show again on a session: unhide, the button shows Showing, the row goes, "Back in the list.", refresh, focus on the next row\'s button', async () => {
-    const r = rig({ routes: { [LIST]: { status: 200, body: FULL }, [unUrl()]: OK_BACK }, hold: [unUrl()] });
+    const after = { status: 200, body: { ...FULL, sessions: FULL.sessions.filter((x) => x.id !== ID) } }; // the server's answer once planner is shown again
+    const r = rig({ routes: { [LIST]: once({ status: 200, body: FULL }, after), [unUrl()]: OK_BACK }, hold: [unUrl()] });
     await r.mod.openRemovedList({ refresh: r.refresh });
     const btn = buttons(r).find((b) => b.attrs['aria-label'] === 'Show planner again');
     const next = buttons(r).find((b) => b.attrs['aria-label'] === 'Show builder again');
@@ -561,7 +564,7 @@ describe('openRemovedList: the Show removed dialog', () => {
 
   test('(+) Show again on a folder uses the group route; the last row shown again leaves the empty line and focus on the heading', async () => {
     const one = { groups: [{ key: KEY, label: 'demo', root: '/tmp/nika-test/demo', at: Date.now() }], sessions: [], more: { groups: 0, sessions: 0 } };
-    const r = rig({ routes: { [LIST]: { status: 200, body: one }, [gunUrl()]: OK_BACK } });
+    const r = rig({ routes: { [LIST]: once({ status: 200, body: one }, { status: 200, body: { groups: [], sessions: [], more: { groups: 0, sessions: 0 } } }), [gunUrl()]: OK_BACK } });
     await r.mod.openRemovedList({ refresh: r.refresh });
     focus.el = null;
     buttons(r)[0].click();
@@ -754,6 +757,38 @@ describe('the folder menu: Remove from the list on a detected folder (project.js
   });
 });
 
+describe('the folder header on the dashboard (app.js groupEl; 0.5.4 SF, RM review nit 10)', () => {
+  function headerOf({ isApp, g }) {
+    const asked = [];
+    const sandbox = {
+      h, isApp, hooks: { groupActions: (...args) => { asked.push(args); return [h('button', { type: 'button', text: 'Remove from the list' })]; } },
+      countsLine: () => [], agentNodes: () => [], rulesEl: () => h('span', { text: 'rules' }),
+    };
+    const groupEl = vm.runInNewContext(`${fn(APP, 'function groupEl(')}; groupEl`, sandbox);
+    return { section: groupEl(g, ''), asked };
+  }
+  const group = (o = {}) => ({ key: KEY, label: 'demo', root: '/x/demo', project: null, counts: {}, agents: [{ id: ID }], ...o });
+
+  test('(\u2212) the browser tier: the group header builds no folder actions and has no grp-actions element, for a detected folder and for a project', () => {
+    for (const g of [group(), group({ project: { key: KEY2, rules: null } })]) {
+      const { section, asked } = headerOf({ isApp: false, g });
+      assert.deepEqual(asked, [], 'groupActions is never called');
+      assert.equal(section.all((n) => /\bgrp-actions\b/.test(n.className ?? '')).length, 0);
+      assert.equal(section.all((n) => n.textContent === 'Remove from the list').length, 0);
+    }
+  });
+
+  test('(+) the app tier: the same header asks groupActions once and carries its element (the control for the browser-tier test above)', () => {
+    const { section, asked } = headerOf({ isApp: true, g: group() });
+    assert.equal(asked.length, 1);
+    assert.equal(section.all((n) => /\bgrp-actions\b/.test(n.className ?? '')).length, 1);
+  });
+
+  test('(\u2212) an app-tier group with no agents asks nothing in the header either (the body\'s call to action is the one place)', () => {
+    assert.deepEqual(headerOf({ isApp: true, g: group({ agents: [] }) }).asked, []);
+  });
+});
+
 describe('the lines and the group model (app.js, project.js)', () => {
   test('(+) buildGroups carries each group\'s hidden count (0 for a project with no group or an older server)', () => {
     const state = {
@@ -905,5 +940,250 @@ describe('app.css: the 0.5.4 RM block', () => {
 describe('served files', () => {
   test('(+) server.js serves /removed.js as JavaScript from public/removed.js', () => {
     assert.match(read('../src/server.js'), /\['\/removed\.js', \['removed\.js', 'text\/javascript; charset=utf-8'\]\],/);
+  });
+});
+
+// ---- 0.5.4 SF, item 13: the time copy of the dialog, and a dialog that does not go stale ----------------------------------------------
+
+describe('0.5.4 SF item 13a: "Removed 3 min ago" in the dialog; the activity column stays "3 min"', () => {
+  const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+  const metas = (r) => r.node('#rm-body').all((n) => n.className === 'rm-meta').map((n) => n.textContent);
+  const when = (now, list) => ({ groups: [], sessions: list.map((ms, i) => ({ id: `${String(i + 1).repeat(8)}-1111-4111-8111-111111111111`, name: `s${i}`, project: null, at: now - ms })), more: { groups: 0, sessions: 0 } });
+  // the ticker of ui.js, run from its own source against the time elements of a drawn dialog
+  const ticker = (times) => vm.runInNewContext(`${fn(code(read('ui.js')), 'export function tickTimes').replace(/^export /, '')}\ntickTimes`, { $$: () => times, ago, agoWords, Number });
+  const timesOf = (r) => r.node('#rm-body').all((n) => n.tag === 'time');
+
+  test('(+) each unit reads in words, and "just now" under a minute', async () => {
+    const now = Date.now();
+    const r = rig({ routes: { [LIST]: { status: 200, body: when(now, [20_000, 3 * MIN + 5_000, 2 * HOUR + MIN, 4 * DAY + HOUR]) } } });
+    await r.mod.openRemovedList({ refresh: r.refresh });
+    assert.deepEqual(metas(r), ['Removed just now', 'Removed 3 min ago', 'Removed 2 h ago', 'Removed 4 d ago']);
+  });
+
+  test('(+) agoWords at every boundary (a fixed now): 59.999 s is just now, 60 s is 1 min ago, 59 min, 1 h, 23 h, 1 d; a time in the future is just now', () => {
+    const t = 1_700_000_000_000;
+    const at = (ms) => agoWords(t - ms, t);
+    assert.deepEqual([0, 59_999, MIN, 59 * MIN + 59_999, HOUR, DAY - 1, DAY, 40 * DAY].map(at), ['just now', 'just now', '1 min ago', '59 min ago', '1 h ago', '23 h ago', '1 d ago', '40 d ago']);
+    assert.equal(agoWords(t + 5 * MIN, t), 'just now');
+  });
+
+  test('(+) a time that is not a number reads as the dash, with no "ago"', () => {
+    for (const v of [NaN, Infinity, undefined, null, 'x']) assert.equal(agoWords(v, 1), '\u2013');
+    const el = timeWordsEl(NaN);
+    assert.equal(el.textContent, '\u2013');
+    assert.equal(el.attrs['data-ts'], undefined);
+  });
+
+  test('(+) after one refresh tick the rows still read in words (the ticker rewrites every time[data-ts])', async () => {
+    const now = Date.now();
+    const r = rig({ routes: { [LIST]: { status: 200, body: when(now, [20_000, 3 * MIN + 5_000, 2 * HOUR + MIN, 4 * DAY + HOUR]) } } });
+    await r.mod.openRemovedList({ refresh: r.refresh });
+    const times = timesOf(r);
+    assert.equal(times.length, 4);
+    for (const t of times) t.textContent = 'stale';
+    ticker(times)();
+    assert.deepEqual(metas(r), ['Removed just now', 'Removed 3 min ago', 'Removed 2 h ago', 'Removed 4 d ago']);
+  });
+
+  test('(\u2212) the activity column and every other timeEl caller still read "3 min", "now", "2 h", "4 d" (no "ago"), before and after a tick', () => {
+    const now = Date.now();
+    const els = [20_000, 3 * MIN + 5_000, 2 * HOUR + MIN, 4 * DAY + HOUR].map((ms) => timeEl(now - ms));
+    assert.deepEqual(els.map((e) => e.textContent), ['now', '3 min', '2 h', '4 d']);
+    assert.ok(els.every((e) => e.attrs['data-words'] === undefined));
+    for (const e of els) e.textContent = 'stale';
+    ticker(els)();
+    assert.deepEqual(els.map((e) => e.textContent), ['now', '3 min', '2 h', '4 d']);
+    assert.equal(ago(1_700_000_000_000 - 3 * MIN, 1_700_000_000_000), '3 min', 'ago() itself is unchanged');
+  });
+
+  test('(\u2212) app.js still calls timeEl with one argument for the activity column', () => {
+    assert.match(APP, /timeEl\(a\.lastActivity\)\)/);
+    assert.doesNotMatch(APP, /timeWordsEl/);
+  });
+});
+
+describe('0.5.4 SF item 13b: the open dialog reads the list again after every successful action', () => {
+  const now = Date.now();
+  const S1 = { id: ID, name: 'planner', project: 'demo', at: now - 3_600_000 };
+  const S2 = { id: ID2, name: 'builder', project: null, at: now - 7_200_000 };
+  const S3 = { id: ID3, name: 'tester', project: null, at: now - 9_000_000 };
+  const G1 = { key: KEY, label: 'demo', root: '/tmp/nika-test/demo', at: now - 60_000 };
+  const G2 = { key: KEY2, label: 'other', root: '/tmp/nika-test/other', at: now - 120_000 };
+  const list = (groups, sessions) => ({ status: 200, body: { groups, sessions, more: { groups: 0, sessions: 0 } } });
+  /** The server's answers in turn (the last one repeats): the first for the open, one more for every re-read. */
+  const seq = (...answers) => { let n = 0; return async () => answers[Math.min(n++, answers.length - 1)]; };
+  const body = (r) => r.node('#rm-body');
+  const names = (r) => body(r).all((n) => n.className.split(' ').includes('rm-name')).map((n) => n.textContent);
+  const btn = (r, label) => body(r).all((n) => n.tag === 'button').find((b) => b.attrs['aria-label'] === label);
+  const gets = (r) => r.calls.filter((c) => c.method === 'GET').length;
+
+  test('(+) Show again on a session: the entry the server pruned meanwhile is gone after it, and the answer after the action is what is drawn', async () => {
+    const r = rig({ routes: { [LIST]: seq(list([G1], [S1, S2, S3]), list([G1], [S3])), [unUrl()]: OK_BACK } });
+    await r.mod.openRemovedList({ refresh: r.refresh });
+    assert.deepEqual(names(r), ['demo', 'planner', 'builder', 'tester']);
+    btn(r, 'Show planner again').click();
+    await r.settle();
+    assert.deepEqual(names(r), ['demo', 'tester'], 'builder was pruned by the server: it is not listed any more');
+    assert.deepEqual(r.calls.map((c) => `${c.method} ${c.url}`), [LIST, unUrl(), LIST]);
+    assert.equal(r.last().msg, 'Back in the list.');
+    assert.equal(r.refreshed.n, 1);
+  });
+
+  test('(+) Show again on a folder re-reads too, and a folder the server pruned goes with it', async () => {
+    const r = rig({ routes: { [LIST]: seq(list([G1, G2], [S1]), list([], [S1])), [gunUrl()]: OK_BACK } });
+    await r.mod.openRemovedList({ refresh: r.refresh });
+    btn(r, 'Show demo again').click();
+    await r.settle();
+    assert.deepEqual(names(r), ['planner']);
+    assert.equal(gets(r), 2);
+  });
+
+  test('(+) focus goes to the next row that is still listed, by identity: a row the server pruned before it does not shift the focus', async () => {
+    const r = rig({ routes: { [LIST]: seq(list([], [S1, S2, S3]), list([], [S3])), [unUrl(ID2)]: OK_BACK } });
+    await r.mod.openRemovedList({ refresh: r.refresh });
+    focus.el = null;
+    btn(r, 'Show builder again').click();
+    await r.settle();
+    assert.equal(focus.el.attrs['aria-label'], 'Show tester again', 'planner was pruned before it, so tester moved up to the first place: the row that followed is still tester');
+    const last = rig({ routes: { [LIST]: seq(list([], [S1, S2]), list([], [S2])), [unUrl(ID2)]: OK_BACK } });
+    await last.mod.openRemovedList({ refresh: last.refresh });
+    focus.el = null;
+    btn(last, 'Show builder again').click();
+    await last.settle();
+    assert.equal(focus.el, last.node('#rm-h'), 'nothing follows: the heading');
+  });
+
+  test('(+) an Undo while the dialog is open re-reads the list: the entry that is back in the list leaves it', async () => {
+    const r = rig({ routes: { [LIST]: seq(list([], [S1, S2]), list([], [S2])), [rmUrl(ID3)]: OK, [unUrl(ID3)]: OK_BACK } });
+    await r.mod.openRemovedList({ refresh: r.refresh }); // the dialog is open; an Undo toast of an earlier Remove can still be on screen
+    await r.mod.removeRow(row({ id: ID3 }), grp(), { refresh: r.refresh });
+    await r.last().action.run();
+    assert.deepEqual(names(r), ['builder'], 'the re-read answer is drawn');
+    assert.equal(gets(r), 2);
+    assert.equal(r.last().msg, 'Back in the list.');
+  });
+
+  test('(\u2212) an Undo with the dialog closed reads nothing', async () => {
+    const r = rig({ routes: { [rmUrl()]: OK, [unUrl()]: OK_BACK } });
+    await r.mod.removeRow(row(), grp(), { refresh: r.refresh });
+    await r.last().action.run();
+    assert.equal(gets(r), 0);
+  });
+
+  test('(\u2212) a failed Show again keeps the list as it is, shows the error as today and reads nothing again', async () => {
+    for (const un of ['net', { status: 500, body: { error: 'write_failed' } }, { status: 404, body: { error: 'not_found' } }, { status: 200, body: { hidden: true } }]) {
+      const r = rig({ routes: { [LIST]: seq(list([G1], [S1, S2])), [unUrl()]: un } });
+      await r.mod.openRemovedList({ refresh: r.refresh });
+      btn(r, 'Show planner again').click();
+      await r.settle();
+      assert.deepEqual(names(r), ['demo', 'planner', 'builder'], JSON.stringify(un));
+      assert.equal(gets(r), 1, JSON.stringify(un));
+      assert.equal(r.last().msg, "Couldn't show it again. Nothing changed.");
+      assert.equal(r.last().kind, 'error');
+    }
+  });
+
+  test('(\u2212) a failed Undo reads nothing again', async () => {
+    const r = rig({ routes: { [LIST]: seq(list([], [S1])), [rmUrl(ID3)]: OK, [unUrl(ID3)]: 'net' } });
+    await r.mod.openRemovedList({ refresh: r.refresh });
+    await r.mod.removeRow(row({ id: ID3 }), grp(), { refresh: r.refresh });
+    await r.last().action.run();
+    assert.equal(gets(r), 1);
+    assert.equal(r.last().msg, "Couldn't undo. Use Show removed to bring it back.");
+  });
+
+  test('(\u2212) a re-read that fails (network, an error status, a body of the wrong shape) leaves the row the action brought back out of the list, and says nothing more', async () => {
+    for (const bad of ['net', { status: 500, body: { error: 'internal' } }, { status: 200, body: { nope: 1 } }, { status: 200, body: null }]) {
+      let n = 0;
+      const answer = async () => { if (n++ === 0) return list([G1], [S1, S2]); if (bad === 'net') throw new Error('x'); return bad; };
+      const r = rig({ routes: { [LIST]: answer, [unUrl()]: OK_BACK } });
+      await r.mod.openRemovedList({ refresh: r.refresh });
+      btn(r, 'Show planner again').click();
+      await r.settle();
+      assert.deepEqual(names(r), ['demo', 'builder'], JSON.stringify(bad));
+      assert.equal(r.last().msg, 'Back in the list.', JSON.stringify(bad));
+      assert.notEqual(r.last().kind, 'error');
+      assert.equal(body(r).all((x) => x.attrs.role === 'alert').length, 0, 'no error state: the list is still there');
+    }
+  });
+
+  test('(\u2212) two quick actions: an older read that comes in after a newer one is dropped, so an entry that is back in the list does not reappear', async () => {
+    let n = 0;
+    let gate;
+    const held = new Promise((res) => { gate = res; });
+    const answer = async () => {
+      n += 1;
+      if (n === 1) return list([], [S1, S2]);
+      if (n === 2) { await held; return list([], [S2]); } // the read after the first action: builder is still hidden then
+      return list([], []);                                 // the read after the second action
+    };
+    const r = rig({ routes: { [LIST]: answer, [unUrl()]: OK_BACK, [unUrl(ID2)]: OK_BACK } });
+    await r.mod.openRemovedList({ refresh: r.refresh });
+    btn(r, 'Show planner again').click();
+    await r.settle();
+    btn(r, 'Show builder again').click();
+    await r.settle();
+    assert.deepEqual(names(r), [], 'the newer read is drawn');
+    gate();
+    await r.settle();
+    assert.deepEqual(names(r), [], 'the older read came in late and is dropped');
+    assert.ok(body(r).textContent.includes('Nothing is removed from the list.'));
+  });
+
+  test('(\u2212) an Undo\'s read that comes in after the read of a later Show again is dropped too', async () => {
+    let n = 0;
+    let gate;
+    const held = new Promise((res) => { gate = res; });
+    const answer = async () => {
+      n += 1;
+      if (n === 1) return list([], [S1, S2]);
+      if (n === 2) { await held; return list([], [S1, S2]); } // the read of the Undo: planner is still hidden when the server answers it
+      return list([], [S2]);                                    // the read after Show again on planner
+    };
+    const r = rig({ routes: { [LIST]: answer, [rmUrl(ID3)]: OK, [unUrl(ID3)]: OK_BACK, [unUrl()]: OK_BACK } });
+    await r.mod.openRemovedList({ refresh: r.refresh });
+    await r.mod.removeRow(row({ id: ID3 }), grp(), { refresh: r.refresh });
+    const undo = r.last().action.run();
+    await r.settle();
+    btn(r, 'Show planner again').click();
+    await r.settle();
+    assert.deepEqual(names(r), ['builder']);
+    gate();
+    await undo;
+    await r.settle();
+    assert.deepEqual(names(r), ['builder'], 'the older answer is dropped');
+  });
+
+  test('(\u2212) a slow read of an earlier open does not overwrite the list of a newer one', async () => {
+    let n = 0;
+    let gate;
+    const held = new Promise((res) => { gate = res; });
+    const answer = async () => { n += 1; if (n === 1) { await held; return list([], [S1, S2]); } return list([], [S2]); };
+    const r = rig({ routes: { [LIST]: answer } });
+    const first = r.mod.openRemovedList({ refresh: r.refresh });
+    await r.settle();
+    await r.mod.openRemovedList({ refresh: r.refresh }); // opened again while the first read is still out
+    assert.deepEqual(names(r), ['builder']);
+    gate();
+    await first;
+    await r.settle();
+    assert.deepEqual(names(r), ['builder'], 'the older answer is dropped');
+    assert.equal(body(r).attrs['aria-busy'], 'false');
+  });
+
+  test('(+) the re-read is the same markup: the rows are text, with the new time copy, and every Show again button works on the new rows', async () => {
+    const evil = '<img src=x onerror=alert(1)>';
+    const r = rig({ routes: { [LIST]: seq(list([], [S1, S2]), list([], [{ ...S2, name: evil, at: now - 30_000 }]), list([], [])), [unUrl()]: OK_BACK, [unUrl(ID2)]: OK_BACK } });
+    await r.mod.openRemovedList({ refresh: r.refresh });
+    btn(r, 'Show planner again').click();
+    await r.settle();
+    assert.equal(body(r).all((n) => n.tag === 'img').length, 0);
+    assert.deepEqual(names(r), [evil]);
+    assert.ok(body(r).textContent.includes('Removed just now'));
+    btn(r, `Show ${evil} again`).click();
+    await r.settle();
+    assert.ok(body(r).textContent.includes('Nothing is removed from the list.'));
   });
 });

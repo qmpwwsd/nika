@@ -100,6 +100,14 @@ describe('hideSession / readHidden / listHidden', () => {
     assert.deepEqual(Object.keys(raw(t).sessions), [B]);
   });
 
+  test('(\u2212) 0.5.4 SF (RM nit 11): listHidden itself leaves out an entry older than 90 days, a session and a folder, and lists one exactly 90 days old', async () => {
+    const t = fresh();
+    // written by hand: a hide would drop the expired entries itself, and only the read is under test here
+    writeDoc(t, doc({ [A]: { at: NOW - MAX_AGE_MS - 1 }, [B]: { at: NOW - MAX_AGE_MS } }, { [KA]: { at: NOW - MAX_AGE_MS - 1 }, [KB]: { at: NOW - MAX_AGE_MS } }));
+    assert.deepEqual(await listHidden(t.env, NOW), { sessions: [{ id: B, at: NOW - MAX_AGE_MS }], groups: [{ key: KB, at: NOW - MAX_AGE_MS }] });
+    assert.deepEqual(await listHidden(t.env, NOW + 1), { sessions: [], groups: [] }, 'a millisecond later the 90-day-old ones are gone too');
+  });
+
   test('(+) exactly 90 days old still counts, for a session and for a folder', async () => {
     const t = fresh();
     await hideSession(A, t.env, { now: NOW - MAX_AGE_MS });

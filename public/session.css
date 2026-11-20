@@ -395,7 +395,6 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .dlg-tab[data-answered="true"] { color: var(--busy); }
 .dlg-tab[aria-current="step"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .dlg-ring { flex: none; width: 10px; height: 10px; border: 1.5px solid currentColor; border-radius: 50%; }
-.dlg-step { display: none; margin: 0; color: var(--text-muted); font-size: var(--fs-small); font-weight: 600; }
 .ch { display: flex; align-items: flex-start; gap: 10px; min-height: 32px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); color: var(--text); overflow-wrap: anywhere; cursor: pointer; }
 .ch:hover { background: var(--surface-2); }
 .ch[data-on="true"] { background: var(--accent-soft); border-color: var(--accent); }

@@ -6,6 +6,7 @@ import { openRegular } from '../fsafe.js';
 import { IMAGE_REF, SUBAGENT_ID, TOOL_USE_ID, UUID } from '../ids.js';
 import { IMAGE_MEDIA, base64Size, checkImageBlock } from '../image.js';
 import { clean, cleanBlock } from '../text.js';
+import { createLimiter } from '../limiter.js';
 import { readSubagents, subagentTranscripts } from './subagents.js';
 import { indexTranscripts } from './transcripts.js';
 
@@ -24,27 +25,18 @@ const LONG_CACHE_MAX = 16; // remembered long-line pages
 const LONG_ENTRIES_MAX = 500; // 0.5.1 (round RV, I4): entries kept from one long line, the LAST ones; more is a cut page (`cut: true`)
 const LONG_CACHE_TEXT_MAX = 1024 * 1024; // a long-line page whose entry text adds up to more than this (characters) is never remembered
 
-/** Runs at most `max` async tasks at once; the rest wait in FIFO order. A slot is released even when a task throws. */
-export function createLimiter(max) {
-  let active = 0;
-  const waiting = [];
-  return async (task) => {
-    if (active >= max) await new Promise((resolve) => waiting.push(resolve)); // the finishing task hands its slot over
-    else active += 1;
-    try {
-      return await task();
-    } finally {
-      const next = waiting.shift();
-      if (next) next();
-      else active -= 1;
-    }
-  };
-}
-
 const limited = createLimiter(MAX_READS); // module-level: shared by every request
-// One long-line read or one picture read at a time across the server (T60). Always taken inside a `limited` slot, never the other way round, so
-// the two cannot wait for each other.
+// One long-line read or one picture read at a time across the server (T60).
 const longLimited = createLimiter(1);
+// The read slots and their ONE order (0.5.4 SF, item 7; RV051 M2): imageGate -> limited -> longLimited. A path takes some of them, always in this
+// order, never the other way round:
+//   - a history page read (readPage) takes `limited`, then `longLimited` only when its window lies inside one long line (longPage); never the gate;
+//   - a picture read (readImage) takes `imageGate`, then `limited`, then `longLimited`.
+// The gate lets one picture read at a time wait for the single long slot inside `limited`: without it four queued pictures held all four `limited`
+// slots and delayed page reads that never needed the long slot. No cycle is possible: every wait is for a slot that comes later in the order than
+// any slot the waiter holds, and the last one (`longLimited`) is held only by a task that waits for nothing. Taking `longLimited` first on the
+// picture path would deadlock (a picture holds it and waits for `limited`, whose slots are held by page reads that wait for it).
+const imageGate = createLimiter(1);
 
 const fail = (status, error, message) => ({ status, body: { error, message } });
 const notFound = (message = 'no such session') => fail(404, 'not_found', message);
@@ -490,8 +482,8 @@ async function imageAt(file, off, i, j) {
 /**
  * GET /api/app/session/:id/image/:ref and .../subagents/:agentId/image/:ref (0.5.1, C; T59): the picture a history entry names. `agentId` is null
  * for the session's own transcript. `ref` is "<line offset>:<block>" or "<line offset>:<block>.<part>" (an entry id, or an `images[].ref`). Checks, in
- * order: session id, agent id, ref, the session in the index, the agent in the listing, then the file inside one limited slot and one longLimited
- * slot. Returns { status, body }: 200 `{ type, data }` (canonical base64 of the decoded bytes, never the transcript's own string), 404 `not_found`
+ * order: session id, agent id, ref, the session in the index, the agent in the listing, then the file inside the image gate, one limited slot and one
+ * longLimited slot (in that order; see the slots comment at the top). Returns { status, body }: 200 `{ type, data }` (canonical base64 of the decoded bytes, never the transcript's own string), 404 `not_found`
  * for every miss, 413 `too-large`, 415 `not-image` (checkImageBlock). The request names an offset, never a path.
  */
 export async function readImage(sessionId, agentId, ref, { claudeDir, cache, now = Date.now } = {}) {
@@ -508,5 +500,5 @@ export async function readImage(sessionId, agentId, ref, { claudeDir, cache, now
     target = (await subagentTranscripts(file)).get(agentId);
     if (!target) return notFound('no such subagent');
   }
-  return limited(() => longLimited(() => imageAt(target, Number(m[1]), Number(m[2]), m[3] === undefined ? null : Number(m[3]))));
+  return imageGate(() => limited(() => longLimited(() => imageAt(target, Number(m[1]), Number(m[2]), m[3] === undefined ? null : Number(m[3])))));
 }

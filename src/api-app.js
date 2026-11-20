@@ -481,7 +481,7 @@ export function createAppApi({ secret, ctx, deps }) {
     if (body.permissionMode === 'bypassPermissions') return err(400, 'invalid', 'bypassPermissions is never allowed');
     try {
       const next = await updateSettings(body, ctx.env);
-      fit.setMode(next.fit.mode); // 0.5.3 (P2): the saved Fit mode reaches the controller at once (a refused save never gets here); it never rejects
+      fit.setMode(next.fit.mode); // 0.5.4 (P2): the saved Fit mode reaches the controller at once (a refused save never gets here); it never rejects
       return { status: 200, body: withoutProjects(next) };
     } catch (e) {
       if (e?.code === 'EINVAL') return err(400, 'invalid', clean(e.warnings?.[0] ?? e.message, 200) ?? 'invalid settings');
@@ -686,7 +686,7 @@ export function createAppApi({ secret, ctx, deps }) {
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
     if (!fitAllowed('PUT', id)) return err(429, 'busy', `at most ${FIT_RATE} fit requests per second per pane`);
-    // 0.5.3 (P2): a page that opens, or asks to fit again (open true), also picks up a config.json edited by hand. The mode never comes from the request.
+    // 0.5.4 (P2): a page that opens, or asks to fit again (open true), also picks up a config.json edited by hand. The mode never comes from the request.
     if (checked.value.open === true) fit.setMode((await loadConfig(ctx.env)).config.fit.mode);
     return fit.hold(id, checked.value);
   });

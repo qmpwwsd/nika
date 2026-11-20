@@ -89,6 +89,30 @@ export function isStrictPaneListing(stdout, fields = COLLECTOR_FIELDS) {
   return true;
 }
 
+/** Index of `#{@nika-parent}` in the collector's `-a` format (FORMAT in src/collect/tmux.js). A spawn test pins it to the argv the collector sends. */
+export const COLLECTOR_PARENT_FIELD = 8;
+
+/**
+ * The tree of every pane, from the same `-a` read as isStrictPaneListing (0.5.4 SF, item 14, owner answer P1-Q6 A): pane id -> the raw text of its `@nika-parent`
+ * ('' when it has none). Nothing is cleaned up, because place() compares the text to the parent's pane id exactly: a value that is not that id (malformed, a leading
+ * zero, a near miss) is in nobody's tree, and '' is only in "you"'s. A line that is short or whose pane id does not parse is skipped (that pane is not listed). A pane id
+ * on two lines is `null` (ambiguous, in nobody's tree), and so is a line with MORE fields than the format (review S2): a tab in `pane_title` (field 3) shifts every field
+ * after it, so field 8 can be a piece of the title, and a tab in the trailing kind makes the line as uncertain; unknown means closed. (isStrictPaneListing still lets the
+ * last field hold tabs: the pane id and the session sit before the title, so a tab there cannot move them.) The collector's own parse (parsePaneLines) turns a
+ * malformed tag into "none", which is why this reads the text.
+ * @returns {Map<string, string|null>}
+ */
+export function parentTags(stdout, fields = COLLECTOR_FIELDS) {
+  const tags = new Map();
+  for (const line of String(stdout).split('\n')) {
+    if (line === '') continue;
+    const f = line.split('\t');
+    if (f.length < fields || !PANE_ID.test(f[0])) continue;
+    tags.set(f[0], tags.has(f[0]) || f.length > fields ? null : f[COLLECTOR_PARENT_FIELD]);
+  }
+  return tags;
+}
+
 /** tmux's tiled grid for n panes (layout_set_tiled; spike S-P1a): rows first, columns when the product is still short. */
 export function tiledGrid(n) {
   let rows = 1;
@@ -123,7 +147,9 @@ function windowsOf(rows, key) {
     const ok = own.length === first.panes && own.every(same) && own.filter((r) => r.current === 1).length <= 1;
     const splittable = ok && !first.zoomed && !own.some((r) => r.fit);
     const agents = splittable && own.every((r) => (r.role === 'agent' || r.role === 'sub-orchestrator') && r.key === key);
-    wins.set(id, { id, index: first.index, active: first.active === 1, zoomed: first.zoomed === 1, w: first.ww, h: first.wh, rows: own, count: own.length, ok, splittable, agents });
+    // 0.5.4 SF (item 12): the sub-orchestrator panes of this project in the window, live or dead (a dead row still marks whose window it is)
+    const subs = own.filter((r) => r.role === 'sub-orchestrator' && r.key === key).map((r) => r.pane);
+    wins.set(id, { id, index: first.index, active: first.active === 1, zoomed: first.zoomed === 1, w: first.ww, h: first.wh, rows: own, count: own.length, ok, splittable, agents, subs });
   }
   return wins;
 }
@@ -140,13 +166,15 @@ export function isAgentsWindow({ rows, key, win, pane }) {
 /**
  * Where does the new agent's pane go? `rows` is the rows of readPlaceListing() of the session's listing (none when it is untrusted); `key` the project key; `parent` the parent
  * pane (this project's orchestrator or sub-orchestrator) or null for "you"; `under` an explicit pane to split below; `last` the pane
- * `.last-pane` names (used only for `placement: 'under-last'`); `placement` the setting (`beside` or `under-last`).
+ * `.last-pane` names (used only for `placement: 'under-last'`); `placement` the setting (`beside` or `under-last`); `parents` the Map of parentTags() (0.5.4 SF,
+ * item 14): when it is given, a window of agents is a target of rule 3's tile step and of rule 4 only when every pane in it is in the spawn's tree, and rule 2 follows
+ * `last` only inside the tree (below); without it nothing is checked (the unit tests of rules 1 to 5).
  * First match wins: (1) `under`; (2) `last`; (3) the home window, the parent's own (the session's current window when the parent is not
  * in the listing, and when there is none; the parent, or an agent of this project, is split there, and for "you" the active pane); (4) the agents window with the fewest panes that has room; (5) a new window.
  * A dead pane (remain-on-exit) is never split. `moved: true` marks an explicit `under` that had no room.
  * @returns {{ op: 'split', target: string, dir: '-h'|'-v', tile: string|null, placement: 'beside'|'under'|'tiled', moved?: true } | { op: 'window', placement: 'window', moved?: true }}
  */
-export function place({ rows, key, parent = null, under = null, last = null, placement = 'beside' }) {
+export function place({ rows, key, parent = null, under = null, last = null, placement = 'beside', parents }) {
   const wins = windowsOf(rows, key);
   const byPane = new Map();
   for (const r of rows) if (!byPane.has(r.pane)) byPane.set(r.pane, r);
@@ -155,6 +183,15 @@ export function place({ rows, key, parent = null, under = null, last = null, pla
   const out = (r) => (moved ? { ...r, moved: true } : r);
   const mine = (r) => (r.role === 'agent' || r.role === 'sub-orchestrator') && r.key === key;
   const live = (r) => !r.dead;
+  // 0.5.4 SF (item 12, owner decision 2026-11-20, "keep trees apart"): a window that holds a sub-orchestrator is a tile target (rule 3's tile step, rule 4) only
+  // for a spawn whose parent is that pane; a window with two of them is a target for neither (no spawn's parent is both).
+  const ownSub = (win) => win.subs.length === 0 || (win.subs.length === 1 && win.subs[0] === parent);
+  // 0.5.4 SF (item 14, owner answer P1-Q6 A, "whole trees"): the pane is in the spawn's tree when it is the parent or its `@nika-parent` is exactly the parent's pane id; for
+  // "you" (no parent) when it is listed with no tag. A pane the read does not list, a tag that is not that id and an ambiguous pane (null) are in nobody's tree.
+  const inTree = (r) => (parent ? r.pane === parent || parents.get(r.pane) === parent : parents.get(r.pane) === '');
+  // A window is open to a spawn (rule 3's tile step, rule 4, and rule 2 when it joins a tile) when BOTH hold: item 12's check and every pane in the tree. Both are "only when"
+  // conditions: a sub-orchestrator is a child of the main orchestrator, so the tree alone would open a window of sub A to the main orchestrator's spawns again.
+  const openTo = (win) => ownSub(win) && (parents === undefined || win.rows.every(inTree));
 
   const biggest = (win) => win.rows.filter(live).sort((a, b) => b.w * b.h - a.w * a.h || paneNumber(a.pane) - paneNumber(b.pane))[0];
   const tiled = (win) => {
@@ -176,9 +213,11 @@ export function place({ rows, key, parent = null, under = null, last = null, pla
     if (r) return r;
     moved = true; // the setting places it, and the answer says so
   }
+  // rule 2 follows `last` only inside the spawn's tree, and joins a tile only when that window is open to the spawn; the plain split below a pane of the tree is as before
   if (placement === 'under-last' && last) {
-    const r = below(last);
-    if (r) return out(r);
+    const row = byPane.get(last);
+    const r = row && (parents === undefined || inTree(row)) ? below(last) : null;
+    if (r && (!r.tile || openTo(wins.get(r.tile)))) return out(r);
   }
 
   // rule 3: the home window: the parent's own, else the session's current one. A named parent is split only when it is in the home window.
@@ -186,7 +225,7 @@ export function place({ rows, key, parent = null, under = null, last = null, pla
   const active = [...wins.values()].filter((w) => w.active);
   const home = parentRow ? winOf(parentRow) : active.length === 1 ? active[0] : undefined;
   if (home?.splittable) {
-    if (home.agents && tileFits(home)) {
+    if (home.agents && openTo(home) && tileFits(home)) {
       const r = tiled(home);
       if (r) return out(r);
     }
@@ -199,7 +238,7 @@ export function place({ rows, key, parent = null, under = null, last = null, pla
   }
 
   // rule 4: an agents window with room, the one with the fewest panes first, then the lowest index
-  const open = [...wins.values()].filter((w) => w.agents && tileFits(w) && biggest(w)).sort((a, b) => a.count - b.count || a.index - b.index)[0];
+  const open = [...wins.values()].filter((w) => w.agents && openTo(w) && tileFits(w) && biggest(w)).sort((a, b) => a.count - b.count || a.index - b.index)[0];
   if (open) return out(tiled(open));
   return out({ op: 'window', placement: 'window' }); // rule 5
 }

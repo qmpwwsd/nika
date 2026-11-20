@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { El, focus, installDom } from './fake-dom.js';
-import { IMAGE_MIME, B64_MAX, MAX_THUMBS, dataUrlOf, sizeLabel, imageLine, createImageViewer } from '../public/image-viewer.js';
+import { IMAGE_MIME, B64_MAX, MAX_THUMBS, MAX_THUMB_BYTES, dataUrlOf, sizeLabel, imageLine, createImageViewer } from '../public/image-viewer.js';
 
 const SRC = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'image-viewer.js'), 'utf8');
 
@@ -73,6 +73,11 @@ describe('constants', () => {
     assert.ok(Object.isFrozen(IMAGE_MIME));
     assert.equal(B64_MAX, 11184812);
     assert.equal(MAX_THUMBS, 24);
+  });
+
+  test('(+) 0.5.4 SF (RV051 M1): the thumbnails also have a byte budget of 32 MiB, which holds at least four of the largest image nika shows (8 MiB)', () => {
+    assert.equal(MAX_THUMB_BYTES, 32 * 1024 * 1024);
+    assert.ok(Number.isSafeInteger(MAX_THUMB_BYTES) && MAX_THUMB_BYTES >= 8 * 1024 * 1024, 'one image of the largest size always fits an empty window');
   });
 
   test('(−) the file is ASCII, builds no markup, sets no inline style and runs no code from text', () => {

@@ -4,7 +4,7 @@
 // The server's own message text is never shown: the status and the error code pick one of the fixed texts below. Every string that came from the
 // server is set as text (h() text attribute or text node), never as markup.
 import { appFetch, isApp } from './api.js';
-import { h, icon, timeEl } from './dom.js';
+import { h, icon, timeWordsEl } from './dom.js';
 import { $, toast, setBusy, openDialog, SHAPE } from './ui.js';
 
 const SLOW_MS = 400; // a request slower than this shows a spinner toast
@@ -76,8 +76,35 @@ async function undo(url, refresh) {
   if (res?.status === 200 && res.body?.hidden === false) {
     toast('Back in the list.');
     await refresh();
+    await rereadOpen(refresh);
   } else {
     toast(UNDO_FAILED, { kind: 'error' });
+  }
+}
+
+let reads = 0; // reads of the removed list started (0.5.4 SF, item 13b)
+let drawn = 0; // the newest read that was drawn: an older answer that comes in after it is dropped (it can still list what a newer one lacks)
+
+/** GET /api/app/hidden as a view: null when the request failed, the status is not 200 or the body does not have the route's shape. */
+async function readView() {
+  try {
+    const res = await appFetch('/api/app/hidden');
+    return res.status === 200 ? removedView(res.body) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An Undo toast can outlive the click that opened Show removed: while that dialog is open its list is read again (the entry is back in the list). */
+async function rereadOpen(refresh) {
+  const dlg = $('#dlg-removed');
+  const body = $('#rm-body');
+  if (!isApp || !dlg?.open || !body) return;
+  const mine = ++reads;
+  const view = await readView();
+  if (view && mine > drawn) {
+    drawn = mine;
+    paint(body, view, refresh);
   }
 }
 
@@ -167,7 +194,7 @@ function paint(body, view, refresh) {
       h('div', { class: 'rm-text' },
         h('span', { class: 'rm-name', title: entry.name, text: entry.name }),
         ...meta,
-        h('span', { class: 'rm-meta' }, 'Removed ', timeEl(entry.at))),
+        h('span', { class: 'rm-meta' }, 'Removed ', timeWordsEl(entry.at))),
       btn);
   };
   const section = (title, list, more) => [
@@ -181,7 +208,10 @@ function paint(body, view, refresh) {
   return buttons;
 }
 
-/** Show again: unhide, then the row leaves the list and focus moves to the next row's button (else the heading). A failure keeps the row. */
+const idOf = (e) => e.key ?? e.id;
+const rowsOf = (view) => [...view.groups, ...view.sessions];
+
+/** Show again: unhide, then read the list again and draw it (a row the server pruned meanwhile goes too), and move focus to the next row that is still listed, else the heading. A failure keeps the row. */
 async function showAgain(btn, entry, url, body, view, refresh) {
   if (btn.disabled) return;
   setBusy(btn, true, `Showing${ELL}`);
@@ -191,12 +221,19 @@ async function showAgain(btn, entry, url, body, view, refresh) {
     toast(AGAIN_FAILED, { kind: 'error' });
     return;
   }
-  const at = [...view.groups, ...view.sessions].indexOf(entry);
-  view.groups = view.groups.filter((g) => g !== entry);
-  view.sessions = view.sessions.filter((s) => s !== entry);
-  view.empty = !view.groups.length && !view.sessions.length;
-  const buttons = paint(body, view, refresh);
-  (buttons[at] ?? $('#rm-h'))?.focus();
+  const mine = ++reads;
+  const fresh = await readView();
+  if (mine > drawn) {
+    drawn = mine;
+    // when the server's list cannot be read: the list as it was, without this row
+    const groups = view.groups.filter((g) => g !== entry);
+    const sessions = view.sessions.filter((x) => x !== entry);
+    const next = fresh ?? { ...view, groups, sessions, empty: !groups.length && !sessions.length };
+    const ids = rowsOf(view).map(idOf);
+    const after = new Set(ids.slice(ids.indexOf(idOf(entry)) + 1));
+    const buttons = paint(body, next, refresh);
+    (buttons[rowsOf(next).findIndex((e) => after.has(idOf(e)))] ?? $('#rm-h'))?.focus();
+  }
   toast('Back in the list.');
   await refresh();
 }
@@ -211,16 +248,16 @@ function showError(body, refresh) {
 async function load(body, refresh) {
   body.setAttribute('aria-busy', 'true');
   body.replaceChildren(h('p', { class: 'muted', role: 'status' }, h('span', { class: 'spin', 'aria-hidden': 'true' }), ` Loading${ELL}`));
-  let view = null;
-  try {
-    const res = await appFetch('/api/app/hidden');
-    if (res.status === 200) view = removedView(res.body);
-  } catch {
-    // the error state below
-  }
+  const mine = ++reads;
+  const view = await readView();
   body.setAttribute('aria-busy', 'false');
-  if (view) paint(body, view, refresh);
-  else showError(body, refresh);
+  if (mine <= drawn) return; // a newer read was drawn already
+  if (view) {
+    drawn = mine;
+    paint(body, view, refresh);
+  } else {
+    showError(body, refresh);
+  }
 }
 
 /** Opens the Show removed dialog and fills it from GET /api/app/hidden (app tier). */

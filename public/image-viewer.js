@@ -13,6 +13,8 @@ export const IMAGE_MIME = Object.freeze({ png: 'image/png', jpeg: 'image/jpeg', 
 export const B64_MAX = 11184812;
 /** The most transcript thumbnails one window loads (session.js counts them). */
 export const MAX_THUMBS = 24;
+/** 0.5.4 SF (RV051 M1): the most decoded bytes the held thumbnails add up to (session.js sums each tile's declared size; one without a size counts as the 8 MiB largest). */
+export const MAX_THUMB_BYTES = 32 * 1024 * 1024;
 
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const DATA_URL = /^data:image\/(png|jpeg|gif|webp);base64,([\s\S]*)$/;

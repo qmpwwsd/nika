@@ -1,6 +1,6 @@
 // Identifier shapes checked at every trust boundary (collectors, API, CLI, store). Reject before use, never clean up.
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-export const PANE_ID = /^%\d{1,6}$/;
+export const PANE_ID = /^%(?:0|[1-9]\d{0,5})$/;  // canonical (0.5.4 SF, item 11): tmux reads a `%` target by number, so a leading zero would be a second spelling of another pane
 /** tmux `#{window_id}`; taken from tmux's own listing, never from a request (fit, ADR 0017). */
 export const WINDOW_ID = /^@\d{1,6}$/;
 /** tmux `#{window_index}` as the snapshot and the CLI show it: 1 to 6 ASCII digits (0.5.4); anything else is dropped, never cleaned up. */
@@ -47,7 +47,7 @@ export const CLAUDE_COMMAND = /^(?:claude|node|\d+\.\d+\.\d+[\w.+-]*)$/;
 /** `default` = no `--permission-mode` flag; `bypassPermissions` is never accepted (T4). */
 export const PERMISSION_MODES = ['default', 'manual', 'acceptEdits', 'plan', 'auto', 'dontAsk'];
 export const PANE_PLACEMENTS = ['beside', 'under-last'];
-/** The Fit mode setting (0.5.3, P2): `auto` is today's Fit, `fill` always sizes the window to the panel, `terminal` never resizes it, `off` holds nothing. The default is the first. */
+/** The Fit mode setting (0.5.4, P2): `auto` is today's Fit, `fill` always sizes the window to the panel, `terminal` never resizes it, `off` holds nothing. The default is the first. */
 export const FIT_MODES = ['auto', 'fill', 'terminal', 'off'];
 /** The labels a spawned agent can carry (0.5, W9), in the order the spawn sheet lists them. The page keeps a copy in public/dash-model.js and a test compares the two. */
 export const KINDS = ['coder', 'reviewer', 'tester', 'designer', 'scout', 'writer', 'agent'];

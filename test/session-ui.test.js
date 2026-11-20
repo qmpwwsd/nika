@@ -32,7 +32,7 @@ import { installDom, El, withClass, focus as focusState } from './fake-dom.js';
 import { panelOf as panelOfReal, cropOf as cropOfReal, layoutOf as layoutOfReal, INPUT_TEXT as INPUT_TEXT_REAL, CROP_TEXT as CROP_TEXT_REAL } from '../public/crop.js';
 import { subagentGroups as subagentGroupsReal } from '../public/dash-model.js';
 import { timeEl as timeElReal } from '../public/dom.js';
-import { dataUrlOf as dataUrlOfReal, sizeLabel as sizeLabelReal, MAX_THUMBS as MAX_THUMBS_REAL, IMAGE_MIME as IMAGE_MIME_REAL } from '../public/image-viewer.js';
+import { dataUrlOf as dataUrlOfReal, sizeLabel as sizeLabelReal, MAX_THUMBS as MAX_THUMBS_REAL, MAX_THUMB_BYTES as MAX_THUMB_BYTES_REAL, IMAGE_MIME as IMAGE_MIME_REAL } from '../public/image-viewer.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -5841,7 +5841,60 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.chip.getAttribute('data-k'), 'fitted');
     assert.equal(r.log.said.length, 2);
     assert.equal(r.log.said[1], chipViewReal(FITTED.body).say);
-    assert.equal(r.again.textContent, 'Fitting…', 'the next draw resets it; a shut panel is not drawn');
+    assert.equal(r.again.textContent, '', '0.5.4 SF (LC-P2): the shut panel is drawn too, so it holds no stale "Fitting..." (was: \'Fitting\u2026\', "the next draw resets it; a shut panel is not drawn")');
+    assert.equal(r.again.getAttribute('aria-disabled'), null);
+  });
+
+  // ---- 0.5.4 SF item 3 (live check LC-P2): the panel keeps no stale "Fitting..." while it is shut; opening it shows the current state ----
+  const headingOf = (body) => chipViewReal(body).label;
+
+  test('(\u2212) SF item 3: a state change while the panel was never opened is in the shut panel at once (heading, reason, action), not only after the next open', async () => {
+    const r = await chipped([BLOCKED, answer('blocked', 'changed')]);
+    assert.equal(isClosed(r), true);
+    await r.clk.advance(5000); // the heartbeat brings the second answer
+    assert.equal(r.chip.getAttribute('data-k'), 'blocked');
+    assert.equal(r.popH.textContent, headingOf(answer('blocked', 'changed').body));
+    assert.equal(r.popWhy.textContent, chipViewReal(answer('blocked', 'changed').body).title);
+    assert.equal(r.again.textContent, 'Fit again');
+  });
+
+  test('(+) SF item 3: Fit again pending, the panel shut with Esc, then the answer: no "Fitting..." stays, and opening the panel later shows the current state', async () => {
+    const r = await opened([BLOCKED, answer('blocked', 'changed')]);
+    r.again.click();
+    assert.equal(r.again.textContent, 'Fitting\u2026');
+    r.log.events.resize(); // shut it while the ask is on its way (the page's resize closes the panel)
+    assert.equal(isClosed(r), true);
+    await r.clk.advance(0); // the answer: blocked / changed, the state it had been in
+    assert.equal(r.again.textContent, 'Fit again', 'drawn while shut');
+    assert.equal(r.again.getAttribute('aria-disabled'), null);
+    r.chip.click();
+    assert.deepEqual([r.pop.hidden, r.popH.textContent, r.again.textContent], [false, headingOf(answer('blocked', 'changed').body), 'Fit again']);
+  });
+
+  test('(+) SF item 3: a state change while shut, then open: the current label (fitted has no action: the button is hidden and empty; blocked / user-change has Fit again)', async () => {
+    const r = await chipped([answer('blocked', 'user-change'), FITTED]);
+    await r.clk.advance(5000);
+    assert.equal(r.chip.getAttribute('data-k'), 'fitted');
+    r.chip.click();
+    assert.deepEqual([r.pop.hidden, r.again.hidden, r.popH.textContent], [false, true, headingOf(FITTED.body)]);
+  });
+
+  test('(\u2212) SF item 3: drawing the shut panel opens nothing: it stays hidden, nothing listens on the document, nothing is placed, focus does not move', async () => {
+    const r = await chipped([BLOCKED, answer('blocked', 'changed'), FITTED]);
+    focusState.el = r.outside;
+    await r.clk.advance(5000);
+    await r.clk.advance(5000);
+    assert.equal(isClosed(r), true);
+    assert.deepEqual(r.log.placed, []);
+    assert.equal(focusState.el, r.outside);
+    assert.equal(r.chip.getAttribute('aria-expanded'), 'false');
+  });
+
+  test('(+) SF item 3 the code: renderFit and fitAgainEvent draw the panel without asking whether it is open; drawFitPop empties the button when there is no action', () => {
+    assert.doesNotMatch(fnOf('function renderFit(view, opts)'), /if \(FIT\.pop\) drawFitPop\(\)/);
+    assert.match(fnOf('function renderFit(view, opts)'), /\n  drawFitPop\(\);/);
+    assert.doesNotMatch(fnOf('function fitAgainEvent(e)'), /if \(FIT\.pop\) drawFitPop\(\)/);
+    assert.match(fnOf('function drawFitPop()'), /if \(v\.action === null\) \{[^}]*again\.textContent = '';/);
   });
 
   test('(+) F1: an answer zoomed closes the panel like fitted', async () => {
@@ -8794,6 +8847,83 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal([...body.matchAll(/\bgrowStep\(/g)].length, 1);
   });
 
+  // -- 0.5.4 SF item 1 (F-1, live check LC-P2): Auto -> Terminal -> Auto must not bring the window back at the grown size
+  /** The beat after the one that carried the switch: the rows its PUT asks. */
+  const nextBeatRows = async (r) => {
+    const sent = r.log.calls.length;
+    await r.clk.advance(5000);
+    return r.log.calls.slice(sent).filter((c) => c.method === 'PUT').map((c) => c.json.rows);
+  };
+
+  test('(\u2212) SF F-1: Auto grew to 60 rows, the beat answers Terminal or Off, the question closes: the beats after it ask the base 30 rows, not the grown 60 (the stale ask)', async () => {
+    for (const [name, next] of [['terminal', answerM('terminal', 'terminal')], ['off', OFF_ANSWER], ['fitted + terminal', answerM('fitted', 'terminal', { cols: 100, rows: 60 })]]) {
+      const r = await grownRig(next);
+      await r.clk.advance(5000); // the beat that carries the switch (asks the grown 60, as before)
+      await closeQuestion(r);
+      assert.deepEqual(await nextBeatRows(r), [30], `${name}: the beat that would bring Auto back asks the base rows`);
+      assert.deepEqual(await nextBeatRows(r), [30], `${name}: and the one after it`);
+    }
+  });
+
+  // review N1: the grow ends the same way in the `stepping` phase (a step is asked and answered, the pane is not at the grown size yet), and the base must be dropped there too
+  /** Like grownRig, but the pane has not reached the grown size: the grow is still `stepping`. */
+  const steppingRig = async (next) => {
+    const r = await growRig({ first: answerM('fitted', 'auto'), more: [answerM('fitted', 'auto', { cols: 100, rows: 60 }), next] });
+    await firstStep(r);
+    await r.clk.advance(0); // the answer to the step
+    assert.deepEqual(rowsOfPuts(r), [30, 60], 'Auto asked the grown rows');
+    assert.equal(r.ctx.GR.phase, 'stepping');
+    return r;
+  };
+
+  test('(\u2212) SF F-1 (review N1): the same in the stepping phase: the beat answers Terminal or Off, the first look after it ends the grow, and the beats after ask the base 30 rows, not the grown 60', async () => {
+    for (const [name, next] of [['terminal', answerM('terminal', 'terminal')], ['off', OFF_ANSWER], ['fitted + terminal', answerM('fitted', 'terminal', { cols: 100, rows: 60 })]]) {
+      const r = await steppingRig(next);
+      await r.clk.advance(5000); // the beat that carries the switch (asks the grown 60, as before)
+      r.handleCapture({ status: 304, body: null }); // the first look after the answer that said Terminal or Off: the grow ends here
+      assert.equal(r.ctx.GR.phase, 'idle', `${name}: the switch ended the grow`);
+      assert.deepEqual(await nextBeatRows(r), [30], `${name}: the beat that would bring Auto back asks the base rows`);
+      assert.deepEqual(await nextBeatRows(r), [30], `${name}: and the one after it`);
+    }
+  });
+
+  test('(+) SF F-1: the same scenario with the question still open when Auto comes back: the grow starts again from the base (cut question, 200 ms, growNext)', async () => {
+    const r = await grownRig(answerM('terminal', 'terminal'));
+    await r.clk.advance(5000);
+    r.handleCapture({ status: 304, body: null }); // the first look after the answer that said Terminal
+    assert.equal(r.ctx.GR.phase, 'idle', 'the switch ended the grow');
+    r.ctx.FIT.mode = 'auto'; // the mode is Auto again (the page learns it from an answer)
+    r.ctx.FIT.state = 'fitted';
+    showDialog(r, CUTD);
+    r.fitCaptured();
+    await r.clk.advance(250);
+    r.handleCapture({ status: 304, body: null });
+    assert.equal(r.ctx.GR.phase, 'stepping', 'a new step');
+    assert.equal(rowsOfPuts(r).at(-1), 60, 'asks growNext(30)');
+  });
+
+  test('(\u2212) SF F-1: a grow that keeps running in Auto asks the grown rows on its beats (the base is dropped only when the grow ends because nothing resizes)', async () => {
+    const r = await grownRig(answerM('fitted', 'auto', { cols: 100, rows: 60 }));
+    await r.clk.advance(5000);
+    assert.deepEqual(await nextBeatRows(r), [60]);
+  });
+
+  test('(\u2212) SF F-1: ending the grow in Terminal sends nothing by itself (the base waits for the next beat)', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    await firstStep(r);
+    await r.clk.advance(0);
+    const sent = r.log.calls.length;
+    r.ctx.FIT.mode = 'terminal';
+    r.growTick();
+    await r.clk.advance(1000); // more than the 250 ms debounce, less than a beat
+    assert.equal(r.log.calls.length, sent);
+  });
+
+  test('(+) SF F-1 the code: growTick drops the grown ask at the planner when it ends a grow because nothing resizes, with no request of its own', () => {
+    const body = fnOf('function growTick()');
+    assert.match(body, /if \(!resizes && GR\.phase !== 'idle'\) \{[^}]*GR = GROW_IDLE;[^}]*FIT\.room = false;[^}]*FIT\.planner\.retarget\(FIT\.base\.cols, FIT\.base\.rows\);[^}]*\} else \{/);
+  });
+
   test('(\u2212) M-22 room: the hold that ran out takes no room step while the mode is terminal or off (the one answer that still says fitted), and (+) takes it in Auto and in Fill', async () => {
     for (const mode of ['terminal', 'off']) {
       const r = await heldRig({ first: answerM('fitted', mode, { cols: 145, rows: 21 }), more: [answerM('fitted', mode, { cols: 210, rows: 32 })] });
@@ -10412,10 +10542,10 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     assert.match(BLOCK, /\.dlg-kind\[data-k="plan"\]\s*\{[^}]*color:\s*var\(--m-plan\)/);
   });
 
-  test('(+) a ticked row has the accent fill and edge; the step strip stays at every width and the step text stays hidden (0.5.1, D)', () => {
+  test('(+) a ticked row has the accent fill and edge; the step strip stays at every width and there is no step text rule (0.5.1, D; 0.5.4 SF RV051 M4)', () => {
     assert.match(BLOCK, /\.ch\[data-on="true"\]\s*\{[^}]*background:\s*var\(--accent-soft\)[^}]*border-color:\s*var\(--accent\)/);
     assert.doesNotMatch(BLOCK, /\.dlg-tabs\s*\{[^}]*display:\s*none/, 'no rule hides the strip');
-    assert.match(BLOCK, /\.dlg-step\s*\{[^}]*display:\s*none/, 'the step text stays hidden at every width');
+    assert.doesNotMatch(BLOCK, /\.dlg-step\b/, 'the step text rule is gone with its element (0.5.4 SF RV051 M4)');
   });
 
   test('(+) the option rows share the permission buttons\' metrics (32 px, line-strong edge, surface fill) and a description is clamped to 3 lines', () => {
@@ -11102,11 +11232,59 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
       SUB: sub, sessionId: S, projectKey: project, A: { subs }, h: hReal, subagentHref: subagentHrefReal, SUBAGENT_ID: SUBAGENT_ID_REAL, H: { items: [], ids: new Set() },
       Date, ENTRY_ID: vm.runInNewContext(constOf('ENTRY_ID') + '; ENTRY_ID'), KINDS: vm.runInNewContext(constOf('KINDS') + '; KINDS'),
     };
-    const api = mk(['function cleanImages(e)', 'function cleanEntries(list)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function linkLate(entries)'], ctx, `${constOf('DOTS')}\n${constOf('clip')}`);
+    const api = mk(['function cleanImages(e)', 'function cleanEntries(list, cut = false)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function linkLate(entries)'], ctx, `${constOf('DOTS')}\n${constOf('clip')}`);
     return { ...api, ctx };
   };
   const RAW = (over = {}) => ({ id: '100:0', at: '2026-11-15T10:00:00.000Z', role: 'assistant', kind: 'tool_use', tool: 'Agent', text: '{"description":"List project files"}', truncated: false, ...over });
   const linkOf = (li) => li.all(withClass('hx-sub'))[0] ?? null;
+
+  // -- 0.5.4 SF (RV051 N1): a history page with `cut: true` says that earlier parts of the message are not shown, once, above the first entry of that page
+  const CUT_NOTE_TEXT = 'Earlier parts of this message are not shown.';
+  const cutRig = () => {
+    const ctx = {
+      SUB: false, sessionId: S, projectKey: KEY, A: { subs: [] }, h: hReal, subagentHref: subagentHrefReal, SUBAGENT_ID: SUBAGENT_ID_REAL, H: { items: [], ids: new Set() },
+      Date, ENTRY_ID: vm.runInNewContext(constOf('ENTRY_ID') + '; ENTRY_ID'), KINDS: vm.runInNewContext(constOf('KINDS') + '; KINDS'),
+    };
+    return mk(['function cleanImages(e)', 'function cleanEntries(list, cut = false)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)'], ctx, `${constOf('DOTS')}\n${constOf('clip')}\n${constOf('CUT_NOTE')}`);
+  };
+  const PAGE = (cut, n = 3) => ({ entries: Array.from({ length: n }, (_, i) => RAW({ id: `100:${i}`, kind: 'text', role: 'assistant', text: `part ${i}` })), nextBefore: 40, cut });
+  const notesIn = (li) => li.all(withClass('hx-trunc'));
+
+  test('(+) N1: a cut page shows the note once, as the first line of its first entry, in the existing note style; the other entries of the page have none', () => {
+    const r = cutRig();
+    const entries = r.cleanEntries(PAGE(true).entries, true);
+    assert.equal(entries.length, 3);
+    const lis = entries.map((e) => r.entryEl(e));
+    assert.equal(lis.reduce((n, li) => n + notesIn(li).length, 0), 1, 'once');
+    const [note] = notesIn(lis[0]);
+    assert.equal(note.tag, 'p');
+    assert.equal(note.textContent, CUT_NOTE_TEXT);
+    assert.equal(lis[0].kids[0], note, 'above the first entry\'s own header');
+    assert.equal(notesIn(lis[1]).length + notesIn(lis[2]).length, 0);
+  });
+
+  test('(\u2212) N1: no note without `cut: true` (absent, false, and values that only look true), and none for a cut page with no entries', () => {
+    const r = cutRig();
+    for (const cut of [undefined, false, null, 'true', 1, 0, {}, []]) {
+      const entries = r.cleanEntries(PAGE(false).entries, cut);
+      assert.equal(entries.length, 3);
+      assert.equal(entries.map((e) => r.entryEl(e)).reduce((n, li) => n + notesIn(li).length, 0), 0, String(cut));
+    }
+    for (const list of [[], null, undefined]) assert.equal(r.cleanEntries(list, true).length, 0, String(list)); // length: an array from the page's own context is not reference-equal to []
+  });
+
+  test('(\u2212) N1: the note is not part of the entry data the server sends: an entry that claims `cut` itself gets no note from cleanEntries (only the page does)', () => {
+    const r = cutRig();
+    const entries = r.cleanEntries([{ ...PAGE(false).entries[0], cut: true }]);
+    assert.equal(notesIn(r.entryEl(entries[0])).length, 0);
+  });
+
+  test('(+) N1 the code: the four places that take a history page (newest, poll, older, jump to latest) pass the page\'s `cut` to cleanEntries; the note is text, not markup', () => {
+    for (const head of ['async function loadNewest()', 'async function refreshHistory()', 'async function loadOlder()']) assert.match(fnOf(head), /cleanEntries\(r\.body\?\.entries, r\.body\?\.cut\)/, head);
+    assert.match(SRC, /function wireHistory\(\) \{[\s\S]*?resetHistory\(cleanEntries\(r\.body\?\.entries, r\.body\?\.cut\)/);
+    assert.doesNotMatch(SRC, /cleanEntries\(r\.body\?\.entries\)/, 'no call site leaves the page\'s cut out');
+    assert.match(fnOf('function entryEl(e)'), /e\.cut === true \? h\('p', \{ class: 'hx-trunc', text: CUT_NOTE \}\) : null/);
+  });
 
   test('(+) 4.5: a tool call with a subagent id gets "Open subagent transcript" after its fold: an a.hx-sub whose href is the subagent view of this session, the project kept', () => {
     const r = entryRig();
@@ -12412,8 +12590,8 @@ describe('0.5.1 C: image tiles in the transcript and their wiring (design sectio
   const S1 = '11111111-1111-4111-8111-111111111111';
   const KEY1 = '0123456789abcdef';
   const AGX = 'a0000000000000001';
-  const NAMES = ['function cleanImages(e)', 'function cleanEntries(list)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function imageViewer()', 'function imageTile(',
-    'function watchTile(t)', 'function seenTiles(list)', 'function failThumb(t, line)', 'async function loadThumb(t)', 'function forgetTiles(li)', 'function openTile(t)'];
+  const NAMES = ['function cleanImages(e)', 'function cleanEntries(list, cut = false)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function imageViewer()', 'function imageTile(',
+    'function watchTile(t)', 'function seenTiles(list)', 'function releaseThumb(t)', 'function failThumb(t, line)', 'async function loadThumb(t)', 'function forgetTiles(li)', 'function openTile(t)'];
   const CONSTS = ['DOTS', 'MID', 'clip', 'ENTRY_ID', 'KINDS', 'IMG_REF', 'IMG_MAX', 'IMG', 'cleanMedia', 'cleanSize', 'whoLong', 'imagePath'];
   const STAMP = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const IMGE = (over = {}) => ({ id: '100:1', at: '2026-11-17T10:02:03.000Z', role: 'user', kind: 'image', text: '', media: 'png', size: 861234, truncated: false, ...over });
@@ -12442,7 +12620,7 @@ describe('0.5.1 C: image tiles in the transcript and their wiring (design sectio
     const viewer = { open: (o) => { log.opened.push(o); } };
     const ctx = {
       h: hReal, icon: iconReal, SUB: sub, sessionId: S1, agentId: sub ? AGX : null, projectKey: KEY1, A: { subs: [] }, subagentHref: subagentHrefReal, SUBAGENT_ID: SUBAGENT_ID_REAL, Date,
-      IntersectionObserver: FakeObserver, scroller: () => sc, $: (id) => { assert.equal(id, 'img-dlg'); return dlg; }, dataUrlOf: dataUrlOfReal, sizeLabel: sizeLabelReal, MAX_THUMBS: MAX_THUMBS_REAL, IMAGE_MIME: IMAGE_MIME_REAL,
+      IntersectionObserver: FakeObserver, scroller: () => sc, $: (id) => { assert.equal(id, 'img-dlg'); return dlg; }, dataUrlOf: dataUrlOfReal, sizeLabel: sizeLabelReal, MAX_THUMBS: MAX_THUMBS_REAL, MAX_THUMB_BYTES: MAX_THUMB_BYTES_REAL, IMAGE_MIME: IMAGE_MIME_REAL,
       createImageViewer: (o) => { log.viewers.push(o); return viewer; }, call: async (p) => { log.calls.push(p); return reply(p); },
     };
     const pre = CONSTS.map(constOf).join('\n');
@@ -12683,6 +12861,69 @@ describe('0.5.1 C: image tiles in the transcript and their wiring (design sectio
     await tick();
     assert.equal(r.log.calls.length, 25);
     assert.equal(r.IMG.held, 24);
+  });
+
+  // -- 0.5.4 SF (RV051 M1): the byte budget (32 MiB of declared sizes) next to the count cap
+
+  const MIB = 1024 * 1024;
+  const seven = (r, n, over = {}) => Array.from({ length: n }, (_, i) => one(r, { id: `${300 + i}:1`, size: 7 * MIB, ...over }));
+
+  test('(+) M1: five 7 MiB tiles are 35 MiB, over the 32 MiB budget although the count cap (24) is far: four are fetched, the fifth is not and stays watched', async () => {
+    const r = rig();
+    const made = seven(r, 5);
+    for (const t of made) r.seen(t.btn);
+    await tick();
+    assert.equal(r.log.calls.length, 4, 'four requests');
+    assert.equal(imgOf(made[4].btn).attrs.src, undefined);
+    assert.equal(r.log.observers[0].watched.has(made[4].btn), true, 'still watched: it loads when there is room again');
+    assert.equal(r.IMG.held, 4);
+    assert.equal(r.IMG.bytes, 28 * MIB);
+  });
+
+  test('(+) M1: a tile that leaves the page gives its bytes back, and a later sighting of the fifth tile fetches it', async () => {
+    const r = rig();
+    const made = seven(r, 5);
+    for (const t of made.slice(0, 4)) r.seen(t.btn);
+    await tick();
+    r.forgetTiles(made[0].li);
+    assert.equal(r.IMG.bytes, 21 * MIB);
+    r.seen(made[4].btn);
+    await tick();
+    assert.equal(r.log.calls.length, 5);
+    assert.equal(r.IMG.bytes, 28 * MIB);
+    assert.equal(r.IMG.held, 4);
+  });
+
+  test('(+) M1: a thumbnail that did not come gives its bytes back too (failThumb), so a failed fetch never uses up the budget', async () => {
+    const r = rig({ reply: async () => ({ status: 404, body: null }) });
+    const made = seven(r, 2);
+    for (const t of made) r.seen(t.btn);
+    await tick();
+    assert.equal(r.IMG.held, 0);
+    assert.equal(r.IMG.bytes, 0);
+  });
+
+  test('(\u2212) M1: a tile without a declared size counts as the largest image (8 MiB): five of them load four; the count cap still ends the small ones at 24', async () => {
+    const r = rig();
+    const unknown = Array.from({ length: 5 }, (_, i) => one(r, { id: `${400 + i}:1`, size: null }));
+    for (const t of unknown) r.seen(t.btn);
+    await tick();
+    assert.equal(r.log.calls.length, 4);
+    assert.equal(r.IMG.bytes, 32 * MIB, 'exactly the budget still fits');
+    const r2 = rig();
+    const small = Array.from({ length: 25 }, (_, i) => one(r2, { id: `${500 + i}:1`, size: 1024 }));
+    for (const t of small) r2.seen(t.btn);
+    await tick();
+    assert.equal(r2.log.calls.length, 24, 'tiny tiles: the count cap, not the bytes');
+    assert.equal(r2.IMG.bytes, 24 * 1024);
+  });
+
+  test('(\u2212) M1: one image of the largest size always fits an empty window (no tile can be starved by the budget alone)', async () => {
+    const r = rig();
+    const big = one(r, { id: '600:1', size: 8 * MIB });
+    r.seen(big.btn);
+    await tick();
+    assert.equal(r.log.calls.length, 1);
   });
 
   // -- leaving the page: trim, reset

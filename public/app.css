@@ -104,6 +104,7 @@ legend { font-weight: 600; padding: 0; margin-bottom: 4px; }
 .radio-card[data-on="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .radio-card input { margin-top: 2px; }
 .radio-card b { display: block; font-weight: 600; }
+.radio-card b .ic { vertical-align: -3px; }   /* the icon in a card's title sits on the title's first line: 13px text, 16px icon (0.5.4 SF, N-5) */
 .radio-card span span { color: var(--text-muted); font-size: var(--fs-small); }
 .radio-card[data-on="true"] span span { color: var(--text); }
 .radio-card[data-off="true"] { opacity: 0.5; }   /* the sub-orchestrator card while it cannot be chosen; #sp-role-why beside it says why, at full contrast */

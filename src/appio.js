@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findTmux, findClaude, parseSince, DEFAULT_SINCE } from './config.js';
 import { makeExec } from './exec.js';
-import { collect, findSession, findSessions, findGroup } from './model.js';
+import { collect, findSession, findSessions, findGroup, findGroups } from './model.js';
 import { readHidden } from './hidden.js';
 import { createServer } from './server.js';
 import { createAppApi } from './api-app.js';
@@ -278,6 +278,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         env, exec, tmuxBin, claudeBin: findClaude(env), nikaArgv: [process.execPath, NIKA_BIN], claudeDir: config.claudeDir, now, started: new Map(),
         findSession: (id) => findSession(id, { config: cfg, exec, now: now(), cache: collectorCache }), // one session by id, whatever its age (the saved orchestrator)
         findGroup: (key) => findGroup(key, { config: cfg, now: now(), cache: collectorCache }), // one folder by key whatever the age of its sessions (Remove of a folder older than the 7-day snapshot)
+        findGroups: (keys) => findGroups(keys, { config: cfg, now: now(), cache: collectorCache }), // several folders by key in one walk (0.5.4 SF, RM R5: the labels and paths of the Removed list)
         findSessions: (ids) => findSessions(ids, { config: cfg, now: now(), cache: collectorCache }), // ended sessions by id in one transcript-index walk (the project list's saved orchestrators)
       };
       // every row: pane eligibility, the saved orchestrator's state and the repo key of a pane read this one (deps.collect), so a removal never changes what nika controls (0.5.4, T69)
@@ -308,7 +309,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
       };
       server = createServer({ config: cfg, exec, token: crypto.randomBytes(24).toString('base64url'), now, version: VERSION, app: createAppApi({ secret, ctx, deps }) });
       fit = ctx.fit;
-      fit.setMode((await loadConfig(env)).config.fit.mode); // 0.5.3 (P2): the saved Fit mode, before the first request (recover() runs in every mode)
+      fit.setMode((await loadConfig(env)).config.fit.mode); // 0.5.4 (P2): the saved Fit mode, before the first request (recover() runs in every mode)
       await bounded(fit.recover()); // give back what a crash left (design W7 section 6): before the first request and before `ready`
       if (phase === 'done') return; // stdin closed while it ran: finish() has closed the server
       try {

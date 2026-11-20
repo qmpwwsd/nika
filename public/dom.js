@@ -173,13 +173,28 @@ export function ago(ms, now = Date.now()) {
   if (m < 1440) return `${Math.floor(m / 60)} h`;
   return `${Math.floor(m / 1440)} d`;
 }
-export function timeEl(ms) {
+/** The same time in words, for a sentence (0.5.4 SF, item 13a): "just now" under a minute, "N min ago", "N h ago", "N d ago"; the dash when it is not a number. */
+export function agoWords(ms, now = Date.now()) {
+  const t = ago(ms, now);
+  if (t === 'now') return 'just now';
+  return Number.isFinite(ms) ? `${t} ago` : t;
+}
+/** The `time` element behind timeEl and timeWordsEl: `words` picks the sentence form and sets data-words, which the page's refresh follows (ui.js tickTimes). */
+function timeNode(ms, words) {
   // an out-of-range number would make toISOString() throw and stop the refresh loop
   const ok = Number.isFinite(ms) && Number.isFinite(new Date(ms).getTime());
   return h('time', {
     'data-ts': ok ? ms : null,
+    'data-words': ok && words ? '1' : null,
     datetime: ok ? new Date(ms).toISOString() : null,
     title: ok ? new Date(ms).toLocaleString() : null,
-    text: ok ? ago(ms) : '–',
+    text: ok ? (words ? agoWords(ms) : ago(ms)) : '\u2013',
   });
+}
+export function timeEl(ms) {
+  return timeNode(ms, false);
+}
+/** The same element in words, for a sentence (0.5.4 SF, item 13a): "Removed 3 min ago". The lists keep timeEl ("3 min"). */
+export function timeWordsEl(ms) {
+  return timeNode(ms, true);
 }

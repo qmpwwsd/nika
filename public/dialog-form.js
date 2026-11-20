@@ -258,9 +258,6 @@ export function reviewModel(d) {
   return { mapped: true, total: tabs.length, answered, rows };
 }
 
-/** The narrow strip text: "Question 2 of 4 . Tools", or "Review". */
-export const stepText = (d) => (d.at === 'review' ? 'Review' : `Question ${d.current + 1} of ${d.tabs.length}${MID}${d.tabs[d.current].header}`);
-
 /** What the polite region says when a step appears (`first`: no form was on screen before). A step that mentions bypass says it is terminal only. */
 export function announcement(d, { name = 'the agent', first = true } = {}) {
   const where = d.bypass ? TERMINAL_NOTE : null;
@@ -330,7 +327,7 @@ function stripEls(d, onStep) {
   ], { 'data-answered': String(t.answered) }));
   items.push(item(d.tabs.length, ['Review']));
   return {
-    nodes: [h('ol', { class: 'dlg-tabs', 'aria-label': 'Steps' }, ...items), h('p', { class: 'sr-only', id: 'dlg-steps-desc', text: STEPS_NOTE }), h('p', { class: 'dlg-step', text: stepText(d) })],
+    nodes: [h('ol', { class: 'dlg-tabs', 'aria-label': 'Steps' }, ...items), h('p', { class: 'sr-only', id: 'dlg-steps-desc', text: STEPS_NOTE })],
     steps,
   };
 }

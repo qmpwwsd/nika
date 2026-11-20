@@ -393,17 +393,27 @@ export async function findSession(id, { config, exec, now = Date.now(), cache = 
 }
 
 /**
- * One folder (a group) by its key, whatever the age of its sessions: an index-only read of every transcript (`sinceMs: Infinity`; no ps, tmux, registry or
- * report read, so nothing is live), unfiltered. It answers a Remove of a detected folder whose sessions all ended before the 7-day window of the eligibility
- * snapshot. Null when no folder has the key. Throws EINDEX when the key is missing and the transcript index could not be read ("no such folder" would be a guess).
+ * Several folders (groups) by key with ONE walk, whatever the age of their sessions: an index-only read of every transcript (`sinceMs: Infinity`; no ps, tmux,
+ * registry or report read, so nothing is live), unfiltered. `Map(key -> group)` for the keys nika has a folder for (a key it has none for is left out). It answers a
+ * Remove of a detected folder whose sessions all ended before the 7-day window of the eligibility snapshot, and (0.5.4 SF, RM R5) the labels and paths of the Removed
+ * list. No key reads nothing. Throws EINDEX when a key is missing and the transcript index could not be read ("no such folder" would be a guess); the error carries `found`,
+ * the Map of the folders it did find, so a caller that only labels keys (the Removed list) keeps them and one that needs an answer (Remove) still gets the throw.
  * shortcut: like findSessions, a session whose folder is a deleted scratchpad worktree is not folded into its project here.
  * @param {object} o { config, now?, cache? } as collect()
  */
-export async function findGroup(key, { config, now = Date.now(), cache = {} }) {
+export async function findGroups(keys, { config, now = Date.now(), cache = {} }) {
+  const found = new Map();
+  if (!keys.length) return found;
   const { snapshot } = await collect({ config, exec: null, now, sinceMs: Infinity, cache, indexOnly: true });
-  const group = snapshot.groups.find((g) => g.key === key) ?? null;
-  if (!group && snapshot.sources.transcripts !== 'ok') throw Object.assign(new Error('transcript index unavailable'), { code: 'EINDEX' });
-  return group;
+  const wanted = new Set(keys);
+  for (const group of snapshot.groups) if (wanted.has(group.key)) found.set(group.key, group);
+  if (found.size < wanted.size && snapshot.sources.transcripts !== 'ok') throw Object.assign(new Error('transcript index unavailable'), { code: 'EINDEX', found });
+  return found;
+}
+
+/** One folder by its key, whatever the age of its sessions (findGroups of one key): the group, or null when no folder has the key. Throws EINDEX as findGroups does. */
+export async function findGroup(key, o) {
+  return (await findGroups([key], o)).get(key) ?? null;
 }
 
 /**

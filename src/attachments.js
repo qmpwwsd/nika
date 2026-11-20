@@ -12,7 +12,7 @@ import { openRegular } from './fsafe.js';
 import { loadConfig } from './store.js';
 import { PANE_ID, PROJECT_KEY } from './ids.js';
 import { imageTypeOf } from './image.js';
-import { createLimiter } from './collect/history.js';
+import { createLimiter } from './limiter.js';
 
 export const UPLOAD_CAP = 12 * 1024 * 1024; // request body: base64 of 8 MiB is 11 184 812 chars plus the JSON frame
 export const MAX_BYTES = 8 * 1024 * 1024; // decoded, per file

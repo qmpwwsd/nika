@@ -972,6 +972,100 @@ describe('index.html: the Session window section (0.5.4 P2, M-23)', () => {
     assert.equal(new Set(drawn).size, 4, 'four different drawings');
   });
 
+  // ---- 0.5.4 SF (N-4, live check LC-P2): the pin dot of i-fit-pin and i-term-pin is its own dot, with a clear gap to the bracket or the frame ----
+  /** The segments (x1, y1, x2, y2) of an SVG path of M m H h V v L l commands, and of a rect (its four sides, corners taken sharp: the safe side for a dot inside). */
+  const segmentsOf = (body) => {
+    const segs = [];
+    for (const m of body.matchAll(/<rect\b[^>]*\bx="([\d.]+)"[^>]*\by="([\d.]+)"[^>]*\bwidth="([\d.]+)"[^>]*\bheight="([\d.]+)"/g)) {
+      const [x, y, w, h] = m.slice(1).map(Number);
+      segs.push([x, y, x + w, y], [x + w, y, x + w, y + h], [x + w, y + h, x, y + h], [x, y + h, x, y]);
+    }
+    for (const m of body.matchAll(/<path\b[^>]*\bd="([^"]*)"/g)) {
+      let x = 0;
+      let y = 0;
+      let sx = 0;
+      let sy = 0;
+      for (const [, cmd, args] of m[1].matchAll(/([MmHhVvLl])([^MmHhVvLl]*)/g)) {
+        const n = (args.match(/-?\d*\.?\d+/g) ?? []).map(Number);
+        const rel = cmd === cmd.toLowerCase();
+        const up = cmd.toUpperCase();
+        if (up === 'H') for (const v of n) { const nx = rel ? x + v : v; segs.push([x, y, nx, y]); x = nx; }
+        else if (up === 'V') for (const v of n) { const ny = rel ? y + v : v; segs.push([x, y, x, ny]); y = ny; }
+        else for (let i = 0; i + 1 < n.length; i += 2) {
+          const nx = rel ? x + n[i] : n[i];
+          const ny = rel ? y + n[i + 1] : n[i + 1];
+          if (up === 'M' && i === 0) { sx = nx; sy = ny; } else segs.push([x, y, nx, ny]);
+          x = nx;
+          y = ny;
+        }
+      }
+      void sx; void sy;
+    }
+    return segs;
+  };
+  const distToSegment = (px, py, [x1, y1, x2, y2]) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const t = dx === 0 && dy === 0 ? 0 : Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  };
+  const STROKE = Number(/\.ic\s*\{[^}]*stroke-width:\s*([\d.]+)/.exec(read('app.css'))[1]);
+  const dotOf = (body) => {
+    const m = /<circle\b[^>]*\bcx="([\d.]+)"[^>]*\bcy="([\d.]+)"[^>]*\br="([\d.]*)"/.exec(body);
+    return m && { cx: Number(m[1]), cy: Number(m[2]), r: Number(m[3]), R: Number(m[3]) + STROKE / 2 };
+  };
+
+  for (const [where, src] of [['index.html', () => HTML], ['session.html', () => SESSION_HTML]]) {
+    for (const n of ['fit-pin', 'term-pin']) {
+      test(`(+) N-4 (${where}, i-${n}): the dot is a filled circle of radius 0.75 to 1.25 (a stroke of ${STROKE} drawing it), at least viewBox width / 14 = 1.143 away from every other stroke, and inside the viewBox`, () => {
+        const body = symbolOf(src(), n);
+        const dot = dotOf(body);
+        assert.ok(dot, 'a dot');
+        assert.ok(dot.R >= 0.75 && dot.R <= 1.25, `visual radius ${dot.R}`);
+        assert.ok(dot.r - STROKE / 2 <= 0, 'a stroke wider than the circle: no hole in the middle, a filled dot');
+        const others = segmentsOf(body);
+        assert.ok(others.length >= 4, 'the bracket or the frame is there');
+        const gap = Math.min(...others.map((seg) => distToSegment(dot.cx, dot.cy, seg))) - STROKE / 2 - dot.R;
+        assert.ok(gap >= 16 / 14, `gap ${gap.toFixed(3)} (viewBox units) to the nearest stroke`);
+        assert.ok(dot.cx - dot.R >= 1 && dot.cx + dot.R <= 15 && dot.cy - dot.R >= 1 && dot.cy + dot.R <= 15, 'inside the viewBox');
+      });
+    }
+  }
+
+  test('(\u2212) N-4: the geometry check catches the old dot (cx 12.5, cy 3.5, r .75: it overlaps the corner bracket) and a dot that is only 1 unit from the frame', () => {
+    const oldFit = '<path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/><circle cx="12.5" cy="3.5" r=".75"/>';
+    const oldDot = dotOf(oldFit);
+    const gap = (body, dot) => Math.min(...segmentsOf(body).map((seg) => distToSegment(dot.cx, dot.cy, seg))) - STROKE / 2 - dot.R;
+    assert.ok(gap(oldFit, oldDot) < 0, `the old dot overlaps: ${gap(oldFit, oldDot).toFixed(2)}`);
+    const tight = '<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><circle cx="11.5" cy="5.5" r=".25"/>';
+    assert.ok(gap(tight, dotOf(tight)) < 16 / 14, 'one unit from the frame is not enough');
+  });
+
+  test('(+) N-4: the pins are still their base icon plus the dot: the same bracket and frame on both pages', () => {
+    for (const n of ['fit-pin', 'term-pin']) assert.equal(symbolOf(HTML, n), symbolOf(SESSION_HTML, n), n);
+    for (const [pin, base] of [['fit-pin', 'fit'], ['term-pin', 'term']]) {
+      const withoutDot = symbolOf(SESSION_HTML, pin).replace(/<circle\b[^>]*\/>/, '');
+      assert.equal(withoutDot, symbolOf(SESSION_HTML, base), `${pin} minus its dot is ${base}`);
+    }
+  });
+
+  // ---- 0.5.4 SF (N-5, live check LC-P2): the icon in a Settings card's title sits on the title's first line, not above it ----
+  const APP_CSS = read('app.css');
+  test('(+) N-5: the icon in a radio-card title is moved down 3px (13px text, 16px icon: its middle moves from 8px to 5px above the baseline, the middle of the capitals) by one rule that only touches that icon', () => {
+    const rules = [...APP_CSS.matchAll(/(^|\})\s*([^{}]*\.radio-card b[^{}]*\.ic[^{}]*)\{([^}]*)\}/g)];
+    assert.equal(rules.length, 1, 'one rule');
+    assert.equal(rules[0][2].trim(), '.radio-card b .ic');
+    assert.match(rules[0][3], /^\s*vertical-align:\s*-3px;\s*$/);
+    for (const card of sec.match(/<label class="radio-card">[\s\S]*?<\/label>/g)) assert.match(card, /<b><svg class="ic" aria-hidden="true">/, 'the icon is inline in the title (the rule\'s b)');
+  });
+
+  test('(\u2212) N-5: no other icon moves: the base .ic rule has no vertical-align, and nothing else in app.css aligns an .ic inside a title', () => {
+    const base = /^\.ic\s*\{([^}]*)\}/m.exec(APP_CSS);
+    assert.ok(base, 'the base .ic rule');
+    assert.doesNotMatch(base[1], /vertical-align/);
+    assert.equal([...APP_CSS.matchAll(/vertical-align:\s*-3px/g)].length, 1, 'one such alignment');
+  });
+
   test('(\u2212) the page keeps its ids unique, and the new section has no inline style, script or handler', () => {
     const ids = [...HTML.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
     assert.deepEqual(ids.filter((id, i) => ids.indexOf(id) !== i), []);

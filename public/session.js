@@ -27,7 +27,7 @@ import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageR
 import { createGlideArm, frameOf, glideFrom, matrixY, paneWriteDisarms, GLIDE_MS } from './glide.js';
 import { panelOf, cropOf, layoutOf, INPUT_TEXT, CROP_TEXT } from './crop.js';
 import { createAttachTray } from './attach.js';
-import { createImageViewer, dataUrlOf, sizeLabel, MAX_THUMBS, IMAGE_MIME } from './image-viewer.js';
+import { createImageViewer, dataUrlOf, sizeLabel, MAX_THUMBS, MAX_THUMB_BYTES, IMAGE_MIME } from './image-viewer.js';
 import { createDialogForm, cleanDialog } from './dialog-form.js';
 import { createSurveyPanel, cleanSurvey } from './survey-panel.js';
 
@@ -1096,6 +1096,7 @@ const keyOf = (id) => {
 };
 const offsetOf = (id) => Number(id.slice(0, id.indexOf(':')));
 const nextBefore = (v) => (Number.isInteger(v) && v >= 0 ? v : null);
+const CUT_NOTE = 'Earlier parts of this message are not shown.'; // 0.5.4 SF (RV051 N1): on the first entry of a page the server cut (`cut: true`)
 
 const cleanMedia = (v) => (typeof v === 'string' && Object.hasOwn(IMAGE_MIME, v) ? v : null);
 const cleanSize = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
@@ -1111,9 +1112,13 @@ function cleanImages(e) {
   return out;
 }
 
-function cleanEntries(list) {
+/**
+ * The entries of a history answer, checked. 0.5.4 SF (RV051 N1): `cut` is the page's `cut` and counts only as exactly true (a long line whose earlier entries were
+ * left out): the first entry then carries `cut`, so its note says so once. An entry cannot ask for the note itself.
+ */
+function cleanEntries(list, cut = false) {
   if (!Array.isArray(list)) return [];
-  return list
+  const out = list
     .filter((e) => e && typeof e === 'object' && typeof e.id === 'string' && ENTRY_ID.test(e.id)
       && (e.role === 'user' || e.role === 'assistant') && KINDS.has(e.kind) && typeof e.text === 'string')
     .map((e) => ({
@@ -1130,6 +1135,8 @@ function cleanEntries(list) {
       images: cleanImages(e),
       imagesMore: e.kind === 'tool_result' && Number.isInteger(e.imagesMore) && e.imagesMore >= 0 && e.imagesMore <= 999 ? e.imagesMore : 0,
     }));
+  if (cut === true && out.length) out[0].cut = true;
+  return out;
 }
 
 function textBlock(e) {
@@ -1185,7 +1192,7 @@ function linkLate(entries) {
 
 // ---- images in the transcript (0.5.1 item C, design 2.5): a tile per image, a thumbnail fetched when the tile nears the screen, the viewer on click ----
 
-const IMG = { watcher: null, held: 0, tiles: new Map(), of: new WeakMap(), viewer: null }; // held: thumbnails being fetched or kept (at most MAX_THUMBS); tiles: button -> tile; of: entry -> its tiles
+const IMG = { watcher: null, held: 0, bytes: 0, tiles: new Map(), of: new WeakMap(), viewer: null }; // held: thumbnails being fetched or kept (at most MAX_THUMBS); bytes: their declared sizes added up (at most MAX_THUMB_BYTES, 0.5.4 SF RV051 M1); tiles: button -> tile; of: entry -> its tiles
 const whoLong = (e) => (e.kind === 'tool_result' ? 'a tool result' : e.role === 'user' ? (SUB ? 'the parent' : 'your message') : 'Claude');
 const imagePath = (ref) => (SUB ? `/api/app/session/${sessionId}/subagents/${agentId}/image/${encodeURIComponent(ref)}` : `/api/app/session/${sessionId}/image/${encodeURIComponent(ref)}`);
 
@@ -1199,9 +1206,16 @@ function openTile(t) {
   imageViewer().open({ name: t.heading, meta: t.meta, src: t.url, load: () => call(imagePath(t.ref)), opener: t.btn });
 }
 
+/** A thumbnail that was being fetched or kept stops counting against the cap and the byte budget. */
+function releaseThumb(t) {
+  if (t.state !== 'loading' && t.state !== 'loaded') return;
+  IMG.held -= 1;
+  IMG.bytes -= t.cost;
+}
+
 /** A thumbnail that did not come: the placeholder says so (the tile still opens the viewer, which tries again). */
 function failThumb(t, line) {
-  if (t.state === 'loading' || t.state === 'loaded') IMG.held -= 1;
+  releaseThumb(t);
   t.state = 'failed';
   t.url = null;
   t.img.removeAttribute('src');
@@ -1213,6 +1227,7 @@ function failThumb(t, line) {
 async function loadThumb(t) {
   t.state = 'loading';
   IMG.held += 1;
+  IMG.bytes += t.cost;
   const r = await call(imagePath(t.ref));
   if (t.state !== 'loading') return; // the entry left the page while the answer was on its way
   const url = r.status === 200 ? dataUrlOf(r.body) : null;
@@ -1225,11 +1240,11 @@ async function loadThumb(t) {
   t.img.setAttribute('src', url);
 }
 
-/** The observer's callback: a tile that reaches the screen starts its fetch while fewer than MAX_THUMBS are held; one that finds no room stays watched. */
+/** The observer's callback: a tile that reaches the screen starts its fetch while fewer than MAX_THUMBS are held and its size fits the byte budget (0.5.4 SF, RV051 M1); one that finds no room stays watched. */
 function seenTiles(list) {
   for (const en of list) {
     const t = en.isIntersecting ? IMG.tiles.get(en.target) : undefined;
-    if (!t || t.state !== 'idle' || IMG.held >= MAX_THUMBS) continue;
+    if (!t || t.state !== 'idle' || IMG.held >= MAX_THUMBS || IMG.bytes + t.cost > MAX_THUMB_BYTES) continue;
     IMG.watcher.unobserve(en.target);
     loadThumb(t);
   }
@@ -1247,7 +1262,7 @@ function forgetTiles(li) {
   for (const t of IMG.of.get(li) ?? []) {
     IMG.watcher?.unobserve(t.btn);
     IMG.tiles.delete(t.btn);
-    if (t.state === 'loading' || t.state === 'loaded') IMG.held -= 1;
+    releaseThumb(t);
     t.state = 'gone';
   }
   IMG.of.delete(li);
@@ -1260,7 +1275,7 @@ function imageTile(ref, media, size, who, at, mine) {
   if (size !== null && size > IMG_MAX) return off(`Image${MID}too large to show here (over 8 MB)`);
   const kind = media.toUpperCase();
   const sized = size ? sizeLabel(size) : '';
-  const t = { ref, state: 'idle', url: null, heading: `Image from ${who}`, meta: sized ? `${kind}${MID}${sized}` : kind };
+  const t = { ref, state: 'idle', url: null, cost: size > 0 ? size : IMG_MAX, heading: `Image from ${who}`, meta: sized ? `${kind}${MID}${sized}` : kind };
   t.img = h('img', { class: 'hx-thumb', alt: '', decoding: 'async', hidden: true });
   t.phText = h('span', { text: t.meta });
   t.ph = h('span', { class: 'hx-img-ph' }, icon('image'), t.phText);
@@ -1283,7 +1298,8 @@ function entryEl(e) {
   const stamp = Number.isFinite(when) ? new Date(when).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   const time = Number.isFinite(when) ? h('time', { class: 'hx-at', datetime: new Date(when).toISOString(), title: new Date(when).toLocaleString(), text: stamp }) : null;
   const who = e.kind === 'tool_result' ? 'Tool' : e.role === 'user' ? (SUB ? 'Parent' : 'You') : 'Claude';
-  const li = h('li', { class: 'hx', 'data-role': e.role, 'data-kind': e.kind }, h('div', { class: 'hx-meta' }, h('span', { class: 'hx-who', text: who }), time));
+  const note = e.cut === true ? h('p', { class: 'hx-trunc', text: CUT_NOTE }) : null; // 0.5.4 SF (RV051 N1)
+  const li = h('li', { class: 'hx', 'data-role': e.role, 'data-kind': e.kind }, note, h('div', { class: 'hx-meta' }, h('span', { class: 'hx-who', text: who }), time));
   const mine = [];
   if (e.kind === 'image') li.append(imageTile(e.id, e.media, e.size, whoLong(e), stamp, mine));
   else li.append(...(e.kind === 'text' ? textBlock(e) : [foldBlock(e)]));
@@ -1383,7 +1399,7 @@ async function loadNewest() {
   const r = await fetchHistory(null);
   if (r.status === 200) {
     historyNote(r.body?.entries?.length ? '' : 'No messages in this transcript yet.');
-    resetHistory(cleanEntries(r.body?.entries), nextBefore(r.body?.nextBefore));
+    resetHistory(cleanEntries(r.body?.entries, r.body?.cut), nextBefore(r.body?.nextBefore));
   } else if (r.status === 404) {
     historyNote(SUB ? 'No transcript for this subagent yet. nika keeps looking.' : 'No transcript found for this session yet. nika keeps looking.');
   } else {
@@ -1402,7 +1418,7 @@ async function refreshHistory() {
     if (!H.liveEdge || A.kind === 'ended') return;
     const r = await fetchHistory(null);
     if (r.status !== 200) return;
-    const entries = cleanEntries(r.body?.entries);
+    const entries = cleanEntries(r.body?.entries, r.body?.cut);
     if (!entries.length) return;
     const late = entries.filter((e) => e.subagent);
     if (late.length) linkLate(late); // a call on screen that has its subagent now
@@ -1441,7 +1457,7 @@ async function loadOlder() {
     const sc = scroller();
     const top = sc.scrollTop;
     const h0 = sc.scrollHeight;
-    const added = mount(cleanEntries(r.body?.entries), 'start');
+    const added = mount(cleanEntries(r.body?.entries, r.body?.cut), 'start');
     H.older = nextBefore(r.body?.nextBefore);
     sc.scrollTop = top + (sc.scrollHeight - h0); // the entries the reader was looking at stay where they were
     trim('end');
@@ -1955,6 +1971,7 @@ function growTick() {
   if (!resizes && GR.phase !== 'idle') { // 0.5.4 P2 (SF-1): the mode became Terminal or Off while a grow ran: nika no longer sizes the window, so the grow ends here and asks nothing, not even the way back
     GR = GROW_IDLE;
     FIT.room = false;
+    FIT.planner.retarget(FIT.base.cols, FIT.base.rows); // 0.5.4 SF (F-1): the grown ask is dropped here too, or the first beat back in Auto would bring the window back grown; nothing is sent
   } else {
     const step = growStep(GR, { now: Date.now(), dialog: W.dialog, fitted: FIT.state === 'fitted' && resizes, paneRows: M.rows, baseRows: FIT.base.rows, baseCols: FIT.base.cols });
     GR = step.G;
@@ -2108,13 +2125,14 @@ function renderFit(view, opts) {
   el.setAttribute('title', view.title);
   el.setAttribute('aria-label', view.label);
   el.replaceChildren(icon(view.icon), h('span', { text: view.text }), icon('chev', 'ic chev'));
-  if (FIT.pop) drawFitPop();
+  drawFitPop(); // 0.5.4 SF (LC-P2): also while the panel is shut, so it never holds a stale label; it opens nothing
   if (opts?.quiet !== true) announce(view.say); // F9: a change that followed the window's own focus is drawn, not announced twice (the status stays readable on the chip)
 }
 
 /**
  * The chip's panel from FIT.view and FIT.ui (fit-ui.js fitPanelView): text through textContent and h() only. Focus stays where it is,
- * unless the action button it was on has just gone: then it goes to Close.
+ * unless the action button it was on has just gone: then it goes to Close. 0.5.4 SF: drawn on every change, also while the panel is shut (nothing opens, nothing is
+ * placed); a button with no action is hidden and empty, so no "Fitting..." stays in it.
  */
 function drawFitPop() {
   const v = fitPanelView(FIT.view, { ...FIT.ui, room: FIT.room, grow: GR.phase === 'stepping' || GR.phase === 'held' });
@@ -2130,8 +2148,10 @@ function drawFitPop() {
   note.hidden = v.note === null;
   note.replaceChildren(...(v.note === null ? [] : [icon('warn'), v.note]));
   again.hidden = v.action === null;
-  if (v.action === null) again.removeAttribute('aria-disabled');
-  else {
+  if (v.action === null) {
+    again.removeAttribute('aria-disabled');
+    again.textContent = '';
+  } else {
     again.textContent = v.action.text;
     if (FIT.ui.pending) again.setAttribute('aria-disabled', 'true'); // not disabled: focus stays on it
     else again.removeAttribute('aria-disabled');
@@ -2179,23 +2199,19 @@ function fitAway(e) {
 function fitAgainEvent(e) {
   if (e.pending) {
     FIT.ui = { pending: true, note: false };
-    if (FIT.pop) drawFitPop();
+    drawFitPop();
     return;
   }
   FIT.ui = { pending: false, note: false };
   if (e.status === 403) return;
   if (e.status === 200 && e.view) {
+    drawFitPop(); // 0.5.4 SF: the pending label goes in a shut panel too
     if (['fitted', 'zoomed', 'terminal'].includes(e.view.state)) closeFitPop(true);
-    else {
-      if (FIT.pop) drawFitPop();
-      if (!e.changed) announce(stillOffSay(e.view));
-    }
+    else if (!e.changed) announce(stillOffSay(e.view));
     return;
   }
-  if (FIT.pop) {
-    FIT.ui.note = true;
-    drawFitPop();
-  }
+  if (FIT.pop) FIT.ui.note = true; // the note is for an open panel only
+  drawFitPop();
   const p = fitPanelView(FIT.view, { pending: false, note: true });
   if (p) announce(p.note);
 }
@@ -3149,7 +3165,7 @@ function wireHistory() {
   $('load-older').addEventListener('click', loadOlder);
   $('jump-latest').addEventListener('click', async () => {
     const r = await fetchHistory(null);
-    if (r.status === 200) resetHistory(cleanEntries(r.body?.entries), nextBefore(r.body?.nextBefore));
+    if (r.status === 200) resetHistory(cleanEntries(r.body?.entries, r.body?.cut), nextBefore(r.body?.nextBefore));
     else showProblem(serverMessage(r, 'The latest entries could not be loaded.'), 'error', 5000);
   });
 }

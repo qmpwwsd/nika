@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  READING_MS, TEXT_MAX, cleanDialog, answerBody, dialogOutcome, announcement, stepText, createDialogForm, typable, wellFormed, reviewModel,
+  READING_MS, TEXT_MAX, cleanDialog, answerBody, dialogOutcome, announcement, createDialogForm, typable, wellFormed, reviewModel,
 } from '../public/dialog-form.js';
 import { installDom, El, focus, withClass } from './fake-dom.js';
 
@@ -358,9 +358,10 @@ describe('dialogOutcome: every route answer is a fixed line (design W1 section 6
 // ---- the small pure helpers -----------------------------------------------------------------------------------------------------
 
 describe('stepText and announcement: the words', () => {
-  test('(+) the narrow strip text and the review word', () => {
-    assert.equal(stepText(cleanDialog(multi({ current: 1 }))), `Question 2 of 4 ${MID} Project`);
-    assert.equal(stepText(cleanDialog(review())), 'Review');
+  test('(\u2212) 0.5.4 SF (RV051 M4): stepText is gone with the step text element it fed (nothing used it any more); the review word and the question place live in the strip and the announcement', async () => {
+    const mod = await import('../public/dialog-form.js');
+    assert.equal(Object.hasOwn(mod, 'stepText'), false);
+    assert.equal(typeof mod.announcement, 'function');
   });
 
   test('(+) a question is announced with its place; later tabs by number; a single question without a count', () => {
@@ -1270,10 +1271,11 @@ describe('the step strip: every step is a button that asks Claude to move there 
     assert.equal(items[0].getAttribute('aria-disabled'), null);
   });
 
-  test('(+) the narrow text names the question and the tab (it stays in the DOM)', () => {
+  test('(\u2212) 0.5.4 SF (RV051 M4): a question dialog with a strip draws no step text: no .dlg-step element (it was hidden at every width), and the one sr-only step note is still there', () => {
     const r = rig();
     r.render(multi({ current: 2, tabs: tabs(4, 2) }));
-    assert.equal(one(r.root, 'dlg-step').textContent, `Question 3 of 4 ${MID} Scope`);
+    assert.equal(one(r.root, 'dlg-step'), null);
+    assert.equal(r.root.all((n) => n.attrs.id === 'dlg-steps-desc').length, 1);
   });
 
   test('(+) a click on a step that is not the current one posts { sig, tab }; Review posts tab: n; nothing else is sent', async () => {
@@ -2584,8 +2586,12 @@ describe('the review as cards, one column at every width (stylesheet; 0.5.2 R3 r
       assert.doesNotMatch(n, /\.dlg-step\b/, 'nor the step text');
     }
     assert.doesNotMatch(CSS, /\.dlg-tabs\s*\{[^}]*display:\s*none/, 'no rule hides the strip');
-    assert.match(rule2('.dlg-step'), /display:\s*none/, 'the step text stays hidden at every width');
+    assert.equal(rule2('.dlg-step'), '', '0.5.4 SF (RV051 M4): there is no step text rule any more (it was hidden at every width)');
     function rule2(sel) { return [...CSS.matchAll(/(?<![^}{])\s*([^{}]+)\{([^}]*)\}/g)].filter((m) => m[1].trim() === sel).map((m) => m[2]).join(';'); }
+  });
+
+  test('(\u2212) 0.5.4 SF (RV051 M4): session.css has no .dlg-step rule: the element it hid is gone', () => {
+    assert.doesNotMatch(CSS, /\.dlg-step\b/);
   });
 
   test('(+) a card is the option card look (strong border, medium radius, surface); a question not answered is dashed on the idle fill', () => {

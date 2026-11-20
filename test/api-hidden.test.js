@@ -82,6 +82,7 @@ async function boot({ env = w.env, deps = makeDeps(), ctxOver = {}, app = true }
     },
     findSessions: async (ids) => new Map(ids.filter((id) => known.has(id) && id !== HOST).map((id) => [id, known.get(id)])),
     findGroup: async (key) => (key === KEY_OLD ? OLD_GROUP : null),
+    findGroups: async (keys) => new Map(keys.filter((key) => key === KEY_OLD).map((key) => [key, OLD_GROUP])),
     ...ctxOver,
   });
   const handler = app ? createAppApi({ secret: SECRET, ctx, deps }) : null;
@@ -101,6 +102,7 @@ async function boot({ env = w.env, deps = makeDeps(), ctxOver = {}, app = true }
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, raw: data, body: data && res.headers['content-type']?.includes('json') ? JSON.parse(data) : data }));
     });
     r.on('error', reject);
+    r.setTimeout(4000, () => r.destroy(new Error(`no answer to ${method} ${p} within 4 s`))); // 0.5.4 SF (RM review row 22): a guard that is gone fails the test, it does not hang it
     if (payload !== undefined) r.write(payload);
     r.end();
   });
@@ -564,6 +566,108 @@ describe('GET /api/app/hidden', () => {
     await hideGroup('f'.repeat(16), e, { now: NOW - 1000, warn: () => {} });
     const b = await boot({ env: e });
     assert.deepEqual((await b.call('GET', '/api/app/hidden')).body.groups, [{ key: 'f'.repeat(16), label: null, root: null, at: NOW - 1000 }]);
+  });
+
+  // ---- 0.5.4 SF (RM R5): a removed old folder gets its label and path from one index-only walk per request ----
+  test('(+) a removed folder whose sessions all ended before the 7-day snapshot lists with its label and path (one index walk for all such keys; a folder of the snapshot is not asked)', async () => {
+    const e = fresh();
+    const KEY_OLD2 = keyFor('/tmp/nika-test/older-demo');
+    const OLD2 = { key: KEY_OLD2, label: 'older-demo', root: '/tmp/nika-test/older-demo', agents: [agent(uid(13))] };
+    await hideGroup(KEY_OLD, e, { now: NOW - 1000, warn: () => {} });
+    await hideGroup(KEY_A, e, { now: NOW - 2000, warn: () => {} });
+    await hideGroup(KEY_OLD2, e, { now: NOW - 3000, warn: () => {} });
+    const asked = [];
+    const b = await boot({ env: e, ctxOver: { findGroups: async (keys) => { asked.push(keys); return new Map([[KEY_OLD, OLD_GROUP], [KEY_OLD2, OLD2]].filter(([k]) => keys.includes(k))); } } });
+    const r = await b.call('GET', '/api/app/hidden');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.groups, [
+      { key: KEY_OLD, label: 'old-demo', root: '/tmp/nika-test/old-demo', at: NOW - 1000 },
+      { key: KEY_A, label: 'demo', root: ROOT_A, at: NOW - 2000 },
+      { key: KEY_OLD2, label: 'older-demo', root: '/tmp/nika-test/older-demo', at: NOW - 3000 },
+    ]);
+    assert.deepEqual(asked, [[KEY_OLD, KEY_OLD2]], 'one walk, only for the keys the snapshot misses');
+  });
+
+  test('(\u2212) a key the index has nowhere stays label and path null ("Folder with no recent sessions"), beside one that is found', async () => {
+    const e = fresh();
+    await hideGroup(KEY_OLD, e, { now: NOW - 1000, warn: () => {} });
+    await hideGroup('f'.repeat(16), e, { now: NOW - 2000, warn: () => {} });
+    const b = await boot({ env: e });
+    assert.deepEqual((await b.call('GET', '/api/app/hidden')).body.groups, [
+      { key: KEY_OLD, label: 'old-demo', root: '/tmp/nika-test/old-demo', at: NOW - 1000 },
+      { key: 'f'.repeat(16), label: null, root: null, at: NOW - 2000 },
+    ]);
+  });
+
+  // review N4: an index that fails after it found some folders keeps the labels it found; the key it could not resolve stays without label and path
+  const partly = (found) => async () => { throw Object.assign(eindex(), { found }); };
+
+  test('(+) findGroups fails with EINDEX but carries the folders it found: they keep label and path, the key it could not resolve stays null, and the route answers 200 (review N4)', async () => {
+    const e = fresh();
+    await hideGroup(KEY_OLD, e, { now: NOW - 1000, warn: () => {} });
+    await hideGroup('f'.repeat(16), e, { now: NOW - 2000, warn: () => {} });
+    const b = await boot({ env: e, ctxOver: { findGroups: partly(new Map([[KEY_OLD, OLD_GROUP]])) } });
+    const r = await b.call('GET', '/api/app/hidden');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.groups, [
+      { key: KEY_OLD, label: 'old-demo', root: '/tmp/nika-test/old-demo', at: NOW - 1000 },
+      { key: 'f'.repeat(16), label: null, root: null, at: NOW - 2000 },
+    ]);
+  });
+
+  test('(\u2212) what the failure carries is used only as a Map of the asked keys: an empty map, a plain object, an array, a string, nothing, or a group of another key leave label and path null, no 5xx (review N4)', async () => {
+    const e = fresh();
+    await hideGroup(KEY_OLD, e, { now: NOW - 1000, warn: () => {} });
+    const none = [{ key: KEY_OLD, label: null, root: null, at: NOW - 1000 }];
+    for (const found of [new Map(), { [KEY_OLD]: OLD_GROUP }, [[KEY_OLD, OLD_GROUP]], 'junk', null, undefined, new Map([['e'.repeat(16), OLD_GROUP]])]) {
+      const b = await boot({ env: e, ctxOver: { findGroups: partly(found) } });
+      const r = await b.call('GET', '/api/app/hidden');
+      assert.equal(r.status, 200, String(found));
+      assert.deepEqual(r.body.groups, none, String(found));
+    }
+  });
+
+  test('(\u2212) a label and a path that came with the failure are cleaned and cut like the others (review N4)', async () => {
+    const e = fresh();
+    await hideGroup(KEY_OLD, e, { now: NOW - 1000, warn: () => {} });
+    const dirty = { ...OLD_GROUP, label: `la${String.fromCharCode(7)}bel${'y'.repeat(200)}`, root: `/tmp/${'z'.repeat(400)}`, secret: 'x' };
+    const b = await boot({ env: e, ctxOver: { findGroups: partly(new Map([[KEY_OLD, dirty]])) } });
+    const g = (await b.call('GET', '/api/app/hidden')).body.groups[0];
+    assert.deepEqual(Object.keys(g).sort(), ['at', 'key', 'label', 'root']);
+    assert.ok(g.label.length <= 120 && !g.label.includes(String.fromCharCode(7)));
+    assert.ok(g.root.length <= 300);
+  });
+
+  test('(\u2212) an index that cannot be read keeps today\'s answer: 200, label and path null, no 5xx', async () => {
+    const e = fresh();
+    await hideGroup(KEY_OLD, e, { now: NOW - 1000, warn: () => {} });
+    for (const findGroups of [async () => { throw eindex(); }, async () => { throw new Error('boom'); }, undefined]) {
+      const b = await boot({ env: e, ctxOver: { findGroups } });
+      const r = await b.call('GET', '/api/app/hidden');
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body.groups, [{ key: KEY_OLD, label: null, root: null, at: NOW - 1000 }]);
+    }
+  });
+
+  test('(\u2212) when every key is in the snapshot, or the list is empty, the index is not walked at all', async () => {
+    const e = fresh();
+    let walks = 0;
+    const ctxOver = { findGroups: async () => { walks += 1; return new Map(); } };
+    assert.equal((await (await boot({ env: e, ctxOver })).call('GET', '/api/app/hidden')).status, 200);
+    await hideGroup(KEY_A, e, { now: NOW - 1000, warn: () => {} });
+    assert.equal((await (await boot({ env: e, ctxOver })).call('GET', '/api/app/hidden')).body.groups[0].label, 'demo');
+    assert.equal(walks, 0);
+  });
+
+  test('(\u2212) a label and a path from the index are cleaned and cut like the snapshot\'s, and only the whitelisted fields leave', async () => {
+    const e = fresh();
+    await hideGroup(KEY_OLD, e, { now: NOW - 1000, warn: () => {} });
+    const dirty = { ...OLD_GROUP, label: `la\u0007bel${'y'.repeat(200)}`, root: `/tmp/${'z'.repeat(400)}\u001b[31m`, secret: 'x' };
+    const b = await boot({ env: e, ctxOver: { findGroups: async () => new Map([[KEY_OLD, dirty]]) } });
+    const g = (await b.call('GET', '/api/app/hidden')).body.groups[0];
+    assert.deepEqual(Object.keys(g).sort(), ['at', 'key', 'label', 'root']);
+    assert.ok(g.label.length <= 120 && !/[\u0000-\u001f\u007f-\u009f]/.test(g.label));
+    assert.ok(g.root.length <= 300 && !/[\u0000-\u001f\u007f-\u009f]/.test(g.root));
   });
 
   test('(\u2212) without a snapshot the folders list with label and path null, and the route still answers', async () => {

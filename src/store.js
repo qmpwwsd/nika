@@ -33,7 +33,7 @@ export function defaults() {
     ui: { theme: 'system', singleKeyShortcuts: true },
     compaction: { enabled: true, pct: 80, window: 400000 }, // auto-compact for the sessions nika starts (src/compact.js)
     attachments: { keepDays: 7 }, // days an attachment of the session window stays on disk (src/attachments.js)
-    fit: { mode: 'auto' }, // how a session window fits Claude's pane to its panel; read by src/fit.js through setMode (0.5.3)
+    fit: { mode: 'auto' }, // how a session window fits Claude's pane to its panel; read by src/fit.js through setMode (0.5.4)
   };
 }
 

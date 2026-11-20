@@ -383,6 +383,26 @@ describe('app tier: Remove of a folder whose sessions ended before the 7-day sna
     }
   });
 
+  test('(+) 0.5.4 SF (RM R5): after the Remove, Show removed lists that old folder with its label and path (src/appio.js wires findGroups), and a key no folder has stays null', async () => {
+    const { env } = await dirs();
+    const key = await keyOf();
+    const app = await startApp({ env, config: old.config });
+    try {
+      assert.equal((await app.post(`/api/app/groups/${key}/remove`)).status, 200);
+      const res = await app.app('/api/app/hidden');
+      assert.equal(res.status, 200);
+      assert.deepEqual(res.body.groups.map((g) => [g.key, g.label, g.root]), [[key, 'old-folder', dir]]);
+      const stored = path.join(env.XDG_STATE_HOME, 'nika', HIDDEN_FILE);
+      const doc = JSON.parse(fs.readFileSync(stored, 'utf8'));
+      doc.groups['d'.repeat(16)] = { at: doc.groups[key].at };
+      fs.writeFileSync(stored, JSON.stringify(doc), { mode: 0o600 });
+      const again = await app.app('/api/app/hidden');
+      assert.deepEqual(again.body.groups.map((g) => [g.key, g.label, g.root]).sort(), [[key, 'old-folder', dir], ['d'.repeat(16), null, null]].sort());
+    } finally {
+      await app.stop();
+    }
+  });
+
   test('(\u2212) a key no folder has is 404 and writes nothing', async () => {
     const { env } = await dirs();
     const app = await startApp({ env, config: old.config });

@@ -15,7 +15,7 @@ import { addProject, updateProjectConfig } from '../src/store.js';
 import { ensureDir, writeAtomic } from '../src/fwrite.js';
 import { collect } from '../src/model.js';
 import { listPanes } from '../src/collect/tmux.js';
-import { COLLECTOR_FIELDS } from '../src/place.js';
+import { COLLECTOR_FIELDS, COLLECTOR_PARENT_FIELD } from '../src/place.js';
 import { indexReports } from '../src/collect/reports.js';
 import { fakeTmux, makeWorld, TMUX, CLAUDE, NIKA_ARGV } from './tmux-fake.js';
 import { makeFixture, cleanup, fakeExec, SID, NOW } from './helpers.js';
@@ -319,6 +319,25 @@ describe('spawnAgent: refusals', () => {
     assert.deepEqual((await spawnAgent({}, w.ctx(exec))).body.error, 'invalid');
     assert.equal(exec.calls.length, 0);
     assert.equal(fs.existsSync(rd(w)), false);
+  });
+
+  test('(\u2212) 0.5.4 SF (item 11): a pane id with a leading zero as under or parent (%050, %00, %0123) is 400 invalid, no tmux call, no file; (+) %0 and %999999 are not refused as invalid', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: BASE_PANES() });
+    for (const id of ['%050', '%00', '%0123']) {
+      for (const [field, message] of [['under', 'invalid under pane'], ['parent', 'invalid parent pane']]) {
+        const r = await spawnAgent(req(w, { [field]: id }), w.ctx(exec));
+        assert.deepEqual([r.status, r.body.error, r.body.message], [400, 'invalid', message], `${field} ${id}`);
+      }
+    }
+    assert.equal(exec.calls.length, 0);
+    assert.equal(fs.existsSync(rd(w)), false);
+    for (const id of ['%0', '%999999']) {
+      for (const field of ['under', 'parent']) {
+        const r = await spawnAgent(req(w, { name: `ok-${field}`, [field]: id }), w.ctx(exec));
+        assert.notEqual(r.body.error, 'invalid', `${field} ${id}: the shape is fine, the pane checks decide`);
+      }
+    }
   });
 
   test('(−) the name `orchestrator` is reserved for the main orchestrator\'s tag, for both roles: 400, no tmux call, no file; (+) names that only contain it pass', async () => {
@@ -1791,6 +1810,62 @@ describe('spawnAgent: placement (0.5.4, P1)', () => {
     assert.deepEqual([r.status, r.body.placement, r.body.moved, exec.of('split-window').length], [200, 'window', 'under', 0], 'a row repeated: untrusted, so even a pane with room is not split');
   });
 
+  // ---- 0.5.4 SF (P1, round 3): an untrusted first listing says so on stderr, once, with the step and the reason only ------------------------------------------
+  const L1_NOTE = 'nika: spawn placement: the session listing could not be trusted, so a new agents window opened\n';
+  /** An exec that adds one line to the first listing (the session's, `list-panes -s`): `extra(stdout)` is the line. */
+  const withExtraLine = (exec, extra) => async (cmd, args, opts) => {
+    const out = await exec(cmd, args, opts);
+    return args.includes('-s') && args.includes('list-panes') ? { ...out, stdout: `${out.stdout}${extra(out.stdout)}\n` } : out;
+  };
+  const BAD_FIRST = { 'a line that does not parse': () => 'junk', 'a short line': () => '%1\t@99\t9', 'a pane id on two rows': (stdout) => stdout.split('\n')[0] };
+
+  test('SF-P1-a (+) 0.5.4 SF: a first listing that is untrusted (a line that does not parse, a short line, a pane id twice) logs the one fixed line, and the agent still opens in a new agents window', async () => {
+    for (const [what, extra] of Object.entries(BAD_FIRST)) {
+      const w = await world();
+      const logs = [];
+      const exec = fakeTmux({ nextId: 60, panes: [main(w), crowd(w, '@2', 1, ['%21'], { w: 200 })[0]] });
+      const r = await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec, { exec: withExtraLine(exec, extra), stderr: { write: (t) => logs.push(t) } }));
+      assert.deepEqual([r.status, r.body.placement, exec.of('split-window').length, exec.of('new-window').length], [200, 'window', 0, 1], what);
+      assert.deepEqual(logs, [L1_NOTE], what);
+    }
+  });
+
+  test('SF-P1-b (\u2212) 0.5.4 SF: a trusted first listing logs nothing about the listing (a split into a roomy home window, and a lone orchestrator pane)', async () => {
+    for (const panes of [(w) => [main(w, { w: 100 }), mate(w, '%20', 'h1', { w: 99 })], (w) => [main(w)]]) {
+      const w = await world();
+      const logs = [];
+      const exec = fakeTmux({ nextId: 60, panes: panes(w) });
+      const r = await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec, { stderr: { write: (t) => logs.push(t) } }));
+      assert.equal(r.status, 200);
+      assert.equal(logs.some((t) => t.includes('session listing')), false, logs.join('|'));
+    }
+  });
+
+  test('SF-P1-c (\u2212) 0.5.4 SF: the line carries no listing text: a hostile row (a marker, a path, an escape sequence, a pane id) never reaches stderr', async () => {
+    const w = await world();
+    const logs = [];
+    const exec = fakeTmux({ nextId: 60, panes: [main(w), crowd(w, '@2', 1, ['%21'], { w: 200 })[0]] });
+    const r = await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec, { exec: withExtraLine(exec, () => 'junk-ZQX-marker /secret/path \u001b[31mred %77 @99'), stderr: { write: (t) => logs.push(t) } }));
+    assert.equal(r.status, 200);
+    assert.deepEqual(logs, [L1_NOTE]);
+    for (const leak of ['ZQX', 'secret', 'junk', '\u001b', '%77', '@99']) assert.equal(logs.join('').includes(leak), false, leak);
+  });
+
+  test('S-29 (\u2212) 0.5.4 SF (item 11, review R2-1 shape 7b): the alias %050 for the foreign pane %50, as a forged row in the first listing (@nika-fit) plus a whole -a line (@nika-kind), is never split: the first listing is untrusted, a new agents window opens, one log line', async () => {
+    const w = await world();
+    const logs = [];
+    const foreign = { id: '%50', session: 'Aaa', window: 0, windowName: 'zsh', command: 'zsh', win: '@5' };
+    const alias = ['%050', 'My-App', '0', '', '', '', '', '', '', '0', ''].join('\t'); // a whole 11-field line of the collector's format, as a @nika-kind value can carry it
+    const user = { id: '%9', session: 'My-App', window: 1, windowName: 'zsh', command: 'vim', win: '@2', w: 100, h: 20, winW: 100, winH: 20, fit: `v\n${forgedFields(w, '%050').join('\t')}\t`, kind: `x\n${alias}` };
+    const exec = fakeTmux({ nextId: 60, panes: [foreign, main(w, { w: 100, h: 20, winW: 100, winH: 20 }), user] });
+    const before = JSON.stringify(exec.panes.map((p) => [p.id, p.w, p.h]));
+    const r = await spawnAgent(req(w), w.ctx(exec, { stderr: { write: (t) => logs.push(t) } }));
+    assert.deepEqual([r.status, r.body.placement, r.body.session, exec.of('split-window').length, exec.of('select-layout').length, exec.of('new-window').length], [200, 'window', 'My-App', 0, 0, 1]);
+    assert.equal(exec.calls.some((c) => c.includes('%050')), false, 'the alias never reaches a tmux argv');
+    assert.deepEqual(logs, [L1_NOTE]);
+    assert.equal(JSON.stringify(exec.panes.filter((p) => p.id !== r.body.pane).map((p) => [p.id, p.w, p.h])), before, 'no pane was resized');
+  });
+
   test('S-25 (\u2212) the split target must be a pane of the spawn\'s session in the strict listing too: a made-up or a foreign pane named only by the placement listing is never split', async () => {
     for (const [what, pane] of [['made-up', '%77'], ['another session', '%60']]) {
       const w = await world();
@@ -1898,6 +1973,95 @@ describe('spawnAgent: placement (0.5.4, P1)', () => {
     const format = exec.calls[0][exec.calls[0].length - 1];
     assert.deepEqual(exec.calls[0], LIST_ALL);
     assert.equal(format.split('\t').length, COLLECTOR_FIELDS);
+    assert.equal(format.split('\t')[COLLECTOR_PARENT_FIELD], '#{@nika-parent}', 'parentTags reads the parent tag from this field (0.5.4 SF, item 14)');
+  });
+
+  // ---- 0.5.4 SF (item 12, owner decision 2026-11-20, "keep trees apart"): the live check tiled sub-orchestrator B's agents into sub-orchestrator A's window -----
+  test('S-31 (\u2212) 0.5.4 SF (item 12): sub B (parent %40) and the main orchestrator are not tiled into sub A\'s agents window, which has room; a plain agents window is; sub A (parent %30) still is', async () => {
+    const w = await world8();
+    const subA = { id: '%30', session: 'My-App', window: 2, windowName: 'agents', command: 'claude', role: 'sub-orchestrator', agent: `${w.project.key}/sub-a`, depth: '2', parent: '%1', win: '@3', w: 99, h: 50 };
+    const kidA = mate(w, '%31', 'a1', { window: 2, windowName: 'agents', win: '@3', parent: '%30', depth: '3', w: 100, h: 50 });
+    // sub B: a window of its own with a user pane and no room beside it, so only rule 4 can place its agent
+    const subB = { id: '%40', session: 'My-App', window: 3, windowName: 'zsh', command: 'claude', role: 'sub-orchestrator', agent: `${w.project.key}/sub-b`, depth: '2', parent: '%1', win: '@4', w: 100 };
+    const userB = { id: '%41', session: 'My-App', window: 3, windowName: 'zsh', command: 'zsh', win: '@4', w: 99 };
+    const base = () => [main(w, { w: 100 }), mate(w, '%10', 'm1', { w: 99 }), subA, kidA, subB, userB]; // %20 is the first id the fake gives a new pane
+    const sizes = (exec) => [exec.of('split-window').length, exec.of('select-layout').length];
+    for (const parent of ['%40', '%1']) {
+      const exec = fakeTmux({ panes: base() });
+      const r = await spawnAgent(req(w, { parent }), w.ctx(exec));
+      assert.deepEqual([r.status, r.body.placement, sizes(exec), exec.of('new-window').length], [200, 'window', [0, 0], 1], `${parent}: a new agents window, nothing split or re-tiled`);
+      assert.equal(JSON.stringify(exec.calls).includes('"@3"'), false, `${parent}: no call names sub A's window`);
+    }
+    // 0.5.4 SF (item 14): the plain agents window is sub B's own now (its agents carry parent %40); it held agents of the main orchestrator (the default of `mate`), which are not B's tree
+    const plain = fakeTmux({ panes: [...base(), ...crowd(w, '@5', 4, ['%51', '%52']).map((p) => ({ ...p, parent: '%40' }))] });
+    const p = await spawnAgent(req(w, { parent: '%40' }), w.ctx(plain));
+    assert.deepEqual([p.status, p.body.placement, plain.of('select-layout')[0][2]], [200, 'tiled', '@5'], 'the plain agents window takes it');
+    const own = fakeTmux({ panes: base() });
+    const a = await spawnAgent(req(w, { parent: '%30' }), w.ctx(own));
+    assert.deepEqual([a.status, a.body.placement, own.of('select-layout')[0][2], own.of('split-window')[0].slice(1, 4)], [200, 'tiled', '@3', ['-h', '-t', '%31']], 'sub A\'s own agent still joins its window');
+  });
+
+  // ---- 0.5.4 SF (item 14, owner answer P1-Q6 A, 2026-11-20, "whole trees"): the tree of every pane comes from the `-a` read doSpawn already made ----------------------
+  test('S-32 (\u2212) 0.5.4 SF (item 14): an agents window is tiled only when every pane in it is the spawn\'s parent or its child, by @nika-parent of the -a read: no new tmux call, no new argv', async () => {
+    const w = await world8();
+    const kids = (win, index, ids, parent) => crowd(w, win, index, ids).map((p) => ({ ...p, parent, depth: parent === '%1' ? '2' : '3' }));
+    const subA = { id: '%30', session: 'My-App', window: 2, windowName: 'agents', command: 'claude', role: 'sub-orchestrator', agent: `${w.project.key}/sub-a`, depth: '2', parent: '%1', win: '@3', w: 99, h: 16 };
+    const subB = { id: '%40', session: 'My-App', window: 3, windowName: 'zsh', command: 'claude', role: 'sub-orchestrator', agent: `${w.project.key}/sub-b`, depth: '2', parent: '%1', win: '@4', w: 100 };
+    const userB = { id: '%41', session: 'My-App', window: 3, windowName: 'zsh', command: 'zsh', win: '@4', w: 99 };
+    // sub A's window is full (sub A and five agents of its own), it has an overflow window of its own (@6); the main orchestrator has its own agents window (@5)
+    const base = () => [main(w, { w: 100 }), mate(w, '%10', 'm1', { w: 99 }), subA, ...kids('@3', 2, ['%31', '%32', '%33', '%34', '%35'], '%30'), subB, userB, ...kids('@5', 4, ['%51', '%52'], '%1'), ...kids('@6', 5, ['%61', '%62'], '%30')];
+    const where = async (parent, panes = base(), extra = {}) => {
+      const exec = fakeTmux({ panes });
+      const r = await spawnAgent(req(w, { ...(parent ? { parent } : {}), ...extra }), w.ctx(exec));
+      return { r, exec, tile: exec.of('select-layout')[0]?.[2] ?? null };
+    };
+    const named = (exec, ...wins) => wins.filter((x) => JSON.stringify(exec.calls).includes(`"${x}"`));
+
+    const b = await where('%40');
+    assert.deepEqual([b.r.status, b.r.body.placement, b.exec.of('new-window').length, b.exec.of('split-window').length], [200, 'window', 1, 0], 'sub B: no agents window of its own, a new one');
+    assert.deepEqual(named(b.exec, '@3', '@5', '@6'), [], 'and no call names another tree\'s window');
+    const m = await where('%1');
+    assert.deepEqual([m.r.status, m.r.body.placement, m.tile], [200, 'tiled', '@5'], 'the main orchestrator: its own agents window, not sub A\'s');
+    assert.deepEqual(named(m.exec, '@3', '@6'), []);
+    const a = await where('%30');
+    assert.deepEqual([a.r.status, a.r.body.placement, a.tile], [200, 'tiled', '@6'], 'sub A: its full window has no room, so its own overflow window, not the main orchestrator\'s');
+    assert.deepEqual(named(a.exec, '@5', '@4'), []);
+    // no new read and no new argument: the same calls as ever before the split (the -a read, the tag read, the session listing)
+    assert.deepEqual(m.exec.calls.slice(0, 3), [LIST_ALL, LIST_AGENTS, L1()]);
+    assert.equal(m.exec.calls.filter((c) => c[2] === 'list-panes' && c[3] === '-a').length, 2, 'two -a reads, as before: the tree is read from them');
+
+    // "you": no parent. Agents that carry a parent tag are not its tree; untagged ones are
+    const you = await where(null);
+    assert.deepEqual([you.r.status, you.r.body.placement], [200, 'window'], '"you": every agents window holds tagged agents');
+    const untagged = [...base(), ...kids('@8', 1, ['%81', '%82'], '')];
+    const y2 = await where(null, untagged);
+    assert.deepEqual([y2.r.status, y2.r.body.placement, y2.tile], [200, 'tiled', '@8'], '"you": the window of untagged agents');
+    const y3 = await where('%1', untagged);
+    assert.equal(y3.tile, '@5', 'and the main orchestrator does not take it (the untagged window has the lower index: it would be first if it were open)');
+
+    // a tag that is not a pane id, and a pane that the read lists with no tag, put the window in nobody\'s tree
+    const bad = base().map((p) => (p.id === '%52' ? { ...p, parent: 'junk' } : p));
+    const m2 = await where('%1', bad);
+    assert.deepEqual([m2.r.status, m2.r.body.placement, m2.exec.of('select-layout').length], [200, 'window', 0], 'a malformed tag in the main orchestrator\'s window: closed');
+    const loose = base().map((p) => (p.id === '%52' ? { ...p, parent: '' } : p));
+    assert.equal((await where('%1', loose)).r.body.placement, 'window', 'an untagged agent in it: closed');
+
+    // under-last: .last-pane of another tree is not followed; one of its own tree is
+    const last = await world8({ panePlacement: 'under-last' });
+    const kidsL = (win, index, ids, parent) => crowd(last, win, index, ids).map((p) => ({ ...p, parent, depth: parent === '%1' ? '2' : '3' }));
+    const baseL = () => [main(last, { w: 100 }), mate(last, '%10', 'm1', { w: 99 }), { ...subA, agent: `${last.project.key}/sub-a` }, { ...subB, agent: `${last.project.key}/sub-b` }, userB, ...kidsL('@6', 5, ['%61', '%62'], '%30')];
+    const under = async (parent, pane) => {
+      await put(last, '.last-pane', `${pane}\n`);
+      const exec = fakeTmux({ panes: baseL() });
+      const r = await spawnAgent(req(last, { parent }), last.ctx(exec));
+      return { r, exec, tile: exec.of('select-layout')[0]?.[2] ?? null };
+    };
+    const own = await under('%30', '%62');
+    assert.deepEqual([own.r.body.placement, own.exec.of('split-window')[0].slice(1, 4)], ['tiled', ['-v', '-t', '%62']], 'sub A follows its own last pane');
+    const other = await under('%40', '%62');
+    assert.deepEqual([other.r.body.placement, other.exec.of('split-window').length, other.exec.of('new-window').length], ['window', 0, 1], 'sub B does not follow sub A\'s last pane');
+    const mine = await under('%1', '%62');
+    assert.equal(mine.r.body.placement, 'window', 'nor does the main orchestrator');
   });
 
   // ---- review M2: the under pane's session name goes into argv, so it must pass TMUX_SESSION --------------------------------------------------

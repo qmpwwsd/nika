@@ -1,6 +1,6 @@
 // Shared state and widgets for the main page (dashboard, project view, settings). Every data string reaches the
 // page through h() / textContent. Nothing here talks to the server; api.js does.
-import { h, icon, placeMenuX, clearMenuPlacement, ago } from './dom.js';
+import { h, icon, placeMenuX, clearMenuPlacement, ago, agoWords } from './dom.js';
 import { STATUS_ORDER } from './dash-model.js';
 import { isMac } from './shortcuts.js';
 
@@ -65,7 +65,7 @@ export function save(key, value) {
 // ago() and timeEl() live in dom.js now (0.5.1 H: the session window needs them too); the page code keeps importing them from here.
 export { ago, timeEl } from './dom.js';
 export function tickTimes() {
-  for (const t of $$('time[data-ts]')) t.textContent = ago(Number(t.dataset.ts));
+  for (const t of $$('time[data-ts]')) t.textContent = (t.dataset.words === '1' ? agoWords : ago)(Number(t.dataset.ts)); // data-words: timeWordsEl(ms), "3 min ago"
 }
 
 /* ---------- live region and toasts ---------- */

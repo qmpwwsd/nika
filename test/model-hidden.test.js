@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { makeFixture, cleanup, fakeExec, jsonl, SID, NOW, PROC_START } from './helpers.js';
-import { collect, findSession, findSessions, findGroup } from '../src/model.js';
+import { collect, findSession, findSessions, findGroup, findGroups } from '../src/model.js';
 import { statusLine } from '../src/appio.js';
 import { saveConfig, defaults, keyFor } from '../src/store.js';
 
@@ -321,5 +321,73 @@ describe('findGroup: one folder by key, whatever its age (fix round 1: Remove of
   test('(\u2212) when nika cannot read its transcript index, "no such folder" is a guess: it throws EINDEX', async () => {
     const config = { ...fxg.config, claudeDir: path.join(fxg.root, 'no-such-claude-dir') };
     await assert.rejects(findGroup('d'.repeat(16), { config, now: NOW }), { code: 'EINDEX' });
+  });
+
+  // ---- 0.5.4 SF (RM R5): several folders by key with one index-only walk, for the Removed list ----
+  test('(+) findGroups answers several keys in one call, the old folder with its label and root, a key nika has no folder for left out', async () => {
+    const key = (await wide()).snapshot.groups.find((g) => g.label === 'old-folder').key;
+    const found = await findGroups([key, 'd'.repeat(16)], { config: fxg.config, now: NOW });
+    assert.ok(found instanceof Map);
+    assert.deepEqual([...found.keys()], [key]);
+    assert.deepEqual([found.get(key).label, found.get(key).root], ['old-folder', dir]);
+    assert.ok(found.get(key).agents.every((a) => !a.live && a.pane === null), 'index-only: nothing live');
+  });
+
+  test('(\u2212) findGroups with no key reads nothing: an empty map, also when the index could not be read', async () => {
+    const config = { ...fxg.config, claudeDir: path.join(fxg.root, 'no-such-claude-dir') };
+    assert.equal((await findGroups([], { config, now: NOW })).size, 0);
+  });
+
+  // review N4: a project folder nika cannot read is skipped by the index walk (the index is still "ok"), so the folders it can read keep their groups
+  test('(+) findGroups with one readable folder and one unreadable project folder: the readable key keeps its group, the unreadable key is left out, nothing throws (review N4)', { skip: process.getuid?.() === 0 && 'root ignores a mode 000 folder' }, async () => {
+    const fxp = makeFixture();
+    const open = path.join(fxp.root, 'open-folder');
+    const locked = path.join(fxp.root, 'locked-folder');
+    const put = (cwd, sid) => {
+      const file = path.join(fxp.claudeDir, 'projects', slug(cwd), `${sid}.jsonl`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const stamp = new Date(NOW - 9 * DAY).toISOString();
+      fs.writeFileSync(file, jsonl([
+        { type: 'user', cwd, sessionId: sid, timestamp: stamp, message: { role: 'user', content: 'synthetic prompt' } },
+        { type: 'assistant', cwd, sessionId: sid, timestamp: stamp, message: { role: 'assistant', model: 'claude-sonnet-5-5', content: [] } },
+      ]));
+      fs.utimesSync(file, new Date(NOW - 9 * DAY), new Date(NOW - 9 * DAY));
+      return path.dirname(file);
+    };
+    fs.mkdirSync(open, { recursive: true });
+    fs.mkdirSync(locked, { recursive: true });
+    put(open, 'a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5');
+    const lockedDir = put(locked, 'b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6');
+    try {
+      const wideKeys = Object.fromEntries((await collect({ config: fxp.config, exec: fakeExec({ psLines: [] }), now: NOW, sinceMs: Infinity })).snapshot.groups.map((g) => [g.label, g.key]));
+      assert.ok(wideKeys['open-folder'] && wideKeys['locked-folder'], 'both folders are known while readable');
+      fs.chmodSync(lockedDir, 0o000);
+      const found = await findGroups([wideKeys['open-folder'], wideKeys['locked-folder']], { config: fxp.config, now: NOW });
+      assert.deepEqual([...found.keys()], [wideKeys['open-folder']]);
+      assert.deepEqual([found.get(wideKeys['open-folder']).label, found.get(wideKeys['open-folder']).root], ['open-folder', open]);
+    } finally {
+      fs.chmodSync(lockedDir, 0o755);
+      cleanup(fxp);
+    }
+  });
+
+  test('(\u2212) when findGroups throws EINDEX it hands over what it found: a Map, empty when the whole index could not be read (review N4)', async () => {
+    const config = { ...fxg.config, claudeDir: path.join(fxg.root, 'no-such-claude-dir') };
+    const err = await findGroups(['d'.repeat(16)], { config, now: NOW }).then(() => null, (e) => e);
+    assert.equal(err?.code, 'EINDEX');
+    assert.ok(err.found instanceof Map, 'found is a Map');
+    assert.equal(err.found.size, 0);
+    await assert.rejects(findGroup('d'.repeat(16), { config, now: NOW }), { code: 'EINDEX' }); // Remove still gets the throw
+  });
+
+  test('(\u2212) findGroups throws EINDEX when a key is missing and the index could not be read ("no such folder" would be a guess)', async () => {
+    const config = { ...fxg.config, claudeDir: path.join(fxg.root, 'no-such-claude-dir') };
+    await assert.rejects(findGroups(['d'.repeat(16)], { config, now: NOW }), { code: 'EINDEX' });
+  });
+
+  test('(+) findGroup is findGroups of one key: the same group, and null for a key nika has none for', async () => {
+    const key = (await wide()).snapshot.groups.find((g) => g.label === 'old-folder').key;
+    assert.equal((await findGroup(key, { config: fxg.config, now: NOW })).key, key);
+    assert.equal(await findGroup('d'.repeat(16), { config: fxg.config, now: NOW }), null);
   });
 });

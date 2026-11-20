@@ -20,7 +20,7 @@ const inPane = (a) => Boolean(a?.live && a?.pane);
 
 /**
  * The routes as api-app's `{ method, re, cap, handler }` list (a handler gets `{ params, query, body, req }` and resolves `{ status, body }`).
- * `ctx` is api-app's ctx ({ env, now, findSession, findSessions, findGroup }); `snapshot()` resolves nika's unfiltered snapshot (api-app's pane-eligibility
+ * `ctx` is api-app's ctx ({ env, now, findSession, findSessions, findGroup, findGroups }); `snapshot()` resolves nika's unfiltered snapshot (api-app's pane-eligibility
  * one) or null when it could not be taken; `cap` is the write body cap.
  */
 export function hiddenRoutes({ ctx, cap, snapshot }) {
@@ -119,6 +119,18 @@ export function hiddenRoutes({ ctx, cap, snapshot }) {
     const groups = allGroups.slice(0, HIDDEN_ROWS);
     const sessions = allSessions.slice(0, HIDDEN_ROWS);
     const snap = groups.length ? await look() : null;
+    const inSnap = (key) => (Array.isArray(snap?.groups) ? snap.groups.find((x) => x.key === key) ?? null : null);
+    // 0.5.4 SF (RM R5): the snapshot holds the sessions of the last 7 days; the folders it misses are resolved with ONE index-only walk for all of them
+    let old = new Map();
+    const missing = groups.map(([key]) => key).filter((key) => inSnap(key) === null);
+    if (snap && missing.length) {
+      try {
+        old = (await ctx.findGroups?.(missing)) ?? old;
+      } catch (err) {
+        // an index that failed after it found some folders hands them over (EINDEX `found`): they keep label and path; the others stay unknown (null) and the list still works
+        if (err?.found instanceof Map) old = err.found;
+      }
+    }
     let found = new Map();
     if (sessions.length) {
       try {
@@ -129,7 +141,7 @@ export function hiddenRoutes({ ctx, cap, snapshot }) {
       status: 200,
       body: {
         groups: groups.map(([key, at]) => {
-          const g = Array.isArray(snap?.groups) ? snap.groups.find((x) => x.key === key) : null;
+          const g = inSnap(key) ?? old.get(key) ?? null;
           return { key, label: clean(g?.label, 120), root: clean(g?.root, 300), at };
         }),
         sessions: sessions.map(([id, at]) => {

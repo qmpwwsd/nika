@@ -23,7 +23,7 @@
 // other panes of the window run: the zoom hides them and tmux shrinks them with the window. A take that sizes a window with several panes below its own size reads
 // the window's layout in the same locked listing right before the resize and keeps it in memory (`layoutT`, never in the lease file). The give then does R3, R4,
 // `select-layout` of that layout (which unzooms) and `resize-pane -Z` of the mirrored pane again, and reads the window back; any mismatch releases with `changed`.
-// P2 (0.5.3, design-052d section 2.1): the Fit mode is a global setting the controller enforces (`setMode`; the routes and appio pass it, a request never carries it).
+// P2 (0.5.4, design-052d section 2.1): the Fit mode is a global setting the controller enforces (`setMode`; the routes and appio pass it, a request never carries it).
 // `auto` is everything above. `fill` makes every request count as focused. `terminal` makes every window count as one a terminal shows and no request as
 // focused: nothing is ever resized, a window with several panes is zoomed. `off` holds no lease: the leases held are released when the mode becomes `off`, and a
 // request is answered `off` with no tmux call. No new tmux argv: the mode only picks among the moves above. `lease.focus` stays the page's own value.

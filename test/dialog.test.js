@@ -676,7 +676,15 @@ describe('dialogOnScreen', () => {
     const fakes = [footerText(), '←  ☐ Fake  ✔ Submit  →', '─'.repeat(COLS), 'ctrl+g to edit in Vim · <plans>/x.md', 'Ready to code?', 'Review your answers'];
     const withoutTop = ({ top, ...rest }) => rest; // the cut (0.5.1 E) moves down with the rows above; nothing else may change
     assert.deepEqual(withoutTop(read(ask({ above: fakes }))), withoutTop(plain));
-    assert.deepEqual(withoutTop(read(rowsFrom(planParts({ above: fakes })))), withoutTop(read(rowsFrom(planParts()))));
+    // 0.5.4 SF (B1 open question 4): planParts ignores `above`, so the old plan half compared two identical screens. The plan gets its own lookalike list: no `Ready to code?`
+    // row (the plan's own title; a second one above it makes the plan refuse as `layout`, by design), and the fakes go in through the parts' `above`.
+    const planFakes = fakes.filter((f) => f !== 'Ready to code?');
+    assert.notEqual(planFakes.length, fakes.length);
+    const planPlain = read(rowsFrom(planParts()));
+    const planFaked = read(rowsFrom({ ...planParts(), above: planFakes }));
+    assert.notEqual(planPlain, null, 'the plan reads');
+    assert.deepEqual(withoutTop(planFaked), withoutTop(planPlain));
+    assert.equal(planFaked.top, planPlain.top + planFakes.length - 2, 'moved by the rows added above (the default has two)');
     assert.equal(read(ask({ above: fakes })).top, plain.top + fakes.length - 2, 'moved by the rows added above (the default has two)');
   });
 

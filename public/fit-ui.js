@@ -712,6 +712,13 @@ export function createFitPlanner(io) {
         flush(false);
       } else schedule();
     },
+    /**
+     * 0.5.4 SF (F-1): the size the next request carries is cols x rows, and nothing is sent for it: no debounce, no request now. The page uses it when a grow ends
+     * while nika sizes nothing (Terminal or Off), so that the grown rows are not what the first beat in Auto asks for. Remembered before start too.
+     */
+    retarget(cols, rows) {
+      if (validSize(cols, rows)) P.want = { cols, rows };
+    },
     /** The window shows again (timers may have been suspended): one request now, and the next heartbeat 5 s on. It carries the focus read now (F9). */
     beat,
     /**
