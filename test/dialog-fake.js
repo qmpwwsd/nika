@@ -4,7 +4,8 @@
 // effects from spikes S3, W1-T0, W1-T0b and W1-T0c). It records every key together with the screen it landed in, and it can inject a change
 // between two keys, drop a key, swallow a redraw or fail a send. Synthetic text only (acme-api, web-shop, demo-api).
 import { createSessionControl } from '../src/session-control.js';
-import { PLAN_TEXT_LABEL, readDialogScreen, sigOf } from '../src/dialog.js';
+import { PLAN_TEXT_LABEL, readDialogScreen, sigOf, viewOf } from '../src/dialog.js';
+import { width } from '../src/draft.js';
 import { boxRows, span } from './helpers.js';
 
 const DIM = { fg: 246 };
@@ -21,8 +22,14 @@ export const TAB = {
   name: { header: 'Name', question: 'What should the report be called?', options: [['weekly', 'The weekly report.'], ['monthly', 'The monthly report.']] },
 };
 
+// A question step with a preview (0.5.4, QP; Claude Code 2.1.328): `preview` is { rows: [one list of lines per option], hidden: a number or one per option, fallback }.
+// Its focus is an option number or 'chat' (no text row, no Next button); `note` is Claude's note (null: none), `noteOpen` its field being edited.
+TAB.shape = { header: 'Shape', question: 'Pick a shape', options: [['Oval', ''], ['Box', ''], ['Star', '']], preview: { rows: [['( oval )', '', '  long and round'], ['[ box ]'], ['* star *']], hidden: 0, fallback: false } };
+TAB.size = { header: 'Size', question: 'Pick a size', options: [['Small', ''], ['Large', '']], preview: { rows: [['s'], ['L']], hidden: 0, fallback: false } };
+
 const mkTab = (t) => ({
-  multi: false, picked: null, checked: [], text: null, answered: false, ...t, options: t.options.map((o) => (Array.isArray(o) ? { label: o[0], desc: o[1] } : o)),
+  multi: false, picked: null, checked: [], text: null, answered: false, note: null, noteOpen: false, noteText: '', ...t, options: t.options.map((o) => (Array.isArray(o) ? { label: o[0], desc: o[1] } : o)),
+  ...(t.preview ? { preview: { ...t.preview, rows: t.preview.rows.map((r) => [...r]), hidden: Array.isArray(t.preview.hidden) ? [...t.preview.hidden] : t.preview.hidden } } : {}), // a copy: a test changes its world's preview, never the shared TAB
 });
 
 /** Greedy word wrap: the first row may hold `first` cells, the others `rest`. */
@@ -53,8 +60,53 @@ function stripRow(w, current, withSubmit) {
 
 const answerOf = (t) => (t.multi ? [...t.options.filter((_, j) => t.checked.includes(j + 1)).map((o) => o.label), ...(t.text === null ? [] : [t.text])].join(', ') : t.picked !== null ? t.options[t.picked - 1].label : t.text);
 
+const PV = { tl: '\u250c', tr: '\u2510', bl: '\u2514', br: '\u2518', v: '\u2502', h: '\u2500', lt: '\u251c', rt: '\u2524', cut: '\u2702' };
+const PV_FALLBACK = "(can't show the full preview \u00b7 compare the labels and descriptions instead)";
+const PV_X = 34;
+
+/** A preview step the way 2.1.328 draws it: the options at column 0 with the focused option's box beside them, Notes, Chat, the footer wrapped at the pane width. */
+function previewRows(w) {
+  const tab = w.tabs[w.i];
+  const k = tab.options.length;
+  const chat = w.focus === 'chat';
+  const pv = tab.preview;
+  const shown = chat ? k : w.focus; // with Chat focused the box still shows the last option's preview
+  const W = Math.min(pv.fallback ? width(PV_FALLBACK) + 4 : 44, w.cols - PV_X - 2); // the fallback line is one row: its box is as wide as that needs
+  const lines = pv.fallback ? [PV_FALLBACK] : pv.rows[shown - 1] ?? [];
+  const hidden = pv.fallback ? 0 : Array.isArray(pv.hidden) ? pv.hidden[shown - 1] ?? 0 : pv.hidden ?? 0;
+  const box = [PV.tl + PV.h.repeat(W - 2) + PV.tr];
+  for (const t of lines) box.push(`${PV.v} ${t}${' '.repeat(Math.max(0, W - 4 - width(t)))} ${PV.v}`);
+  if (hidden > 0) {
+    const head = `${PV.lt}${PV.h.repeat(3)} ${PV.cut} ${PV.h.repeat(3)} ${hidden} ${hidden === 1 ? 'line' : 'lines'} hidden `;
+    box.push(head + PV.h.repeat(Math.max(0, W - 1 - width(head))) + PV.rt);
+  }
+  box.push(PV.bl + PV.h.repeat(W - 2) + PV.br);
+  const rows = [line('\u23fa I have a question first.'), [], [span('\u2500'.repeat(w.cols), DIM)], stripRow(w, w.i, w.tabs.length > 1), [], [span(tab.question, { b: true, fg: 231 })], []];
+  for (let i = 0; i < Math.max(k, box.length); i += 1) {
+    const right = box[i] ?? '';
+    if (i >= k) { rows.push(right === '' ? [] : [span(' '.repeat(PV_X) + right, DIM)]); continue; }
+    const on = w.focus === i + 1 || (chat && w.lastOption === i + 1); // Chat's pointer is added; the option keeps its own
+    const left = `${ptr(on)} ${i + 1}. ${tab.options[i].label}${tab.picked === i + 1 ? ' \u2714' : ''}`;
+    rows.push([span(ptr(on), ACC), span(` ${i + 1}.`, DIM), span(` ${tab.options[i].label}${tab.picked === i + 1 ? ' \u2714' : ''}`, on ? ACC : {}), span(' '.repeat(Math.max(0, PV_X - width(left)))), span(right, DIM)]);
+  }
+  const noteText = tab.noteOpen ? (tab.noteText === '' ? 'Add notes on this design\u2026' : tab.noteText) : tab.note !== null ? tab.note : 'press n to add notes';
+  rows.push([], line(`${' '.repeat(PV_X)}Notes: ${noteText}`), [], [span('\u2500'.repeat(w.cols), DIM)], line(`${chat ? '\u276f' : ' '} Chat about this`), []);
+  const sw = w.tabs.length > 1;
+  const foot = `Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 n to add notes${sw ? ' \u00b7 Tab to switch questions' : ''}${tab.noteOpen ? ' \u00b7 ctrl+g to edit in Vim' : ''} \u00b7 Esc to cancel`;
+  let cur = '';
+  for (const word of foot.split(' ')) {
+    if (cur === '') cur = word;
+    else if (width(cur) + 1 + width(word) <= w.cols) cur += ` ${word}`;
+    else { rows.push([span(cur, DIM)]); cur = word; }
+  }
+  rows.push([span(cur, DIM)]);
+  if (w.named) rows.push([span(`${'\u2500'.repeat(Math.max(2, w.cols - 10))} demo \u2500`, DIM)]);
+  return rows;
+}
+
 function askRows(w) {
   const tab = w.tabs[w.i];
+  if (tab.preview) return previewRows(w);
   const k = tab.options.length;
   const f = w.focus;
   const several = w.tabs.length > 1;
@@ -145,17 +197,20 @@ function slotOf(w) {
   if (w.phase === 'review') return `review${w.rf}`;
   if (w.phase === 'plan') return w.pf > w.plan.labels.length ? 'plan-text' : 'plan-option';
   if (w.phase !== 'ask') return w.phase;
+  if (w.tabs[w.i].preview) return w.focus === 'chat' ? 'chat' : w.tabs[w.i].noteOpen ? 'note' : 'option';
   const k = w.tabs[w.i].options.length;
   return w.focus === 'button' ? 'button' : w.focus === k + 1 ? 'text' : w.focus === k + 2 ? 'chat' : 'option';
 }
 
-const slotsOf = (tab) => [...tab.options.map((_, j) => j + 1), tab.options.length + 1, ...(tab.multi ? ['button'] : []), tab.options.length + 2];
+const slotsOf = (tab) => (tab.preview ? [...tab.options.map((_, j) => j + 1), 'chat'] : slotsOf0(tab));
+const slotsOf0 = (tab) => [...tab.options.map((_, j) => j + 1), tab.options.length + 1, ...(tab.multi ? ['button'] : []), tab.options.length + 2];
 
 function goTo(w, j) {
   if (j < 0) return;
   if (j >= w.tabs.length) { w.phase = 'review'; w.rf = 1; return; }
   w.i = j;
   w.focus = 1; // coming back to a tab resets the focus (T0c)
+  w.lastOption = 1;
   w.vimMode = 'insert';
 }
 /** A one-question single-select form has no strip arrows and no Submit tab: Left and Right do nothing there (S-TABS). */
@@ -178,6 +233,11 @@ function move(w, by) {
   if (w.phase === 'ask') {
     const slots = slotsOf(w.tabs[w.i]);
     const at = slots.indexOf(w.focus);
+    if (w.tabs[w.i].preview) { // no wrap: Up stops at option 1, Down stops at Chat; Chat remembers the option it came from
+      w.focus = slots[Math.max(0, Math.min(slots.length - 1, at + by))];
+      if (Number.isInteger(w.focus)) w.lastOption = w.focus;
+      return;
+    }
     // Up on option 1 wraps to the text row; Down stops at Chat (S-TABS)
     w.focus = by < 0 && at === 0 ? w.tabs[w.i].options.length + 1 : slots[Math.max(0, Math.min(slots.length - 1, at + by))];
     if (w.focus === w.tabs[w.i].options.length + 1) w.vimMode = 'insert'; // vim: the text row takes INSERT at once (T0b)
@@ -187,7 +247,11 @@ function move(w, by) {
 
 /** Typed characters reach the text row only while it has focus and vim is not in NORMAL mode (there they are vim commands). */
 function typeIn(w, text) {
-  if (w.phase === 'ask') {
+  if (w.phase === 'ask' && w.tabs[w.i].preview) {
+    const tab = w.tabs[w.i];
+    if (tab.noteOpen) tab.noteText += w.mangle ? w.mangle(text) : text;
+    else if (text === 'n' && tab.note === null && w.focus !== 'chat') tab.noteOpen = true; // `n` opens the notes field
+  } else if (w.phase === 'ask') {
     const tab = w.tabs[w.i];
     if (w.focus !== tab.options.length + 1 || (w.vim && w.vimMode === 'normal')) return;
     tab.text = (tab.text ?? '') + (w.mangle ? w.mangle(text) : text);
@@ -197,7 +261,11 @@ function typeIn(w, text) {
 
 function digit(w, d) {
   const n = Number(d);
-  if (w.phase === 'ask') {
+  if (w.phase === 'ask' && w.tabs[w.i].preview) {
+    const tab = w.tabs[w.i];
+    if (tab.noteOpen) typeIn(w, d);
+    else if (n <= tab.options.length) { w.focus = n; w.lastOption = n; } // a digit only moves the focus on a preview step
+  } else if (w.phase === 'ask') {
     const tab = w.tabs[w.i];
     const k = tab.options.length;
     if (w.focus === k + 1) return typeIn(w, d); // the text row takes digits as text
@@ -221,6 +289,12 @@ function enter(w) {
   if (w.phase !== 'ask') return undefined;
   const tab = w.tabs[w.i];
   const k = tab.options.length;
+  if (tab.preview) {
+    if (w.focus === 'chat') return close(w, 'chat');
+    if (tab.noteOpen) { tab.note = tab.noteText; tab.noteOpen = false; } // Enter in the notes field saves it, selects the option and advances
+    tab.picked = w.focus;
+    return advance(w);
+  }
   if (w.focus === k + 2) return close(w, 'chat');
   if (w.focus === 'button') return goTo(w, w.i + 1);
   if (w.focus === k + 1) {
@@ -259,6 +333,9 @@ function key(w, name) {
  *   vim      Claude's input is vim (INSERT shows while the text row has focus and vimMode is 'insert'); mem { vim, plain } is nika's memory
  *   cols     the pane width; state the registry state (default 'attn')
  *   lag      captures after a key that still show the screen from before it (a late redraw)
+ *   A tab with a `preview` (TAB.shape, TAB.size; 0.5.4 QP) is drawn the way 2.1.328 does: no text row, no Next button, its focus is 1..k or 'chat'; a digit only moves the focus,
+ *   `n` opens its notes field (`noteOpen`; typed text goes to `noteText`), Enter selects the focused option (saving an open note) and advances, Down at the last option reaches Chat,
+ *   Enter on Chat closes the dialog ('chat'); `named` adds the labelled rule row under the footer; `lastOption` is the option Chat's pointer came from
  *   typedKept  (default true) a single-select digit keeps the text typed in the text row, as Claude does (S-TABS); false clears it
  *   Input rows (the text row, Chat, Next) keep Left and Right and add `ctrl+g to edit in demo-editor` to the footer; Up on option 1 wraps to the text row
  *   failSend(body, n), drop(body, n) (the key is lost), mangle(text) (typed text arrives changed), onKey(n, w) (runs after the n-th key took
@@ -268,7 +345,7 @@ function key(w, name) {
  */
 export function dialogWorld(opts = {}) {
   const w = {
-    phase: 'ask', i: 0, focus: 1, rf: 1, pf: 1, vim: false, vimMode: 'insert', cols: 120, state: 'attn', mem: { vim: false, plain: false }, lag: 0,
+    phase: 'ask', i: 0, focus: 1, lastOption: 1, named: false, rf: 1, pf: 1, vim: false, vimMode: 'insert', cols: 120, state: 'attn', mem: { vim: false, plain: false }, lag: 0,
     plan: { labels: ['Yes, and use auto mode', 'Yes, manually approve edits'], prose: ['- Reply with the single word done.', '- Stop.'], text: null },
     failSend: null, drop: null, mangle: null, onKey: null, before: null, hold: null, result: null, t: 1_000_000, log: [], slept: [], captures: 0, ...opts,
   };
@@ -309,6 +386,8 @@ export function dialogWorld(opts = {}) {
   w.read = () => readDialogScreen(w.screen().rows, w.cols);
   /** The sig the page would hold for the screen as it is now. */
   w.sig = () => sigOf(w.read());
+  /** The `view` the page would hold for a preview step as it is now (0.5.4, QP). */
+  w.view = () => viewOf(w.read());
   w.control = (extra = {}) => createSessionControl({
     mirror: w.mirror, keys: w.keys, paneCommand: async () => 'claude', stateOf: async () => w.state, vimOf: () => w.mem.vim, plainOf: () => w.mem.plain,
     now: () => w.t, sleep: async (ms) => { w.t += ms; w.slept.push(ms); }, ...extra,

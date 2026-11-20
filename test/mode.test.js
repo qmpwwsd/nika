@@ -1128,6 +1128,138 @@ describe('dialog ends', () => {
   });
 });
 
+// ---- 0.5.4, QP (O1): the question footer of Claude Code 2.1.328 (notes and tab hints) and the rows Claude wraps it over -----------------------
+// Shapes from the live check LC-QP (80 and 52 columns); the text is the footer's own, nothing else of a capture is copied. ASCII source: escapes only.
+describe('the question footer with notes and tab hints, and its wrapped rows (0.5.4, QP, O1)', () => {
+  const M = '\u00b7';
+  const UD = '\u2191/\u2193';
+  const FULL = `Enter to select ${M} ${UD} to navigate ${M} n to add notes ${M} Tab to switch questions ${M} Esc to cancel`;
+  const OPEN = `Enter to select ${M} ${UD} to navigate ${M} n to add notes ${M} Tab to switch questions ${M} ctrl+g to edit in Vim ${M} Esc to cancel`;
+  const WRAP80 = [`Enter to select ${M} ${UD} to navigate ${M} n to add notes ${M} Tab to switch questions ${M}`, 'Esc to cancel'];
+  const WRAP52 = [`Enter to select ${M} ${UD} to navigate ${M} n to add notes ${M}`, `Tab to switch questions ${M} Esc to cancel`];
+  const THREE = ['Enter to select \u00b7', `${UD} to navigate ${M} n to add notes ${M} Tab to`, 'switch questions \u00b7 Esc to cancel'];
+  const RULE = '\u2500'.repeat(30);
+  /** A screen: some transcript, a blank row, the Chat row, a blank row, the footer rows. */
+  const screen = (...foot) => rowsOf('transcript line', 'Pick a shape', '', '  Chat about this', '', ...foot);
+  const texts = (...foot) => screen(...foot).map(rowText);
+  const last = (...foot) => screen(...foot).length - 1;
+
+  test('(+) ASK_FOOTER takes the notes and tab hints after the navigation, in that order, and the editor hint after them', () => {
+    const m = ASK_FOOTER.exec(FULL);
+    assert.deepEqual([m[1], m[2], m[3]], [UD, 'n to add notes', 'Tab to switch questions']);
+    const open = ASK_FOOTER.exec(OPEN);
+    assert.deepEqual([open[1], open[2], open[3]], [UD, 'n to add notes', 'Tab to switch questions']);
+    const notesOnly = ASK_FOOTER.exec(`Enter to select ${M} ${UD} to navigate ${M} n to add notes ${M} Esc to cancel`);
+    assert.deepEqual([notesOnly[2], notesOnly[3]], ['n to add notes', undefined]);
+    const old = ASK_FOOTER.exec('Enter to select \u00b7 Tab/Arrow keys to navigate \u00b7 Esc to cancel');
+    assert.deepEqual([old[1], old[2], old[3]], ['Tab/Arrow keys', undefined, undefined], 'a plain step keeps its footer');
+  });
+
+  test('(\u2212) ASK_FOOTER: the hints in another order, repeated, or with something else between them do not match', () => {
+    for (const f of [
+      `Enter to select ${M} ${UD} to navigate ${M} Tab to switch questions ${M} n to add notes ${M} Esc to cancel`,
+      `Enter to select ${M} ${UD} to navigate ${M} n to add notes ${M} n to add notes ${M} Esc to cancel`,
+      `Enter to select ${M} ${UD} to navigate ${M} n to add notes ${M} press q ${M} Esc to cancel`,
+      `Enter to select ${M} n to add notes ${M} ${UD} to navigate ${M} Esc to cancel`,
+      `${M} n to add notes ${M} Tab to switch questions`,
+    ]) assert.equal(ASK_FOOTER.test(f), false, f);
+  });
+
+  test('(\u2212) a footer that ends in the editor hint takes no rule row for the editor name: rule rows under it are no wrapped footer', () => {
+    const insert = `-- INSERT -- ${M} Enter to select ${M} Tab/Arrow keys to navigate ${M} ctrl+g to edit in Vim`;
+    assert.equal(ASK_FOOTER.test(`${insert} ${RULE} ${RULE}`), false, 'rule rows joined to the hint');
+    assert.equal(ASK_FOOTER.test(`${insert} ${RULE}`), false);
+    assert.equal(ASK_FOOTER.test(insert), true, 'the row alone is still a footer');
+    const t = [...texts(insert), RULE, RULE];
+    const k = t.length - 1;
+    assert.equal(mode.askFooterRows(t, k), 0, 'the last row of the screen is a rule');
+    assert.equal(mode.askFooterRows(t, k - 2), 1, 'the footer row itself still counts as one row');
+    assert.equal(mode.askFooterRows([...texts(insert), RULE], k - 2), 1, 'one rule under the footer row: the footer row still counts');
+    assert.equal(mode.askFooterRows([...texts(insert), RULE], k - 1), 0, 'the rule row itself');
+  });
+
+  test('(+) askFooterRows: one row, two rows (80 and 52 columns) and three rows under a blank row, each counted by its rows', () => {
+    assert.equal(mode.askFooterRows(texts(FULL), last(FULL)), 1);
+    assert.equal(mode.askFooterRows(texts(...WRAP80), last(...WRAP80)), 2);
+    assert.equal(mode.askFooterRows(texts(...WRAP52), last(...WRAP52)), 2);
+    assert.equal(mode.askFooterRows(texts(...THREE), last(...THREE)), 3);
+    assert.equal(mode.askFooterRows(texts(OPEN), last(OPEN)), 1);
+    assert.equal(mode.askFooterRows([...WRAP80], 1), 2, 'the footer may start at the top row of the screen');
+  });
+
+  test('(\u2212) askFooterRows: a gap row inside, an indented row, a row above that is not blank, four rows and a join that does not match are 0', () => {
+    assert.equal(mode.askFooterRows(texts(WRAP80[0], '', WRAP80[1]), last(WRAP80[0], '', WRAP80[1])), 0, 'a blank row inside the footer');
+    assert.equal(mode.askFooterRows(texts(WRAP80[0], `  ${WRAP80[1]}`), last(WRAP80[0], `  ${WRAP80[1]}`)), 0, 'the second row is indented');
+    assert.equal(mode.askFooterRows(texts(` ${WRAP80[0]}`, WRAP80[1]), last(` ${WRAP80[0]}`, WRAP80[1])), 0, 'the first row is indented');
+    const touching = rowsOf('transcript line', '  Chat about this', ...WRAP80).map(rowText);
+    assert.equal(mode.askFooterRows(touching, touching.length - 1), 0, 'a non-blank row right above the first footer row');
+    const four = ['Enter to select \u00b7', `${UD} to navigate \u00b7`, 'n to add notes \u00b7 Tab to switch', 'questions \u00b7 Esc to cancel'];
+    assert.equal(mode.askFooterRows(texts(...four), last(...four)), 0, 'four rows are more than Claude wraps a footer over');
+    assert.equal(mode.askFooterRows(texts(WRAP80[0], 'Esc to cancel please'), last(WRAP80[0], 'Esc to cancel please')), 0, 'the join is not the footer');
+    assert.equal(mode.askFooterRows(texts('Esc to cancel'), last('Esc to cancel')), 0, 'the tail row alone');
+    for (const bad of [[], null, undefined, 'x']) assert.equal(mode.askFooterRows(bad, 3), 0, String(bad));
+    for (const k of [-1, 99, 1.5, NaN, undefined]) assert.equal(mode.askFooterRows(texts(FULL), k), 0, String(k));
+  });
+
+  test('(+) endsDialog is a dialog end for the last row of a wrapped footer too, and for every old dialog end', () => {
+    assert.equal(mode.endsDialog(texts(...WRAP80), last(...WRAP80)), true);
+    assert.equal(mode.endsDialog(texts(...WRAP52), last(...WRAP52)), true);
+    assert.equal(mode.endsDialog(texts(...THREE), last(...THREE)), true);
+    assert.equal(mode.endsDialog(texts(FULL), last(FULL)), true);
+    for (const end of ['Enter to select \u00b7 Tab/Arrow keys to navigate \u00b7 Esc to cancel', '  2. Cancel', 'ctrl+g to edit in Vim \u00b7 <plans>/demo-api.md']) assert.equal(mode.endsDialog([end], 0), true, end);
+  });
+
+  test('(\u2212) endsDialog: the first row of a wrapped footer, the tail row alone, a gap, and not-rows are not dialog ends', () => {
+    assert.equal(mode.endsDialog(texts(...WRAP80), last(...WRAP80) - 1), false, 'the first row alone');
+    assert.equal(mode.endsDialog(texts('Esc to cancel'), last('Esc to cancel')), false, 'Esc to cancel alone is the permission prompt');
+    assert.equal(mode.endsDialog(texts(WRAP80[0], '', WRAP80[1]), last(WRAP80[0], '', WRAP80[1])), false);
+    for (const k of [-1, 99, undefined]) assert.equal(mode.endsDialog(texts(FULL), k), false, String(k));
+    assert.equal(mode.endsDialog(undefined, 0), false);
+  });
+
+  test('(+) footerEnd cuts a subagent list and a lone rule row hanging under a wrapped footer, as under a one-row one', () => {
+    for (const foot of [WRAP80, WRAP52, THREE]) {
+      const rows = [...screen(...foot), ...subagentRows({ agents: 2 })];
+      const t = rows.map(rowText);
+      assert.equal(t[footerEnd(t)], foot.at(-1), 'the subagent list');
+      const ruled = [...screen(...foot), ...rowsOf(`${RULE} demo \u2500`)];
+      const tr = ruled.map(rowText);
+      assert.equal(tr[footerEnd(tr)], foot.at(-1), 'the labelled rule row');
+      assert.equal(lastNonBlank(ruled, 1)[0], foot.at(-1));
+      assert.equal(modeFromRows(ruled), 'unknown', 'a footer is not a mode line');
+    }
+  });
+
+  test('(\u2212) footerEnd: a gap inside the footer, an indented tail row or a non-blank row above it cut nothing under it', () => {
+    const cases = {
+      gap: [WRAP80[0], '', WRAP80[1]],
+      indented: [WRAP80[0], `  ${WRAP80[1]}`],
+    };
+    for (const [name, foot] of Object.entries(cases)) {
+      for (const tail of [subagentRows({ agents: 2 }), rowsOf(`${RULE} demo \u2500`)]) {
+        const t = [...screen(...foot), ...tail].map(rowText);
+        assert.equal(footerEnd(t), t.length - 1, name);
+      }
+    }
+    const touching = [...rowsOf('transcript line', '  Chat about this', ...WRAP80), ...rowsOf(`${RULE} demo \u2500`)].map(rowText);
+    assert.equal(footerEnd(touching), touching.length - 1, 'a non-blank row right above the footer');
+  });
+
+  test('(\u2212) the tail row of a wrapped footer is never a permission prompt, and a prompt does not take a wrapped footer for its hint', () => {
+    assert.equal(promptFromRows(screen(...WRAP80)), null);
+    assert.equal(promptFromRows(screen(...WRAP52)), null);
+    assert.equal(promptFromRows(rowsOf('Do you want to proceed?', '\u276f 1. Yes', '  2. No', '', ...WRAP80)), null, 'options above a wrapped footer are no prompt');
+    assert.equal(mode.promptTopRow(screen(...WRAP80)), null);
+  });
+
+  test('(+) bypassWindow reads the rows of a question step whose footer wraps, with a subagent list under it', () => {
+    const rows = rowsOf('Which mode should I use?', '\u276f 1. bypass permissions', '', ...WRAP80);
+    assert.equal(bypassWindow(rows), true);
+    assert.equal(bypassWindow([...rows, ...subagentRows({ agents: 2 })]), true);
+    assert.equal(bypassWindow(rowsOf('Which mode should I use?', '\u276f 1. plain', '', ...WRAP80)), false);
+  });
+});
+
 describe('the auto-mode nudge (orchestrator ruling 4)', () => {
   const TITLE = '  Teach auto mode about your environment?';
   const FOOT = '  Enter to confirm · Esc to cancel';

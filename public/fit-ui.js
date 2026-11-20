@@ -156,10 +156,11 @@ export function drawnScale({ frame, cols, rows, hide, strip }) {
  * `modeConfirmed` exactly true; the other four exits are as they were.
  * F16: with `cutBefore` exactly true (a grow step for a question clipped at the top) the frame is ready at the size when its question is no longer clipped at the top
  * (cutQuestion), whatever else is on screen: nothing but the repaint of that question is waited for.
+ * 0.5.4 (QP, O2): the same wait for a preview with hidden lines and for a plan clipped at the top (growWanted): the frame is ready when none of the three is on screen.
  */
 export function frameReady({ body, draft, want, plainBefore, modeBefore, cutBefore } = {}) {
   if (!body || !want || body.cols !== want.cols || !Array.isArray(body.rows) || body.rows.length !== want.rows) return false;
-  if (cutBefore === true) return !cutQuestion(body.dialog);
+  if (cutBefore === true) return !growWanted(body.dialog);
   const box = hasBox(draft) && (modeBefore !== true || body.modeConfirmed === true);
   return box || Boolean(body.prompt) || body.dialog != null || body.alt !== true || plainBefore !== true;
 }
@@ -183,8 +184,21 @@ export function roomStep({ room, frameRows, state, plainBefore, want, body, draf
 /** F16: the next step's window rows: double, at least GROW_STEP_MIN more, at most GROW_CAP (equal to `rows` or less when there is no room left). */
 export const growNext = (rows) => Math.min(GROW_CAP, Math.max(rows + GROW_STEP_MIN, rows * 2));
 
-/** F16: a question clipped at the top (a raw capture dialog or a cleanDialog answer): rows can show it. A plan, a text shortened with an ellipsis (`clipped`) and every other reason are not. */
+/** F16: a question clipped at the top (a raw capture dialog or a cleanDialog answer): rows can show it. A text shortened with an ellipsis (`clipped`) and every other reason are not; a plan is cutPlan's (0.5.4). */
 export const cutQuestion = (d) => d !== null && typeof d === 'object' && d.kind === 'ask' && d.state === 'unreadable' && d.reason === 'cut';
+
+/**
+ * 0.5.4 (QP, owner answer Q1 = A): a question step with a preview that Claude drew with lines left out (`hidden` above zero) to fit the pane: rows can show them. The fallback (Claude drew
+ * no preview) has nothing to show, so it never asks. Raw capture dialog or cleanDialog answer.
+ */
+export const previewHidden = (d) => d !== null && typeof d === 'object' && d.state === 'ready' && d.at === 'question' && d.preview != null && typeof d.preview === 'object'
+  && d.preview.fallback === false && Number.isInteger(d.preview.hidden) && d.preview.hidden > 0;
+
+/** 0.5.4 (O2): a plan clipped at the top (a raw capture dialog or a cleanDialog answer) is grown like a question. Every other reason a plan is unreadable is not. */
+export const cutPlan = (d) => d !== null && typeof d === 'object' && d.kind === 'plan' && d.state === 'unreadable' && d.reason === 'cut';
+
+/** 0.5.4: what the grow wants rows for: a question clipped at the top, a preview with hidden lines, a plan clipped at the top. */
+export const growWanted = (d) => cutQuestion(d) || previewHidden(d) || cutPlan(d);
 
 const isGrown = (G) => G?.phase === 'stepping' || G?.phase === 'held';
 
@@ -213,8 +227,8 @@ export function scaleRows({ paneRows, G, fitted, baseRows, d, hide }) {
  */
 export function growStep(G, { now, dialog, fitted, paneRows, baseRows, baseCols }) {
   const spent = { ...GROW_IDLE, phase: 'spent', base: `${baseCols}x${baseRows}` };
-  const cut = cutQuestion(dialog);
-  if (dialog?.kind !== 'ask') { // no question on screen (none, a plan, a prompt, kind null)
+  const cut = growWanted(dialog);
+  if (dialog?.kind !== 'ask' && dialog?.kind !== 'plan') { // no question on screen (none, a prompt, kind null); a plan counts as one (0.5.4 O2), or a grown plan would close after a second and grow again
     if (G.phase === 'idle') return { G: G.cutSince === null ? G : { ...G, cutSince: null }, ask: null };
     const quietSince = G.quietSince ?? now;
     if (now - quietSince < GROW_CLOSE_MS) return { G: { ...G, quietSince }, ask: null };

@@ -4270,6 +4270,36 @@ describe('capture: the dialog field', () => {
     assert.match(text(screens['%6'][p.top + 1]), /Claude has written up a plan/, 'the plan prompt is right under it');
   });
 
+  test('(+) 0.5.4 (QP): a question step with a preview carries the focus, the preview (rows, hidden count, fallback, view) and the note state; the sig has none of the preview text, the view has it', async () => {
+    const { a, screens } = await bootScreens();
+    const make = (edit = () => {}) => { const d = dialogWorld({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1 }); edit(d); return d; };
+    const read = async (d) => { screens['%6'] = Object.assign(d.screen().rows, { cols: d.cols }); return (await pane(a, '%6', 'capture')).body.dialog; };
+    const w = make();
+    const d = await read(w);
+    assert.equal(d.state, 'ready');
+    assert.deepEqual([d.focus, d.notes, d.options.map((o) => o.label)], [1, { text: null, editing: false }, ['Oval', 'Box', 'Star']]);
+    assert.deepEqual([d.preview.rows, d.preview.hidden, d.preview.fallback], [['( oval )', '', '  long and round'], 0, false]);
+    assert.match(d.preview.view, SIG16);
+    assert.equal(d.preview.view, w.view(), 'the page and the controller agree on the view');
+    assert.equal(d.sig, dialogSig(readDialogScreen(screens['%6'], 120)));
+    const moved = await read(make((x) => { x.tabs[1].preview.rows[0] = ['( oval )', 'changed']; }));
+    assert.equal(moved.sig, d.sig, 'the preview text is not in the sig');
+    assert.notEqual(moved.preview.view, d.preview.view, 'it is in the view');
+    const chat = await read(make((x) => { x.focus = 'chat'; }));
+    assert.equal(chat.focus, 'chat');
+    const noted = await read(make((x) => { x.tabs[1].noteOpen = true; }));
+    assert.deepEqual(noted.notes, { text: '', editing: true });
+  });
+
+  test('(\u2212) 0.5.4 (QP): a plain question step and a plan carry no focus, preview or notes keys', async () => {
+    const { a, screens } = await bootScreens();
+    for (const opts of [{ tabs: [TAB.project, TAB.mode] }, { phase: 'plan' }, { tabs: [TAB.project, TAB.mode], phase: 'review' }]) {
+      screens['%6'] = dialogRows(opts);
+      const d = (await pane(a, '%6', 'capture')).body.dialog;
+      assert.deepEqual(['focus', 'preview', 'notes'].filter((k) => k in d), [], JSON.stringify(opts));
+    }
+  });
+
   test('(−) dialog.top is absent when the dialog is unreadable or a prompt owns the slot', async () => {
     const { a, screens } = await bootScreens();
     screens['%6'] = dialogRows({ phase: 'nudge' });
@@ -4355,9 +4385,11 @@ describe('capture: the dialog field', () => {
 
 describe('POST /api/app/pane/:id/dialog', () => {
   const body = { picks: [2], sig: DSIG };
+  const VIEW = 'fedcba9876543210'; // a view (the page's hash of a preview step) is 16 lowercase hex characters like a sig
 
   test('(+) hands the pane and exactly the body to the controller and relays its answer and status (every shape)', async () => {
-    const shapes = [{ picks: [2], sig: DSIG }, { picks: [], text: 'acme-api', sig: DSIG }, { sig: DSIG, submit: true }, { sig: DSIG, choice: 1 }, { sig: DSIG, cancel: true }];
+    const shapes = [{ picks: [2], sig: DSIG }, { picks: [], text: 'acme-api', sig: DSIG }, { sig: DSIG, submit: true }, { sig: DSIG, choice: 1 }, { sig: DSIG, cancel: true },
+      { sig: DSIG, focus: 2 }, { sig: DSIG, chat: true }, { sig: DSIG, view: VIEW, picks: [2] }, { sig: DSIG, view: VIEW, picks: [2], note: 'round it' }]; // 0.5.4 (QP): the four bodies of a step with a preview
     for (const json of shapes) {
       const { a, control } = await bootScreens({ ctlAnswers: { answerDialog: { status: 200, body: { done: 'next', sent: 1 } } } });
       const r = await pane(a, '%6', 'dialog', { method: 'POST', json });
@@ -4399,6 +4431,13 @@ describe('POST /api/app/pane/:id/dialog', () => {
       { picks: [1], text: '', sig: DSIG }, { picks: [1], text: 5, sig: DSIG }, { picks: [], text: 'a\nb', sig: DSIG }, { picks: [], text: 'a'.repeat(301), sig: DSIG },
       { picks: [], text: ' a', sig: DSIG }, { picks: [], text: 'a ', sig: DSIG }, { picks: [], text: 'a\u001b[2mb', sig: DSIG }, { picks: [], text: 'a\u0000', sig: DSIG },
       { picks: [], text: 'a\u202eb', sig: DSIG }, { picks: [], text: 'a\u200bb', sig: DSIG }, { picks: [], text: 'a\ud800b', sig: DSIG }, { picks: [], text: null, sig: DSIG },
+      { sig: DSIG, focus: 0 }, { sig: DSIG, focus: 8 }, { sig: DSIG, focus: '2' }, { sig: DSIG, focus: 1.5 }, { sig: DSIG, focus: 2, picks: [2] }, { sig: DSIG, focus: 2, chat: true }, // 0.5.4 (QP)
+      { sig: DSIG, chat: false }, { sig: DSIG, chat: 1 }, { sig: DSIG, chat: 'true' }, { sig: DSIG, chat: true, picks: [1] }, { sig: DSIG, chat: true, view: VIEW },
+      { sig: DSIG, view: VIEW }, { sig: DSIG, view: VIEW.toUpperCase(), picks: [1] }, { sig: DSIG, view: VIEW.slice(1), picks: [1] }, { sig: DSIG, view: 5, picks: [1] },
+      { sig: DSIG, view: VIEW, picks: [1, 2] }, { sig: DSIG, view: VIEW, picks: [] }, { sig: DSIG, view: VIEW, picks: [1], text: 'x' },
+      { sig: DSIG, view: VIEW, picks: [1], note: '' }, { sig: DSIG, view: VIEW, picks: [1], note: '2 big' }, { sig: DSIG, view: VIEW, picks: [1], note: ' x' },
+      { sig: DSIG, view: VIEW, picks: [1], note: 'a\nb' }, { sig: DSIG, view: VIEW, picks: [1], note: 'a'.repeat(301) }, { sig: DSIG, view: VIEW, picks: [1], note: null },
+      { sig: DSIG, picks: [1], note: 'no view' },
       [], 'sig',
     ];
     for (const json of bad) {
@@ -4531,6 +4570,39 @@ describe('POST /api/app/pane/:id/dialog', () => {
     const r = await bypass.post({ picks: [1], sig: b.sig });
     assert.deepEqual([r.status, r.body.error], [400, 'terminal-only']);
     assert.deepEqual(bypass.world.keysLog(), []);
+  });
+
+  test('(+) 0.5.4 (QP) end to end with the real controller: focus an option, answer it with the view of the capture, then Chat about this on the next step; no digit, one key each', async () => {
+    const { world, sig, post } = await live({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1, mem: { vim: false, plain: true } });
+    const first = await sig();
+    assert.deepEqual([first.state, first.focus], ['ready', 1]);
+    let r = await post({ sig: first.sig, focus: 3 });
+    assert.deepEqual([r.status, r.body.done, r.body.sent], [200, 'focused', 2]);
+    const second = await sig();
+    assert.deepEqual([second.focus, second.sig], [3, first.sig], 'the focus is not in the sig');
+    r = await post({ sig: second.sig, view: second.preview.view, picks: [3] });
+    assert.deepEqual([r.status, r.body.done], [200, 'next']);
+    const size = await sig();
+    assert.equal(size.current, 2);
+    r = await post({ sig: size.sig, chat: true });
+    assert.deepEqual([r.status, r.body.done], [200, 'chat']);
+    assert.deepEqual(world.keysLog(), ['Down', 'Down', 'Enter', 'Down', 'Down', 'Enter']);
+    assert.deepEqual(world.leaks(), []);
+  });
+
+  test('(\u2212) 0.5.4 (QP) end to end: a stale view is 409 preview-changed and a note while the field is open in the terminal is 409 notes-open -- nothing is sent', async () => {
+    const stale = await live({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1 });
+    const s = await stale.sig();
+    stale.world.tabs[1].preview.rows[0] = ['( oval )', 'changed in the terminal'];
+    const r = await stale.post({ sig: s.sig, view: s.preview.view, picks: [1] });
+    assert.deepEqual([r.status, r.body.error], [409, 'preview-changed']);
+    assert.deepEqual(stale.world.keysLog(), []);
+    const open = await live({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1 });
+    open.world.tabs[1].noteOpen = true;
+    const o = await open.sig();
+    const n = await open.post({ sig: o.sig, chat: true });
+    assert.deepEqual([n.status, n.body.error], [409, 'notes-open']);
+    assert.deepEqual(open.world.keysLog(), []);
   });
 
   test('(−) nothing of the answer text, the picks or the sig reaches a log line, on success and on an internal error', async () => {

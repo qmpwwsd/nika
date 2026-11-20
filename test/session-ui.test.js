@@ -18,7 +18,7 @@ import {
   createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal,
   createRedrawHold as createRedrawHoldReal, remeasure as remeasureReal, askSize as askSizeReal, roomStep as roomStepReal, refitFrom as refitFromReal, HOLD_MS as HOLD_MS_REAL, REFIT_MS as REFIT_MS_REAL, FOCUS_SETTLE_MS as FOCUS_SETTLE_REAL, BLUR_SETTLE_MS as BLUR_SETTLE_REAL,
   hiddenRows as hiddenRowsReal, fillSize as fillSizeReal, drawnScale as drawnScaleReal, // F11
-  GROW_IDLE as GROW_IDLE_REAL, growStep as growStepReal, growRebase as growRebaseReal, growAsk as growAskReal, scaleRows as scaleRowsReal, cutQuestion as cutQuestionReal, // F16
+  GROW_IDLE as GROW_IDLE_REAL, growStep as growStepReal, growRebase as growRebaseReal, growAsk as growAskReal, scaleRows as scaleRowsReal, cutQuestion as cutQuestionReal, growWanted as growWantedReal, // F16; growWanted: 0.5.4 QP + O2
   panelFrame as panelFrameReal, // 0.5.2 R2
 } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
@@ -4810,7 +4810,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false, mode: 'auto' }, SC: { planner: null, scrolled: false },
       LAY: { v: null }, PANEL_IDS: ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note'], layoutOf: layoutOfReal, panelFrame: panelFrameReal, // 0.5.2 R2
       // F16: the grow's state, the pure rules, what the form is told, the page's dialog and a clock the test sets (growTick reads Date.now())
-      GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal,
+      GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal, growWanted: growWantedReal,
       W: { dialog: null, pane: 'ok' }, renderMode: () => log.df.push(fns.growing()), Date: { now: () => clk.now },
       GL: { arm: null, timer: 0 }, // F17: no arm here (a spy goes in where a test needs one)
       P: { on: false }, // F11: Type into pane, read by the real drawMirror
@@ -7794,6 +7794,71 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.ctx.GR.rows, 60);
   });
 
+  // ---- 0.5.4 QP (owner answer Q1 = A) and O2: a preview with hidden lines and a plan cut at the top also get rows ----
+  const PVHID = { state: 'ready', kind: 'ask', at: 'question', sig: '0123456789abcdef', preview: { rows: ['a'], hidden: 4, fallback: false, view: '0123456789abcdef' } };
+  const PVFALL = { ...PVHID, preview: { rows: [], hidden: 4, fallback: true, view: '0123456789abcdef' } };
+  const PLANCUT = { state: 'unreadable', kind: 'plan', reason: 'cut' };
+  /** One dialog seen on a capture, and again on a 304 250 ms later: has the page asked for more rows. */
+  const lookTwice = async (r, dialog) => {
+    showDialog(r, dialog);
+    r.fitCaptured();
+    await r.clk.advance(250);
+    r.handleCapture({ status: 304, body: null });
+  };
+
+  test('(+) QP Q1 = A: a preview with hidden lines, seen twice 250 ms apart in Auto, asks for the grown rows and the form is told it is growing', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    await lookTwice(r, PVHID);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 60, false)]);
+    assert.equal(r.ctx.GR.phase, 'stepping');
+    assert.equal(r.growing(), true, 'previewState turns this into the growing tag');
+  });
+
+  test('(\u2212) QP Q1 = A: the fallback and a preview with nothing hidden ask nothing; the chip in terminal (a terminal has the size) asks nothing for hidden lines either', async () => {
+    for (const dialog of [PVFALL, { ...PVHID, preview: { rows: ['a'], hidden: 0, fallback: false } }]) {
+      const r = await growRig();
+      await lookTwice(r, dialog);
+      assert.deepEqual(rowsOfPuts(r), [30], JSON.stringify(dialog.preview));
+      assert.equal(r.ctx.GR.phase, 'idle');
+    }
+    const t = await growRig({ state: 'terminal' });
+    for (let i = 0; i < 6; i += 1) await lookTwice(t, PVHID);
+    assert.deepEqual(rowsOfPuts(t), [30]);
+    assert.equal(t.ctx.GR.phase, 'idle');
+    assert.equal(t.growing(), false, 'the hidden state, not the growing one');
+  });
+
+  test('(+) O2: a plan cut at the top, seen twice 250 ms apart in Auto, asks for the grown rows', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    await lookTwice(r, PLANCUT);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 60, false)]);
+    assert.equal(r.ctx.GR.phase, 'stepping');
+  });
+
+  test('(\u2212) O2: a plan in the terminal chip state asks nothing; and a grown pane whose plan closes goes back to the base size after a second', async () => {
+    const t = await growRig({ state: 'terminal' });
+    for (let i = 0; i < 6; i += 1) await lookTwice(t, PLANCUT);
+    assert.deepEqual(rowsOfPuts(t), [30]);
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 30 })] });
+    await lookTwice(r, PLANCUT);
+    assert.equal(r.ctx.GR.phase, 'stepping');
+    paneAt(r, 60);
+    showDialog(r, { state: 'ready', kind: 'plan', at: 'plan', sig: '0123456789abcdef' });
+    for (let i = 0; i < 8; i += 1) {
+      await r.clk.advance(250);
+      r.handleCapture({ status: 304, body: null });
+    }
+    assert.equal(r.ctx.GR.phase, 'held', 'a plan that is whole is held, not closed and grown again');
+    assert.deepEqual(rowsOfPuts(r), [30, 60]);
+    showDialog(r, null);
+    for (let i = 0; i < 6; i += 1) {
+      await r.clk.advance(250);
+      r.handleCapture({ status: 304, body: null });
+    }
+    assert.equal(r.ctx.GR.phase, 'idle');
+    assert.deepEqual(rowsOfPuts(r), [30, 60, 30], 'closed: the base size is asked back');
+  });
+
   test('(−) F16: a cut seen once and gone before it was confirmed asks nothing, and a question that is whole asks nothing', async () => {
     const r = await growRig();
     showDialog(r, CUTD);
@@ -7820,8 +7885,9 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.ctx.GR.phase, 'idle');
   });
 
-  test('(−) F16: the same cut question for a plan, for a shortened text (clipped) and with no planner or base asks nothing; a gone or lost pane neither', async () => {
-    for (const dialog of [{ state: 'unreadable', kind: 'plan', reason: 'cut' }, { state: 'unreadable', kind: 'ask', reason: 'clipped' }]) {
+  // 0.5.4 O2 (requirement change, not a weakened test): a plan cut at the top grows like a question, so it left this list; the O2 test below asks for the grow and keeps the other plan reasons out
+  test('(\u2212) F16: the same cut question for a shortened text (clipped) or a plan that is unreadable for another reason, and with no planner or base, asks nothing; a gone or lost pane neither', async () => {
+    for (const dialog of [{ state: 'unreadable', kind: 'plan', reason: 'clipped' }, { state: 'unreadable', kind: 'plan', reason: 'layout' }, { state: 'unreadable', kind: 'ask', reason: 'clipped' }]) {
       const r = await growRig();
       showDialog(r, dialog);
       r.fitCaptured();
@@ -8078,7 +8144,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(fnOf('function holdTimeout(pending, ctx)'), /FIT\.planner\?\.size\(want\.cols, want\.rows, \{ now: true \}\);/);
     assert.match(fnOf('function fitScale()'), /scaleRows\(\{ paneRows: M\.rows, G: GR, fitted: FIT\.state === 'fitted', baseRows: FIT\.base\?\.rows, d: FIT\.d, hide: FIT\.hide \}\)/);
     assert.match(fnOf('function fitScale()'), /FIT\.scaledAt = \{ cols: M\.cols, rows: M\.rows \};/, 'the record keeps the real pane size');
-    assert.match(fnOf('function fitSized(pane)'), /const cutBefore = GR\.phase === 'stepping' && cutQuestion\(M\.body\.dialog\);\s*HOLD\.start\(\{ want: \{ cols: pane\.cols, rows: pane\.rows \}, plainBefore, modeBefore, cutBefore \}\);/);
+    assert.match(fnOf('function fitSized(pane)'), /const cutBefore = GR\.phase === 'stepping' && growWanted\(M\.body\.dialog\);\s*HOLD\.start\(\{ want: \{ cols: pane\.cols, rows: pane\.rows \}, plainBefore, modeBefore, cutBefore \}\);/);
     assert.match(fnOf('function drawFitPop()'), /fitPanelView\(FIT\.view, \{ \.\.\.FIT\.ui, room: FIT\.room, grow: GR\.phase === 'stepping' \|\| GR\.phase === 'held' \}\)/);
     assert.match(fnOf('function fitCaptured()'), /growTick\(\);\s*\}/);
     assert.match(fnOf('function handleCapture(r)'), /if \(r\.status === 304\) \{\s*recovered\(\);\s*try \{\s*growTick\(\);\s*\} catch \{[^}]*\}\s*return;\s*\}/);
@@ -8087,7 +8153,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(fnOf('function renderMode()'), /DF\?\.render\(\{ pane: W\.pane, dialog: W\.dialog, name: A\.name, attention: A\.attention, growing: growing\(\) \}\);/);
     assert.match(fnOf('function growing()'), /return GR\.phase === 'stepping' && FIT\.state === 'fitted';/);
     assert.match(SRC, /^let GR = GROW_IDLE;/m);
-    assert.match(JS['session.js'], /import \{[^}]*\bGROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion\b[^}]*\} from '\.\/fit-ui\.js';/);
+    assert.match(JS['session.js'], /import \{[^}]*\bGROW_IDLE, growStep, growRebase, growAsk, scaleRows, growWanted\b[^}]*\} from '\.\/fit-ui\.js';/);
   });
 
   test('(−) F16: the new page code keeps constraint 6: no markup sink, no style attribute, no inline script, no new request of its own', () => {
@@ -9043,6 +9109,39 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       await firstStep(r);
       assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 60, false)], mode);
       assert.equal(r.ctx.GR.phase, 'stepping', mode);
+    }
+  });
+
+  // 0.5.4 QP round 1 (review S3, design 10.3 growWanted row): the two reasons QP added (a preview with hidden lines, a plan cut at the top) go through the same fitResizes gate
+  const NEW_GROW_REASONS = [['a preview with hidden lines', PVHID], ['a plan cut at the top', PLANCUT]];
+
+  test('(\u2212) M-22 grow (QP): a preview with hidden lines and a plan cut at the top ask no rows while the mode is terminal or off, also for the one answer that still says fitted, and for the states terminal and off', async () => {
+    const cases = [
+      ['fitted + terminal', answerM('fitted', 'terminal')],
+      ['fitted + off', answerM('fitted', 'off')],
+      ['terminal + terminal', answerM('terminal', 'terminal')],
+      ['off', OFF_ANSWER],
+    ];
+    for (const [reason, dialog] of NEW_GROW_REASONS) {
+      for (const [name, first] of cases) {
+        const r = await growRig({ first });
+        await lookTwice(r, dialog);
+        await r.clk.advance(2000);
+        r.handleCapture({ status: 304, body: null });
+        assert.deepEqual(rowsOfPuts(r), [30], `${reason}, ${name}: only the first request, no grow step`);
+        assert.equal(r.ctx.GR.phase, 'idle', `${reason}, ${name}`);
+      }
+    }
+  });
+
+  test('(+) M-22 grow (QP): the same two ask the first step in Auto and in Fill', async () => {
+    for (const [reason, dialog] of NEW_GROW_REASONS) {
+      for (const mode of ['auto', 'fill']) {
+        const r = await growRig({ first: answerM('fitted', mode), more: [answerM('fitted', mode, { cols: 100, rows: 60 })] });
+        await lookTwice(r, dialog);
+        assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 60, false)], `${reason}, ${mode}`);
+        assert.equal(r.ctx.GR.phase, 'stepping', `${reason}, ${mode}`);
+      }
     }
   });
 

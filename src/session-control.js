@@ -15,7 +15,7 @@ import { CLAUDE_COMMAND } from './ids.js';
 import { clean } from './text.js';
 import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows, rowText, surveyOrFollowUpShown } from './mode.js';
 import { RULE_ROW, SIG, parseDraft, boxSquash, boxInput, normDraft, sameDraft, inEnvelope, chunks, CHUNK_GAP_MS } from './draft.js';
-import { TEXT_MAX, STEPS_MAX, PLAIN_TEXT, PLAN_PICK, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed, stripOf } from './dialog.js';
+import { TEXT_MAX, STEPS_MAX, PLAIN_TEXT, PLAN_PICK, dialogOnScreen, readDialogScreen, identityOf, sigOf, viewOf, notesOpen, otherAllowed, stripOf } from './dialog.js';
 import { surveyOf, SURVEY_UNDO_MS } from './survey.js';
 import { turnRunning } from './turn.js';
 
@@ -204,8 +204,12 @@ export function checkSurveyBody(body) {
 // neither can sit in front of that digit (W1-T2 re-review, I1 residual).
 const DIALOG_TEXT_REFUSED = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]|\p{Cf}|^\p{M}/u;
 const DIALOG_PICKS_MAX = 7; // a digit answers without Enter, so options are numbered 1-9 and two of them are the text and chat rows
-const DIALOG_SHAPES = new Map([['picks,sig', 'picks'], ['picks,sig,text', 'picks'], ['sig,submit', 'submit'], ['choice,sig', 'choice'], ['cancel,sig', 'cancel'], ['sig,tab', 'tab']]);
-const DIALOG_BODY = 'body must be { sig, picks, text? }, { sig, submit: true }, { sig, choice }, { sig, cancel: true } or { sig, tab }';
+// 0.5.4 (QP): a question step with a preview takes { sig, focus }, { sig, view, picks: [n], note? } and { sig, chat: true } (design-053-qp section 5); the route refuses them on any other step.
+const DIALOG_SHAPES = new Map([
+  ['picks,sig', 'picks'], ['picks,sig,text', 'picks'], ['picks,sig,view', 'picks'], ['note,picks,sig,view', 'picks'], ['sig,submit', 'submit'], ['choice,sig', 'choice'], ['cancel,sig', 'cancel'], ['sig,tab', 'tab'],
+  ['focus,sig', 'focus'], ['chat,sig', 'chat'],
+]);
+const DIALOG_BODY = 'body must be { sig, picks, text? }, { sig, submit: true }, { sig, choice }, { sig, cancel: true }, { sig, tab }, { sig, focus }, { sig, chat: true } or { sig, view, picks: [n], note? }';
 const DIALOG_TAB_MAX = 8; // TABS_MAX of src/dialog.js: the tab of a move is a question index, or the number of questions for the review
 const whole = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
 
@@ -217,18 +221,23 @@ export function checkDialogBody(body) {
   if (shape === 'submit' || shape === 'cancel') return body[shape] === true ? null : invalid(DIALOG_BODY);
   if (shape === 'choice') return whole(body.choice, 1, 9) ? null : invalid('choice must be an integer from 1 to 9');
   if (shape === 'tab') return whole(body.tab, 0, DIALOG_TAB_MAX) ? null : invalid(`tab must be an integer from 0 to ${DIALOG_TAB_MAX}`);
-  const { picks, text } = body;
+  if (shape === 'focus') return whole(body.focus, 1, DIALOG_PICKS_MAX) ? null : invalid(`focus must be an integer from 1 to ${DIALOG_PICKS_MAX}`);
+  if (shape === 'chat') return body.chat === true ? null : invalid(DIALOG_BODY);
+  const { picks, text, view, note } = body;
   const listed = Array.isArray(picks) && picks.length <= DIALOG_PICKS_MAX && Array.from(picks, (p) => whole(p, 1, DIALOG_PICKS_MAX)).every(Boolean) && new Set(picks).size === picks.length;
   if (!listed) return invalid(`picks must be at most ${DIALOG_PICKS_MAX} distinct integers from 1 to ${DIALOG_PICKS_MAX}`);
-  if (text !== undefined && !(typeof text === 'string' && text.length >= 1 && text.length <= TEXT_MAX && text.isWellFormed() && !DIALOG_TEXT_REFUSED.test(text) && text === text.trim() && !/^[1-9]/.test(text) && clean(text) !== null)) {
-    return invalid(`text must be 1 to ${TEXT_MAX} characters without control characters, and must not start with a digit from 1 to 9 or start or end with a space`);
-  }
+  // a view goes with exactly one pick (a step with a preview takes one pick: a digit only moves the focus there, so nothing is a checkbox)
+  if (view !== undefined && !(typeof view === 'string' && SIG.test(view) && picks.length === 1)) return invalid('view must be 16 lowercase hex characters and goes with exactly one pick');
+  const typed = (v) => typeof v === 'string' && v.length >= 1 && v.length <= TEXT_MAX && v.isWellFormed() && !DIALOG_TEXT_REFUSED.test(v) && v === v.trim() && !/^[1-9]/.test(v) && clean(v) !== null;
+  if (text !== undefined && !typed(text)) return invalid(`text must be 1 to ${TEXT_MAX} characters without control characters, and must not start with a digit from 1 to 9 or start or end with a space`);
+  if (note !== undefined && !typed(note)) return invalid(`note must be 1 to ${TEXT_MAX} characters without control characters, and must not start with a digit from 1 to 9 or start or end with a space`);
   return null;
 }
 
 /** Why a valid body does not fit the dialog on screen (400 invalid), else null (design W1 4.1, after the read). */
 function bodyMisfit(S, want, target) {
-  if (want.cancel || want.submit) return null;
+  if (want.cancel || want.submit || want.chat) return null;
+  if (want.focus !== undefined) return want.focus > S.options.length ? 'focus is not one of the options' : null;
   if (want.choice !== undefined) {
     const o = S.options.find((x) => x.n === want.choice);
     if (o === undefined) return 'choice is not one of the options';
@@ -394,10 +403,12 @@ export function createSessionControl({
   };
   const dialogView = (seen) => (promptFromRows(seen.rows) !== null ? null : readDialogScreen(seen.rows, seen.cols));
   // The reason a screen is not a readable dialog, else null. No dialog and no sign of one is `no-dialog`; a screen with no readable footer and
-  // no input box may hold a dialog nika cannot read (a wrapped footer, "Exit plan mode?", the auto-mode nudge): `dialog-changed`, never "plain box".
+  // no input box may hold a dialog nika cannot read ("Exit plan mode?", the auto-mode nudge, an unknown overlay), and a dialog on screen may be one nika
+  // cannot read exactly (a clipped option, a narrow pane): `dialog-unread` (0.5.4, QP, O3), never "plain box" and no longer the false `dialog-changed`, which
+  // now means a readable other step only.
   const dialogLost = (seen, S) => {
-    if (S === null) return promptFromRows(seen.rows) === null && unknownScreen(seen) ? 'dialog-changed' : 'no-dialog';
-    return S.unreadable === undefined ? null : 'dialog-changed';
+    if (S === null) return promptFromRows(seen.rows) === null && unknownScreen(seen) ? 'dialog-unread' : 'no-dialog';
+    return S.unreadable === undefined ? null : 'dialog-unread';
   };
 
   /** Step 4 of the mode route: an idle pane's fresh capture, else { res: 409 not-idle }. */
@@ -650,6 +661,7 @@ export function createSessionControl({
     return exclusive(pane, async (ctx) => {
       let seen = await readIdle(pane, ctx);
       if (seen.res) return seen.res;
+      if (notesOpen(seen.rows)) return conflict('notes-open'); // 0.5.4 (QP): an Escape would land in Claude's notes field (what it does there was never seen): nothing is sent
       // 0.5.1 (T64): a screen with no readable mode line and no input box (a subagent's view, the subagent list or the shells pill under the parent's
       // box) is not Claude's own input: an Escape there would stop the viewed subagent. A permission prompt or a dialog keeps its path (Escape = No).
       if (!promptOpen(seen.rows) && unknownScreen(seen)) return conflict('mode-unknown');
@@ -1309,6 +1321,7 @@ export function createSessionControl({
       const gone0 = dialogLost(first, S0);
       if (gone0) return refuse(gone0);
       if (S0.kind !== 'ask' || (S0.at !== 'question' && S0.at !== 'review') || sigOf(S0) !== want.sig) return refuse('dialog-changed');
+      if (S0.notes?.editing) return refuse('notes-open'); // 0.5.4 (QP): a key in Claude's open notes field would be typed or moved there
       if (S0.tabs.length < 2) return invalid('this dialog has one question');
       if (S0.bypass) return terminalOnly();
       const n = S0.tabs.length;
@@ -1326,7 +1339,8 @@ export function createSessionControl({
         const seen = await look(pane, ctx);
         if (seen.res) return relay(seen.res);
         const T = stripOf(seen.rows, seen.cols); // null on a permission prompt too
-        if (T === null) return refuse('dialog-changed');
+        if (T === null) return refuse(dialogOnScreen(seen.rows) ? 'dialog-unread' : 'dialog-changed'); // a dialog nika cannot read, or none (a closed dialog, a prompt)
+        if (T.editing) return refuse('notes-open'); // a step with a preview whose notes field is open: no key goes out
         if (JSON.stringify(T.headers) !== headers) return refuse('dialog-changed');
         if (JSON.stringify(T.answered) !== marks) return refuse('dialog-touched');
         if (T.bypass) return terminalOnly();
@@ -1338,11 +1352,21 @@ export function createSessionControl({
         if (sent >= max) return refuse('not-taken');
         let key;
         let hit;
-        if (T.input) { // the text row, Chat or Next: Right and Left do nothing there, Up leaves it
+        // A step with a preview (the footer has `n to add notes`): Chat's focus shows no `ctrl+g` there, so the strip cannot see it and the step is read whole (0.5.4, QP). A step
+        // nika cannot read whole is dialog-unread and no key goes out. From Chat one Up lands on the last option; Right and Left switch steps from the option rows.
+        const full = T.notes ? dialogView(seen) : null;
+        if (T.notes && (full === null || full.unreadable !== undefined)) return refuse(full === null ? 'dialog-changed' : 'dialog-unread');
+        if (full?.focus === 'chat') {
+          if (T.at !== pos0) return refuse('dialog-focus'); // the focus sits on Chat of another step: the person moved it in the terminal
+          if (ups >= 3) return refuse('text-focus');
+          key = 'Up';
+          hit = (cap) => { const S2 = dialogView(cap); return S2 !== null && S2.unreadable === undefined && S2.at === 'question' && S2.i === S0.i && S2.focus === full.options.length; };
+        } else if (T.input) { // the text row, Chat or Next: Right and Left do nothing there, Up leaves it
           if (T.at !== pos0) return refuse('dialog-focus'); // the focus sits on an input row of another step: the person moved it in the terminal
           if (ups >= 3) return refuse('text-focus');
           const before = dialogView(seen);
-          if (before === null || before.unreadable !== undefined) return refuse('dialog-changed'); // the focus cannot be proven to change on a step nika cannot read whole
+          if (before === null) return refuse('dialog-changed');
+          if (before.unreadable !== undefined) return refuse('dialog-unread'); // the focus cannot be proven to change on a step nika cannot read whole
           key = 'Up';
           hit = (cap) => { const S2 = dialogView(cap); return S2 !== null && S2.unreadable === undefined && S2.at === 'question' && S2.i === S0.i && S2.focus !== before.focus; };
         } else {
@@ -1357,7 +1381,7 @@ export function createSessionControl({
         else expect = key === 'Right' ? T.at + 1 : T.at - 1;
         const got = await settled(pane, (rows, cap) => hit(cap), ctx);
         if (got.res) return relay(got.res);
-        if (!got.rows) return refuse((got.lastSeen && stripOf(got.lastSeen.rows, got.lastSeen.cols) === null && 'dialog-changed') || 'not-taken');
+        if (!got.rows) return refuse((got.lastSeen && stripOf(got.lastSeen.rows, got.lastSeen.cols) === null && (dialogOnScreen(got.lastSeen.rows) ? 'dialog-unread' : 'dialog-changed')) || 'not-taken');
       }
       return refuse('not-taken'); // STEPS_MAX rounds and still not there
     });
@@ -1394,8 +1418,12 @@ export function createSessionControl({
     if (bad) return Promise.resolve(bad);
     if (body.tab !== undefined) return moveTab(pane, { sig: body.sig, tab: body.tab });
     // fixed here, before any await: a body changed later cannot change the keys
-    const want = { sig: body.sig, picks: body.picks === undefined ? undefined : [...body.picks], text: body.text, submit: body.submit === true, choice: body.choice, cancel: body.cancel === true };
+    const want = {
+      sig: body.sig, picks: body.picks === undefined ? undefined : [...body.picks], text: body.text, submit: body.submit === true, choice: body.choice, cancel: body.cancel === true,
+      focus: body.focus, view: body.view, note: body.note, chat: body.chat === true,
+    };
     const target = want.text === undefined ? undefined : clean(want.text); // the text as the screen shows it (whitespace collapsed)
+    const noteTarget = want.note === undefined ? undefined : clean(want.note); // the note as Claude's notes row shows it
     return exclusive(pane, async (ctx) => {
       let sent = 0; // keys.send calls that went out
       let escapes = 0;
@@ -1409,33 +1437,90 @@ export function createSessionControl({
       const S0 = view(first);
       const gone0 = lost(first, S0);
       if (gone0) return refuse(gone0);
-      const fits = want.picks !== undefined ? S0.at === 'question' : want.submit ? S0.at === 'review' : want.choice !== undefined ? S0.at === 'plan' : true;
+      const fits = want.picks !== undefined || want.focus !== undefined || want.chat ? S0.at === 'question' : want.submit ? S0.at === 'review' : want.choice !== undefined ? S0.at === 'plan' : true;
       if (!fits || sigOf(S0) !== want.sig) return refuse('dialog-changed');
+      // 0.5.4 (QP), design-053-qp section 5: a step with a preview takes { focus }, { picks, view, note? }, { chat } and a Decline; no other step takes focus, chat or view (a note and a text
+      // never come without a view or a pick, which checkDialogBody already requires, so these two conditions cover them)
+      const previewStep = S0.preview !== undefined;
+      if (previewStep ? want.picks !== undefined && want.view === undefined : want.focus !== undefined || want.chat || want.view !== undefined) {
+        return invalid(previewStep ? 'a step with a preview takes { focus }, { picks, view, note? }, { chat } or a Decline' : 'focus, chat, view and note are for a step with a preview');
+      }
+      if (S0.notes?.editing) return refuse('notes-open'); // Claude's notes field is open: nothing goes out, a Decline included (what Escape does there was never seen)
+      if (want.view !== undefined && want.view !== viewOf(S0)) return refuse('preview-changed');
+      // a note is typed only where vim is ruled out (the text row's two other roads do not exist in the notes field)
+      if (want.note !== undefined && ((await plainOf(pane)) !== true || (await vimOf(pane)) === true || ctx.insert)) return refuse('note-mode');
       const held = answered.get(pane);
       if (held?.sig === want.sig && now() - held.at < answerHoldMs) return refuse('already-answered');
-      // bypass on the dialog, or in the free text itself (typed first and refused after it would leave the text in Claude's field): terminal only
-      if (!want.cancel && (S0.bypass || (want.text !== undefined && mentionsBypass(want.text)) || (S0.at === 'plan' && PLAN_PICK !== 'digit'))) return terminalOnly();
+      // bypass on the dialog (a preview row and the note on screen included), or in the free text or the note itself (typed first and refused after it would leave the text in Claude's field): terminal only
+      if (!want.cancel && (S0.bypass || (want.text !== undefined && mentionsBypass(want.text)) || (want.note !== undefined && mentionsBypass(want.note)) || (S0.at === 'plan' && PLAN_PICK !== 'digit'))) return terminalOnly();
       const unfit = bodyMisfit(S0, want, target);
       if (unfit) return invalid(unfit);
+      if (want.note !== undefined && S0.notes.text !== null) return invalid('this step already shows a note'); // Claude keeps it; the answer carries no note
       const id0 = identityOf(S0);
+      const noteView = noteTarget === undefined ? undefined : viewOf(S0, noteTarget); // the view of the step once the note is typed
 
       const same = (S2) => S2 !== null && S2.unreadable === undefined && identityOf(S2) === id0; // still this step, readable
       const drift = (seen, S) => lost(seen, S) ?? (identityOf(S) === id0 ? null : 'dialog-changed');
       const gone = (S2, kind) => S2 === null || S2.kind !== kind; // the dialog of that kind is no longer on screen
       const tabs = (S) => JSON.stringify(S.tabs.map((t) => t.header));
-      // where a question step goes once its tab is answered: a one-question single-select form is done, the others show the review or the next tab
-      const moved = (S, S2) => {
+      // where a question step goes once its tab is answered: a one-question single-select form is done, the others show the review or the next tab.
+      // 0.5.4 (QP, O3): the move is proven by the strip alone (stripOf reads it on every step nika can find, a step with a preview or a clipped option included): the
+      // same headers, the answered mark of the tab that was answered, every other mark as before, and the strip one step on. A strip nika cannot read (a one-tab
+      // multi-select form has none) keeps the old proof, on a readable step.
+      const moved = (S, S2, cap) => {
         if (S.single && !S.multi) return gone(S2, 'ask') && 'submitted';
+        const T2 = stripOf(cap.rows, cap.cols);
+        if (T2 !== null) {
+          const was = S.tabs.map((t) => t.answered);
+          const proven = JSON.stringify(T2.headers) === tabs(S) && T2.answered.every((a, j) => (j === S.i ? a === true : a === was[j])) && T2.at === S.i + 1;
+          return proven && (S.i + 1 === S.tabs.length ? 'review' : 'next');
+        }
         if (!same(S2) && (S2 === null || S2.unreadable !== undefined || S2.kind !== 'ask' || tabs(S2) !== tabs(S))) return false;
         if (S2.at === 'review') return 'review';
         return S2.at === 'question' && S2.i === S.i + 1 && S2.tabs[S.i].answered && 'next';
       };
 
       // What a person can change in the terminal between two of our reads: the focus, the boxes, the typed text, the INSERT marker.
-      const mutable = (S) => JSON.stringify([S.insert, S.options?.map((o) => [o.checked, o.ticked]), S.textRow]);
+      const mutable = (S) => JSON.stringify([S.insert, S.options?.map((o) => [o.checked, o.ticked]), S.textRow, S.notes]); // a preview step's note (and whether its field is open) too
       const shifted = (A, B) => (A.focus !== B.focus ? 'dialog-focus' : mutable(A) !== mutable(B) ? 'dialog-touched' : null);
       let settledS = null; // the screen the last key was proven on (the settle read): the next fresh read must still be this one
       let arrived = false; // the last key was nika's own Down and it put the focus on the text row with no INSERT shown (M4)
+      let budget = null; // the keys a focus or Chat request may use (the distance), fixed on the first round
+
+      /**
+       * A step with a preview (0.5.4, QP; design-053-qp section 5): a digit only moves the focus there, so none is ever sent. `focus` moves it one key per round; `picks` is Enter on the
+       * focus the page's view was taken at (with a note: `n`, the note, Enter, each proven); `chat` is Down to Chat and Enter. Returns what decide returns, or { done } for a request that
+       * needs no key. The view is compared right before every Enter.
+       */
+      const decidePreview = async (S) => {
+        const k = S.options.length;
+        const f = S.focus;
+        if (want.focus !== undefined) {
+          if (f === want.focus) return { done: 'focused' };
+          budget ??= f === 'chat' ? k - want.focus + 1 : Math.abs(want.focus - f);
+          if (sent >= budget) return { error: 'dialog-focus' };
+          const next = f === 'chat' ? k : f + (want.focus > f ? 1 : -1);
+          return { send: { keys: [f !== 'chat' && want.focus > f ? 'Down' : 'Up'] }, hit: (S2) => same(S2) && S2.focus === next };
+        }
+        if (want.chat) {
+          if (f === 'chat') return { send: { keys: ['Enter'] }, hit: (S2, cap) => S2 === null && promptFromRows(cap.rows) === null && !unknownScreen(cap) && 'chat' };
+          budget ??= k - f + 1;
+          if (sent >= budget) return { error: 'dialog-focus' };
+          const next = f === k ? 'chat' : f + 1;
+          return { send: { keys: ['Down'] }, hit: (S2) => same(S2) && S2.focus === next };
+        }
+        // picks: the focus is the pick (a digit would only move it) and Chat is not focused (its pointer and the option's are both drawn)
+        if (f !== want.picks[0]) return { error: 'dialog-focus' };
+        const enter = (expect) => (viewOf(S) !== expect ? { error: 'preview-changed' } : { send: { keys: ['Enter'] }, hit: (S2, cap) => moved(S, S2, cap) });
+        if (noteTarget === undefined) return enter(want.view);
+        if (!S.notes.editing) {
+          if (S.notes.text !== null) return { error: 'dialog-touched' };
+          // the reader reads an empty note (the placeholder) only in an open field, so `text === ''` also proves the field opened
+          return { send: { text: 'n' }, hit: (S2) => same(S2) && S2.notes.text === '' && S2.focus === f && JSON.stringify(S2.preview) === JSON.stringify(S.preview) };
+        }
+        if (S.notes.text === '') return { send: { text: want.note }, hit: (S2) => same(S2) && S2.notes.editing && S2.notes.text === noteTarget && S2.focus === f, miss: 'note-mismatch' };
+        return S.notes.text === noteTarget ? enter(noteView) : { error: 'note-mismatch' };
+      };
 
       /** The one key the screen calls for: { send, hit(S2) -> false | true (go on) | a done name, miss? } or { error } (a 409 code). */
       const decide = async (S) => {
@@ -1445,6 +1530,7 @@ export function createSessionControl({
           // vim INSERT: the first Escape only leaves it (the dialog stays); the second goes only once a fresh read shows INSERT gone
           return { send: { keys: ['Escape'] }, hit: S.insert ? (S2) => declined(S2) || (same(S2) && !S2.insert) : declined };
         }
+        if (S.preview !== undefined) return decidePreview(S);
         if (S.at === 'review') return S.focus === 1 ? { send: { keys: ['Enter'] }, hit: (S2) => gone(S2, 'ask') && 'submitted' } : { error: 'dialog-focus' };
         if (S.at === 'plan') {
           if (S.textRow?.value != null) return { error: 'dialog-touched' }; // feedback typed in the text option would be lost by a digit
@@ -1470,9 +1556,9 @@ export function createSessionControl({
           if (!(S.insert || (await plainOf(pane)) === true || (PLAIN_TEXT && arrived && !vim))) return { error: 'text-mode' };
           return { send: { text: want.text }, hit: (S2) => same(S2) && S2.textRow.value === target, miss: 'text-mismatch' };
         };
-        const enter = { send: { keys: ['Enter'] }, hit: (S2) => moved(S, S2) };
+        const enter = { send: { keys: ['Enter'] }, hit: (S2, cap) => moved(S, S2, cap) };
         if (!S.multi) {
-          if (target === undefined) return onOption ? { send: { text: String(want.picks[0]) }, hit: (S2) => moved(S, S2) } : { error: 'dialog-focus' };
+          if (target === undefined) return onOption ? { send: { text: String(want.picks[0]) }, hit: (S2, cap) => moved(S, S2, cap) } : { error: 'dialog-focus' };
           if (value === target) return onText ? enter : onOption ? down() : { error: 'dialog-focus' }; // the typed text again: Down to the text row, then Enter re-confirms it
           if (onOption) return down();
           return onText ? type() : { error: 'dialog-focus' };
@@ -1483,7 +1569,7 @@ export function createSessionControl({
           const flipped = (S2) => same(S2) && S2.focus === S.focus && S2.options.every((o, j) => o.checked === (o.n === flip ? !S.options[j].checked : S.options[j].checked));
           return onOption ? { send: { text: String(flip) }, hit: flipped } : { error: 'dialog-focus' };
         }
-        if (target === undefined) return onOption ? { send: { keys: ['Right'] }, hit: (S2) => moved(S, S2) } : { error: 'dialog-focus' }; // Right works from an option row only (T0c)
+        if (target === undefined) return onOption ? { send: { keys: ['Right'] }, hit: (S2, cap) => moved(S, S2, cap) } : { error: 'dialog-focus' }; // Right works from an option row only (T0c)
         // Other text on the last tab: Down to the text row, the text, Down to the button row, Enter there opens the review (T0c)
         if (value === null) return onOption ? down() : onText ? type() : { error: 'dialog-focus' };
         if (S.focus === 'button') return enter;
@@ -1497,11 +1583,13 @@ export function createSessionControl({
         const S = view(seen);
         const code = drift(seen, S);
         if (code) return refuse(code);
+        if (S.notes?.editing && settledS?.notes?.editing !== true) return refuse('notes-open'); // open in the terminal, not by nika's own `n` (that one was proven by its settle read)
         const changed = settledS === null ? null : shifted(settledS, S); // changed in the terminal since the key took: nothing more is sent
         if (changed) return refuse(changed);
         if (S.bypass && !want.cancel) return terminalOnly();
         const act = await decide(S);
         if (act.error) return refuse(act.error);
+        if (act.done) return out(200, { done: act.done, sent }); // a request that needs no key (the focus is already there)
         if (interrupting.has(pane) || escapeGap(pane)) return refuse('not-idle'); // a key right behind a Stop/End Escape would be Meta+key
         const res = await keys.send(pane, act.send);
         if (res.status !== 200) return relay(res);
@@ -1509,7 +1597,7 @@ export function createSessionControl({
         const escape = act.send.keys?.[0] === 'Escape';
         if (escape) escapes += 1;
         let verdict = false;
-        const got = await settled(pane, (rows, cap) => { verdict = act.hit(view(cap)) || false; return verdict !== false; }, ctx);
+        const got = await settled(pane, (rows, cap) => { verdict = act.hit(view(cap), cap) || false; return verdict !== false; }, ctx);
         if (got.res) return relay(got.res);
         if (!got.rows) return refuse((got.lastSeen && drift(got.lastSeen, view(got.lastSeen))) || act.miss || 'not-taken');
         if (typeof verdict === 'string') {

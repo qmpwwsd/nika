@@ -12,6 +12,7 @@ import {
   remeasure, askSize, frameReady, roomStep, refitFrom, createRedrawHold, HOLD_MS, HOLD_POLL_MS, ROOM_ROWS, REFIT_MS,
   HIDE_MAX, hiddenRows, fillSize, drawnScale,
   GROW_STEP_MIN, GROW_CAP, GROW_CONFIRM_MS, GROW_SETTLE_MS, GROW_WAIT_MS, GROW_CLOSE_MS, GROW_IDLE, growNext, cutQuestion, growAsk, scaleRows, growStep, growRebase, // F16
+  previewHidden, cutPlan, growWanted, // 0.5.4 QP (Q1 = A) and O2
   inked, // 0.5.2 R1
   panelFrame, // 0.5.2 R2
   FIT_MODES, // 0.5.4 P2
@@ -3205,8 +3206,10 @@ describe('F16: growStep, one test per row of the transition table (design F16 4.
     assert.deepEqual(look(G, { now: 3000, dialog: null }).ask, { back: true });
   });
 
-  test('(+) a plan, a prompt or a dialog of no kind replacing the question counts as closed after a second', () => {
-    for (const dialog of [{ kind: 'plan', state: 'unreadable', reason: 'cut' }, { kind: 'plan', state: 'ready' }, { kind: null, state: 'unreadable', reason: 'layout' }, undefined]) {
+  // 0.5.4 O2 (requirement change, not a weakened test): a plan is a question on screen now (the grow also serves a plan cut at the top), so it no longer counts as closed;
+  // the plan cases moved to 'a plan on screen is a question on screen' in the 0.5.4 QP + O2 describe below. A prompt or a dialog of no kind still does.
+  test('(+) a prompt or a dialog of no kind replacing the question counts as closed after a second', () => {
+    for (const dialog of [{ kind: null, state: 'unreadable', reason: 'layout' }, undefined]) {
       const a = look(held(), { now: 1000, dialog });
       assert.equal(a.G.quietSince, 1000);
       assert.deepEqual(look(a.G, { now: 2000, dialog }).ask, { back: true });
@@ -3252,7 +3255,8 @@ describe('F16: frameReady, createRedrawHold and fitPanelView for the grow', () =
   const WHOLE = { state: 'ready', kind: 'ask', at: 'question', sig: '0123456789abcdef' };
 
   test('(+) cutBefore: a question that is whole at the size ends the hold, and so does any screen but a clipped question', () => {
-    for (const dialog of [WHOLE, null, undefined, { state: 'unreadable', kind: 'ask', reason: 'clipped' }, { state: 'unreadable', kind: 'ask', reason: 'wide' }, { state: 'unreadable', kind: 'plan', reason: 'cut' }]) {
+    // 0.5.4 O2 (requirement change, not a weakened test): a plan cut at the top is grown like a question, so it no longer ends the hold; it moved to the (\u2212) case below
+    for (const dialog of [WHOLE, null, undefined, { state: 'unreadable', kind: 'ask', reason: 'clipped' }, { state: 'unreadable', kind: 'ask', reason: 'wide' }, { state: 'unreadable', kind: 'plan', reason: 'clipped' }]) {
       assert.equal(frameReady({ body: body({ dialog }), draft: null, want, plainBefore: true, cutBefore: true }), true, JSON.stringify(dialog));
     }
     assert.equal(frameReady({ body: body({ prompt: { question: 'x', options: [] } }), draft: null, want, plainBefore: true, cutBefore: true }), true, 'a prompt');
@@ -3782,5 +3786,179 @@ describe('0.5.4 P2: fitPanelView for the new keys (M-19)', () => {
   test('(\u2212) a key the table does not know has no hint and no action (a view built by hand)', () => {
     const p = fitPanelView({ key: 'fitted:fill-hand', label: 'L', title: 'T' }, IDLE);
     assert.deepEqual(p, { heading: 'L', why: 'T', hint: null, code: null, action: null, note: null });
+  });
+});
+
+// ---- 0.5.4 QP (owner answer Q1 = A) and O2: the grow also wants rows for a preview with hidden lines and for a plan cut at the top -----------------------
+
+describe('0.5.4 QP + O2: previewHidden, cutPlan and growWanted', () => {
+  const PV = (over = {}) => ({ state: 'ready', kind: 'ask', at: 'question', sig: '0123456789abcdef', preview: { rows: ['a'], hidden: 3, fallback: false, view: '0123456789abcdef' }, ...over });
+  const PLAN_CUT = { state: 'unreadable', kind: 'plan', reason: 'cut' };
+
+  test('(+) previewHidden: a ready question step whose preview has hidden lines and is not the fallback; one hidden line is enough', () => {
+    assert.equal(previewHidden(PV()), true);
+    assert.equal(previewHidden(PV({ preview: { rows: [], hidden: 1, fallback: false } })), true);
+    assert.equal(previewHidden(PV({ preview: { rows: [], hidden: 99999, fallback: false } })), true);
+  });
+
+  test('(\u2212) previewHidden: no hidden lines, the fallback, a review, an unreadable step, no preview, a count that is not a whole number above zero, and non-objects are not', () => {
+    assert.equal(previewHidden(PV({ preview: { rows: [], hidden: 0, fallback: false } })), false, 'hidden 0');
+    assert.equal(previewHidden(PV({ preview: { rows: [], hidden: 5, fallback: true } })), false, 'the fallback has nothing to grow for');
+    assert.equal(previewHidden(PV({ at: 'review' })), false, 'at review');
+    assert.equal(previewHidden(PV({ at: undefined })), false, 'no at');
+    assert.equal(previewHidden(PV({ state: 'unreadable', reason: 'cut' })), false, 'unreadable');
+    assert.equal(previewHidden(PV({ preview: undefined })), false, 'no preview');
+    assert.equal(previewHidden(PV({ preview: null })), false, 'null preview');
+    assert.equal(previewHidden(PV({ preview: { rows: [], hidden: 3 } })), false, 'fallback not exactly false');
+    for (const hidden of ['3', 2.5, NaN, Infinity, true, -1, null, undefined]) assert.equal(previewHidden(PV({ preview: { rows: [], hidden, fallback: false } })), false, String(hidden));
+    for (const v of [null, undefined, 'x', 7, true, []]) assert.equal(previewHidden(v), false, String(v));
+  });
+
+  test('(+) cutPlan: a plan that is unreadable because its top is clipped, raw or cleaned', () => {
+    assert.equal(cutPlan(PLAN_CUT), true);
+    assert.equal(cutPlan({ ...PLAN_CUT, extra: 1 }), true);
+  });
+
+  test('(\u2212) cutPlan: every other reason, a question, a ready plan, null and non-objects are not', () => {
+    for (const reason of ['clipped', 'wide', 'layout', 'numbers', 'tab', 'survey', undefined, 'Cut', 'cut ']) assert.equal(cutPlan({ ...PLAN_CUT, reason }), false, String(reason));
+    assert.equal(cutPlan({ ...PLAN_CUT, kind: 'ask' }), false, 'a question is cutQuestion\'s');
+    assert.equal(cutPlan({ ...PLAN_CUT, kind: null }), false);
+    assert.equal(cutPlan({ ...PLAN_CUT, state: 'ready' }), false);
+    for (const v of [null, undefined, 'cut', 7, true, []]) assert.equal(cutPlan(v), false, String(v));
+  });
+
+  test('(+) growWanted is the union: a cut question, a preview with hidden lines, a cut plan; (\u2212) nothing else', () => {
+    assert.equal(growWanted({ state: 'unreadable', kind: 'ask', reason: 'cut' }), true);
+    assert.equal(growWanted(PV()), true);
+    assert.equal(growWanted(PLAN_CUT), true);
+    assert.equal(growWanted(PV({ preview: { rows: [], hidden: 0, fallback: false } })), false);
+    assert.equal(growWanted({ state: 'ready', kind: 'plan' }), false);
+    assert.equal(growWanted({ state: 'unreadable', kind: 'ask', reason: 'clipped' }), false);
+    for (const v of [null, undefined, 'x', 7]) assert.equal(growWanted(v), false, String(v));
+  });
+});
+
+describe('0.5.4 QP + O2: growStep for a preview with hidden lines and for a cut plan', () => {
+  const PVH = { kind: 'ask', state: 'ready', at: 'question', sig: '0123456789abcdef', preview: { rows: ['a'], hidden: 3, fallback: false } };
+  const PVWHOLE = { ...PVH, preview: { rows: ['a'], hidden: 0, fallback: false } };
+  const PVFALL = { ...PVH, preview: { rows: [], hidden: 3, fallback: true } };
+  const PLANCUT = { kind: 'plan', state: 'unreadable', reason: 'cut' };
+  const PLANREADY = { kind: 'plan', state: 'ready', at: 'plan', sig: '0123456789abcdef' };
+  const BASE = { baseRows: 21, baseCols: 145 };
+  const look = (G, over = {}) => growStep(G, { now: 0, dialog: PVH, fitted: true, paneRows: 21, ...BASE, ...over });
+  const stepping = (over = {}) => ({ ...GROW_IDLE, phase: 'stepping', rows: 42, askedAt: 0, ...over });
+  const held = (over = {}) => ({ ...GROW_IDLE, phase: 'held', rows: 42, ...over });
+
+  test('(+) a preview with hidden lines grows like a cut question: first look noted, 200 ms later one step to twice the rows', () => {
+    const first = look(GROW_IDLE, { now: 700 });
+    assert.deepEqual(first, { G: { ...GROW_IDLE, cutSince: 700 }, ask: null });
+    assert.deepEqual(look(first.G, { now: 700 + GROW_CONFIRM_MS - 1 }), { G: first.G, ask: null });
+    assert.deepEqual(look(first.G, { now: 700 + GROW_CONFIRM_MS }), { G: { ...GROW_IDLE, phase: 'stepping', rows: 42, askedAt: 900 }, ask: { rows: 42 } });
+  });
+
+  test('(\u2212) a preview with nothing hidden, the fallback, and a review never start a grow', () => {
+    for (const dialog of [PVWHOLE, PVFALL, { ...PVH, at: 'review' }]) {
+      assert.deepEqual(look({ ...GROW_IDLE, cutSince: 0 }, { now: 9999, dialog }), { G: GROW_IDLE, ask: null });
+      assert.deepEqual(look(GROW_IDLE, { now: 9999, dialog }), { G: GROW_IDLE, ask: null });
+    }
+  });
+
+  test('(\u2212) not fitted (Fit terminal, off or parked): a preview with hidden lines asks nothing, an idle first look is forgotten', () => {
+    for (const fitted of [false, undefined, null, 'fitted']) {
+      assert.deepEqual(look({ ...GROW_IDLE, cutSince: 0 }, { now: 9999, fitted }), { G: GROW_IDLE, ask: null }, String(fitted));
+      assert.equal(look(GROW_IDLE, { now: 9999, fitted }).ask, null);
+    }
+  });
+
+  test('(+) the preview whole after the grow (hidden 0) is held at the grown size: no shrink, no regrow, however long it stays', () => {
+    let r = look(stepping({ settleAt: 900 }), { now: 5000, dialog: PVWHOLE, paneRows: 42 });
+    assert.deepEqual([r.G.phase, r.G.rows, r.ask], ['held', 42, null]);
+    for (const now of [6000, 9000, 20000]) {
+      r = look(r.G, { now, dialog: PVWHOLE, paneRows: 42 });
+      assert.deepEqual([r.G.phase, r.G.rows, r.ask], ['held', 42, null], String(now));
+    }
+  });
+
+  test('(+) still hidden at the grown size: the settle, then the next step; at the cap it is given up and the base size asked back (the pane parks at 120 rows)', () => {
+    let r = look(stepping(), { now: 2000, paneRows: 42 });
+    assert.deepEqual([r.G.phase, r.G.settleAt, r.ask], ['stepping', 2800, null]);
+    r = look(r.G, { now: 2800, paneRows: 42 });
+    assert.deepEqual(r.ask, { rows: 84 });
+    const capped = look(stepping({ rows: GROW_CAP, settleAt: 2800 }), { now: 2800, paneRows: GROW_CAP });
+    assert.deepEqual(capped, { G: { ...GROW_IDLE, phase: 'spent', base: '145x21' }, ask: { back: true } });
+  });
+
+  test('(+) a cut plan grows: noted, confirmed, one step', () => {
+    const first = look(GROW_IDLE, { now: 700, dialog: PLANCUT });
+    assert.deepEqual(first, { G: { ...GROW_IDLE, cutSince: 700 }, ask: null });
+    assert.deepEqual(look(first.G, { now: 900, dialog: PLANCUT }).ask, { rows: 42 });
+  });
+
+  test('(\u2212) a plan unreadable for any other reason does not grow', () => {
+    for (const reason of ['clipped', 'wide', 'layout', 'numbers', 'tab', undefined]) {
+      assert.deepEqual(look({ ...GROW_IDLE, cutSince: 0 }, { now: 9999, dialog: { kind: 'plan', state: 'unreadable', reason } }), { G: GROW_IDLE, ask: null }, String(reason));
+    }
+  });
+
+  test('(+) a plan on screen is a question on screen: a grown size is held while it is whole, not closed after a second and grown again (no flap)', () => {
+    let r = look(stepping({ settleAt: 900 }), { now: 5000, dialog: PLANREADY, paneRows: 42 });
+    assert.deepEqual([r.G.phase, r.G.rows, r.G.quietSince, r.ask], ['held', 42, null, null], 'the plan is whole at the grown size');
+    for (const now of [5000 + GROW_CLOSE_MS - 1, 5000 + GROW_CLOSE_MS, 5000 + 5 * GROW_CLOSE_MS]) {
+      r = look(r.G, { now, dialog: PLANREADY, paneRows: 42 });
+      assert.deepEqual([r.G.phase, r.G.quietSince, r.ask], ['held', null, null], String(now));
+    }
+    assert.deepEqual(look(held(), { now: 9000, dialog: PLANCUT, paneRows: 21 }).G.phase, 'stepping', 'a cut plan after a hold is stepped again');
+  });
+
+  test('(+) the plan closes: after a second of nothing the grown pane goes back to the base size', () => {
+    let G = held();
+    const quiet = look(G, { now: 3250, dialog: null, paneRows: 42 });
+    assert.deepEqual([quiet.G.quietSince, quiet.ask], [3250, null]);
+    assert.deepEqual(look(quiet.G, { now: 3250 + GROW_CLOSE_MS, dialog: null, paneRows: 42 }), { G: GROW_IDLE, ask: { back: true } });
+  });
+
+  test('(\u2212) a survey, a prompt and kind null are still no question on screen', () => {
+    for (const dialog of [{ kind: 'survey', state: 'ready' }, { kind: null, state: 'unreadable', reason: 'cut' }, undefined]) {
+      const a = look(held(), { now: 100, dialog });
+      assert.equal(a.G.quietSince, 100, JSON.stringify(dialog));
+    }
+  });
+
+  test('(+) the owner\'s case with a preview: grows, is held once whole, goes back a second after it closes', () => {
+    let G = GROW_IDLE;
+    const at = (now, over) => { const r = look(G, { now, ...over }); G = r.G; return r.ask; };
+    assert.equal(at(0), null);
+    assert.deepEqual(at(250), { rows: 42 });
+    assert.equal(at(700, { paneRows: 42 }), null);
+    assert.equal(G.settleAt, 1500);
+    assert.equal(at(1000, { paneRows: 42, dialog: PVWHOLE }), null);
+    assert.equal(G.phase, 'held');
+    assert.equal(at(3000, { paneRows: 42, dialog: PVWHOLE }), null);
+    assert.equal(at(3250, { paneRows: 42, dialog: null }), null);
+    assert.deepEqual(at(4250, { paneRows: 42, dialog: null }), { back: true });
+    assert.deepEqual(G, GROW_IDLE);
+  });
+});
+
+describe('0.5.4 QP + O2: frameReady and the redraw hold for a preview and a cut plan', () => {
+  const want = { cols: 145, rows: 42 };
+  const body = (dialog) => ({ cols: 145, rows: new Array(42).fill([]), alt: true, prompt: null, dialog });
+  const PVH = { state: 'ready', kind: 'ask', at: 'question', preview: { rows: ['a'], hidden: 3, fallback: false } };
+  const PVWHOLE = { ...PVH, preview: { rows: ['a'], hidden: 0, fallback: false } };
+  const PLANCUT = { state: 'unreadable', kind: 'plan', reason: 'cut' };
+
+  test('(+) cutBefore: a preview that still has hidden lines, and a plan still cut at the top, keep the hold', () => {
+    for (const dialog of [PVH, PLANCUT]) assert.equal(frameReady({ body: body(dialog), draft: null, want, plainBefore: true, cutBefore: true }), false, JSON.stringify(dialog));
+  });
+
+  test('(\u2212) cutBefore: the preview whole (hidden 0), the fallback and a ready plan end the hold', () => {
+    for (const dialog of [PVWHOLE, { ...PVH, preview: { rows: [], hidden: 3, fallback: true } }, { state: 'ready', kind: 'plan', at: 'plan' }]) {
+      assert.equal(frameReady({ body: body(dialog), draft: null, want, plainBefore: true, cutBefore: true }), true, JSON.stringify(dialog));
+    }
+  });
+
+  test('(\u2212) without cutBefore a preview with hidden lines is a dialog as before: it ends the F10 hold', () => {
+    assert.equal(frameReady({ body: body(PVH), draft: null, want, plainBefore: true }), true);
+    assert.equal(frameReady({ body: body(PLANCUT), draft: null, want, plainBefore: true }), true);
   });
 });

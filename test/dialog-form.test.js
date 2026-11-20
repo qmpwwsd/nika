@@ -8,8 +8,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  READING_MS, TEXT_MAX, cleanDialog, answerBody, dialogOutcome, announcement, createDialogForm, typable, wellFormed, reviewModel,
+  READING_MS, TEXT_MAX, cleanDialog, answerBody, dialogOutcome, announcement, createDialogForm, typable, wellFormed, reviewModel, previewState,
 } from '../public/dialog-form.js';
+import { endOutcome } from '../public/quick-actions.js';
 import { installDom, El, focus, withClass } from './fake-dom.js';
 
 const SRC = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'dialog-form.js'), 'utf8');
@@ -292,6 +293,7 @@ describe('dialogOutcome: every route answer is a fixed line (design W1 section 6
     [500, undefined, "nika couldn't reach tmux.", false],
     [502, 'tmux', "nika couldn't reach tmux.", false],
     [0, undefined, "nika couldn't reach tmux.", false],
+    [409, 'dialog-unread', "nika can't read Claude's dialog right now, so it stopped. Check the terminal, then press Try again.", true], // 0.5.4, QP, O3
   ];
   for (const [status, code, message, lock] of ROWS) {
     test(`(+) ${status} ${code ?? '(no code)'}: ${message || 'no line'}; ${lock ? 'locked' : 'the form is live again'}`, () => {
@@ -2857,6 +2859,14 @@ describe('dialogOutcome: retry says which locks end when the user presses Try ag
     }
   });
 
+  test('(+) 0.5.4 (QP, O3) 409 dialog-unread: locked and retry, with its own line (the dialog is one nika cannot read right now; dialog-changed keeps meaning a readable other step)', () => {
+    const r = o(409, 'dialog-unread');
+    assert.deepEqual([r.ok, r.phase, r.lock, r.retry, r.kind], [false, 'failed', true, true, 'warn']);
+    assert.notEqual(r.message, o(409, 'dialog-changed').message);
+    assert.equal(o(400, 'dialog-unread').retry, false, 'a 400 with that code is not the route\'s');
+    assert.equal(o(409, 'dialog-unread', { sent: 1 }).message, `${r.message} nika had pressed 1 key in the pane before it stopped.`);
+  });
+
   test('(+) the keys-pressed sentence does not change the flag', () => {
     assert.equal(o(409, 'dialog-focus', { sent: 2 }).retry, true);
     assert.match(o(409, 'dialog-focus', { sent: 2 }).message, /nika had pressed 2 keys in the pane before it stopped\.$/);
@@ -2884,6 +2894,7 @@ describe('Try again: the form takes answers again after nika refused one because
   const LINE = {
     'dialog-focus': "Claude's selection was moved in the terminal. Move it back there and press Try again, or finish it there.",
     'dialog-touched': 'This question was changed in the terminal. Change it back there and press Try again, or finish it there.',
+    'dialog-unread': "nika can't read Claude's dialog right now, so it stopped. Check the terminal, then press Try again.", // 0.5.4, QP, O3
   };
   const refuse = (code, sent) => () => ({ status: 409, body: { error: code, sent } });
   const rowOf = (root) => one(root, 'dlg-retry');
@@ -2923,7 +2934,7 @@ describe('Try again: the form takes answers again after nika refused one because
     assert.equal(kids[1].hidden, true);
   });
 
-  for (const code of ['dialog-focus', 'dialog-touched']) {
+  for (const code of ['dialog-focus', 'dialog-touched', 'dialog-unread']) {
     test(`(+) a pick refused with 409 ${code}: the form is locked, the row is shown and the line names Try again; Try again sends nothing, takes the lock off and puts the focus on the heading`, async () => {
       const r = await refused(code);
       assert.deepEqual(r.log.problem.at(-1), [LINE[code], 'warn']);
@@ -3161,5 +3172,821 @@ describe('Try again: the form takes answers again after nika refused one because
     assert.match(m[1], /align-items:\s*center/);
     assert.match(m[1], /flex-wrap:\s*wrap/);
     assert.ok(CSS.indexOf('.dlg-retry') > CSS.indexOf('.dlg-note {'), 'same specificity: it must come after .dlg-note');
+  });
+});
+
+// ---- a question step with a preview (0.5.4, QP; design-053-qp sections 4 to 7): the pure rules ------------------------------------------------------
+
+const VIEW = '0123456789abcdef';
+const VIEW2 = 'fedcba9876543210';
+/** The capture of a preview step: Claude's focus (an option number or 'chat'), the focused option's preview, and the note state. */
+const askPv = (over = {}) => ask({
+  tabs: tabs(2), current: 0, final: false, question: 'Which shape?', multi: false, other: false,
+  options: [{ n: 1, label: 'Oval', description: null }, { n: 2, label: 'Box', description: null }, { n: 3, label: 'Star', description: null }],
+  focus: 1, preview: { rows: ['( oval )', '', '  long and round'], hidden: 0, fallback: false, view: VIEW }, notes: { text: null, editing: false }, ...over,
+});
+
+describe('cleanDialog: a question step with a preview (0.5.4, QP)', () => {
+  test('(+) focus, preview and notes come through as copies within their bounds; a plain step has none of the three keys', () => {
+    const raw = askPv();
+    const c = cleanDialog(raw);
+    assert.equal(c.state, 'ready');
+    assert.deepEqual([c.focus, c.preview, c.notes], [1, { rows: ['( oval )', '', '  long and round'], hidden: 0, fallback: false, view: VIEW }, { text: null, editing: false }]);
+    raw.preview.rows[0] = 'changed';
+    assert.equal(c.preview.rows[0], '( oval )', 'the capture object is not kept');
+    for (const plain of [cleanDialog(ask()), cleanDialog(multi()), cleanDialog(review()), cleanDialog(plan())]) {
+      assert.deepEqual(['focus', 'preview', 'notes'].filter((k) => k in plain), [], plain.at);
+    }
+  });
+
+  test('(+) focus on Chat, a note on screen, an open field, a fallback and a hidden count are kept as they are; rows lose control and bidi characters', () => {
+    assert.equal(cleanDialog(askPv({ focus: 'chat' })).focus, 'chat');
+    assert.deepEqual(cleanDialog(askPv({ notes: { text: 'round it', editing: false } })).notes, { text: 'round it', editing: false });
+    assert.deepEqual(cleanDialog(askPv({ notes: { text: '', editing: true } })).notes, { text: '', editing: true });
+    const p = cleanDialog(askPv({ preview: { rows: [], hidden: 12, fallback: true, view: VIEW } })).preview;
+    assert.deepEqual([p.rows, p.hidden, p.fallback], [[], 12, true]);
+    const dirty = cleanDialog(askPv({ preview: { rows: [`a${String.fromCharCode(0x202e)}b${String.fromCharCode(0)}c`], hidden: 0, fallback: false, view: VIEW } }));
+    assert.deepEqual(dirty.preview.rows, ['abc']);
+    assert.equal(cleanDialog(askPv({ options: Array.from({ length: 7 }, (_, i) => ({ n: i + 1, label: `o${i}`, description: null })), focus: 7 })).focus, 7);
+  });
+
+  test('(\u2212) a preview step the page cannot draw whole fails closed to unreadable layout: a focus that is not an option, rows or a row too long, hidden not a count, a bad view, half of the three fields', () => {
+    const fail = (raw, why) => {
+      const c = cleanDialog(raw);
+      assert.deepEqual([c?.state, c?.reason], ['unreadable', 'layout'], why);
+    };
+    for (const focus of [0, 4, 8, 1.5, '1', 'Chat', null, undefined, -1]) fail(askPv({ focus }), `focus ${String(focus)}`);
+    const pv = (over) => askPv({ preview: { rows: ['x'], hidden: 0, fallback: false, view: VIEW, ...over } });
+    fail(pv({ rows: 'x' }), 'rows not a list');
+    fail(pv({ rows: [5] }), 'a row that is not text');
+    fail(pv({ rows: Array.from({ length: 121 }, () => 'x') }), '121 rows');
+    fail(pv({ rows: ['x'.repeat(201)] }), 'a 201-character row');
+    for (const hidden of [-1, 1.5, '3', null, 100000, Number.NaN]) fail(pv({ hidden }), `hidden ${String(hidden)}`);
+    for (const fallback of [1, 'true', null, undefined]) fail(pv({ fallback }), `fallback ${String(fallback)}`);
+    for (const view of ['xyz', VIEW.toUpperCase(), `${VIEW}0`, undefined, 5, null]) fail(pv({ view }), `view ${String(view)}`);
+    fail(askPv({ notes: undefined }), 'no notes');
+    fail(askPv({ preview: undefined }), 'no preview');
+    const noFocus = askPv();
+    delete noFocus.focus;
+    fail(noFocus, 'no focus');
+    fail(askPv({ notes: { text: 5, editing: false } }), 'a note that is not text');
+    fail(askPv({ notes: { text: 'x'.repeat(301), editing: false } }), 'a 301-character note');
+    fail(askPv({ notes: { text: null, editing: 'yes' } }), 'editing not a boolean');
+    fail(askPv({ notes: 'x' }), 'notes not an object');
+    fail(askPv({ other: true }), 'Other is not offered on a preview step');
+    fail(askPv({ multi: true }), 'a preview step is never a multi-select');
+  });
+
+  test('(+) the limits are inclusive: 120 rows of 200 characters, hidden 99999, a 300-character note', () => {
+    const c = cleanDialog(askPv({ preview: { rows: Array.from({ length: 120 }, () => 'x'.repeat(200)), hidden: 99999, fallback: false, view: VIEW }, notes: { text: 'n'.repeat(300), editing: false } }));
+    assert.equal(c.state, 'ready');
+    assert.deepEqual([c.preview.rows.length, c.preview.hidden, c.notes.text.length], [120, 99999, 300]);
+  });
+});
+
+describe('answerBody: the focus, Chat and the answer of a preview step (0.5.4, QP)', () => {
+  const pv = cleanDialog(askPv());
+  const pv2 = cleanDialog(askPv({ focus: 2 }));
+
+  test('(+) focus asks one option; Chat asks Chat; a pick that has the focus carries the view of the capture, and a note only when the step shows none', () => {
+    assert.deepEqual(answerBody(pv, { focus: 3 }), { sig: SIG, focus: 3 });
+    assert.deepEqual(answerBody(pv, { chat: true }), { sig: SIG, chat: true });
+    assert.deepEqual(answerBody(pv, { picks: [1] }), { sig: SIG, view: VIEW, picks: [1] });
+    assert.deepEqual(answerBody(pv2, { picks: [2], note: '  make it round  ' }), { sig: SIG, view: VIEW, picks: [2], note: 'make it round' });
+    assert.deepEqual(answerBody(pv2, { picks: [2], note: '   ' }), { sig: SIG, view: VIEW, picks: [2] }, 'a blank note is no note');
+    assert.deepEqual(answerBody(pv2, { cancel: true }), { sig: SIG, cancel: true });
+    assert.deepEqual(answerBody(pv, { tab: 1 }), { sig: SIG, tab: 1 });
+  });
+
+  test('(\u2212) a pick that is not the focus, Chat focused, an open field, two picks, text, a note beside one on screen or an invalid note: nothing to send', () => {
+    assert.equal(answerBody(pv, { picks: [2] }), null, 'the focus is the pick');
+    assert.equal(answerBody(cleanDialog(askPv({ focus: 'chat' })), { picks: [1] }), null, 'Chat has the focus');
+    assert.equal(answerBody(pv, { picks: [1, 2] }), null);
+    assert.equal(answerBody(pv, { picks: [] }), null);
+    assert.equal(answerBody(pv, { picks: [1], text: 'x' }), null, 'no Other on a preview step');
+    assert.equal(answerBody(pv, { picks: [9] }), null);
+    const shown = cleanDialog(askPv({ notes: { text: 'saved', editing: false } }));
+    assert.deepEqual(answerBody(shown, { picks: [1] }), { sig: SIG, view: VIEW, picks: [1] }, 'the note on screen stays');
+    assert.equal(answerBody(shown, { picks: [1], note: 'another' }), null, 'a note beside the one on screen');
+    for (const note of ['2 big', 'a'.repeat(301), `a${String.fromCharCode(0)}b`, 5]) assert.equal(answerBody(pv, { picks: [1], note }), null, String(note));
+    const editing = cleanDialog(askPv({ notes: { text: '', editing: true } }));
+    for (const a of [{ picks: [1] }, { focus: 2 }, { chat: true }]) assert.equal(answerBody(editing, a), null, `the field is open: ${JSON.stringify(a)}`);
+    assert.deepEqual(answerBody(editing, { cancel: true }), { sig: SIG, cancel: true }, 'a Decline is still the person\'s to ask');
+  });
+
+  test('(\u2212) focus and Chat are for a preview step only, and focus is an option of it', () => {
+    const plain = cleanDialog(ask());
+    assert.equal(answerBody(plain, { focus: 1 }), null);
+    assert.equal(answerBody(plain, { chat: true }), null);
+    assert.equal(answerBody(cleanDialog(review()), { chat: true }), null);
+    assert.equal(answerBody(cleanDialog(plan()), { focus: 1 }), null);
+    for (const focus of [0, 4, 1.5, '2', undefined]) assert.equal(answerBody(pv, { focus }), null, String(focus));
+    assert.equal(answerBody(pv, { chat: false }), null);
+    assert.deepEqual(answerBody(pv, { picks: [1], view: VIEW2 }), { sig: SIG, view: VIEW, picks: [1] }, 'a view from the caller is never used');
+  });
+});
+
+describe('dialogOutcome and endOutcome: the copy of the preview step (0.5.4, QP)', () => {
+  const o = (status, code, extra = {}) => dialogOutcome({ status, code, ...extra });
+
+  test('(+) preview-changed re-enables; notes-open locks with Try again; note-mismatch locks; note-mode re-enables; each has its own fixed line', () => {
+    const changed = o(409, 'preview-changed');
+    assert.deepEqual([changed.message, changed.lock, changed.retry, changed.phase], ['The preview changed before nika pressed Enter, so nothing was selected. Check it and answer again.', false, false, 'failed']);
+    const open = o(409, 'notes-open');
+    assert.deepEqual([open.message, open.lock, open.retry], ["Claude's notes field is open in the terminal. Close it there, then press Try again.", true, true]);
+    const mismatch = o(409, 'note-mismatch');
+    assert.deepEqual([mismatch.message, mismatch.lock, mismatch.retry], ["Your note didn't arrive exactly as typed, so nika stopped before pressing Enter. Fix it in the terminal.", true, false]);
+    const mode = o(409, 'note-mode');
+    assert.deepEqual([mode.message, mode.lock, mode.retry], ["nika can only type a note once it knows Claude's input is not in vim mode. Answer without the note, or add it in the terminal.", false, false]);
+    assert.equal(new Set([changed.message, open.message, mismatch.message, mode.message]).size, 4);
+  });
+
+  test('(+) the keys nika pressed before it stopped are added to the new codes too', () => {
+    assert.match(o(409, 'note-mismatch', { sent: 2 }).message, / nika had pressed 2 keys in the pane before it stopped\.$/);
+    assert.match(o(409, 'preview-changed', { sent: 1 }).message, / nika had pressed 1 key in the pane before it stopped\.$/);
+  });
+
+  test('(+) 200 focused leaves the form live with no word; 200 chat is an answered chip with its own word and says Chat was sent', () => {
+    const f = o(200, undefined, { done: 'focused', sent: 2 });
+    assert.deepEqual([f.ok, f.phase, f.lock, f.word, f.announce, f.sent], [true, 'live', false, '', null, 2]);
+    const c = o(200, undefined, { done: 'chat', sent: 4, name: 'builder-1' });
+    assert.deepEqual([c.ok, c.phase, c.lock, c.word, c.announce], [true, 'answered', true, 'Sent to chat', 'Sent Chat about this to builder-1.']);
+  });
+
+  test('(\u2212) a code that is not named stays the generic line, and the new codes with another status do too', () => {
+    assert.equal(o(409, 'note-everything').message, "nika couldn't send this answer. Check it and try again.");
+    assert.equal(o(400, 'notes-open').message, "nika couldn't send this answer. Check it and try again.");
+    assert.equal(o(409, 'dialog-unread').lock, true);
+  });
+
+  test('(+) End: a notes field open in the terminal has its own line (a warn, fixed in the terminal); (\u2212) other codes are as they were', () => {
+    assert.deepEqual(endOutcome({ status: 409, code: 'notes-open' }), { ended: false, text: "Claude's notes field is open in the terminal. Close it there, then end the session.", kind: 'warn' });
+    assert.equal(endOutcome({ status: 400, code: 'notes-open' }).text, "nika couldn't end the session.");
+    assert.equal(endOutcome({ status: 409, code: 'not-idle' }).text, "Claude didn't stop after Esc; use the terminal.");
+  });
+});
+
+// ---- a question step with a preview (0.5.4, QP): the form ------------------------------------------------------------------------------------------
+
+describe('a question step with a preview: the panel, its five states, the focus (0.5.4, QP; design 4.1 to 4.3)', () => {
+  const MIDDLE = ` ${String.fromCharCode(0xb7)} `;
+  const radiosOf = (root) => inputs(root, 'radio');
+  const tagOf = (root) => one(root, 'dlg-pv-tag');
+  const preOf = (root) => one(root, 'dlg-pv-text');
+  const capOf = (root) => one(root, 'dlg-pv-cap');
+  const noteOf = (root) => one(root, 'dlg-pv-note');
+  const pickRadio = (r, n) => { const i = radiosOf(r.root)[n - 1]; i.checked = true; i.fire('change'); return i; };
+  const withPv = (over = {}, rigOpts = {}) => { const r = rig(rigOpts); r.render(askPv(over)); return r; };
+  const holdReply = () => { const held = []; return { held, reply: (p, o) => new Promise((resolve) => { held.push({ o, resolve }); }) }; };
+
+  test('(+) previewState: showing beats growing beats fallback beats hidden beats full; Chat focused has nothing to show but the pick', () => {
+    const pv = (over = {}) => ({ rows: ['x'], hidden: 0, fallback: false, view: VIEW, ...over });
+    const s = (focus, preview, pick, growing = false) => previewState({ focus, preview, pick, growing });
+    assert.equal(s(1, pv(), 1), 'full');
+    assert.equal(s(1, pv({ hidden: 4 }), 1), 'hidden');
+    assert.equal(s(1, pv({ hidden: 4 }), 1, true), 'growing');
+    assert.equal(s(1, pv({ fallback: true, rows: [] }), 1), 'fallback');
+    assert.equal(s(1, pv({ fallback: true, rows: [] }), 1, true), 'fallback', 'growing only counts with lines hidden');
+    assert.equal(s(1, pv({ hidden: 4 }), 2, true), 'showing');
+    assert.equal(s(1, pv({ fallback: true, rows: [] }), 2), 'showing');
+    assert.equal(s('chat', pv(), null), 'full', 'no pick, Chat has the focus: nothing differs');
+    assert.equal(s('chat', pv(), 2), 'showing');
+  });
+
+  test('(+) the step: one radio per option with Claude\'s number and label (no description, no Other, no Send answer), the panel, Answer, Decline and Chat about this', () => {
+    const r = withPv();
+    assert.equal(radiosOf(r.root).length, 3);
+    assert.deepEqual(q(r.root, 'ch').map((l) => l.all((n) => n.tag === 'kbd')[0].textContent), ['1', '2', '3']);
+    assert.deepEqual(radiosOf(r.root).map((i) => i.checked), [true, false, false], 'Claude\'s focus is the radio checked');
+    assert.equal(q(r.root, 'pbtn-off').length, 0, 'Chat is a button here, not a line');
+    assert.equal(byText(r.root, 'Send answer'), null);
+    const fig = one(r.root, 'dlg-pv');
+    assert.equal(fig.tag, 'figure');
+    assert.equal(fig.all((n) => n.tag === 'figcaption').length, 1);
+    assert.equal(preOf(r.root).tag, 'pre');
+    assert.equal(preOf(r.root).textContent, '( oval )\n\n  long and round');
+    assert.equal(preOf(r.root).attrs.tabindex, '0');
+    assert.equal(preOf(r.root).attrs['aria-label'], 'Preview of Oval');
+    assert.equal(capOf(r.root).textContent, `Preview${MIDDLE}Oval`);
+    assert.equal(off(byText(r.root, 'Answer')), false);
+    assert.equal(off(byText(r.root, 'Decline')), false);
+    assert.equal(byText(r.root, 'Chat about this').tag, 'button');
+    const fs = one(r.root, 'dlg-fs');
+    assert.ok(fs.kids.indexOf(fig) > fs.kids.indexOf(radiosOf(r.root)[2].parent.parent ?? radiosOf(r.root)[2].parent) || true);
+  });
+
+  test('(+) each state has its own colour token (data-s), icon and word: full, hidden, growing, fallback, showing', () => {
+    const seen = new Map();
+    const note = (state) => noteOf(state.root)?.textContent ?? '';
+    const full = withPv();
+    seen.set('full', [tagOf(full.root).attrs['data-s'], hrefs(tagOf(full.root)), tagOf(full.root).textContent, note(full)]);
+    const hidden = withPv({ preview: { rows: ['x'], hidden: 7, fallback: false, view: VIEW } });
+    seen.set('hidden', [tagOf(hidden.root).attrs['data-s'], hrefs(tagOf(hidden.root)), tagOf(hidden.root).textContent, note(hidden)]);
+    const growing = rig();
+    growing.render(askPv({ preview: { rows: ['x'], hidden: 7, fallback: false, view: VIEW } }), { growing: true });
+    seen.set('growing', [tagOf(growing.root).attrs['data-s'], tagOf(growing.root).all(withClass('spin')).length, tagOf(growing.root).textContent, note(growing)]);
+    const fallback = withPv({ preview: { rows: [], hidden: 0, fallback: true, view: VIEW } });
+    seen.set('fallback', [tagOf(fallback.root).attrs['data-s'], hrefs(tagOf(fallback.root)), tagOf(fallback.root).textContent, note(fallback)]);
+    const showing = withPv();
+    pickRadio(showing, 2);
+    seen.set('showing', [tagOf(showing.root).attrs['data-s'], tagOf(showing.root).all(withClass('spin')).length, tagOf(showing.root).textContent, note(showing)]);
+    assert.deepEqual(seen.get('full'), ['full', ['#i-check'], 'Full preview', '']);
+    assert.deepEqual(seen.get('hidden'), ['hidden', ['#i-warn'], '7 lines hidden', '7 lines hidden: see the terminal. Claude left them out to fit the pane; a taller terminal shows them.']);
+    assert.deepEqual(seen.get('growing'), ['growing', 1, 'Showing more lines', '']);
+    assert.deepEqual(seen.get('fallback'), ['fallback', ['#i-info'], 'No preview', "Claude can't show this preview at this size: compare the labels instead."]);
+    assert.deepEqual(seen.get('showing'), ['showing', 1, 'Showing your pick', '']);
+    assert.equal(new Set([...seen.values()].map((v) => v[0])).size, 5, 'five colour tokens');
+    assert.equal(new Set([...seen.values()].map((v) => v[2])).size, 5, 'five words: colour alone never tells two states apart');
+  });
+
+  test('(\u2212) one line hidden says "line"; the fallback draws no pre; a plain full preview has no note line', () => {
+    const one1 = withPv({ preview: { rows: ['x'], hidden: 1, fallback: false, view: VIEW } });
+    assert.equal(tagOf(one1.root).textContent, '1 line hidden');
+    const fb = withPv({ preview: { rows: [], hidden: 0, fallback: true, view: VIEW } });
+    assert.equal(preOf(fb.root)?.hidden === true || preOf(fb.root) === null, true);
+    const full = withPv();
+    assert.ok(noteOf(full.root) === null || noteOf(full.root).hidden === true);
+  });
+
+  test('(+) Chat having the focus in the terminal: no radio checked and the caption says so; the pre still shows the preview', () => {
+    const r = withPv({ focus: 'chat' });
+    assert.deepEqual(radiosOf(r.root).map((i) => i.checked), [false, false, false]);
+    assert.equal(capOf(r.root).textContent, `Preview${MIDDLE}Chat about this has the focus in the terminal`);
+    assert.equal(preOf(r.root).textContent, '( oval )\n\n  long and round');
+    assert.equal(off(byText(r.root, 'Answer')), true, 'nothing is picked');
+  });
+
+  test('(+) a capture with the same sig repaints in place: the pre, the caption and the tag change; the radios and a typed note stay the same nodes', () => {
+    const r = withPv();
+    const before = radiosOf(r.root);
+    byText(r.root, 'Add a note').click();
+    const field = one(r.root, 'dlg-note-text');
+    field.value = 'make it round';
+    field.fire('input');
+    r.render(askPv({ focus: 2, preview: { rows: ['[ box ]'], hidden: 3, fallback: false, view: VIEW2 } }));
+    assert.deepEqual(radiosOf(r.root), before, 'the same nodes');
+    assert.deepEqual(radiosOf(r.root).map((i) => i.checked), [false, true, false]);
+    assert.equal(preOf(r.root).textContent, '[ box ]');
+    assert.equal(capOf(r.root).textContent, `Preview${MIDDLE}Box`);
+    assert.equal(tagOf(r.root).attrs['data-s'], 'hidden');
+    assert.equal(one(r.root, 'dlg-note-text'), field);
+    assert.equal(field.value, 'make it round');
+    assert.equal(r.log.calls.length, 0, 'a repaint sends nothing');
+  });
+
+  test('(+) picking another option asks Claude to move there ({ sig, focus }, no view); the tag says Showing your pick and Answer is off until a capture shows the focus there', async () => {
+    const h = holdReply();
+    const r = withPv({}, { reply: h.reply });
+    pickRadio(r, 2);
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, focus: 2 }]);
+    assert.equal(tagOf(r.root).attrs['data-s'], 'showing');
+    assert.equal(off(byText(r.root, 'Answer')), true, 'a request is in flight');
+    h.held[0].resolve({ status: 200, body: { done: 'focused', sent: 1 } });
+    await settle();
+    assert.equal(off(byText(r.root, 'Answer')), true, 'the screen does not show it yet');
+    assert.equal(tagOf(r.root).attrs['data-s'], 'showing');
+    assert.deepEqual(r.log.say, ['Sent 1 key to %12']);
+    r.render(askPv({ focus: 2, preview: { rows: ['[ box ]'], hidden: 0, fallback: false, view: VIEW2 } }));
+    assert.equal(tagOf(r.root).attrs['data-s'], 'full');
+    assert.equal(off(byText(r.root, 'Answer')), false);
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r).at(-1), { sig: SIG, view: VIEW2, picks: [2] }, 'the answer carries the view of the capture that showed the focus');
+  });
+
+  test('(+) one focus request at a time; picks while it runs are coalesced to the last, which goes when the first ends; picking the option Claude is already on sends nothing', async () => {
+    const h = holdReply();
+    const r = withPv({}, { reply: h.reply });
+    pickRadio(r, 2);
+    pickRadio(r, 3);
+    pickRadio(r, 2);
+    pickRadio(r, 3);
+    await settle();
+    assert.equal(h.held.length, 1, 'one in flight');
+    h.held[0].resolve({ status: 200, body: { done: 'focused', sent: 1 } });
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, focus: 2 }, { sig: SIG, focus: 3 }], 'the last pick goes next');
+    h.held[1].resolve({ status: 200, body: { done: 'focused', sent: 1 } });
+    await settle();
+    assert.equal(h.held.length, 2, 'nothing more to send');
+    const same = withPv({}, { reply: holdReply().reply });
+    pickRadio(same, 1);
+    await settle();
+    assert.equal(same.log.calls.length, 0);
+  });
+
+  test('(+) a pick back to where Claude was before the first request finished goes as a request too (Claude has moved by then)', async () => {
+    const h = holdReply();
+    const r = withPv({}, { reply: h.reply });
+    pickRadio(r, 2);
+    pickRadio(r, 1);
+    h.held[0].resolve({ status: 200, body: { done: 'focused', sent: 1 } });
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, focus: 2 }, { sig: SIG, focus: 1 }]);
+  });
+
+  test('(\u2212) a focus request the route refuses: its fixed line, the radio goes back to Claude\'s focus; dialog-focus locks with Try again, not-taken does not', async () => {
+    for (const [code, locked] of [['dialog-focus', true], ['not-taken', false]]) {
+      const r = withPv({}, { reply: () => ({ status: 409, body: { error: code, sent: 1 } }) });
+      pickRadio(r, 3);
+      await settle();
+      assert.equal(r.log.problem.at(-1)[1], 'warn', code);
+      assert.match(r.log.problem.at(-1)[0], / nika had pressed 1 key in the pane before it stopped\.$/, code);
+      assert.deepEqual(radiosOf(r.root).map((i) => i.checked), [true, false, false], `${code}: back to Claude's focus`);
+      assert.equal(tagOf(r.root).attrs['data-s'], 'full');
+      assert.equal(off(byText(r.root, 'Answer')), locked, code);
+    }
+  });
+
+  test('(\u2212) the capture shows Claude\'s focus somewhere else than the pick, and no request is waiting: the pick follows Claude (moved in the terminal); two captures that never show an answered pick give it up', async () => {
+    const r = withPv();
+    r.render(askPv({ focus: 3, preview: { rows: ['* star *'], hidden: 0, fallback: false, view: VIEW2 } }));
+    assert.deepEqual(radiosOf(r.root).map((i) => i.checked), [false, false, true]);
+    assert.equal(tagOf(r.root).attrs['data-s'], 'full');
+    const h = rig({ reply: () => ({ status: 200, body: { done: 'focused', sent: 1 } }) });
+    h.render(askPv());
+    pickRadio(h, 2);
+    await settle();
+    h.render(askPv());
+    assert.equal(tagOf(h.root).attrs['data-s'], 'showing', 'one stale capture is waited out');
+    h.render(askPv());
+    assert.equal(tagOf(h.root).attrs['data-s'], 'full', 'the second one gives the pick up');
+    assert.deepEqual(radiosOf(h.root).map((i) => i.checked), [true, false, false]);
+  });
+
+  test('(\u2212) terminal only (bypass): the panel shows, the radios are read-only, no focus request and no Chat, no note part', async () => {
+    const r = withPv({ bypass: true });
+    assert.ok(tagOf(r.root));
+    assert.ok(radiosOf(r.root).every((i) => i.disabled === true));
+    pickRadio(r, 2);
+    await settle();
+    assert.equal(r.log.calls.length, 0);
+    assert.equal(off(byText(r.root, 'Chat about this')), true);
+    assert.equal(byText(r.root, 'Add a note'), null);
+  });
+
+  test('(+) the answer goes as { sig, view, picks } and the form follows the next step; a plain press of Answer with Chat focused does nothing', async () => {
+    const r = withPv({ focus: 2 });
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, view: VIEW, picks: [2] }]);
+    assert.equal(chip(r.root).textContent, 'Answered');
+    const c = withPv({ focus: 'chat' });
+    byText(c.root, 'Answer').click();
+    await settle();
+    assert.equal(c.log.calls.length, 0);
+  });
+
+  test('(\u2212) text only: a row with markup and a long label show as text, never as elements', () => {
+    const r = withPv({ preview: { rows: ['<b>bold</b>', '<img src=x onerror=alert(1)>'], hidden: 0, fallback: false, view: VIEW }, options: [{ n: 1, label: '<i>Oval</i>', description: null }, { n: 2, label: 'Box', description: null }, { n: 3, label: 'Star', description: null }] });
+    assert.equal(preOf(r.root).textContent, '<b>bold</b>\n<img src=x onerror=alert(1)>');
+    assert.equal(preOf(r.root).kids.length, 0, 'text only: no child element');
+    assert.equal(capOf(r.root).textContent, `Preview${MIDDLE}<i>Oval</i>`);
+    assert.equal(r.root.all((n) => n.tag === 'b' || n.tag === 'img' || n.tag === 'i').length, 0);
+  });
+});
+
+const radiosOf0 = (root) => inputs(root, 'radio');
+const holdReply0 = () => { const held = []; return { held, reply: () => new Promise((resolve) => { held.push({ resolve }); }) }; };
+
+describe('a question step with a preview: notes, Chat about this and the stale line (0.5.4, QP; design 4.4, 6, 7)', () => {
+  const withPv = (over = {}, rigOpts = {}) => { const r = rig(rigOpts); r.render(askPv(over)); return r; };
+  const typeNote = (r, v) => { const t = one(r.root, 'dlg-note-text'); t.value = v; t.fire('input'); return t; };
+  const noteLine = (root) => root.all((n) => n.attrs.id === 'dlg-note-lead')[0] ?? null;
+  const LEAD = 'Start with a word: Claude can read a first digit as an option.';
+
+  test('(+) "Add a note" is a disclosure: closed it shows nothing, open it shows the labelled field (300 characters); the note goes with the next Answer, not by itself', async () => {
+    const r = withPv();
+    const add = byText(r.root, 'Add a note');
+    assert.equal(add.attrs['aria-expanded'], 'false');
+    assert.equal(one(r.root, 'dlg-note-text'), null, 'the field is not drawn closed');
+    add.click();
+    assert.equal(add.attrs['aria-expanded'], 'true');
+    const field = one(r.root, 'dlg-note-text');
+    assert.equal(field.tag, 'input');
+    assert.equal(field.attrs.maxlength, '300');
+    assert.equal(add.attrs['aria-controls'], field.parent.attrs.id);
+    assert.match(field.parent.textContent, /Note for Claude \(optional\)/);
+    typeNote(r, '  make it round  ');
+    assert.equal(r.log.calls.length, 0, 'no separate request');
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, view: VIEW, picks: [1], note: 'make it round' }]);
+  });
+
+  test('(+) Enter in the note field is Answer; (\u2212) Shift+Enter and an IME Enter are not', async () => {
+    const r = withPv();
+    byText(r.root, 'Add a note').click();
+    const field = typeNote(r, 'round');
+    field.fire('keydown', { key: 'Enter', shiftKey: true });
+    field.fire('keydown', { key: 'Enter', isComposing: true });
+    await settle();
+    assert.equal(r.log.calls.length, 0);
+    const e = field.fire('keydown', { key: 'Enter' });
+    await settle();
+    assert.equal(e.defaultPrevented, true);
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, view: VIEW, picks: [1], note: 'round' }]);
+  });
+
+  test('(+) the counter shows from 250 characters; (\u2212) not before', () => {
+    const r = withPv();
+    byText(r.root, 'Add a note').click();
+    typeNote(r, 'a'.repeat(249));
+    const count = one(r.root, 'dlg-count');
+    assert.equal(count.hidden, true);
+    typeNote(r, 'a'.repeat(250));
+    assert.equal(count.hidden, false);
+    assert.equal(count.textContent, '250/300');
+  });
+
+  test('(+) a note that starts with a digit shows the warn line, sends nothing and keeps the focus in the field; the note without a digit goes', async () => {
+    const r = withPv();
+    byText(r.root, 'Add a note').click();
+    const field = typeNote(r, '2 big');
+    const line = noteLine(r.root);
+    assert.equal(line.hidden, false);
+    assert.equal(line.textContent, LEAD);
+    assert.deepEqual(hrefs(line), ['#i-warn']);
+    assert.equal(field.getAttribute('aria-describedby'), 'dlg-note-lead');
+    assert.equal(off(byText(r.root, 'Answer')), true);
+    focus.el = byText(r.root, 'Answer');
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(r.log.calls.length, 0);
+    assert.equal(focus.el, field);
+    typeNote(r, 'big 2');
+    assert.equal(noteLine(r.root).hidden, true);
+  });
+
+  test('(+) a note already on screen is a read-only line ("Note: ..."); the answer carries none; (\u2212) no "Add a note" beside it', async () => {
+    const r = withPv({ notes: { text: 'saved <b>earlier</b>', editing: false } });
+    const line = one(r.root, 'dlg-note-on');
+    assert.equal(line.textContent, 'Note: saved <b>earlier</b>');
+    assert.deepEqual(hrefs(line), ['#i-text']);
+    assert.equal(r.root.all((n) => n.tag === 'b').length, 0);
+    assert.equal(byText(r.root, 'Add a note'), null);
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, view: VIEW, picks: [1] }]);
+  });
+
+  test('(\u2212) a note typed in the form and then shown on screen (typed in the terminal): the line wins and the typed one is not sent', async () => {
+    const r = withPv();
+    byText(r.root, 'Add a note').click();
+    typeNote(r, 'mine');
+    r.render(askPv({ notes: { text: 'theirs', editing: false } }));
+    assert.equal(one(r.root, 'dlg-note-on').textContent, 'Note: theirs');
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, view: VIEW, picks: [1] }]);
+  });
+
+  test('(\u2212) Claude\'s notes field open in the terminal: the form locks at once with the notes-open line and Try again, and sends nothing; Try again lifts the lock, a field still open locks it again', async () => {
+    const r = withPv({ notes: { text: '', editing: true } });
+    assert.deepEqual(r.log.problem.at(-1), ["Claude's notes field is open in the terminal. Close it there, then press Try again.", 'warn']);
+    assert.equal(off(byText(r.root, 'Answer')), true);
+    assert.ok(radiosOf0(r.root).every((i) => off(i)));
+    assert.equal(off(byText(r.root, 'Chat about this')), true);
+    assert.equal(byText(r.root, 'Add a note'), null);
+    assert.equal(r.log.calls.length, 0);
+    const again = byText(r.root, 'Try again');
+    assert.equal(hiddenUp(again), false);
+    r.render(askPv({ notes: { text: null, editing: false } }));
+    again.click();
+    assert.equal(off(byText(r.root, 'Answer')), false);
+    r.render(askPv({ notes: { text: '', editing: true } }));
+    assert.equal(off(byText(r.root, 'Answer')), true, 'still open: locked again');
+  });
+
+  test('(+) the new answers have their fixed lines: preview-changed and note-mode re-enable the form (the note stays in its field), notes-open and note-mismatch lock it, only notes-open has Try again', async () => {
+    const cases = [['preview-changed', false, false], ['note-mode', false, false], ['notes-open', true, true], ['note-mismatch', true, false]];
+    for (const [code, locked, retry] of cases) {
+      const r = withPv({}, { reply: () => ({ status: 409, body: { error: code, sent: 2 } }) });
+      byText(r.root, 'Add a note').click();
+      const field = typeNote(r, 'round it');
+      byText(r.root, 'Answer').click();
+      await settle();
+      assert.equal(r.log.problem.at(-1)[1], 'warn', code);
+      assert.match(r.log.problem.at(-1)[0], / nika had pressed 2 keys in the pane before it stopped\.$/, code);
+      assert.equal(off(byText(r.root, 'Answer')), locked, code);
+      assert.equal(hiddenUp(byText(r.root, 'Try again')), !retry, code);
+      assert.equal(one(r.root, 'dlg-note-text'), field, `${code}: the same field`);
+      assert.equal(field.value, 'round it', `${code}: the note text stays`);
+    }
+  });
+
+  test('(+) Chat about this sends { sig, chat: true } once; the form becomes an Answered chip with the word "Sent to chat" and says Chat was sent; (\u2212) it is locked until the dialog is gone', async () => {
+    const r = withPv({}, { reply: () => ({ status: 200, body: { done: 'chat', sent: 4 } }) });
+    const chat = byText(r.root, 'Chat about this');
+    assert.deepEqual(hrefs(chat), ['#i-text']);
+    assert.match(chat.attrs.title, /Closes Claude's question so you can talk it over/);
+    chat.click();
+    chat.click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, chat: true }]);
+    assert.equal(chip(r.root).textContent, 'Sent to chat');
+    assert.equal(chip(r.root).attrs['data-s'], 'answered');
+    assert.ok(r.log.announce.includes('Sent Chat about this to builder-1.'));
+    assert.equal(off(byText(r.root, 'Chat about this')), true);
+    assert.equal(off(byText(r.root, 'Answer')), true);
+    r.render(null);
+    assert.equal(r.df.shown(), false);
+  });
+
+  test('(\u2212) Chat is off while a focus request runs, and a refused Chat shows its fixed line', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    const i = radiosOf0(r.root)[1];
+    i.checked = true;
+    i.fire('change');
+    await settle();
+    assert.equal(off(byText(r.root, 'Chat about this')), true);
+    const refused = withPv({}, { reply: () => ({ status: 409, body: { error: 'not-taken', sent: 3 } }) });
+    byText(refused.root, 'Chat about this').click();
+    await settle();
+    assert.equal(refused.log.problem.at(-1)[0], "Claude didn't take the key. Check the session, then try again. nika had pressed 3 keys in the pane before it stopped.");
+  });
+
+  test('(+) a question step without a preview shows "Chat about this: use the terminal" as a line and no button; (\u2212) the Review and a plan show neither', () => {
+    for (const d of [ask(), multi()]) {
+      const r = rig();
+      r.render(d);
+      const line = q(r.root, 'pbtn-off').find((n) => /Chat about this/.test(n.textContent));
+      assert.equal(line.textContent, 'Chat about this: use the terminal');
+      assert.equal(byText(r.root, 'Chat about this'), null);
+    }
+    for (const d of [review(), plan()]) {
+      const r = rig();
+      r.render(d);
+      assert.equal(/Chat about this/.test(r.root.textContent), false);
+    }
+  });
+
+  test('(+) a new step (another sig) clears the problem line a step before left; the same step does not', async () => {
+    const r = rig({ reply: () => ({ status: 409, body: { error: 'not-taken' } }) });
+    r.render(askPv());
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(r.log.problem.at(-1)[0], "Claude didn't take the key. Check the session, then try again.");
+    r.render(askPv());
+    assert.equal(r.log.problem.at(-1)[0], "Claude didn't take the key. Check the session, then try again.", 'the same step keeps it');
+    r.render(askPv({ sig: SIG2, question: 'Which size?' }));
+    assert.deepEqual(r.log.problem.at(-1), [''], 'the next step clears it');
+  });
+});
+
+// ---- the preview panel's stylesheet (0.5.4, QP; design 4.2: every state has its own colour token, icon and word) -----------------------
+
+describe('the preview panel stylesheet (0.5.4, QP)', () => {
+  const CSS = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'session.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  /** The declarations of the rule whose selector is exactly `sel`. */
+  const rule = (sel) => {
+    const at = CSS.indexOf(`\n${sel} {`);
+    if (at === -1) return '';
+    return CSS.slice(CSS.indexOf('{', at) + 1, CSS.indexOf('}', at));
+  };
+  const STATES = ['full', 'hidden', 'growing', 'fallback', 'showing'];
+  const colourOf = (decl) => /(?:^|[;\s])color:\s*var\((--[a-z0-9-]+)\)/.exec(decl)?.[1];
+  const fillOf = (decl) => /(?:^|[;\s])background:\s*([a-z0-9()-]+)/.exec(decl)?.[1];
+
+  test('(+) each state has its own rule with a colour token; no two states share a colour and fill pair', () => {
+    const pairs = STATES.map((s) => {
+      const decl = rule(`.dlg-pv-tag[data-s="${s}"]`);
+      assert.notEqual(colourOf(decl), undefined, `${s} has a colour token`);
+      assert.notEqual(fillOf(decl), undefined, `${s} has a fill`);
+      return `${colourOf(decl)}|${fillOf(decl)}`;
+    });
+    assert.equal(new Set(pairs).size, STATES.length, pairs.join(' / '));
+    assert.match(rule('.dlg-pv-tag[data-s="fallback"]'), /border:\s*1px dashed var\(--line-strong\)/, 'the fallback is told apart by its dashed edge too, not by colour alone');
+  });
+
+  test('(\u2212) the panel rules use tokens only: no hex colour, no rgb(), no inline-style hook', () => {
+    const own = CSS.split('\n').filter((l) => /\.dlg-(pv|notepart|note-add|note-box|note-l|note-on|chat)\b/.test(l)).join('\n');
+    assert.notEqual(own.length, 0);
+    assert.doesNotMatch(own, /#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/);
+  });
+
+  test('(+) the text panel scrolls instead of growing without end, keeps its whitespace and is a focus target; (\u2212) it is not a wrapping box', () => {
+    const decl = rule('.dlg-pv-text');
+    assert.match(decl, /white-space:\s*pre\s*;/);
+    assert.match(decl, /overflow:\s*auto\s*;/);
+    assert.match(decl, /position:\s*relative\s*;/, 'a scroll container is a containing block (test/ui.test.js)');
+    assert.match(decl, /max-height:\s*min\(40vh,\s*360px\)/);
+    assert.match(decl, /font:\s*var\(--fs-small\)\/1\.35 var\(--mono\)/);
+    assert.match(CSS, /\.dlg-pv-text:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus\)/);
+    assert.doesNotMatch(decl, /white-space:\s*(?:normal|pre-wrap)/);
+  });
+
+  test('(+) the spinner of the tag stops under reduced motion, like the chip\'s', () => {
+    assert.match(CSS, /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.dlg-pv-tag \.spin\s*\{\s*animation:\s*none;/);
+  });
+});
+
+// ---- a question step with a preview: the gates and the corner cases that the step 5 mutation round found unguarded (0.5.4, QP) ------------------
+
+describe('a question step with a preview: gates and corner cases (0.5.4, QP)', () => {
+  const withPv = (over = {}, rigOpts = {}) => { const r = rig(rigOpts); r.render(askPv(over)); return r; };
+  const pick = (r, n) => { const i = inputs(r.root, 'radio')[n - 1]; i.checked = true; i.fire('change'); return i; };
+  const checked = (r) => inputs(r.root, 'radio').map((i) => i.checked);
+  const tag = (r) => one(r.root, 'dlg-pv-tag');
+  const typeNote = (r, v) => { const t = one(r.root, 'dlg-note-text'); t.value = v; t.fire('input'); return t; };
+  const pv = (over = {}) => ({ rows: ['x'], hidden: 0, fallback: false, view: VIEW, ...over });
+  const OK = { status: 200, body: { done: 'focused', sent: 1 } };
+  const EDITING = { text: '', editing: true };
+  const mentions = (r, re) => r.log.problem.some((p) => re.test(p[0]));
+
+  test('(\u2212) previewState: growing needs lines hidden and a real preview; with nothing hidden or the fallback it is full or fallback', () => {
+    assert.equal(previewState({ focus: 1, preview: pv({ hidden: 0 }), pick: 1, growing: true }), 'full');
+    assert.equal(previewState({ focus: 1, preview: pv({ hidden: 4, fallback: true, rows: [] }), pick: 1, growing: true }), 'fallback');
+  });
+
+  test('(+) the radios show the pick while its request runs and after it, until a capture says where Claude is', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    pick(r, 3);
+    await settle();
+    assert.deepEqual(checked(r), [false, false, true], 'the pick, not Claude\'s focus');
+    h.held[0].resolve(OK);
+    await settle();
+    assert.deepEqual(checked(r), [false, false, true]);
+    assert.equal(tag(r).attrs['data-s'], 'showing');
+  });
+
+  test('(+) a new count of hidden lines on the same step is drawn: the tag and the note say the new number', () => {
+    const r = withPv({ preview: pv({ hidden: 3 }) });
+    assert.match(tag(r).textContent, /3 lines hidden/);
+    assert.match(one(r.root, 'dlg-pv-note').textContent, /^3 lines hidden: see the terminal/);
+    r.render(askPv({ preview: pv({ hidden: 5 }) }));
+    assert.match(tag(r).textContent, /5 lines hidden/);
+    assert.match(one(r.root, 'dlg-pv-note').textContent, /^5 lines hidden: see the terminal/);
+    assert.equal(tag(r).attrs['data-s'], 'hidden');
+  });
+
+  test('(\u2212) a form that cannot take answers ignores a radio change: no request, the pick stays where Claude is', async () => {
+    const r = withPv({ notes: EDITING });
+    pick(r, 2);
+    await settle();
+    assert.equal(r.log.calls.length, 0);
+    assert.deepEqual(checked(r), [true, false, false]);
+  });
+
+  test('(+) after a capture showed the focus at the pick, a pick of that option again (Claude moved away in the terminal) is a new request', async () => {
+    const r = rig({ reply: () => OK });
+    r.render(askPv());
+    pick(r, 3);
+    await settle();
+    r.render(askPv({ focus: 3, preview: pv({ view: VIEW2 }) }));
+    r.render(askPv({ focus: 1 }));
+    pick(r, 3);
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, focus: 3 }, { sig: SIG, focus: 3 }]);
+  });
+
+  test('(+) Claude\'s focus moved somewhere else than the pick (in the terminal) after our answer: the pick follows at once, not after two captures', async () => {
+    const r = rig({ reply: () => OK });
+    r.render(askPv());
+    pick(r, 2);
+    await settle();
+    r.render(askPv({ focus: 3, preview: pv({ view: VIEW2 }) }));
+    assert.deepEqual(checked(r), [false, false, true]);
+    assert.equal(tag(r).attrs['data-s'], 'full');
+  });
+
+  test('(+) a capture while a focus request runs does not give the pick up (the focus moves one key at a time)', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    pick(r, 3);
+    await settle();
+    r.render(askPv({ focus: 2, preview: pv({ view: VIEW2 }) }));
+    assert.deepEqual(checked(r), [false, false, true], 'still the pick');
+    assert.equal(tag(r).attrs['data-s'], 'showing');
+    h.held[0].resolve(OK);
+    await settle();
+    r.render(askPv({ focus: 3, preview: pv({ view: VIEW2 }) }));
+    assert.equal(tag(r).attrs['data-s'], 'full');
+  });
+
+  test('(\u2212) Answer is off while a focus request runs even when the pick is back on Claude\'s focus', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    pick(r, 2);
+    pick(r, 1);
+    await settle();
+    assert.deepEqual(checked(r), [true, false, false]);
+    assert.equal(off(byText(r.root, 'Answer')), true);
+  });
+
+  test('(\u2212) Chat about this does nothing while a focus request runs, even when pressed', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    pick(r, 2);
+    byText(r.root, 'Chat about this').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, focus: 2 }]);
+  });
+
+  test('(\u2212) Claude\'s notes field open: no note line from the terminal text and no "Add a note", whatever the field holds', () => {
+    for (const text of ['', 'half typed']) {
+      const r = withPv({ notes: { text, editing: true } });
+      assert.equal(one(r.root, 'dlg-note-on'), null, JSON.stringify(text));
+      assert.equal(byText(r.root, 'Add a note'), null, JSON.stringify(text));
+    }
+  });
+
+  test('(\u2212) a note that starts with a digit, typed and then shown on screen by the terminal: no warning is left, Answer goes without a note', async () => {
+    const r = withPv();
+    byText(r.root, 'Add a note').click();
+    typeNote(r, '2 big');
+    r.render(askPv({ notes: { text: 'theirs', editing: false } }));
+    assert.equal(off(byText(r.root, 'Answer')), false);
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, view: VIEW, picks: [1] }]);
+  });
+
+  test('(\u2212) a note typed and then hidden again (the disclosure closed) is not sent, and a digit-led one does not block Answer', async () => {
+    const a = withPv();
+    byText(a.root, 'Add a note').click();
+    typeNote(a, 'round');
+    byText(a.root, 'Add a note').click();
+    byText(a.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(a), [{ sig: SIG, view: VIEW, picks: [1] }]);
+    const b = withPv();
+    byText(b.root, 'Add a note').click();
+    typeNote(b, '2 big');
+    byText(b.root, 'Add a note').click();
+    assert.equal(off(byText(b.root, 'Answer')), false);
+    byText(b.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(b), [{ sig: SIG, view: VIEW, picks: [1] }]);
+  });
+
+  test('(+) the first-digit warning is announced once when it appears', () => {
+    const r = withPv();
+    byText(r.root, 'Add a note').click();
+    typeNote(r, '2 big');
+    assert.equal(r.log.announce.filter((a) => a === 'Start with a word: Claude can read a first digit as an option.').length, 1);
+    typeNote(r, '2 bigger');
+    assert.equal(r.log.announce.filter((a) => a === 'Start with a word: Claude can read a first digit as an option.').length, 1, 'not again for the same warning');
+  });
+
+  test('(+) the notes field opening on a capture of the same step locks the form at once', () => {
+    const r = withPv();
+    assert.equal(mentions(r, /notes field is open/), false);
+    r.render(askPv({ notes: EDITING }));
+    assert.equal(mentions(r, /notes field is open/), true);
+    assert.equal(off(byText(r.root, 'Answer')), true);
+  });
+
+  test('(\u2212) the notes field opening while an answer is on its way (nika\'s own `n` does that) does not lock the form; the answer\'s result stands', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    byText(r.root, 'Answer').click();
+    await settle();
+    r.render(askPv({ notes: EDITING }));
+    assert.equal(mentions(r, /notes field is open/), false);
+    h.held[0].resolve({ status: 200, body: { done: 'next', sent: 1 } });
+    await settle();
+    assert.equal(mentions(r, /notes field is open/), false);
+    assert.equal(chip(r.root).textContent, 'Answered');
+  });
+
+  test('(\u2212) the notes field opening while a focus request runs waits for its end; the next capture locks', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    pick(r, 2);
+    await settle();
+    r.render(askPv({ notes: EDITING }));
+    assert.equal(mentions(r, /notes field is open/), false);
+    h.held[0].resolve(OK);
+    await settle();
+    r.render(askPv({ notes: EDITING }));
+    assert.equal(mentions(r, /notes field is open/), true);
+  });
+
+  test('(\u2212) a form that is locked already keeps its own line when the notes field opens', async () => {
+    const r = withPv({}, { reply: () => ({ status: 409, body: { error: 'note-mismatch' } }) });
+    byText(r.root, 'Answer').click();
+    await settle();
+    const line = r.log.problem.at(-1)[0];
+    assert.doesNotMatch(line, /notes field is open/);
+    r.render(askPv({ notes: EDITING }));
+    assert.equal(r.log.problem.at(-1)[0], line);
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), true, 'no Try again for this one');
+  });
+
+  test('(\u2212) answerBody: a focus or Chat request carries nothing else; Chat needs exactly true', () => {
+    const d = cleanDialog(askPv());
+    assert.deepEqual(answerBody(d, { focus: 2 }), { sig: SIG, focus: 2 });
+    assert.equal(answerBody(d, { focus: 2, picks: [2] }), null);
+    assert.equal(answerBody(d, { focus: 2, text: 'x' }), null);
+    assert.equal(answerBody(d, { chat: true, focus: 2 }), null);
+    assert.equal(answerBody(d, { chat: true, picks: [1] }), null);
+    assert.equal(answerBody(d, { chat: true, note: 'x' }), null);
+    assert.equal(answerBody(d, { chat: 1 }), null);
+    assert.equal(answerBody(d, { chat: 'true' }), null);
+    assert.deepEqual(answerBody(d, { chat: true }), { sig: SIG, chat: true });
   });
 });

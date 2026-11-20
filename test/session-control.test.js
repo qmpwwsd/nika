@@ -2402,19 +2402,44 @@ describe('a question or plan dialog on screen (promptOpen)', () => {
   // The three shapes src/dialog.js parks (W1-T1 review M3): dialogOnScreen is false for them, because the footer is not the last row or the
   // title is clipped away, yet a dialog is open and an Escape would decline it. They have no mode line and no input box.
   const TREE = [[], [sp('  \u23fa main')], [sp('  \u25ef Explore  scan the repo 5s')]]; // a subagent list under the last row
+  // 0.5.4 (QP, O1): a wrapped ask footer with an agent list under it is no longer parked: the footer is found by askFooterRows (consecutive rows at column 0 under a
+  // blank row), so it is a dialog on screen like any other (WRAPPED_WITH_LIST below). The other two shapes stay parked.
   const PARKED = {
     'Exit plan mode? with an agent list': () => [...dialogWorld({ phase: 'exit' }).screen().rows, ...TREE],
-    'a wrapped ask footer with an agent list': () => {
-      const rows = dialogWorld({ phase: 'ask' }).screen().rows;
-      const foot = rowText(rows.at(-1));
-      const at = foot.indexOf('navigate');
-      return [...rows.slice(0, -1), [sp(foot.slice(0, at).trimEnd())], [sp(foot.slice(at))], ...TREE];
-    },
     'a plan clipped above Ready to code?': () => {
       const rows = dialogWorld({ phase: 'plan' }).screen().rows;
       return rows.slice(rows.findIndex((row) => rowText(row).trim() === 'Ready to code?') + 1);
     },
   };
+
+  const WRAPPED_WITH_LIST = () => {
+    const rows = dialogWorld({ phase: 'ask' }).screen().rows;
+    const foot = rowText(rows.at(-1));
+    const at = foot.indexOf('navigate');
+    return [...rows.slice(0, -1), [sp(foot.slice(0, at).trimEnd())], [sp(foot.slice(at))], ...TREE];
+  };
+
+  test('(+) 0.5.4 (QP, O1): a wrapped ask footer with an agent list under it is a dialog on screen: Stop is 409 prompt-open and End sends one Escape (as for any dialog), not screen-unclear or mode-unknown', async () => {
+    const rows = WRAPPED_WITH_LIST();
+    assert.equal(dialogOnScreen(rows), true, 'the wrapped footer anchors the dialog');
+    for (const state of ['busy', 'attn']) {
+      const w = withDialog(WRAPPED_WITH_LIST(), { state });
+      assert.deepEqual(await w.control().stop('%2'), code(409, 'prompt-open'), state);
+      assert.deepEqual(keysOf(w), [], state);
+      const e = withDialog(WRAPPED_WITH_LIST(), { state });
+      assert.deepEqual(await e.control().endSession('%2'), code(409, 'not-idle'), `${state}: the Escape does not close the fixture`);
+      assert.deepEqual(keysOf(e), ['Escape'], state);
+    }
+  });
+
+  test('(\u2212) 0.5.4 (QP, O1): the wrapped footer alone is not enough: a footer split with a non-blank row above it or an indented second row, under an agent list, is still parked', async () => {
+    for (const bad of [(rows, foot, at) => [...rows.slice(0, -2), [sp(foot.slice(0, at).trimEnd())], [sp(`  ${foot.slice(at)}`)], ...TREE], (rows, foot, at) => [...rows.slice(0, -2), [sp('x')], [sp(foot.slice(0, at).trimEnd())], [sp(foot.slice(at))], ...TREE]]) {
+      const rows = dialogWorld({ phase: 'ask' }).screen().rows;
+      const foot = rowText(rows.at(-1));
+      const made = bad(rows, foot, foot.indexOf('navigate'));
+      assert.equal(dialogOnScreen(made), false, 'no footer is found');
+    }
+  });
 
   test('(−) I2: Stop is 409 screen-unclear (not prompt-open: no prompt is recognised) on the parked shapes, busy or attn, and not one key goes out (an Escape would decline the dialog)', async () => {
     for (const [name, make] of Object.entries(PARKED)) {
@@ -3072,6 +3097,21 @@ describe('autoCompact (0.5.4, AC): the typed /compact of a waiting session', () 
     ];
     for (const [name, w, error] of cases) {
       assert.deepEqual(await w.control().autoCompact('%2'), refused(error), name);
+      assert.deepEqual(w.sent, [], name);
+    }
+  });
+
+  test('(\u2212) test 22 (QP interaction, design 11 item 9): a question step with a preview on screen, notes closed or open and Chat focused: the quiet check still refuses with prompt-open, not one key', async () => {
+    const shown = (o, edit = () => {}) => { const d = dialogWorld({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1, ...o }); edit(d); return d.screen().rows; };
+    const screens = {
+      'a preview step': shown({}),
+      'the notes field open': shown({}, (d) => { d.tabs[1].noteOpen = true; }),
+      'Chat focused': shown({ focus: 'chat' }),
+    };
+    for (const [name, rows] of Object.entries(screens)) {
+      assert.equal(dialogOnScreen(rows), true, `${name}: the fixture is a dialog`);
+      const w = Object.assign(world({}), { rows: () => rows });
+      assert.deepEqual(await w.control().autoCompact('%2'), refused('prompt-open'), name);
       assert.deepEqual(w.sent, [], name);
     }
   });

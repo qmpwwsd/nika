@@ -23,7 +23,7 @@ import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
-import { panelSize, panelFrame, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS, GROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion } from './fit-ui.js';
+import { panelSize, panelFrame, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS, GROW_IDLE, growStep, growRebase, growAsk, scaleRows, growWanted } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 import { createGlideArm, frameOf, glideFrom, matrixY, paneWriteDisarms, GLIDE_MS } from './glide.js';
 import { panelOf, cropOf, layoutOf, INPUT_TEXT, CROP_TEXT } from './crop.js';
@@ -2043,7 +2043,7 @@ function fitSized(pane) {
   // F12: besides the box, did the drawn frame show Claude's mode line (a confirmed, known mode)? Then the hold waits for the mode line too.
   const plainBefore = M.body.alt === true && M.draft !== null;
   const modeBefore = plainBefore && M.body.modeConfirmed === true && modeKey(M.body.mode) !== 'unknown';
-  const cutBefore = GR.phase === 'stepping' && cutQuestion(M.body.dialog); // F16: a grow step waits for Claude to repaint the question whole
+  const cutBefore = GR.phase === 'stepping' && growWanted(M.body.dialog); // F16: a grow step waits for Claude to repaint the question whole (0.5.4: a preview with hidden lines and a cut plan too)
   HOLD.start({ want: { cols: pane.cols, rows: pane.rows }, plainBefore, modeBefore, cutBefore });
   kickMirror(0);
 }

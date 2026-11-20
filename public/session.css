@@ -449,6 +449,31 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .dlg-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--text-muted); font-size: var(--fs-small); }
 .dlg-retry { align-items: center; flex-wrap: wrap; } /* 0.5.2 R4: the Try again button sits after the text and wraps under it when the form is narrow */
 .dlg-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+/* a question step with a preview (0.5.4, QP). The panel shows the preview of the option Claude has the focus on; its tag has five states, each with its own colour, icon and word:
+   full busy + check, hidden idle + warn, growing accent + spinner, fallback muted dashed + info, showing text on surface-2 + spinner. Tokens only, so light and dark come along. */
+.dlg-pv { display: grid; gap: 4px; min-width: 0; margin: 4px 0 0; }
+.dlg-pv-h { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.dlg-pv-tag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px 2px 8px; border-radius: 999px; color: var(--busy); background: var(--busy-soft); font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
+.dlg-pv-tag[data-s="full"] { color: var(--busy); background: var(--busy-soft); }
+.dlg-pv-tag[data-s="hidden"] { color: var(--idle); background: var(--idle-soft); }
+.dlg-pv-tag[data-s="growing"] { color: var(--accent); background: var(--accent-soft); }
+.dlg-pv-tag[data-s="fallback"] { color: var(--text-muted); background: transparent; border: 1px dashed var(--line-strong); padding: 1px 9px 1px 7px; }
+.dlg-pv-tag[data-s="showing"] { color: var(--text); background: var(--surface-2); }
+.dlg-pv-cap { min-width: 0; color: var(--text-muted); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.dlg-pv-text { position: relative; margin: 0; padding: 6px 8px; max-height: min(40vh, 360px); overflow: auto; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text); font: var(--fs-small)/1.35 var(--mono); white-space: pre; }
+.dlg-pv-text:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.dlg-pv-note { padding: 0 2px; }
+.dlg[data-inert="true"] .dlg-pv-text { opacity: 0.8; }   /* dimmed when the form cannot take an answer, still readable (AA) */
+.dlg-notepart { display: grid; gap: 4px; justify-items: start; min-width: 0; }
+.dlg-note-add { min-height: 24px; padding: 0 6px; font-size: var(--fs-small); }
+.dlg-note-box { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; width: 100%; min-width: 0; }
+.dlg-note-l { flex: 0 0 100%; color: var(--text-muted); font-size: var(--fs-small); font-weight: 600; }
+.dlg-note-box > .dlg-warn { flex: 0 0 100%; }
+.dlg-note-on { padding: 4px 8px; border-left: 3px solid var(--line-strong); color: var(--text); overflow-wrap: anywhere; }
+.dlg-chat { border-color: var(--line-strong); }
+@media (prefers-reduced-motion: reduce) {
+  .dlg-pv-tag .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
+}
 @container composer (max-width: 360px) {
   .dlg-rv-row { grid-template-columns: minmax(0, 1fr); }
   .dlg-rv-chg { grid-column: 1; grid-row: auto; justify-self: start; }

@@ -53,8 +53,9 @@ const MORE_ROW = /^ {2}\u2193 \d+ more\s*$/;
 // Claude's question and plan dialogs (0.5, design W1 2.2 and 2.6). Their footers anchor a dialog on the screen. They live here, not in
 // src/dialog.js, because dialog.js imports this file and footerEnd needs them. A footer is matched on its trimmed text, no-break spaces read
 // as spaces. `Esc to cancel` alone (the permission prompt) is NOT a dialog end.
-/** The footer of a question step; group 1 is the navigation hint (up/down arrows for one tab, `Tab/Arrow keys` for several). */
-export const ASK_FOOTER = /^(?:-- INSERT -- \u00b7 )?Enter to select \u00b7 (\u2191\/\u2193|Tab\/Arrow keys) to navigate(?: \u00b7 ctrl\+g to edit in [^\u00b7]+)?(?: \u00b7 Esc to cancel)?$/;
+/** The footer of a question step; group 1 is the navigation hint (up/down arrows for one tab, `Tab/Arrow keys` for several). Claude Code 2.1.328 adds, on a step with a preview
+ *  (0.5.4, QP), `n to add notes` (group 2) and `Tab to switch questions` (group 3) right after the navigation hint, in that order; the editor hint and `Esc to cancel` follow them. */
+export const ASK_FOOTER = /^(?:-- INSERT -- \u00b7 )?Enter to select \u00b7 (\u2191\/\u2193|Tab\/Arrow keys) to navigate(?: \u00b7 (n to add notes))?(?: \u00b7 (Tab to switch questions))?(?: \u00b7 ctrl\+g to edit in [^\u00b7\u2500-\u257f]+)?(?: \u00b7 Esc to cancel)?$/;
 /** The footer of a plan approval: the editor hint and the plan file's path (the path is never read). */
 export const PLAN_FOOTER = /^ctrl\+g to edit in [^\u00b7]+ \u00b7 .+$/;
 /** The last row of the review step (`2. Cancel`, with or without the pointer). */
@@ -62,6 +63,26 @@ export const REVIEW_END = /^(?:\u276f )?2\. Cancel$/;
 const plain = (text) => (typeof text === 'string' ? text.replace(/\u00a0/g, ' ').trim() : '');
 /** True when the text is the last row of a question step, of the review step or of a plan approval. */
 export const isDialogEnd = (text) => { const t = plain(text); return ASK_FOOTER.test(t) || REVIEW_END.test(t) || PLAN_FOOTER.test(t); };
+
+/**
+ * How many rows the question footer ending at texts[k] takes, else 0 (0.5.4, QP, O1). Claude wraps the footer of a step with a preview over two rows at 80 and 52 columns
+ * (LC-QP), so the last row alone (`Esc to cancel`, `Tab to switch questions \u00b7 Esc to cancel`) is no footer. For n = 1 to 3: the rows k-n+1 to k are all non-blank, start
+ * at column 0 (no-break spaces read as spaces), the row above the first is blank (or the first is row 0), and their texts joined with one space are ASK_FOOTER. Pure shape:
+ * the reader (src/dialog.js) checks the wrap itself, since it knows the pane width and this file does not.
+ */
+export function askFooterRows(texts, k) {
+  if (!Array.isArray(texts) || !Number.isInteger(k) || k < 0 || k >= texts.length) return 0;
+  for (let n = 1; n <= 3 && k - n + 1 >= 0; n += 1) {
+    const rows = texts.slice(k - n + 1, k + 1);
+    if (rows.some((t) => typeof t !== 'string' || plain(t) === '' || plain(t) !== t.replace(/\u00a0/g, ' ').trimEnd())) return 0; // a blank row, or a row that does not start at column 0
+    const above = k - n >= 0 ? texts[k - n] : '';
+    // the row above the first is blank (a missing row above the screen's top counts as blank); with another row above, a longer footer may still start higher
+    if (typeof above === 'string' && plain(above) === '' && ASK_FOOTER.test(rows.map((t) => plain(t)).join(' '))) return n;
+  }
+  return 0;
+}
+/** True when texts[k] is the last row of a question step, of the review step or of a plan approval: a footer row alone (isDialogEnd), or the last row of a wrapped question footer (askFooterRows). */
+export const endsDialog = (texts, k) => Array.isArray(texts) && Number.isInteger(k) && k >= 0 && k < texts.length && (isDialogEnd(texts[k]) || askFooterRows(texts, k) > 0);
 
 // A rule row of Claude's input box (trimmed): two or more box-drawing dashes, plain, or labelled with the session name
 // (`-n <name>` or /rename), which Claude draws into the upper rule as `--- <name> -` (claude-tui.md section 5). The label is
@@ -109,7 +130,7 @@ function subagentEnd(texts) {
   let agents = 0;
   while (at >= 0 && AGENT_ROW.test(texts[at])) { at -= 1; agents += 1; }
   const footer = at - 2;
-  const ok = agents > 0 && at >= 2 && MAIN_ROW.test(texts[at]) && texts[at - 1].trim() === '' && (isModeLine(texts[footer]) || isDialogEnd(texts[footer]))
+  const ok = agents > 0 && at >= 2 && MAIN_ROW.test(texts[at]) && texts[at - 1].trim() === '' && (isModeLine(texts[footer]) || endsDialog(texts, footer))
     && texts.slice(at, at + 1 + agents).filter((t) => t.startsWith(POINTER)).length <= 1; // one pointer row at most (spike D1-S)
   return ok ? footer : texts.length - 1;
 }
@@ -187,7 +208,7 @@ function headOf(text) {
 /** True when texts[k] is the last row of what a task block or a lone rule row may hang under: a dialog end, or the footer of a permission prompt that parses. */
 function blockAnchor(texts, k) {
   if (k < 0 || typeof texts[k] !== 'string') return false;
-  if (isDialogEnd(texts[k])) return true;
+  if (endsDialog(texts, k)) return true;
   return plain(texts[k]).startsWith('Esc to cancel') && promptOf(texts.slice(0, k + 1).filter((t) => t.trim()).slice(-PROMPT_ROWS)) !== null;
 }
 
