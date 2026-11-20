@@ -87,7 +87,7 @@ function treeRig({ isApp = true, open = [], expanded = [], rowItems = null } = {
     isApp, state, hooks: rowItems ? { rowItems: (...args) => { seen.push(args); return rowItems; } } : {}, ORDER: STATUS_ORDER, ROW_CAP: 12,
     endedPlan, statusOf, treeRows, hasTree, parentOf, roleTag, roleTagEl, ctxEl, h, icon, menuEl, sessionHref, SHAPE,
     subagentView, subagentHref, subagentItemEl, labelEl, agentLabelView,
-    rowMode: () => null, canEndRow: () => false, reasonOf: () => 'Needs you', endedText: () => 'Ended',
+    rowMode: () => null, rowNote: () => null, canEndRow: () => false, reasonOf: () => 'Needs you', endedText: () => 'Ended',
     statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
     copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
     render: (force) => renders.push(force), document: { getSelection: () => ({ isCollapsed: true }), activeElement: null }, location: {},

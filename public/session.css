@@ -60,6 +60,12 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .sess-meta .mono { color: var(--text); }
 .sess-meta .ctx { display: inline-flex; align-items: center; gap: 6px; }
 .sess-meta .ctx-l { color: var(--text-muted); }
+/* 0.5.4 AC: the line for a typed /compact. Each state has its own colour (existing tokens), icon and words; the long text is what assistive tech reads at every width. */
+.sess-ac { display: inline-flex; align-items: center; gap: 6px; }
+.sess-ac[data-st="typed"] { color: var(--fit-other); }
+.sess-ac[data-st="compacted"] { color: var(--text-muted); }
+.sess-ac[data-st="stopped"] { color: var(--idle); }
+.sess-ac .ac-short { display: none; }
 /* the right of the bar: the claude.ai link and the shortcuts button never part (nowrap), so the button can not end up alone on a line */
 .bar-tools { display: flex; flex-wrap: nowrap; align-items: center; gap: 12px; flex: none; }
 .model { padding: 1px 8px; border-radius: var(--r-sm); background: var(--surface-2); color: var(--text); font-weight: 600; }
@@ -329,6 +335,8 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
   .split[data-tab="term"] .hist, .split[data-tab="hist"] .termcol { display: none; }
   .hist { border-right: 0; }
   .sess-meta .hide-narrow { display: none; }
+  .sess-ac .ac-short { display: inline; }
+  .sess-meta .sess-ac .ac-long { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; } /* drawn off, but still read: the short text is aria-hidden */
 }
 @media (max-width: 760px) {
   .bar .btn .lbl, .term-head .btn .lbl, .term-head .btn kbd { display: none; }   /* the segments keep their words at every width (spec 9.3) */

@@ -27,7 +27,7 @@ after(() => restore());
 
 const DEFAULT = { enabled: true, pct: 80, window: 400000 };
 const ERR = 'Choose a whole number from 20 to 95.';
-const OFF_LINE = "Off. Sessions nika starts keep Claude Code's own setting.";
+const OFF_LINE = "Off. nika sets nothing and types no /compact; Claude Code's own setting applies."; // 0.5.4 AC, test 39
 const LINE_80_400K = 'Compacts at about 320k tokens (about 160k on 200k-window models).';
 
 // ---- the page code in a vm ---------------------------------------------------------------------------------------------------------
@@ -203,7 +203,7 @@ describe('index.html: the Auto-compact section', () => {
     assert.match(sec, /<span class="onoff-st" id="set-compact-st" aria-hidden="true"><\/span>/);
     assert.match(sec, /<p class="help" id="set-compact-result"><\/p>/);
     assert.match(sec, /<p class="help" id="set-compact-cap">On a model with a 200k window, Claude can't compact later than about 83 %, so a higher % acts as about 83 % on those models\.<\/p>/);
-    assert.match(sec, /<p class="help" id="set-compact-help">Applies only to sessions nika starts: the orchestrator, a resumed orchestrator and spawned agents, from their next start\. Running sessions and sessions you start yourself keep Claude Code's own setting\. Compact in the session window works at any time\.<\/p>/);
+    assert.match(sec, /<p class="help" id="set-compact-help">Sessions nika starts get this point from their next start\. In any other Claude session nika shows, nika types \/compact when the session has waited 60 seconds past this point and you have not typed in nika for it: once each time it grows past the point, at most every 10 minutes\. nika can't type into a session in a plain terminal or another tmux server, types nothing while only the browser dashboard runs, and can't compact a session that keeps working: Claude does that itself, or nika at its next wait\. Compact in the session window works at any time\.<\/p>/); // 0.5.4 AC, test 39 (design 7.4)
     assert.match(sec, /<p class="err" id="set-compact-err" hidden><\/p>/);
   });
 
@@ -1178,5 +1178,30 @@ describe('Session window: the Fit mode setting (M-23, M-24)', () => {
     const src = code(read('settings.js'));
     assert.match(src, /fit: \{ mode: radio\('fit'\) \},/);
     assert.match(src, /setRadio\('fit', s\.fit\?\.mode \?\? 'auto'\);/);
+  });
+});
+
+// ---- 0.5.4 AC, test 39: what the Settings text promises ---------------------------------------------------------------------------------------
+
+describe('the Auto-compact help text says what the typed /compact does (0.5.4 AC, test 39)', () => {
+  const help = /<p class="help" id="set-compact-help">([^<]*)<\/p>/.exec(HTML)?.[1] ?? '';
+
+  test('(+) it names the 60 s wait, the user\'s own typing, the once-per-crossing and 10 minute rules and the three limits', () => {
+    for (const part of ['nika types /compact when the session has waited 60 seconds past this point', 'you have not typed in nika for it', 'once each time it grows past the point',
+      'at most every 10 minutes', "nika can't type into a session in a plain terminal or another tmux server", 'types nothing while only the browser dashboard runs',
+      "can't compact a session that keeps working: Claude does that itself, or nika at its next wait", 'Compact in the session window works at any time.']) {
+      assert.ok(help.includes(part), part);
+    }
+    assert.ok(help.startsWith('Sessions nika starts get this point from their next start.'));
+  });
+
+  test('(\u2212) the 0.4 sentences are gone: it no longer says it applies only to sessions nika starts, or that hand-started ones keep Claude Code\'s setting', () => {
+    assert.equal(help.includes('Applies only to sessions nika starts'), false);
+    assert.equal(help.includes('sessions you start yourself keep'), false);
+  });
+
+  test('(\u2212) it is plain text in an ASCII source, and the paragraph is still described-by the switch', () => {
+    assert.equal([...help].every((ch) => ch.codePointAt(0) < 128), true);
+    assert.match(HTML, /aria-describedby="set-compact-result set-compact-help"/);
   });
 });

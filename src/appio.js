@@ -210,7 +210,7 @@ export function statusLine(snapshot) {
  * @param {import('node:stream').Writable} o.stderr
  * @returns {Promise<number>}
  */
-export function serveApp({ config, env = process.env, stdin, stdout, stderr, exec = makeExec(), now = Date.now, intervalMs = STATUS_MS, helloMs = HELLO_MS, appCopy = {}, releaseMs = RELEASE_ALL_MS, attachments: attachOpts = {} }) {
+export function serveApp({ config, env = process.env, stdin, stdout, stderr, exec = makeExec(), now = Date.now, intervalMs = STATUS_MS, helloMs = HELLO_MS, appCopy = {}, releaseMs = RELEASE_ALL_MS, attachments: attachOpts = {}, createAutoCompact }) {
   const say = (obj) => stdout.write(`${JSON.stringify(obj)}\n`);
   stdout.on('error', () => {}); // the shell went away: stdin closes next and ends us
   if (stdin.isTTY) {
@@ -222,6 +222,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
     let phase = 'hello'; // hello → running → done
     let server = null;
     let fit = null; // the fit controller (src/fit.js), built by createAppApi
+    let autoCompact = null; // the sweeper of the typed /compact (src/autocompact.js), built by createAppApi, ticked below, stopped at finish
     let attachments = null; // the attachment store (src/attachments.js): pruned after ready and every 24 h, stopped at finish
     let timer = null;
     let onMessage = () => {}; // messages after the hello; set once the server runs
@@ -240,6 +241,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
       if (phase === 'done') return;
       phase = 'done';
       clearTimeout(helloTimer);
+      autoCompact?.stop(); // before the timer goes: a sweeper tick in flight types nothing more (0.5.4, AC)
       clearInterval(timer);
       attachments?.stop();
       process.off('SIGINT', stop);
@@ -282,7 +284,7 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         findSessions: (ids) => findSessions(ids, { config: cfg, now: now(), cache: collectorCache }), // ended sessions by id in one transcript-index walk (the project list's saved orchestrators)
       };
       // every row: pane eligibility, the saved orchestrator's state and the repo key of a pane read this one (deps.collect), so a removal never changes what nika controls (0.5.4, T69)
-      const snapshot = () => collect({ config: cfg, exec, now: now(), sinceMs: parseSince(DEFAULT_SINCE), since: DEFAULT_SINCE, cache: collectorCache }).then((r) => r.snapshot);
+      const snapshot = () => collect({ config: cfg, exec, now: now(), sinceMs: parseSince(DEFAULT_SINCE), since: DEFAULT_SINCE, cache: collectorCache, typed: true }).then((r) => r.snapshot); // typed: the app tier's words (0.5.4, AC)
       // the tray's view: the same, with what the user removed from the lists left out (0.5.4, design-053-rm 4.4)
       const viewSnapshot = async () => {
         const t = now();
@@ -306,9 +308,11 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
         picker,
         window: (action) => say({ type: 'window', action }), // the shell acts on its window (contract §5)
         appCopy: { state: () => appCopyState(copyArgs, copyDeps), install: () => installAppCopy(copyArgs, copyDeps), dismiss: () => dismissAppCopy(copyArgs, copyDeps) },
+        ...(createAutoCompact ? { createAutoCompact } : {}), // a test seam
       };
       server = createServer({ config: cfg, exec, token: crypto.randomBytes(24).toString('base64url'), now, version: VERSION, app: createAppApi({ secret, ctx, deps }) });
       fit = ctx.fit;
+      autoCompact = ctx.autoCompact;
       fit.setMode((await loadConfig(env)).config.fit.mode); // 0.5.4 (P2): the saved Fit mode, before the first request (recover() runs in every mode)
       await bounded(fit.recover()); // give back what a crash left (design W7 section 6): before the first request and before `ready`
       if (phase === 'done') return; // stdin closed while it ran: finish() has closed the server
@@ -340,9 +344,18 @@ export function serveApp({ config, env = process.env, stdin, stdout, stderr, exe
           busy = false;
         }
       };
-      timer = setInterval(tick, intervalMs);
+      // The sweeper of the typed /compact (0.5.4, AC) is ticked on the same beat but is not part of the status tick: not awaited, so a slow tmux never holds the
+      // status line back, and it has its own running guard, so ticks never stack. It starts here, after `ready`, so nothing is typed during fit.recover().
+      const sweep = () => {
+        if (phase === 'running') autoCompact?.tick().catch(() => {}); // a tick never rejects; the catch is for a seam that does
+      };
+      const beat = () => {
+        tick();
+        sweep();
+      };
+      timer = setInterval(beat, intervalMs);
       timer.unref(); // never keeps the process alive on its own
-      tick();
+      beat();
       onMessage = (msg) => {
         if (msg.type === 'folder') picker.onFolder(msg);
         if (msg.type === 'files') picker.onFiles(msg);

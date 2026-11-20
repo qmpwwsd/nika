@@ -10,7 +10,7 @@ import { resolveProject } from './collect/projects.js';
 import { mapLimit } from './util.js';
 import { clean } from './text.js';
 import { subagentLabel } from './labels.js';
-import { UUID, WINDOW_INDEX } from './ids.js';
+import { UUID, WINDOW_INDEX, CLAUDE_COMMAND } from './ids.js';
 import { MODEL_CATALOG, modelWindow } from './models.js';
 import { compactLaunch } from './compact.js';
 import { keyFor, loadConfig, defaults, addedTo } from './store.js';
@@ -162,18 +162,20 @@ function linkHosts(live, projectCache) {
  * - `window`: with auto-compact on, the window the launch uses (the setting's, cut to the model's; the model's for 'model'), else the
  *   model's own; an unknown model id counts as 200k (modelWindow). Null, with `pct` and `compactAt`, when no model was seen.
  * - `pct`: tokens / window x 100, one decimal, not capped. `compactAt`: the launch threshold in tokens, only for a session nika started.
- * - `compaction`: 'off' (the setting is off), 'on' (on, and nika started the session: it compacts there), 'none' (on, but nika did
- *   not start it, or it ended: nika's setting does not act on it, so the window is a yardstick). An adopted orchestrator carries
- *   nika's tag but was started by the user, so it reads 'on' until nika resumes it (accepted).
+ * - `compaction`: 'off' (the setting is off), 'on' (on, and nika started the session: it compacts there), 'typed' (0.5.4, AC; on, nika
+ *   did not start it, `typed` is true: the app tier, and the session is live in a pane nika can type into, so nika types /compact at
+ *   `compactAt` when the session waits past it), 'none' (on, but nika did not start it and does not type there, or it ended: nika's setting
+ *   does not act on it, so the window is a yardstick). An adopted orchestrator carries nika's tag but was started by the user, so it reads
+ *   'on' until nika resumes it (accepted).
  */
-export function contextOf(usage, compaction, started) {
+export function contextOf(usage, compaction, started, typed = false) {
   if (!usage) return null;
   const { tokens, model } = usage;
-  const mode = !compaction.enabled ? 'off' : started ? 'on' : 'none';
+  const mode = !compaction.enabled ? 'off' : started ? 'on' : typed ? 'typed' : 'none';
   if (!model) return { tokens, window: null, compactAt: null, pct: null, compaction: mode };
   const launch = compactLaunch(model, compaction); // null when auto-compact is off
   const window = launch?.window ?? modelWindow(model);
-  return { tokens, window, compactAt: mode === 'on' ? launch.compactAt : null, pct: Math.round((tokens / window) * 1000) / 10, compaction: mode };
+  return { tokens, window, compactAt: mode === 'on' || mode === 'typed' ? launch.compactAt : null, pct: Math.round((tokens / window) * 1000) / 10, compaction: mode };
 }
 
 /**
@@ -197,10 +199,12 @@ const NO_HIDDEN = Object.freeze({ sessions: new Map(), groups: new Map() });
  * normally, so it always shows) when its id or its host id is in `sessions`, or when its folder is in `groups`, the folder is not a project added to nika
  * and the row started at or before the removal. A folder that is not a project and has no row left is dropped; a project's group stays, empty. findSession
  * and findSessions pass none: a removed session is still found.
+ * `typed`: the app tier's flag (0.5.4, AC; server `app !== null`, appio's own snapshot): a live session nika did not start, in a pane tmux lists as not
+ * dead and running claude (CLAUDE_COMMAND), reads `context.compaction` 'typed'. The browser tier and the CLI pass none (false), so the same session reads 'none'.
  * @returns {{ snapshot: object, reportPaths: Map<string,string> }}
  *   snapshot is the public JSON (no file paths of reports); reportPaths stays server-side.
  */
-export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [], indexOnly = false, platform = process.platform, hidden = NO_HIDDEN }) {
+export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [], indexOnly = false, platform = process.platform, hidden = NO_HIDDEN, typed = false }) {
   cache.transcripts ??= createTranscriptCache();
   // indexOnly: just the transcript index (findSessions); no registry, ps, tmux or reports, so nothing is live
   const [registry, table, index, tmux, reportDirs] = indexOnly
@@ -310,7 +314,8 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         title,
         model: clean(t?.model, 80),
         modelLabel: modelLabel(t?.model),
-        context: contextOf(t?.usage, compaction, isLive && paneInfo?.role != null), // numbers only (C6)
+        // numbers only (C6); `typed` (0.5.4, AC): the app tier, live, in a listed pane that is not dead and runs claude (what the keys route's pane check needs)
+        context: contextOf(t?.usage, compaction, isLive && paneInfo?.role != null, typed === true && isLive && paneInfo !== null && paneInfo.dead !== true && CLAUDE_COMMAND.test(String(paneInfo.command ?? '').trim())),
         cwd,
         worktree: clean(project.worktree, 120),
         gitBranch: clean(t?.gitBranch, 200),

@@ -90,10 +90,12 @@ export function subagentItemEl(s, { href = null, fk = null, time = null } = {}) 
  * The context meter (design 0.4 section 6) drawn from `a.context` through ctxView: `span.ctx[data-lvl][title]` holding the number
  * (a warning icon when nearly full), a bar of quantised steps (`data-q`, no inline style) and an sr-only sentence; the visible parts
  * are hidden from assistive tech so the sentence is read once. `header` adds the word "Context" and the long numbers (hidden on narrow
- * windows). `el` is an existing `.ctx` element to fill again (the session header's #sess-ctx) instead of a new one.
+ * windows). `el` is an existing `.ctx` element to fill again (the session header's #sess-ctx) instead of a new one. `note` (app tier,
+ * 0.5.4 AC) is the wire note of the pane's last typed /compact: ctxView puts one sentence about it at the end of the title and of the
+ * sr text; the meter gets no new part.
  */
-export function ctxEl(context, { header = false, el = null } = {}) {
-  const v = ctxView(context);
+export function ctxEl(context, { header = false, el = null, note = null } = {}) {
+  const v = ctxView(context, note);
   const root = el ?? h('span', { class: 'ctx' });
   const hid = { 'aria-hidden': 'true' };
   root.setAttribute('data-lvl', v.lvl);

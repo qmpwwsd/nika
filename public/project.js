@@ -6,7 +6,7 @@ import { h, icon } from './dom.js';
 import {
   $, state, hooks, RX, save, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl, closeMenu, syncRadioCards,
 } from './ui.js';
-import { parseModes, modesAfter, settingModeEl, MODE_META } from './modes.js';
+import { parseModes, parseCompacted, modesAfter, settingModeEl, MODE_META } from './modes.js';
 import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
 import {
   CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
@@ -79,14 +79,17 @@ function pollModes() {
   const ctl = new AbortController(); // AbortSignal.timeout() is missing in older macOS web views
   const timer = setTimeout(() => ctl.abort(), 4000);
   appFetch('/api/app/modes', { signal: ctl.signal })
-    .then((r) => (r.status === 200 ? parseModes(r.body) : null))
+    .then((r) => (r.status === 200 ? r.body : null))
     .catch(() => null)
-    .then((map) => {
+    .then((body) => {
       clearTimeout(timer);
       modesBusy = false;
-      const before = JSON.stringify(state.modes.map);
+      const map = parseModes(body);
+      const before = JSON.stringify([state.modes.map, state.compacted]);
       state.modes = modesAfter(state.modes, map);
-      if (JSON.stringify(state.modes.map) !== before) render();
+      // the notes come with the modes and follow the same rule: one failed poll keeps them, the next clears them (0.5.4 AC)
+      state.compacted = map ? parseCompacted(body) : state.modes.misses > 1 ? {} : state.compacted;
+      if (JSON.stringify([state.modes.map, state.compacted]) !== before) render();
     });
 }
 
@@ -503,7 +506,7 @@ function renderProject(force) {
   const key = state.route.key;
   const p = state.projects?.find((x) => x.key === key) ?? null;
   const g = buildGroups().find((x) => x.project?.key === key) ?? null;
-  const sig = JSON.stringify([p, g?.agents, g?.hidden, state.modes.map, state.settings, state.plugins, state.models, state.me?.tmux, state.me?.claude, state.error, state.showEndedProject, [...state.open], [...state.expanded], key]);
+  const sig = JSON.stringify([p, g?.agents, g?.hidden, state.modes.map, state.compacted, state.settings, state.plugins, state.models, state.me?.tmux, state.me?.claude, state.error, state.showEndedProject, [...state.open], [...state.expanded], key]);
   if (!force && (sig === projSig || interacting())) return;
   projSig = sig;
   const body = $('#proj-body');

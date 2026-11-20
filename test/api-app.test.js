@@ -2292,6 +2292,7 @@ function fakeControl(answers = {}) {
       runCommand: method('runCommand', () => ({ status: 200, body: { sent: true } })),
       answer: method('answer', (pane, b) => ({ status: 200, body: { answered: b.n } })),
       stop: method('stop', () => ({ status: 200, body: { stopped: true, presses: 1 } })),
+      autoCompact: method('autoCompact', () => ({ status: 200, body: { sent: true }, keys: 3 })),
       writeDraft: method('writeDraft', () => ({ status: 200, body: { draft: null, typed: 0 } })),
       submit: method('submit', () => ({ status: 200, body: { taken: true, draft: null } })),
       acceptSuggestion: method('acceptSuggestion', () => ({ status: 200, body: { draft: null } })),
@@ -2563,7 +2564,7 @@ describe('GET /api/app/modes', () => {
     screens['%8'] = rowsOf(PROMPT);
     const r = await a.call('GET', '/api/app/modes');
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body, { modes: { '%6': { mode: 'plan', confirmed: true }, '%8': { mode: 'acceptEdits', confirmed: false } } });
+    assert.deepEqual(r.body, { modes: { '%6': { mode: 'plan', confirmed: true }, '%8': { mode: 'acceptEdits', confirmed: false } }, compacted: {} });
     assert.deepEqual(mirror.seen.sort(), ['%6', '%8']); // %5 is a shell, %7 is not a live session
   });
 
@@ -2580,11 +2581,11 @@ describe('GET /api/app/modes', () => {
     a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
     screens['%6'] = rowsOf(['t', FOOTER.plan]);
     screens['%8'] = null;
-    assert.deepEqual((await a.call('GET', '/api/app/modes')).body, { modes: { '%6': { mode: 'plan', confirmed: true } } });
+    assert.deepEqual((await a.call('GET', '/api/app/modes')).body, { modes: { '%6': { mode: 'plan', confirmed: true } }, compacted: {} });
     a.deps.state.panes = new Map();
     a.deps.state.error = 'tmux unavailable: no server running';
     a.clock.t += 2000;
-    assert.deepEqual((await a.call('GET', '/api/app/modes')).body, { modes: {} });
+    assert.deepEqual((await a.call('GET', '/api/app/modes')).body, { modes: {}, compacted: {} });
   });
 
   test('(−) at most 4 captures at once', async () => {
@@ -6452,7 +6453,7 @@ describe('a dead pane (remain-on-exit) gets no keys and no capture', () => {
     screens['%6'] = rowsOf(['t', FOOTER.plan]);
     setPane(a, '%6', { command: 'claude', dead: true });
     const r = await a.call('GET', '/api/app/modes');
-    assert.deepEqual(r.body, { modes: {} });
+    assert.deepEqual(r.body, { modes: {}, compacted: {} });
     assert.deepEqual(mirror.seen, []);
   });
 
@@ -6607,5 +6608,387 @@ describe('the Fit mode: settings PUT and the fit PUT hand it to the controller (
       }
     }
     assert.deepEqual(fit.order, []);
+  });
+});
+
+// --- AC (0.5.4): the router's two hooks for the typed /compact sweeper (src/autocompact.js): `touchedAt` (when a user's action last named the pane) and the note ---
+
+const REFUSED_AC = { status: 409, body: { error: 'busy-switching', message: 'x' } };
+const SIG_AC = 'abcdef0123456789';
+const NOTE_TYPED = { state: 'typed', at: 1_700_000_000_000, tokens: 331000 };
+const NOTE_COMPACTED = { state: 'compacted', at: 1_700_000_000_000, tokens: 331000 };
+
+/** A createAutoCompact seam: keeps what the router built the sweeper with (`seen`), counts tick() and stop(), answers noteFor from `notes` (pane id -> note) and records what it was asked. */
+function fakeAutoCompact() {
+  const f = { seen: null, notes: new Map(), asked: [], ticks: 0, stops: 0 };
+  f.factory = (d) => {
+    f.seen = d;
+    return {
+      tick: async () => { f.ticks += 1; },
+      stop: () => { f.stops += 1; },
+      noteFor: (p, e) => { f.asked.push([p, e]); return f.notes.get(p) ?? null; },
+    };
+  };
+  return f;
+}
+
+describe('typed /compact: the router builds the sweeper (0.5.4, AC)', () => {
+  test('(+) it is built once, from the eligibility, the keys route\'s pane check, the controller\'s autoCompact, the stamp map, the clock and the log; ctx.autoCompact is that object', async () => {
+    const ac = fakeAutoCompact();
+    const lines = [];
+    const control = fakeControl();
+    const { a } = await bootScreens({ over: { createAutoCompact: ac.factory, createSessionControl: control.factory, log: (l) => lines.push(l) } });
+    assert.deepEqual(Object.keys(ac.seen).sort(), ['compact', 'eligibility', 'isEligible', 'log', 'now', 'touchedAt']);
+    assert.equal(typeof a.ctx.autoCompact.tick, 'function');
+    const e = await ac.seen.eligibility();
+    assert.ok(e.panes instanceof Map && e.live instanceof Map);
+    assert.equal(ac.seen.isEligible(e, '%6'), true, 'a live claude pane');
+    assert.equal(ac.seen.isEligible(e, '%5'), false, 'a shell pane');
+    assert.equal(ac.seen.isEligible(e, '%7'), false, 'a pane that is not a live session\'s');
+    assert.equal(ac.seen.now(), a.clock.t);
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity, 'nobody has touched it');
+    assert.deepEqual(await ac.seen.compact('%6'), { status: 200, body: { sent: true }, keys: 3 });
+    assert.deepEqual(control.calls.at(-1), ['autoCompact', '%6']);
+    ac.seen.log('nika: auto-compact: probe');
+    assert.deepEqual(lines, ['nika: auto-compact: probe'], 'the line goes to deps.log');
+  });
+
+  test('(\u2212) without the seam the real sweeper is built (it has the three methods) and the browser tier has none', async () => {
+    const { a } = await bootScreens();
+    assert.deepEqual(Object.keys(a.ctx.autoCompact).sort(), ['noteFor', 'stop', 'tick']);
+  });
+});
+
+describe('typed /compact: user actions stamp the pane on arrival (0.5.4, AC test 11)', () => {
+  /** The 16 routes of design 2.3: [name, method, suffix, request]. */
+  const ROUTES = [
+    ['keys', 'POST', 'keys', { json: { keys: ['Up'] } }],
+    ['mode', 'POST', 'mode', { json: { target: 'plan' } }],
+    ['draft', 'PUT', 'draft', { json: { text: 'hi', base: '' } }],
+    ['submit', 'POST', 'submit', { json: {} }],
+    ['scroll', 'POST', 'scroll', { json: { dir: 'up', pages: 3 } }],
+    ['attachments', 'POST', 'attachments', { json: UPLOAD }],
+    ['attachments/pick', 'POST', 'attachments/pick', { json: { room: 1 } }],
+    ['DELETE attachments/:id', 'DELETE', `attachments/${ATT}`, {}],
+    ['attach-send', 'POST', 'attach-send', { json: { ids: [ATT], base: BASE16 } }],
+    ['suggestion', 'POST', 'suggestion', { json: { text: 'try it' } }],
+    ['dialog', 'POST', 'dialog', { json: { sig: SIG_AC, cancel: true } }],
+    ['survey', 'POST', 'survey', { json: { n: 1, sig: SIG_AC } }],
+    ['answer', 'POST', 'answer', { json: { n: 1, sig: SIG_AC } }],
+    ['command', 'POST', 'command', { json: { text: '/compact' } }],
+    ['end', 'POST', 'end', { json: {} }],
+    ['stop', 'POST', 'stop', { json: {} }],
+  ];
+
+  /** A router whose every module behind those routes writes down what the stamp of %6 was at the moment it was reached, and refuses. */
+  async function rig() {
+    const ac = fakeAutoCompact();
+    const reached = [];
+    const hit = async () => { reached.push(ac.seen.touchedAt('%6')); return REFUSED_AC; };
+    const control = fakeControl({ switchMode: hit, writeDraft: hit, submit: hit, acceptSuggestion: hit, answerDialog: hit, answerSurvey: hit, answer: hit, runCommand: hit, endSession: hit, stop: hit });
+    const store = fakeStore({ save: hit, remove: hit });
+    const picker = { start: () => null, status: () => null, filesStatus: () => null, startFiles: () => { reached.push(ac.seen.touchedAt('%6')); return null; } };
+    const fit = fakeFit();
+    const { a, screens } = await bootScreens({
+      over: {
+        createAutoCompact: ac.factory, createSessionControl: control.factory, createScroll: fakeScroller(hit).factory, createAttachSend: fakeSender(hit).factory, createFit: fit.factory,
+        attachments: store, picker, keys: { send: hit }, collect: async () => keyedSnapshot('%6'),
+      },
+    });
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    return { a, ac, reached, screens };
+  }
+  const url = (id, suffix) => `/api/app/pane/${id.replace('%', '%25')}/${suffix}`;
+
+  test('(+) each of the 16 routes stamps the pane BEFORE its module is reached, also when the module refuses', async () => {
+    const { a, ac, reached } = await rig();
+    assert.equal(ROUTES.length, 16);
+    for (const [name, method, suffix, req] of ROUTES) {
+      reached.length = 0;
+      a.clock.t += 5000;
+      const t = a.clock.t;
+      const r = await a.call(method, url('%6', suffix), req);
+      assert.equal(reached.length, 1, `${name}: its module was reached once (status ${r.status})`);
+      assert.equal(reached[0], t, `${name}: stamped when the request arrived, before the module`);
+      assert.equal(ac.seen.touchedAt('%6'), t, `${name}: and it stays`);
+    }
+  });
+
+  test('(\u2212) a pane the keys route would refuse (a shell, an unlisted one) is not stamped by a refused request', async () => {
+    const { a, ac } = await rig();
+    for (const id of ['%5', '%7', '%99']) {
+      a.clock.t += 5000;
+      assert.equal((await a.call('POST', url(id, 'keys'), { json: { keys: ['Up'] } })).status, 404, id);
+      assert.equal((await a.call('POST', url(id, 'command'), { json: { text: '/compact' } })).status, 404, id);
+      assert.equal(ac.seen.touchedAt(id), -Infinity, id);
+    }
+  });
+
+  test('(\u2212) a request that fails its body check (400) is not a user action on the pane', async () => {
+    const { a, ac } = await rig();
+    a.clock.t += 5000;
+    for (const [suffix, json] of [['keys', { send: 'yes' }], ['mode', { target: 'nope' }], ['draft', { text: 1 }], ['command', { text: 'compact' }], ['answer', { n: 0 }]]) {
+      const r = await a.call(suffix === 'draft' ? 'PUT' : 'POST', url('%6', suffix), { json });
+      assert.equal(r.status, 400, suffix);
+    }
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity);
+  });
+
+  test('(\u2212) the fit heartbeat and release, the chooser poll, the image read, the modes poll and a plain capture stamp nothing', async () => {
+    const { a, ac } = await rig();
+    a.clock.t += 5000;
+    assert.equal((await a.call('PUT', url('%6', 'fit'), { json: FIT_BODY })).status, 200);
+    assert.equal((await a.call('DELETE', url('%6', 'fit'), { json: {} })).status, 200);
+    assert.equal((await a.call('GET', url('%6', `attachments/pick/${REQ_ID}`))).status, 404);
+    assert.equal((await a.call('GET', url('%6', `attachments/${ATT}/image`))).status, 404);
+    assert.equal((await a.call('GET', '/api/app/modes')).status, 200);
+    assert.equal((await a.call('GET', url('%6', 'capture'))).status, 200);
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity);
+  });
+
+  test('(+) a capture with X-Nika-Typing exactly 1 stamps, before the capture is read, also when the capture fails', async () => {
+    const { a, ac, screens } = await rig();
+    a.clock.t += 5000;
+    assert.equal((await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': '1' } })).status, 200);
+    assert.equal(ac.seen.touchedAt('%6'), a.clock.t);
+    screens['%6'] = null; // the mirror fails
+    a.clock.t += 5000;
+    assert.equal((await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': '1' } })).status, 503);
+    assert.equal(ac.seen.touchedAt('%6'), a.clock.t, 'a failed capture is still a sign that somebody is typing');
+  });
+
+  test('(\u2212) any other header value, an unlisted pane and a header on another route stamp nothing', async () => {
+    const { a, ac } = await rig();
+    a.clock.t += 5000;
+    for (const value of ['2', '', '11', 'true', '1, 1', '0', '01']) { // (HTTP trims the spaces around a value, so ' 1' arrives as 1)
+      const r = await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': value } });
+      assert.equal(r.status, 200, JSON.stringify(value));
+      assert.equal(ac.seen.touchedAt('%6'), -Infinity, JSON.stringify(value));
+    }
+    assert.equal((await a.call('GET', url('%5', 'capture'), { headers: { 'x-nika-typing': '1' } })).status, 404);
+    assert.equal(ac.seen.touchedAt('%5'), -Infinity);
+    assert.equal((await a.call('GET', '/api/app/modes', { headers: { 'x-nika-typing': '1' } })).status, 200);
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity);
+  });
+
+  test('(\u2212) the header does not change the answer or the ETag: the same screen with and without it is one ETag and revalidates to 304', async () => {
+    const { a } = await rig();
+    const plain = await a.call('GET', url('%6', 'capture'));
+    const typing = await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+    assert.equal(typing.headers.etag, plain.headers.etag);
+    assert.deepEqual(typing.body, plain.body);
+    assert.equal((await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': '1', 'if-none-match': plain.headers.etag } })).status, 304);
+  });
+
+  test('(+) a stamp of a pane that tmux no longer lists is forgotten at the next refresh; (\u2212) a failed tmux listing keeps the stamps', async () => {
+    const { a, ac } = await rig();
+    a.clock.t += 5000;
+    await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+    assert.equal((await a.call('DELETE', url('%99', `attachments/${ATT}`), { json: {} })).status, 200, 'not eligibility-gated: the file must go');
+    const t0 = a.clock.t;
+    assert.deepEqual([ac.seen.touchedAt('%6'), ac.seen.touchedAt('%99')], [t0, t0], 'a valid pane id is stamped, listed or not');
+    a.deps.state.error = 'tmux unavailable: no server running'; // a blip
+    a.clock.t += 5000;
+    await a.call('GET', '/api/app/modes');
+    assert.deepEqual([ac.seen.touchedAt('%6'), ac.seen.touchedAt('%99')], [t0, t0], 'one failed listing proves nothing');
+    a.deps.state.error = null;
+    a.clock.t += 5000;
+    await a.call('GET', '/api/app/modes');
+    assert.equal(ac.seen.touchedAt('%99'), -Infinity, 'a good listing without it: gone');
+    assert.equal(ac.seen.touchedAt('%6'), t0, 'a listed pane keeps its stamp');
+    a.deps.state.panes.delete('%6');
+    a.clock.t += 5000;
+    await a.call('GET', '/api/app/modes');
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity);
+  });
+});
+
+describe('typed /compact: a missed registry read does not delete the typing stamp (0.5.4, AC, round 2, M1)', () => {
+  const WAIT_AC = 60000; // the sweeper's QUIET_MS and WAIT_MS (src/autocompact.js)
+  const SESSION_AC = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const typedRow = () => ({ id: SESSION_AC, hostId: null, live: true, state: 'idle', pane: { id: '%6' }, context: { tokens: 330000, window: 400000, compactAt: 320000, pct: 82.5, compaction: 'typed' } });
+  const withRow = { groups: [{ key: GROUP_KEY, agents: [typedRow()] }] };
+  const noRow = { groups: [] }; // the registry read missed the live session (a failed readdir, a session file read mid-write); tmux is fine
+  const urlOf = (id, suffix) => `/api/app/pane/${id.replace('%', '%25')}/${suffix}`;
+
+  /** The router with the REAL sweeper and a fake controller; `world.snap` is what the registry read gives (null: the read fails). */
+  async function boot6() {
+    const world = { snap: withRow };
+    const { a, screens, control } = await bootScreens({ over: { collect: async () => { if (world.snap === null) throw new Error('registry unavailable'); return world.snap; } } });
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    const T0 = a.clock.t;
+    const at = (ms) => { a.clock.t = T0 + ms; };
+    const types = () => control.calls.filter((c) => c[0] === 'autoCompact').length;
+    return { a, world, at, types };
+  }
+
+  test('(\u2212) idle at t0, a typing capture at t0 + 50 s, one capture during a registry miss at t0 + 51.5 s (404): the sweeper does not fire at t0 + 60 s, and only from t0 + 110 s', async () => {
+    const { a, world, at, types } = await boot6();
+    await a.ctx.autoCompact.tick(); // t0: idle seen
+    at(50000);
+    assert.equal((await a.call('GET', urlOf('%6', 'capture'), { headers: { 'x-nika-typing': '1' } })).status, 200);
+    at(51500);
+    world.snap = noRow;
+    assert.equal((await a.call('GET', urlOf('%6', 'capture'))).status, 404, 'the pane reads not eligible for this one refresh');
+    world.snap = withRow;
+    at(WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 0, 'the user typed 10 s ago: the 404 did not wipe the stamp');
+    at(WAIT_AC + 30000);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 0);
+    at(50000 + WAIT_AC - 1);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 0, 'one ms short of 60 s after the typing');
+    at(50000 + WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 1, 'quiet for 60 s: it fires');
+  });
+
+  test('(+) without a miss the same run fires once the 60 s after the typing are over (and not at t0 + 60 s)', async () => {
+    const { a, at, types } = await boot6();
+    await a.ctx.autoCompact.tick();
+    at(50000);
+    await a.call('GET', urlOf('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+    at(WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 0);
+    at(50000 + WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 1);
+  });
+
+  test('(\u2212) a registry read that gives no snapshot at all, or none for the pane, keeps the stamp of a listed pane', async () => {
+    for (const miss of [null, noRow]) {
+      const { a, world, at, types } = await boot6();
+      await a.ctx.autoCompact.tick();
+      at(50000);
+      await a.call('GET', urlOf('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+      world.snap = miss;
+      for (const ms of [51500, 53000, 55000]) { at(ms); await a.call('GET', '/api/app/modes'); }
+      world.snap = withRow;
+      at(WAIT_AC);
+      await a.ctx.autoCompact.tick();
+      assert.equal(types(), 0, miss === null ? 'a failed registry read' : 'a read without the pane');
+    }
+  });
+
+  test('(+) the stamp is forgotten once a good tmux listing no longer lists the pane, also when the registry read gave nothing: the id can be reused', async () => {
+    const { a, world, at, types } = await boot6();
+    await a.ctx.autoCompact.tick(); // t0: idle seen
+    at(5000);
+    await a.call('GET', urlOf('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+    const entry = a.deps.state.panes.get('%6');
+    a.deps.state.panes.delete('%6'); // a good listing without the pane
+    world.snap = null; // and the registry read fails in the same refresh
+    at(8000);
+    await a.call('GET', '/api/app/modes');
+    a.deps.state.panes.set('%6', entry); // tmux gives the id to another session
+    world.snap = withRow;
+    at(WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 1, 'the old stamp (55 s ago) belonged to the old pane: the new one is not held back by it');
+  });
+
+  test('(\u2212) a failed tmux listing keeps the stamp, also when the listing comes back empty', async () => {
+    const { a, at, types } = await boot6();
+    await a.ctx.autoCompact.tick();
+    at(50000);
+    await a.call('GET', urlOf('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+    const listed = new Map(a.deps.state.panes);
+    a.deps.state.error = 'tmux unavailable: no server running';
+    a.deps.state.panes = new Map(); // what listPanes gives while tmux is down
+    at(52000);
+    await a.call('GET', '/api/app/modes');
+    a.deps.state.error = null;
+    a.deps.state.panes = listed;
+    at(WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 0, 'one failed listing proves nothing: the stamp of t0 + 50 s is still there');
+  });
+});
+
+describe('typed /compact: the note on the capture and on /modes (0.5.4, AC tests 32 and 33)', () => {
+  const urlOf = (id, suffix) => `/api/app/pane/${id.replace('%', '%25')}/${suffix}`;
+  async function noted() {
+    const ac = fakeAutoCompact();
+    const { a, screens } = await bootScreens({ over: { createAutoCompact: ac.factory } });
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    return { a, ac };
+  }
+
+  test('(+) the capture body carries the sweeper\'s note for the pane, asked with the pane id and the eligibility', async () => {
+    const { a, ac } = await noted();
+    ac.notes.set('%6', NOTE_TYPED);
+    const r = await a.call('GET', urlOf('%6', 'capture'));
+    assert.deepEqual(r.body.compacted, NOTE_TYPED);
+    const [pane, e] = ac.asked.at(-1);
+    assert.equal(pane, '%6');
+    assert.ok(e.live instanceof Map && e.panes instanceof Map, 'the eligibility the router already holds');
+  });
+
+  test('(\u2212) no note is null, not absent; a note of another pane is not shown here', async () => {
+    const { a, ac } = await noted();
+    const r = await a.call('GET', urlOf('%6', 'capture'));
+    assert.equal(r.body.compacted, null);
+    assert.ok(Object.hasOwn(r.body, 'compacted'));
+    ac.notes.set('%8', NOTE_TYPED);
+    assert.equal((await a.call('GET', urlOf('%6', 'capture'))).body.compacted, null);
+  });
+
+  test('(+) the ETag folds the note in: same screen, a note appears or changes -> another ETag and no 304; the same note keeps the ETag and revalidates', async () => {
+    const { a, ac } = await noted();
+    const none = await a.call('GET', urlOf('%6', 'capture'));
+    ac.notes.set('%6', NOTE_TYPED);
+    const typed = await a.call('GET', urlOf('%6', 'capture'), { headers: { 'if-none-match': none.headers.etag } });
+    assert.equal(typed.status, 200, 'a new note is never hidden by a 304');
+    assert.notEqual(typed.body.etag, none.body.etag);
+    assert.equal(typed.headers.etag, `"${typed.body.etag}"`);
+    assert.equal((await a.call('GET', urlOf('%6', 'capture'), { headers: { 'if-none-match': typed.headers.etag } })).status, 304, 'unchanged: a 304');
+    ac.notes.set('%6', NOTE_COMPACTED);
+    const compacted = await a.call('GET', urlOf('%6', 'capture'), { headers: { 'if-none-match': typed.headers.etag } });
+    assert.equal(compacted.status, 200);
+    assert.notEqual(compacted.body.etag, typed.body.etag);
+    ac.notes.delete('%6');
+    const gone = await a.call('GET', urlOf('%6', 'capture'), { headers: { 'if-none-match': compacted.headers.etag } });
+    assert.equal(gone.status, 200, 'and its going away too');
+    assert.equal(gone.body.etag, none.body.etag);
+  });
+
+  test('(+) /modes carries a compacted map: eligible panes with a note, the note as the sweeper gave it', async () => {
+    const { a, ac } = await noted();
+    ac.notes.set('%6', NOTE_TYPED);
+    const r = await a.call('GET', '/api/app/modes');
+    assert.deepEqual(r.body, { modes: { '%6': { mode: 'plan', confirmed: true } }, compacted: { '%6': NOTE_TYPED } });
+  });
+
+  test('(\u2212) no note: an empty map; a note of a pane that is not eligible (a shell, an unlisted one) is not listed', async () => {
+    const { a, ac } = await noted();
+    assert.deepEqual((await a.call('GET', '/api/app/modes')).body.compacted, {});
+    ac.notes.set('%5', NOTE_TYPED);
+    ac.notes.set('%99', NOTE_COMPACTED);
+    assert.deepEqual((await a.call('GET', '/api/app/modes')).body.compacted, {});
+  });
+
+  test('(\u2212) the note is on /api/app/* only: the browser tier has no capture route, and /api/agents on either tier carries no note', async () => {
+    const { a, ac } = await noted();
+    ac.notes.set('%6', NOTE_TYPED);
+    const browser = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => browser.listen(0, '127.0.0.1', res));
+    servers.push(browser);
+    const bport = browser.address().port;
+    const get = (port, p) => new Promise((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET } }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      }).on('error', reject);
+    });
+    assert.equal((await get(bport, '/api/app/pane/%256/capture')).status, 404);
+    assert.equal((await get(bport, '/api/app/modes')).status, 404);
+    for (const r of [await get(bport, '/api/agents?since=all'), await get(a.port, '/api/agents?since=all')]) {
+      assert.equal(r.status, 200);
+      assert.doesNotMatch(r.data, /"compacted"|nika typed/);
+    }
   });
 });

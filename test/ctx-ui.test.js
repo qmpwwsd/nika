@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { El, installDom, withClass } from './fake-dom.js';
 import { h, icon, roleTagEl, ctxEl, labelEl } from '../public/dom.js';
 import { menuEl, sessionHref } from '../public/ui.js';
+import { rowNote } from '../public/modes.js';
 import { roleTag, parentOf, agentLabelView } from '../public/dash-model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -138,10 +139,10 @@ describe('ctxEl: the meter (design 6.1, 6.3)', () => {
 describe('the row cell (both tiers, design 6.2)', () => {
   const APP = code(read('app.js'));
   const SHAPE = { uuid: /^[0-9a-f-]{36}$/, pane: /^%\d{1,6}$/, key: /^[a-z0-9]{16}$/, claudeUrl: /^https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]{1,64}$/ };
-  function rowOf(a, { isApp }) {
+  function rowOf(a, { isApp, compacted = {} }) {
     const sandbox = {
-      h, icon, roleTag, roleTagEl, menuEl, hooks: {}, SHAPE, sessionHref, isApp, parentOf, ctxEl, labelEl, agentLabelView,
-      state: { modes: { map: {} } }, document: { getSelection: () => ({ isCollapsed: true }) }, location: {},
+      h, icon, roleTag, roleTagEl, menuEl, hooks: {}, SHAPE, sessionHref, isApp, parentOf, ctxEl, labelEl, agentLabelView, rowNote, // 0.5.4 AC: rowNote and state.compacted
+      state: { modes: { map: {} }, compacted }, document: { getSelection: () => ({ isCollapsed: true }) }, location: {},
       sOf: (x) => (x.live ? 'idle' : 'ended'), rowMode: () => null, canEndRow: () => false, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
       statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => h('span', { class: 'model', text: 'Sonnet 5.5' }), timeEl: () => new El('span'),
       copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
@@ -209,9 +210,10 @@ describe('the session header (design 6.4)', () => {
     const slot = new El('span');
     slot.className = 'ctx';
     slot.hidden = true;
-    const sandbox = { ctxEl, $: (id) => (id === 'sess-ctx' ? slot : null) };
+    const W = { compacted: null }; // 0.5.4 AC: the last capture's note
+    const sandbox = { ctxEl, W, $: (id) => (id === 'sess-ctx' ? slot : null) };
     const renderContext = vm.runInNewContext(`${fn(SESSION, 'function renderContext(')}; renderContext`, sandbox);
-    return { slot, renderContext };
+    return { slot, renderContext, W };
   }
 
   test('(+) hidden until the first poll; then rendered (the number, the bar, the title), and again at each poll', () => {
@@ -334,5 +336,91 @@ describe('the CSS (design 6.2, 6.3)', () => {
   test('(+) session.css: the header meter lays out inline, and the label is muted', () => {
     assert.match(SESSCSS, /\.sess-meta \.ctx \{ display: inline-flex; align-items: center; gap: 6px; \}/);
     assert.match(SESSCSS, /\.sess-meta \.ctx-l \{ color: var\(--text-muted\); \}/);
+  });
+});
+
+describe('the row meter with a note of a typed /compact (0.5.4 AC, test 36 on the page side)', () => {
+  const APP = code(read('app.js'));
+  const AT = new Date(2026, 10, 20, 14, 2, 10).getTime();
+  const NOTE = { state: 'typed', at: AT, tokens: 331000 };
+  const SUFFIX = ' \u00b7 nika typed /compact at 14:02, at 331k';
+  const SHAPE = { uuid: /^[0-9a-f-]{36}$/, pane: /^%\d{1,6}$/, key: /^[a-z0-9]{16}$/, claudeUrl: /^https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]{1,64}$/ };
+  function rowOf(a, { isApp, compacted }) {
+    const sandbox = {
+      h, icon, roleTag, roleTagEl, menuEl, hooks: {}, SHAPE, sessionHref, isApp, parentOf, ctxEl, labelEl, agentLabelView, rowNote,
+      state: { modes: { map: {} }, compacted }, document: { getSelection: () => ({ isCollapsed: true }) }, location: {},
+      sOf: (x) => (x.live ? 'idle' : 'ended'), rowMode: () => null, canEndRow: () => false, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
+      statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
+      copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
+    };
+    const rowEl = vm.runInNewContext(`${fn(APP, 'function rowEl(')}; rowEl`, sandbox);
+    return rowEl(a, { key: 'k', label: 'demo-api', project: null, agents: [] }, { scope: 'g' });
+  }
+  const agent = (over = {}) => ({ id: '11111111-1111-4111-8111-111111111111', name: 'planner', live: true, pane: { id: '%3' }, resumeCmd: 'claude --resume x', lastActivity: 1, subagents: [], context: ctx({ compaction: 'typed' }), ...over });
+
+  test('(+) app tier: the title and the sr text of the meter of a live row carry the note of its pane', () => {
+    const li = rowOf(agent(), { isApp: true, compacted: { '%3': NOTE } });
+    const m = one(li, 'ctx');
+    assert.equal(m.attrs.title, `Context: 312k of 400k tokens (nika types /compact at 320k)${SUFFIX}`);
+    assert.equal(one(m, 'sr-only').textContent, `Context 78${NB}% used, 312k of 400k tokens, nika types /compact at 320k, nika typed /compact at 14:02, at 331k`);
+    assert.equal(m.accName, one(m, 'sr-only').textContent, 'a screen reader hears the sentence once');
+  });
+
+  test('(\u2212) browser tier: the same row and the same map show no note (the notes are an app tier thing)', () => {
+    const m = one(rowOf(agent(), { isApp: false, compacted: { '%3': NOTE } }), 'ctx');
+    assert.equal(m.attrs.title, 'Context: 312k of 400k tokens (nika types /compact at 320k)');
+  });
+
+  test('(\u2212) app tier: a pane without a note, another pane\'s note, an ended row and a hostile map give the plain meter', () => {
+    const plain = 'Context: 312k of 400k tokens (nika types /compact at 320k)';
+    assert.equal(one(rowOf(agent(), { isApp: true, compacted: {} }), 'ctx').attrs.title, plain);
+    assert.equal(one(rowOf(agent(), { isApp: true, compacted: { '%4': NOTE } }), 'ctx').attrs.title, plain);
+    assert.equal(one(rowOf(agent({ live: false }), { isApp: true, compacted: { '%3': NOTE } }), 'ctx').attrs.title, plain);
+    assert.equal(one(rowOf(agent({ pane: { id: 'constructor' } }), { isApp: true, compacted: {} }), 'ctx').attrs.title, plain);
+    assert.equal(one(rowOf(agent({ pane: null }), { isApp: true, compacted: { '%3': NOTE } }), 'ctx').attrs.title, plain);
+  });
+
+  test('(\u2212) the note adds no element to the row: the cell holds the same parts with or without it', () => {
+    const a = one(rowOf(agent(), { isApp: true, compacted: {} }), 'ctx');
+    const b = one(rowOf(agent(), { isApp: true, compacted: { '%3': NOTE } }), 'ctx');
+    assert.deepEqual(b.kids.map((k) => k.className), a.kids.map((k) => k.className));
+  });
+});
+
+describe('the session header meter with the last capture\'s note (0.5.4 AC, test 36)', () => {
+  const SESSION = code(read('session.js'));
+  const AT = new Date(2026, 10, 20, 14, 2, 10).getTime();
+  const NOTE = { state: 'compacted', at: AT, tokens: 331000 };
+
+  function rig() {
+    const slot = new El('span');
+    slot.className = 'ctx';
+    slot.hidden = true;
+    const W = { compacted: null };
+    const sandbox = { ctxEl, W, $: (id) => (id === 'sess-ctx' ? slot : null) };
+    const renderContext = vm.runInNewContext(`${fn(SESSION, 'function renderContext(')}; renderContext`, sandbox);
+    return { slot, renderContext, W };
+  }
+
+  test('(+) the header title and sr text carry the note the last capture brought, at every poll', () => {
+    const { slot, renderContext, W } = rig();
+    W.compacted = NOTE;
+    renderContext({ context: ctx({ compaction: 'typed' }) });
+    assert.equal(slot.attrs.title, 'Context: 312k of 400k tokens (nika types /compact at 320k) \u00b7 nika compacted this session at 14:02, at 331k');
+    assert.equal(one(slot, 'sr-only').textContent, `Context 78${NB}% used, 312k of 400k tokens, nika types /compact at 320k, nika compacted this session at 14:02, at 331k`);
+    renderContext({ context: ctx({ compaction: 'typed', pct: 79 }) });
+    assert.equal(slot.attrs.title.endsWith('nika compacted this session at 14:02, at 331k'), true, 'still there after the next poll');
+  });
+
+  test('(\u2212) no note: the header is what it was; a note that went away is gone from the title at the next poll', () => {
+    const { slot, renderContext, W } = rig();
+    renderContext({ context: ctx() });
+    assert.equal(slot.attrs.title, 'Context: 312k of 400k tokens (compacts at 320k)');
+    W.compacted = NOTE;
+    renderContext({ context: ctx() });
+    assert.equal(slot.attrs.title.includes('nika compacted'), true);
+    W.compacted = null;
+    renderContext({ context: ctx() });
+    assert.equal(slot.attrs.title, 'Context: 312k of 400k tokens (compacts at 320k)');
   });
 });

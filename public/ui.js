@@ -32,6 +32,7 @@ export const state = {
   models: null, // app tier: /api/app/models (the catalog array), null until loaded
   plugins: null, // app tier: installed plugin names (/api/app/plugins), null until loaded; the project card flags saved ones that are gone
   modes: { map: {}, misses: 0 }, // app tier: latest /api/app/modes answer by pane id (public/modes.js modesAfter)
+  compacted: {}, // app tier (0.5.4 AC): the notes of a typed /compact by pane id, from the same answer (public/modes.js parseCompacted); kept and cleared with modes
   appError: null, // app tier: the private server refused us (403)
   appCopyUi: { busy: false, error: null, hidden: false }, // app tier, macOS: the Add to Applications notice (spec 3.14); hidden = "Not now" this launch
   open: new Set(), // disclosure ids the user toggled ("!id" = closed on purpose)

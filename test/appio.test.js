@@ -14,7 +14,7 @@ import { serveApp, createPicker, statusLine } from '../src/appio.js';
 import { loadConfig } from '../src/store.js';
 import { configDir } from '../src/paths.js';
 import { createAttachments, MAX_BYTES } from '../src/attachments.js';
-import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
+import { makeFixture, cleanup, fakeExec, NOW, SID } from './helpers.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const SECRET = 'kQ3vZ9mT1xW7bN5cR2dF8gH4jL6pS0uY-_aE1iO3tAw'.slice(0, 43);
@@ -32,7 +32,7 @@ const hello = (secret = SECRET, extra = {}) => `${JSON.stringify({ type: 'hello'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** serveApp on PassThrough streams with its own temp config/state dirs. */
-function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs, attachments, state, config = fx.config } = {}) {
+function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs, attachments, state, config = fx.config, createAutoCompact } = {}) {
   counter += 1;
   const base = path.join(ROOT, `h${counter}`);
   fs.mkdirSync(path.join(base, 'cfg'), { recursive: true });
@@ -54,7 +54,7 @@ function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SE
   stderr.on('data', (c) => { errText += c; });
   // the app copy never looks at the real ~/Applications or the real Homebrew folders here
   const copy = { home: path.join(base, 'home'), brewApps: [], ...appCopy };
-  const done = serveApp({ config, env, stdin, stdout, stderr, exec, now: () => NOW, intervalMs, helloMs, appCopy: copy, ...(releaseMs ? { releaseMs } : {}), ...(attachments ? { attachments } : {}) });
+  const done = serveApp({ config, env, stdin, stdout, stderr, exec, now: () => NOW, intervalMs, helloMs, appCopy: copy, ...(releaseMs ? { releaseMs } : {}), ...(attachments ? { attachments } : {}), ...(createAutoCompact ? { createAutoCompact } : {}) });
   const h = {
     env, stdin, secret, base, done,
     lines,
@@ -1573,6 +1573,109 @@ describe('the Fit mode: start() hands the saved mode to the controller (design-0
       } finally {
         await h.close();
       }
+    }
+  });
+});
+
+describe('typed /compact: the sweeper tick and the app tier\'s word (0.5.4, AC test 40)', () => {
+  /** A createAutoCompact seam that counts tick() and stop(); `h` is set by the test so the first tick can look at what had been written to stdout. */
+  function sweeper() {
+    const f = { ticks: 0, stops: 0, readyAtFirstTick: null, fail: false, h: null, built: 0, seen: null };
+    f.factory = (d) => {
+      f.built += 1;
+      f.seen = d;
+      return {
+        tick: async () => {
+          f.ticks += 1;
+          if (f.ticks === 1) f.readyAtFirstTick = f.h.out().includes('"type":"ready"');
+          if (f.fail) throw new Error('boom');
+        },
+        stop: () => { f.stops += 1; },
+        noteFor: () => null,
+      };
+    };
+    return f;
+  }
+  const until = async (pred) => { for (let i = 0; i < 200 && !pred(); i += 1) await sleep(10); return pred(); };
+
+  test('(+) the sweeper is ticked on the status interval, the first time after the ready line; finish() stops it once and no tick follows', async () => {
+    const f = sweeper();
+    const h = harness({ intervalMs: 20, createAutoCompact: f.factory });
+    f.h = h;
+    try {
+      assert.equal(f.ticks, 0, 'nothing before the hello');
+      await h.up();
+      assert.equal(await until(() => f.ticks >= 3), true, `ticks so far: ${f.ticks}`);
+      assert.equal(f.readyAtFirstTick, true, 'the first tick came after ready');
+      assert.equal(f.built, 1);
+      assert.equal(f.stops, 0);
+    } finally {
+      await h.close();
+    }
+    assert.equal(f.stops, 1);
+    const after = f.ticks;
+    await sleep(100);
+    assert.equal(f.ticks, after, 'no tick after finish()');
+  });
+
+  test('(\u2212) a sweeper tick that rejects costs nothing: the status feed goes on and the process does not fail', async () => {
+    const f = sweeper();
+    f.fail = true;
+    const h = harness({ intervalMs: 20, createAutoCompact: f.factory });
+    f.h = h;
+    try {
+      await h.up();
+      assert.equal(await until(() => f.ticks >= 3), true);
+      assert.equal(await until(() => h.lines().filter((l) => l.type === 'status').length >= 3), true, 'status lines keep coming');
+      assert.equal(h.err(), '');
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('(\u2212) the sweeper is ticked while the status read hangs: they are separate, a slow tmux holds back neither', async () => {
+    const f = sweeper();
+    let release;
+    const gate = new Promise((ok) => { release = ok; });
+    const base = fakeExec();
+    let hRef = null;
+    // from the ready line on, every tmux listing hangs: the status tick (collect) never finishes
+    const exec = async (cmd, args, ...rest) => {
+      if (args.includes('list-panes') && hRef?.out().includes('"type":"ready"')) await gate;
+      return base(cmd, args, ...rest);
+    };
+    const h = harness({ exec, createAutoCompact: f.factory });
+    hRef = h;
+    f.h = h;
+    try {
+      await h.up();
+      assert.equal(await until(() => f.ticks >= 1), true, 'the immediate tick after ready did not wait for the status read');
+      assert.equal(h.lines().filter((l) => l.type === 'status').length, 0, 'premise: the status read is still hanging');
+    } finally {
+      release();
+      await h.close();
+    }
+  });
+
+  test('(+) the app tier\'s /api/agents reads a live session in a claude pane as typed, and so does the snapshot the sweeper reads', async () => {
+    const fxT = makeFixture();
+    const slug = (d) => d.replace(/[^A-Za-z0-9]/g, '-');
+    fs.appendFileSync(path.join(fxT.claudeDir, 'projects', slug(fxT.repo), `${SID.idle}.jsonl`), `${JSON.stringify({ type: 'assistant', message: { model: 'claude-sonnet-5-5', usage: { input_tokens: 312000, output_tokens: 5 } } })}\n`);
+    const f = sweeper();
+    const h = harness({ config: fxT.config, createAutoCompact: f.factory });
+    f.h = h;
+    try {
+      await h.up();
+      const typed = { tokens: 312000, window: 400000, compactAt: 320000, pct: 78, compaction: 'typed' };
+      const r = await h.call('GET', '/api/agents?since=7d');
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body.groups.flatMap((g) => g.agents).find((a) => a.id === SID.idle).context, typed, 'the page\'s list');
+      // the snapshot the sweeper reads (appio\'s own collect, the router\'s eligibility) carries the same word: it is what C1 tests
+      const e = await f.seen.eligibility();
+      assert.deepEqual(e.snapshot.groups.flatMap((g) => g.agents).find((a) => a.id === SID.idle).context, typed, 'the sweeper\'s list');
+    } finally {
+      await h.close();
+      cleanup(fxT);
     }
   });
 });

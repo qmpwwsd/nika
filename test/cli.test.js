@@ -664,3 +664,33 @@ describe('nika status: the window index comes from the collector, end to end (0.
     }
   });
 });
+
+// 0.5.4 (AC, test 4): `nika status` passes no `typed`, so a live session in a claude pane without a nika role reads `none`, never `typed`. The binary is
+// driven for real: the registry names this test process (alive for the real ps), and NIKA_TMUX is a small script that lists one claude pane.
+describe('nika status: no typed compaction word (0.5.4, AC test 4)', () => {
+  test('(\u2212) a live session in a claude pane reads none with no point', async () => {
+    const dir = path.join(fx.root, 'claude-typed');
+    const sid = 'abababab-abab-4bab-8bab-abababababab';
+    const cwd = fs.realpathSync(fx.plain);
+    const write = (file, text) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, text);
+    };
+    write(path.join(dir, 'sessions', `${process.pid}.json`), JSON.stringify({
+      pid: process.pid, kind: 'interactive', version: '2.1.328', startedAt: NOW - 600_000, updatedAt: NOW - 1000, nameSource: 'derived', sessionId: sid, cwd, name: 'typed-check', status: 'idle', tmux: 'work:@2.%6',
+    }));
+    write(path.join(dir, 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'), `${sid}.jsonl`), [
+      { type: 'user', cwd, timestamp: new Date(NOW - 60_000).toISOString() },
+      { type: 'assistant', message: { model: 'claude-sonnet-5-5', usage: { input_tokens: 312000, output_tokens: 5 } }, timestamp: new Date(NOW - 30_000).toISOString() },
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n');
+    const fakeTmuxBin = path.join(fx.root, 'fake-tmux-typed');
+    write(fakeTmuxBin, "#!/bin/sh\nprintf '%%6\\twork\\t2\\tMacBook.local\\tclaude\\n'\n");
+    fs.chmodSync(fakeTmuxBin, 0o755);
+    const r = await run(['status', '--json', '--since', 'all'], { CLAUDE_CONFIG_DIR: dir, NIKA_TMUX: fakeTmuxBin });
+    assert.equal(r.code, 0, r.stderr);
+    const a = JSON.parse(r.stdout).groups.flatMap((g) => g.agents).find((x) => x.id === sid);
+    assert.equal(a.live, true, 'the session is live');
+    assert.equal(a.pane?.id, '%6', 'its pane is listed');
+    assert.deepEqual(a.context, { tokens: 312000, window: 400000, compactAt: null, pct: 78, compaction: 'none' });
+  });
+});

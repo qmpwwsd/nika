@@ -27,6 +27,7 @@ import { createFit, checkFitBody, FIT_RATE } from './fit.js';
 import { createScroll, checkScrollBody } from './scroll.js';
 import { ID, UPLOAD_CAP, PER_MESSAGE, checkUploadBody } from './attachments.js';
 import { createAttachSend, checkAttachBody, logLine } from './attach-send.js';
+import { createAutoCompact } from './autocompact.js';
 import { SIG } from './draft.js';
 
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
@@ -105,6 +106,7 @@ async function listTemplates(dir) {
  *                           readImage, a test seam for the one in collect/history.js (the picture a history entry names; default: the real one);
  *                           attachments, the attachment store (src/attachments.js, built by appio.js: save, lookup, remove, markSent, readImage);
  *                           createAttachSend, the same seam for the factory in attach-send.js;
+ *                           createAutoCompact, the same for the sweeper of the typed /compact in autocompact.js (0.5.4, AC; built here, ticked by appio.js, exposed as ctx.autoCompact);
  *                           log(line), where the attachment lines (`nika: attachments: <code>`) go: appio's stderr, the same as the store's (default: process.stderr) }
  * @returns {(req, res, url, port) => Promise<boolean>} true when it handled the request (every /api/app/* request)
  */
@@ -115,6 +117,9 @@ export function createAppApi({ secret, ctx, deps }) {
   const held = new Map(); // pane id → the last mode read from its footer (shown while a prompt or dialog covers the footer)
   const vim = new Map(); // pane id → true once its mode line has shown -- INSERT -- (Claude's input is in vim mode)
   const plain = new Map(); // pane id → true once a probe `i` landed as text (Claude's input is not in vim mode); the draft route sets and drops it
+  // pane id -> ctx.now() of the last request a user's action made for it (0.5.4, AC, design 2.3). The typed /compact waits QUIET_MS after it. Memory only, never on the wire.
+  const touched = new Map();
+  const stamp = (id) => { touched.set(id, ctx.now()); };
 
   const guard = (req, port) => {
     const given = req.headers['x-nika-app'];
@@ -141,6 +146,9 @@ export function createAppApi({ secret, ctx, deps }) {
       // a reused pane id starts fresh; a failed tmux list or registry read proves nothing, so one blip keeps the memory
       // (losing vim memory would let End type into a vim normal-mode input without `i` first)
       if (!error && snapshot) for (const id of [...held.keys(), ...vim.keys(), ...plain.keys()]) if (!isEligible(e, id)) { held.delete(id); vim.delete(id); plain.delete(id); }
+      // a typing stamp (0.5.4, AC) goes only when a GOOD tmux listing no longer lists the pane (the id may be reused), the sweeper's forget-unlisted rule: a registry read
+      // that missed a live session (a failed readdir, a session file read mid-write) must not delete it, or C6 (no user action in the last 60 s) could be skipped
+      if (!error) for (const id of [...touched.keys()]) if (!panes.has(id)) touched.delete(id);
       return e;
     })();
     eligibility = { at: t, promise };
@@ -164,7 +172,7 @@ export function createAppApi({ secret, ctx, deps }) {
     const id = segment(raw, PANE_ID);
     if (!id) return { failure: err(404, 'not_found', 'pane not found') };
     const e = await loadEligibility();
-    if (isEligible(e, id)) return { id };
+    if (isEligible(e, id)) return { id, e };
     return { failure: err(404, 'not_found', e.error ? clean(e.error, 200) : 'pane not found') };
   }
 
@@ -255,6 +263,17 @@ export function createAppApi({ secret, ctx, deps }) {
   const attachSend = (deps.createAttachSend ?? createAttachSend)({
     mirror: deps.mirror, keys: deps.keys, store: deps.attachments, lock: control.withPaneLock, keyGap: control.keyGap,
     vimOf: (id) => vim.get(id) === true, plainOf: (id) => plain.get(id) === true, log: attachLog,
+  });
+
+  // The sweeper of the typed /compact (0.5.4, AC, ADR 0014 amendment): appio.js ticks it every 3 s and stops it at finish. It reads the same eligibility
+  // snapshot the routes use, types only through the controller's autoCompact (per-pane lock, fresh screen checks), and waits for the stamps above.
+  ctx.autoCompact = (deps.createAutoCompact ?? createAutoCompact)({
+    eligibility: () => loadEligibility(),
+    isEligible,
+    compact: (pane) => control.autoCompact(pane),
+    touchedAt: (pane) => touched.get(pane) ?? -Infinity,
+    now: () => ctx.now(),
+    log: attachLog,
   });
 
   /**
@@ -570,8 +589,11 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   route('GET', /^\/api\/app\/pane\/([^/]+)\/capture$/, 0, async ({ params, req }) => {
-    const { id, failure } = await eligiblePane(params[0]);
+    const { id, e, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
+    // 0.5.4 (AC): the session page sends X-Nika-Typing: 1 on the first capture after an edit in its message box (some edits make no draft request at all);
+    // exactly the string `1` counts, any other value is ignored. Before the capture: a capture that fails is still a sign that somebody is typing.
+    if (req.headers['x-nika-typing'] === '1') stamp(id);
     // The mirror is asked without If-None-Match: the mode shown depends on the held map as well as on the rows, so the ETag
     // folds it in and the 304 is decided here (a changed held mode is never hidden behind a 304 on unchanged rows).
     const r = await deps.mirror.capture(id);
@@ -585,11 +607,13 @@ export function createAppApi({ secret, ctx, deps }) {
     // Claude's feedback survey (0.5, F14); surveyOf is null while a prompt or a dialog owns the slot. It depends on the pane's vim memory (vim NORMAL is not
     // answerable), which r.etag does not cover and the draft's `edit` cannot carry (the draft is null while the survey shows), so it is part of the ETag itself.
     const survey = surveyOf(r.body, { vim: vim.get(id) === true, insert: insertShown(r.body.rows) });
-    const etag = crypto.createHash('sha256').update(JSON.stringify([r.etag, screen.mode, screen.modeConfirmed, draft?.edit ?? null, survey])).digest('hex').slice(0, 32);
+    // the last typed /compact of the pane's session (0.5.4, AC): app tier only, from the sweeper's memory; it changes without the screen changing, so it is part of the ETag
+    const compacted = ctx.autoCompact?.noteFor(id, e) ?? null;
+    const etag = crypto.createHash('sha256').update(JSON.stringify([r.etag, screen.mode, screen.modeConfirmed, draft?.edit ?? null, survey, compacted])).digest('hex').slice(0, 32);
     const headers = { ETag: `"${etag}"` };
     if (etagMatches(req.headers['if-none-match'], etag)) return { status: 304, body: null, headers };
     // a new object: the mirror's cached body is shared and stays as captured
-    return { status: 200, body: { ...r.body, ...screen, draft, dialog, survey, etag }, headers };
+    return { status: 200, body: { ...r.body, ...screen, draft, dialog, survey, compacted, etag }, headers };
   });
 
   route('GET', /^\/api\/app\/modes$/, 0, async () => {
@@ -601,7 +625,9 @@ export function createAppApi({ secret, ctx, deps }) {
       const { mode, modeConfirmed } = readScreen(id, r.body.rows);
       return [id, { mode, confirmed: modeConfirmed }];
     });
-    return { status: 200, body: { modes: Object.fromEntries(read.filter(Boolean)) } };
+    // the notes of the typed /compact (0.5.4, AC): the eligible panes that have one, as the sweeper gave it
+    const compacted = Object.fromEntries(ids.map((id) => [id, ctx.autoCompact?.noteFor(id, e) ?? null]).filter(([, note]) => note !== null));
+    return { status: 200, body: { modes: Object.fromEntries(read.filter(Boolean)), compacted } };
   });
 
   /**
@@ -630,6 +656,7 @@ export function createAppApi({ secret, ctx, deps }) {
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before anything is looked at or sent
     // Enter, BTab, a digit or a paste could answer a permission prompt, and the answer route's bypass refusal does not reach
     // this route: so they look at a fresh screen first, and none is sent while a prompt mentions bypass (409 bypass-prompt) or
     // a dialog nika cannot read (its footer is unreadable) does (409 screen-unclear) (T26). Typing letters, arrows and Escape
@@ -652,6 +679,7 @@ export function createAppApi({ secret, ctx, deps }) {
     if (!MODE_TARGETS.includes(body.target)) return err(400, 'invalid', `target must be one of ${MODE_TARGETS.join(', ')}`);
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
+    stamp(id);
     const r = await control.switchMode(id, body.target);
     // Presses went out but the switch did not finish: the footer may now show a mode other than the one held, or none that
     // nika can read (a bypass footer it does not know), so the held mode (and a started pane's launch mode) must not stand in for it
@@ -665,7 +693,9 @@ export function createAppApi({ secret, ctx, deps }) {
     const bad = checkDraftBody(body);
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? control.writeDraft(id, body);
+    if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before the controller, also when it refuses
+    return control.writeDraft(id, body);
   });
 
   // Send's Enter (0.5, W13): the one Enter of the page's Send, never the keys route. The controller presses it under the pane lock, only on a fresh screen
@@ -674,7 +704,9 @@ export function createAppApi({ secret, ctx, deps }) {
     const bad = checkSubmitBody(body);
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? control.submit(id, body);
+    if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before the controller, also when it refuses
+    return control.submit(id, body);
   });
 
   // Fit (0.5, W7): the session window asks for its panel's size, the controller zooms the pane and sizes its tmux window when that is
@@ -705,7 +737,9 @@ export function createAppApi({ secret, ctx, deps }) {
     const bad = checkScrollBody(body);
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? scroller.scroll(id, body);
+    if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before the controller, also when it refuses
+    return scroller.scroll(id, body);
   });
 
   // Attachments (0.5, W2): upload (JSON { name, data }, base64), delete before sending, and the send that pastes the stored paths into Claude's input
@@ -716,6 +750,7 @@ export function createAppApi({ secret, ctx, deps }) {
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
+    stamp(id);
     const key = await paneKey(id);
     if (key === null) return err(409, 'no-project', "nika can't tell this session's project");
     try {
@@ -734,6 +769,7 @@ export function createAppApi({ secret, ctx, deps }) {
     if (keys.length !== 1 || keys[0] !== 'room' || !Number.isInteger(body.room) || body.room < 1 || body.room > PER_MESSAGE) return err(400, 'invalid', `body must be { room: 1 to ${PER_MESSAGE} }`);
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
+    stamp(id);
     const key = await paneKey(id);
     if (key === null) return err(409, 'no-project', "nika can't tell this session's project");
     const reqId = deps.picker.startFiles({ pane: id, key, room: body.room });
@@ -773,6 +809,7 @@ export function createAppApi({ secret, ctx, deps }) {
     const id = segment(params[0], PANE_ID);
     const att = segment(params[1], ID);
     if (!id || !att) return err(400, 'invalid', 'invalid pane or attachment id');
+    stamp(id); // a user's action (0.5.4, AC); the pane may be gone, and a stamp of an unlisted pane is dropped at the next refresh
     try {
       return { status: 200, body: { removed: (await deps.attachments.remove(id, att)) === true } };
     } catch (e) {
@@ -785,7 +822,9 @@ export function createAppApi({ secret, ctx, deps }) {
     const bad = checkAttachBody(body);
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? attachSend.send(id, body);
+    if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before the controller, also when it refuses
+    return attachSend.send(id, body);
   });
 
   // Accept Claude's prompt suggestion (0.5, W4): the page's Tab or right arrow. Not the plain keys route: a Tab that lands after the
@@ -795,7 +834,9 @@ export function createAppApi({ secret, ctx, deps }) {
     const bad = checkSuggestionBody(body);
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? control.acceptSuggestion(id, body);
+    if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before the controller, also when it refuses
+    return control.acceptSuggestion(id, body);
   });
 
   // Answer Claude's question or plan dialog, one step per request, or decline it (0.5, W1). CAP.keys: a body is small, but the cap is the same
@@ -804,7 +845,9 @@ export function createAppApi({ secret, ctx, deps }) {
     const bad = checkDialogBody(body);
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? control.answerDialog(id, body);
+    if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before the controller, also when it refuses
+    return control.answerDialog(id, body);
   });
 
   // Answer Claude's feedback survey with one digit (0.5, F14). Order: body 400 (exactly { n, sig }), pane 404, then the controller (the lock, the screen checks,
@@ -813,25 +856,32 @@ export function createAppApi({ secret, ctx, deps }) {
     const bad = checkSurveyBody(body);
     if (bad) return bad;
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? control.answerSurvey(id, { n: body.n, sig: body.sig });
+    if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before the controller, also when it refuses
+    return control.answerSurvey(id, { n: body.n, sig: body.sig });
   });
 
   route('POST', /^\/api\/app\/pane\/([^/]+)\/answer$/, CAP.small, async ({ params, body }) => {
     const { n, sig } = body;
     if (!Number.isInteger(n) || n < 1 || n > 9 || typeof sig !== 'string' || !SIG.test(sig)) return err(400, 'invalid', 'n must be an integer 1-9 and sig 16 lowercase hex characters');
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? control.answer(id, { n, sig });
+    if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before the controller, also when it refuses
+    return control.answer(id, { n, sig });
   });
 
   route('POST', /^\/api\/app\/pane\/([^/]+)\/command$/, CAP.small, async ({ params, body }) => {
     if (!isCommandText(body.text)) return err(400, 'invalid', `text must be / and a command name, optionally one space and arguments (at most ${COMMAND_MAX} characters, no control characters)`);
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? control.runCommand(id, body.text);
+    if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before the controller, also when it refuses
+    return control.runCommand(id, body.text);
   });
 
   route('POST', /^\/api\/app\/pane\/([^/]+)\/end$/, CAP.small, async ({ params }) => {
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
+    stamp(id);
     try {
       return await control.endSession(id);
     } finally {
@@ -842,7 +892,9 @@ export function createAppApi({ secret, ctx, deps }) {
   // Stop does not take the controller's per-pane lock, so it works while a switch or a command waits
   route('POST', /^\/api\/app\/pane\/([^/]+)\/stop$/, CAP.small, async ({ params }) => {
     const { id, failure } = await eligiblePane(params[0]);
-    return failure ?? control.stop(id);
+    if (failure) return failure;
+    stamp(id); // a user's action (0.5.4, AC): on arrival, before the controller, also when it refuses
+    return control.stop(id);
   });
 
   route('GET', /^\/api\/app\/commands$/, 0, async ({ query }) => {

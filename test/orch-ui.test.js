@@ -146,7 +146,7 @@ function rowRig({ isApp = true, rowItems = undefined } = {}) {
   const ctx = {
     h, icon, roleTag, roleTagEl, ctxEl, labelEl, agentLabelView, menuEl, hooks, SHAPE, sessionHref, isApp, parentOf,
     state: { modes: { map: {} } }, document: { getSelection: () => ({ isCollapsed: true }) }, location: {},
-    sOf: (a) => (a.live ? 'idle' : 'ended'), rowMode: () => null, canEndRow: () => true, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
+    sOf: (a) => (a.live ? 'idle' : 'ended'), rowMode: () => null, rowNote: () => null, canEndRow: () => true, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
     statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
     copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
   };

@@ -9,6 +9,7 @@
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
 import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl, labelEl, placeMenuX, clearMenuPlacement, timeEl } from './dom.js';
+import { acView, cleanNote } from './ctx.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
 import { roleTag, savedPick, subagentView, subagentGroups, subagentHref, SUBAGENT_ID, agentLabelView, subLabelView } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
@@ -230,10 +231,13 @@ function applyBackLabel(group) {
   setBack(String(group.label));
 }
 
-/** The header meter (design 0.4 section 6.4): hidden until the first poll, then drawn from the polled agent's `context` at every poll. */
+/**
+ * The header meter (design 0.4 section 6.4): hidden until the first poll, then drawn from the polled agent's `context` at every poll.
+ * 0.5.4 AC: its tooltip and sr text end with the note of the last capture (W.compacted), if there is one.
+ */
 function renderContext(agent) {
   const el = $('sess-ctx');
-  ctxEl(agent.context, { header: true, el });
+  ctxEl(agent.context, { header: true, el, note: W.compacted });
   el.hidden = false;
 }
 
@@ -515,7 +519,7 @@ function startAgentPoll() {
 // prompt: the capture's prompt as cleanPrompt allows it, for drawing the buttons only. promptOpen: the capture has a prompt at all
 // (even an off-contract one), for every gate: the switcher, the quick actions, the message box keys (composerKey) and the End note.
 // dialog: the capture's question dialog or plan approval as cleanDialog allows it (0.5): the form draws from it, a dialog also counts as promptOpen.
-const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, dialog: null, survey: null, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
+const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, dialog: null, survey: null, compacted: null, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
 const SW = { busy: null, pressed: null, parts: [] };
 let DF = null; // the question dialog form (dialog-form.js), built in boot() with the pane
 let SV = null; // the feedback survey panel (survey-panel.js), built in boot() with the pane
@@ -619,6 +623,33 @@ function noteScreen(body) {
     if (n.msg) announceMode(n.msg);
   }
   renderMode();
+}
+
+/** The /compact line of the header (0.5.4 AC, design 7.1) for a clean note: hidden for none; the icon, both texts and the state are set in place. */
+function renderAc(note) {
+  const el = $('sess-ac');
+  const v = acView(note);
+  el.hidden = v === null;
+  if (v === null) return;
+  const [ic, long, short] = el.children;
+  ic.firstElementChild.setAttribute('href', `#i-${v.icon}`);
+  long.textContent = v.long;
+  short.textContent = v.short;
+  el.setAttribute('data-st', v.state);
+}
+
+/**
+ * What a capture says about nika's typed /compact (`compacted`: the pane's note or null, 0.5.4 AC). The line follows every capture; the polite
+ * region says the long sentence once, when the state changes to typed or stopped (compacted follows from typed and is not said). Anything
+ * that is not exactly the wire note counts as no note. The header meter picks the note up at its next poll (renderContext).
+ */
+function noteCompacted(raw) {
+  const note = cleanNote(raw);
+  if (JSON.stringify(note) === JSON.stringify(W.compacted)) return; // the same note again (about 4 captures a second): nothing to draw or say
+  const before = W.compacted?.state ?? null;
+  W.compacted = note;
+  renderAc(note);
+  if (note !== null && note.state !== before && (note.state === 'typed' || note.state === 'stopped')) announce(acView(note).long);
 }
 
 function setPaneState(state) {
@@ -1480,7 +1511,7 @@ function startHistoryPoll() {
 
 // ---- terminal mirror ---------------------------------------------------------------------------------------------
 
-const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [], body: null, draft: null, cut: null, crop: null, stripKind: null };
+const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [], body: null, draft: null, cut: null, crop: null, stripKind: null, typedAt: 0, typingSent: 0 };
 
 function setLive(state, text) {
   $('term-head').dataset.s = state;
@@ -1616,6 +1647,11 @@ function handleCapture(r) {
   if (r.status === 200 && Array.isArray(r.body?.rows) && Number.isInteger(r.body.cols)) {
     recovered();
     noteScreen(r.body);
+    try {
+      noteCompacted(r.body.compacted); // 0.5.4 AC: the typed /compact line
+    } catch {
+      // the mirror keeps working without the line
+    }
     const cols = Math.min(Math.max(r.body.cols, 1), 1000);
     const term = $('term');
     M.cols = cols;
@@ -1704,7 +1740,12 @@ async function tickMirror() {
   const sent = M.sent;
   const t0 = Date.now();
   try {
-    const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/capture`, { headers: M.etag ? { 'If-None-Match': `"${M.etag}"` } : {} });
+    const headers = M.etag ? { 'If-None-Match': `"${M.etag}"` } : {};
+    if (M.typedAt > M.typingSent) { // 0.5.4 AC (design 2.3): the first capture after an edit of nika's box tells the server the user is typing; once per edit
+      headers['X-Nika-Typing'] = '1';
+      M.typingSent = M.typedAt;
+    }
+    const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/capture`, { headers });
     let applied = true; // R2 #7: a capture the redraw hold kept back was not drawn, so it is no look at where a mode switch stopped
     try {
       applied = handleHeld(r, sent) !== false;
@@ -3044,6 +3085,17 @@ function wirePassthrough() {
 
 // ---- wiring --------------------------------------------------------------------------------------------------------
 
+/**
+ * 0.5.4 AC (design 2.3): every edit of nika's message box (typing, or composing with an input method) stamps M.typedAt; tickMirror then adds the
+ * X-Nika-Typing header to the next capture request, once. It is the only way the server learns that the user is typing, and it sends nothing itself.
+ */
+function wireTyping() {
+  const ta = composer();
+  ['input', 'compositionstart', 'compositionupdate', 'compositionend'].forEach((type) => {
+    ta.addEventListener(type, () => { M.typedAt = Date.now(); });
+  });
+}
+
 function wireComposer() {
   const ta = composer();
   ta.addEventListener('input', () => { grow(); updateChip(); DS.edited(); });
@@ -3304,6 +3356,7 @@ function boot() {
     wireTerminal();
     wireComposer();
     ATT.wire();
+    wireTyping();
     wireSubs();
     wireSubsDlg();
   }

@@ -32,6 +32,7 @@ import { installDom, El, withClass, focus as focusState } from './fake-dom.js';
 import { panelOf as panelOfReal, cropOf as cropOfReal, layoutOf as layoutOfReal, INPUT_TEXT as INPUT_TEXT_REAL, CROP_TEXT as CROP_TEXT_REAL } from '../public/crop.js';
 import { subagentGroups as subagentGroupsReal } from '../public/dash-model.js';
 import { timeEl as timeElReal } from '../public/dom.js';
+import { acView, cleanNote } from '../public/ctx.js';
 import { dataUrlOf as dataUrlOfReal, sizeLabel as sizeLabelReal, MAX_THUMBS as MAX_THUMBS_REAL, MAX_THUMB_BYTES as MAX_THUMB_BYTES_REAL, IMAGE_MIME as IMAGE_MIME_REAL } from '../public/image-viewer.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -181,7 +182,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './glide.js', './crop.js', './attach.js', './image-viewer.js', './dialog-form.js', './survey-panel.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './ctx.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './glide.js', './crop.js', './attach.js', './image-viewer.js', './dialog-form.js', './survey-panel.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -4484,12 +4485,12 @@ describe('W7-T3 fix round 1: the "other" chip has its own hue (tokens.css --fit-
     assert.match(rule('zoomed'), /(^|[\s;])color:\s*var\(--idle\)/);
   });
 
-  test('(−) the new tokens are used by the other chip and the Cursor note (W13) only, and tokens.css stays ASCII with no color-mix() or :has()', () => {
+  test('(\u2212) the new tokens are used by the other chip, the Cursor note (W13) and the typed /compact line (0.5.4 AC) only, and tokens.css stays ASCII with no color-mix() or :has()', () => {
     const users = ['session.css', 'app.css', 'tokens.css'].flatMap((f) => (read(f).match(/var\(--fit-other[a-z-]*\)/g) ?? []).map((u) => `${f} ${u}`));
     assert.deepEqual(users.filter((u) => !u.startsWith('session.css')), []);
-    assert.equal(users.length, 5);
+    assert.equal(users.length, 6); // 0.5.4 AC: and the typed /compact line of the header
     const rules = read('session.css').split('\n').filter((l) => /var\(--fit-other/.test(l)).map((l) => l.slice(0, l.indexOf(' {')));
-    assert.deepEqual(rules, ['.fit[data-k="other"]', '.dnote[data-k="cursor"]']);
+    assert.deepEqual(rules, ['.sess-ac[data-st="typed"]', '.fit[data-k="other"]', '.dnote[data-k="cursor"]']);
     const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
     assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
     assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
@@ -7093,6 +7094,300 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(tick, /if \(applied\) captureHandled\(sent\);/);
     assert.match(fnOf('function holdTimeout(pending, ctx)'), /applyHeld\(pending\.r\);\s*if \(Number\.isInteger\(pending\.n\)\) captureHandled\(pending\.n\);/);
   });
+
+  // ---- 0.5.4 AC: typed /compact on the session page (tests 11b, 12, 37, 38) ------------------------------------------------------------------
+  /** tickMirror with a recording `call`, wireTyping on a fake box, and a clock the test moves. Each edit event moves the clock 10 ms. */
+  const typingRig = () => {
+    const r = tickRig();
+    const calls = [];
+    const listeners = {};
+    const box = { addEventListener(type, f) { (listeners[type] ??= []).push(f); } };
+    let clock = 5000;
+    Object.assign(r.ctx, { composer: () => box, Date: { now: () => clock }, call: async (p, o) => { calls.push([p, o]); return r.answers.shift(); } });
+    Object.assign(r.ctx.M, { typedAt: 0, typingSent: 0 }); // as session.js declares them
+    runFns(['function wireTyping()'], ['wireTyping'], r.ctx).wireTyping();
+    const edit = (type) => { clock += 10; for (const f of listeners[type]) f({ type }); };
+    const capture = async (over) => { r.answers.push(shot(120, 30, over)); await r.tickMirror(); await flushAll(); clock += 250; return calls.at(-1); };
+    return { ...r, calls, listeners, edit, capture, M: r.ctx.M };
+  };
+  const typingHeader = (call) => call[1].headers['X-Nika-Typing'];
+
+  test('(+) 12: an input and a compositionstart each add X-Nika-Typing: 1 to the NEXT capture only (as do compositionupdate and compositionend)', async () => {
+    for (const type of ['input', 'compositionstart', 'compositionupdate', 'compositionend']) {
+      const t = typingRig();
+      assert.equal(typingHeader(await t.capture()), undefined, `${type}: nobody typed yet`);
+      t.edit(type);
+      assert.equal(typingHeader(await t.capture()), '1', `${type}: the capture after the edit`);
+      assert.equal(typingHeader(await t.capture()), undefined, `${type}: the one after that`);
+      assert.equal(t.calls.length, 3);
+    }
+  });
+
+  test('(+) 12: two edits before one capture send one header; an edit after a capture left rides the next one', async () => {
+    const t = typingRig();
+    t.edit('input');
+    t.edit('input');
+    assert.equal(typingHeader(await t.capture()), '1');
+    t.answers.push(shot(120, 30));
+    const pending = t.tickMirror(); // the request is out
+    t.edit('compositionupdate'); // typed while it was on its way
+    await pending;
+    await flushAll();
+    assert.equal(typingHeader(t.calls.at(-1)), undefined, 'that capture left before the edit');
+    assert.equal(typingHeader(await t.capture()), '1', 'the next one carries it');
+    assert.equal(typingHeader(await t.capture()), undefined);
+  });
+
+  test('(\u2212) 12: no edit, no header: ten captures in a row carry none; the box listens for exactly the four edit events and nothing else', async () => {
+    const t = typingRig();
+    for (let i = 0; i < 10; i += 1) assert.equal(typingHeader(await t.capture()), undefined, String(i));
+    assert.deepEqual(Object.keys(t.listeners).sort(), ['compositionend', 'compositionstart', 'compositionupdate', 'input']);
+  });
+
+  test('(\u2212) 12: the header is only the string 1, sits beside If-None-Match without replacing it, and the plain capture sends neither when there is no etag', async () => {
+    const t = typingRig();
+    t.M.etag = 'ab12';
+    t.edit('input');
+    const both = await t.capture();
+    assert.deepEqual(Object.keys(both[1].headers).sort(), ['If-None-Match', 'X-Nika-Typing']);
+    assert.equal(both[1].headers['If-None-Match'], '"ab12"');
+    assert.equal(both[1].headers['X-Nika-Typing'], '1');
+    const quiet = await t.capture();
+    assert.deepEqual(Object.keys(quiet[1].headers), ['If-None-Match']);
+    t.M.etag = null;
+    assert.deepEqual(Object.keys((await t.capture())[1].headers), []);
+    assert.match(t.calls[0][0], /^\/api\/app\/pane\/%2512\/capture$/);
+  });
+
+  test('(+) 12: session.js declares typedAt and typingSent on M, wires the box in boot next to the composer, and sends nothing of its own for an edit', () => {
+    assert.match(SRC, /const M = \{[^}]*\btypedAt: 0, typingSent: 0\b/);
+    assert.match(fnOf('function boot()'), /wireComposer\(\);\s*ATT\.wire\(\);\s*wireTyping\(\);/);
+    const wire = fnOf('function wireTyping()');
+    assert.doesNotMatch(wire, /\bcall\(|fetch\(|appFetch|kickMirror/);
+    assert.match(wire, /M\.typedAt = Date\.now\(\)/);
+    const tick = fnOf('async function tickMirror()');
+    assert.match(tick, /M\.typedAt > M\.typingSent/);
+    assert.match(tick, /M\.typingSent = M\.typedAt/);
+  });
+
+  test('(\u2212) 12: wireComposer is untouched by the typing stamp (its own rigs run it with no knowledge of it)', () => {
+    assert.doesNotMatch(fnOf('function wireComposer()'), /typedAt|wireTyping|X-Nika-Typing/);
+  });
+
+  test('(\u2212) 11b: ten seconds of captures with nobody at the keyboard call the capture route only, with no typing header', async () => {
+    const t = typingRig();
+    for (let i = 0; i < 40; i += 1) await t.capture(i % 3 === 0 ? { etag: `e${i}` } : {}); // 40 x 250 ms
+    assert.equal(t.calls.length, 40);
+    for (const [p, o] of t.calls) {
+      assert.match(p, /\/capture$/);
+      assert.equal(o.headers['X-Nika-Typing'], undefined);
+      assert.equal(o.method, undefined, 'a GET');
+    }
+  });
+
+  test('(\u2212) 11b: only the nine user-driven functions name a route the server counts as the user acting; none of them is reached from a timer, the polls or boot', () => {
+    const named = new Map();
+    let current = null;
+    for (const line of SRC.split('\n')) {
+      const m = /^(?:export )?(?:async )?function (\w+)\(/.exec(line);
+      if (m) current = m[1];
+      if (/\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/(mode|command|stop|answer|scroll|draft|suggestion)`|postRetry\('(keys|submit)'/.test(line)) named.set(current, true);
+    }
+    const NINE = ['answer', 'deliver', 'putDraft', 'scrollCall', 'sendCommand', 'stop', 'submitEnter', 'suggestDraft', 'switchTo'];
+    assert.deepEqual([...named.keys()].sort(), NINE, 'a new caller of a stamped route must be looked at: does it run only because the user did something?');
+    for (const head of ['async function tickMirror()', 'function startAgentPoll()', 'function startHistoryPoll()', 'async function refreshAgent()', 'async function refreshHistory()',
+      'async function loadNewest()', 'async function loadSettings()', 'async function loadCommands()', 'function boot()', 'function jumpToLive()']) {
+      const body = fnOf(head);
+      for (const name of NINE) assert.doesNotMatch(body, new RegExp(`\\b${name}\\(`), `${head} calls ${name}`);
+    }
+    // the draft sync and the suggestion ask only after an edit or a Tab: their callers hand the calls over as functions, not at boot
+    assert.doesNotMatch(fnOf('function boot()'), /putDraft|suggestDraft|scrollCall|submitEnter/);
+  });
+
+  // 37: acView and the line
+  const AC_AT = new Date(2026, 10, 20, 14, 2, 10).getTime(); // 14:02 local
+  const acNote = (state, over = {}) => ({ state, at: AC_AT, tokens: 331000, ...over });
+
+  test('(+) 37: acView gives each state its own icon, long and short text (and data-st)', () => {
+    assert.deepEqual(acView(acNote('typed')), { state: 'typed', icon: 'clock', long: 'nika typed /compact at 14:02, at 331k', short: '/compact 14:02' });
+    assert.deepEqual(acView(acNote('compacted')), { state: 'compacted', icon: 'compact', long: 'nika compacted this session at 14:02, at 331k', short: 'Compacted 14:02' });
+    assert.deepEqual(acView(acNote('stopped')), {
+      state: 'stopped', icon: 'warn', long: 'nika stopped typing /compact here after 3 failed tries; it tries again after nika restarts', short: '/compact stopped',
+    });
+    const views = ['typed', 'compacted', 'stopped'].map((s) => acView(acNote(s)));
+    for (const k of ['icon', 'long', 'short']) assert.equal(new Set(views.map((v) => v[k])).size, 3, `${k} differs per state`);
+  });
+
+  test('(\u2212) 37: acView of nothing or of a malformed note is null (the line stays hidden)', () => {
+    for (const bad of [null, undefined, 'typed', 7, [], {}, acNote('done'), acNote('typed', { at: '1' }), acNote('typed', { tokens: -1 }), { ...acNote('typed'), extra: 1 }, acNote('typed', { at: 9e15 })]) {
+      assert.equal(acView(bad), null, JSON.stringify(bad));
+    }
+  });
+
+  /** renderAc and noteCompacted on a fake line shaped as session.html has it: an icon, .ac-long and .ac-short. */
+  const lineRig = () => {
+    const line = new El('span');
+    line.className = 'sess-ac';
+    line.hidden = true;
+    const svg = new El('svg');
+    const use = new El('use');
+    use.setAttribute('href', '#i-clock');
+    svg.append(use);
+    const long = new El('span');
+    long.className = 'ac-long';
+    const short = new El('span');
+    short.className = 'ac-short';
+    short.setAttribute('aria-hidden', 'true');
+    line.append(svg, long, short);
+    const said = [];
+    const W = { compacted: null };
+    const ctx = { $: (id) => (id === 'sess-ac' ? line : null), W, announce: (m) => said.push(m), acView, cleanNote };
+    const fns = runFns(['function renderAc(note)', 'function noteCompacted(raw)'], ['renderAc', 'noteCompacted'], ctx);
+    return { line, use, long, short, said, W, ...fns };
+  };
+
+  test('(+) 37: a typed note shows the line: data-st, the icon, the long and the short text, as text only; the polite region says the long sentence once', () => {
+    const r = lineRig();
+    r.noteCompacted(acNote('typed'));
+    assert.equal(r.line.hidden, false);
+    assert.equal(r.line.attrs['data-st'], 'typed');
+    assert.equal(r.use.attrs.href, '#i-clock');
+    assert.equal(r.long.textContent, 'nika typed /compact at 14:02, at 331k');
+    assert.equal(r.short.textContent, '/compact 14:02');
+    assert.equal(r.short.attrs['aria-hidden'], 'true');
+    assert.equal(r.line.accName, 'nika typed /compact at 14:02, at 331k', 'a screen reader hears the long sentence once, the short text and the icon are hidden');
+    assert.deepEqual(r.said, ['nika typed /compact at 14:02, at 331k']);
+    assert.deepEqual(JSON.parse(JSON.stringify(r.W.compacted)), acNote('typed'));
+    r.noteCompacted(acNote('typed')); // the next capture brings the same note
+    r.noteCompacted(acNote('typed', { tokens: 332000 }));
+    assert.equal(r.said.length, 1, 'said once, not at every capture');
+  });
+
+  test('(+) 37: the same note again (about 4 captures a second) draws nothing; a changed field redraws', () => {
+    const r = lineRig();
+    r.noteCompacted(acNote('typed'));
+    r.long.textContent = 'marker';
+    r.short.textContent = 'marker';
+    r.noteCompacted(acNote('typed')); // a fresh object with the same three fields
+    assert.equal(r.long.textContent, 'marker', 'not redrawn');
+    assert.equal(r.short.textContent, 'marker', 'not redrawn');
+    r.noteCompacted(acNote('typed', { tokens: 332000 }));
+    assert.equal(r.long.textContent, 'nika typed /compact at 14:02, at 332k', 'a changed size redraws');
+    r.long.textContent = 'marker';
+    r.noteCompacted(acNote('typed', { tokens: 332000, at: AC_AT + 60000 }));
+    assert.equal(r.long.textContent, 'nika typed /compact at 14:03, at 332k', 'a changed time redraws');
+  });
+
+  test('(+) 37: stopped is announced; typed to stopped and null to stopped both count as a change', () => {
+    const r = lineRig();
+    r.noteCompacted(acNote('stopped'));
+    assert.equal(r.line.attrs['data-st'], 'stopped');
+    assert.equal(r.use.attrs.href, '#i-warn');
+    assert.deepEqual(r.said, ['nika stopped typing /compact here after 3 failed tries; it tries again after nika restarts']);
+    const q = lineRig();
+    q.noteCompacted(acNote('typed'));
+    q.noteCompacted(acNote('stopped'));
+    assert.equal(q.said.length, 2);
+    q.noteCompacted(null);
+    q.noteCompacted(acNote('stopped'));
+    assert.equal(q.said.length, 3, 'gone and back is a change');
+  });
+
+  test('(\u2212) 37: compacted is shown but never announced (it follows from typed); a null note hides the line and says nothing', () => {
+    const r = lineRig();
+    r.noteCompacted(acNote('typed'));
+    r.noteCompacted(acNote('compacted'));
+    assert.equal(r.line.attrs['data-st'], 'compacted');
+    assert.equal(r.use.attrs.href, '#i-compact');
+    assert.equal(r.long.textContent, 'nika compacted this session at 14:02, at 331k');
+    assert.equal(r.short.textContent, 'Compacted 14:02');
+    assert.equal(r.said.length, 1, 'only the typed one');
+    const c = lineRig();
+    c.noteCompacted(acNote('compacted'));
+    assert.deepEqual(c.said, [], 'first seen as compacted: still silent');
+    r.noteCompacted(null);
+    assert.equal(r.line.hidden, true);
+    assert.equal(r.W.compacted, null);
+    assert.equal(r.said.length, 1);
+  });
+
+  test('(\u2212) 37: a malformed note, or none at all (an older server), leaves the line hidden, silent and the stored note null', () => {
+    for (const bad of [undefined, null, 'typed', 7, [], {}, acNote('done'), acNote('typed', { at: 'x' }), { ...acNote('stopped'), extra: 1 }]) {
+      const r = lineRig();
+      r.noteCompacted(bad);
+      assert.equal(r.line.hidden, true, JSON.stringify(bad));
+      assert.deepEqual(r.said, [], JSON.stringify(bad));
+      assert.equal(r.W.compacted, null);
+    }
+  });
+
+  test('(\u2212) 37: markup in the note cannot reach the line: the numbers and words are the page\'s own, set as text', () => {
+    const r = lineRig();
+    r.noteCompacted({ state: '<img src=x>', at: 1, tokens: 1 });
+    assert.equal(r.line.hidden, true);
+    assert.equal(r.long.textContent.includes('<'), false);
+    const body = fnOf('function renderAc(note)') + fnOf('function noteCompacted(raw)');
+    assert.doesNotMatch(body, /innerHTML|insertAdjacentHTML|outerHTML|\.style\b|setAttribute\('style'/);
+    assert.match(body, /\.textContent = /);
+  });
+
+  test('(+) 37: a capture hands its note to the line inside a guard, so a failure there never stops the mirror; the stylesheet and markup carry the line', () => {
+    assert.match(fnOf('function handleCapture(r)'), /noteScreen\(r\.body\);\s*try \{\s*noteCompacted\(r\.body\.compacted\);\s*\} catch \{[^}]*\}/);
+    assert.match(fnOf('function renderContext(agent)'), /ctxEl\(agent\.context, \{ header: true, el, note: W\.compacted \}\)/);
+    assert.match(HTML, /<span class="ctx" id="sess-ctx" hidden><\/span>\s*<span class="sess-ac" id="sess-ac" hidden><svg class="ic" aria-hidden="true"><use href="#i-clock"\/><\/svg><span class="ac-long"><\/span><span class="ac-short" aria-hidden="true"><\/span><\/span>/);
+    for (const sym of ['i-clock', 'i-compact', 'i-warn']) assert.equal(HTML.split(`<symbol id="${sym}"`).length - 1, 1, sym);
+    const ids = [...HTML.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
+    assert.equal(ids.filter((x) => x === 'sess-ac').length, 1);
+  });
+
+  test('(+) 37: the line is not focusable and takes no action; no new token, no inline style', () => {
+    const tag = /<span class="sess-ac"[^>]*>/.exec(HTML)?.[0] ?? '';
+    assert.doesNotMatch(tag, /tabindex|role=|onclick| style=/);
+    const css = strip(CSS);
+    const before = new Set([...strip(read('tokens.css')).matchAll(/--[a-z0-9-]+\s*:/g)].map((m) => m[0]));
+    for (const m of css.matchAll(/(--[a-z0-9-]+)\s*:/g)) if (/sess-ac|ac-long|ac-short/.test(css.slice(Math.max(0, m.index - 200), m.index))) assert.ok(before.has(`${m[1]}:`) || before.has(`${m[1]} :`), `new token ${m[1]}`);
+    assert.doesNotMatch(css.slice(css.indexOf('.sess-ac')), /--(ac|sess-ac)-[a-z]+\s*:/);
+  });
+
+  test('(+) 37: CSS: each state has its own colour from existing tokens; long text above the narrow breakpoint, short text below it, the long one stays readable by assistive tech', () => {
+    const css = strip(CSS);
+    assert.match(css, /\.sess-ac\[data-st="typed"\]\s*\{\s*color:\s*var\(--fit-other\);\s*\}/);
+    assert.match(css, /\.sess-ac\[data-st="compacted"\]\s*\{\s*color:\s*var\(--text-muted\);\s*\}/);
+    assert.match(css, /\.sess-ac\[data-st="stopped"\]\s*\{\s*color:\s*var\(--idle\);\s*\}/);
+    assert.match(css, /\.sess-ac\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;/);
+    assert.match(css, /\.sess-ac \.ac-short\s*\{\s*display:\s*none;\s*\}/, 'wide: only the long text is drawn');
+    const narrow = /@media \(max-width: 1000px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
+    assert.match(narrow, /\.sess-ac \.ac-short\s*\{\s*display:\s*inline;\s*\}/, 'narrow: the short text is drawn');
+    const longRule = /\.sess-meta \.sess-ac \.ac-long\s*\{([^}]*)\}/.exec(narrow)?.[1] ?? '';
+    assert.match(longRule, /position:\s*absolute/);
+    assert.match(longRule, /clip:\s*rect\(0 0 0 0\)/);
+    assert.doesNotMatch(longRule, /display:\s*none|visibility:\s*hidden/, 'display none would take the only text a screen reader hears out of the tree');
+  });
+
+  // 38: contrast (the mode-chip pattern: tokens of each theme, WCAG 2.x, 4.5:1 for --fs-small text on the header's --surface)
+  {
+    const { THEME, ratio } = colourKit();
+    const STATE_TOKEN = { typed: '--fit-other', compacted: '--text-muted', stopped: '--idle' };
+    for (const name of Object.keys(THEME)) {
+      test(`(+) 38 contrast (${name}): typed, compacted and stopped are each 4.5:1 or more on the header's --surface`, () => {
+        const v = THEME[name];
+        for (const [state, token] of Object.entries(STATE_TOKEN)) {
+          assert.match(v[token] ?? '', /^#[0-9a-f]{6}$/i, `${token} in ${name}`);
+          assert.ok(ratio(v[token], v['--surface']) >= 4.5, `${state} (${token}) on --surface: ${ratio(v[token], v['--surface']).toFixed(2)}`);
+        }
+      });
+    }
+
+    test('(\u2212) 38: the header sits on --surface, and the colour used per state is the one the stylesheet names (so the numbers above are the real ones)', () => {
+      const css = strip(CSS);
+      assert.match(css, /\.bar\s*\{[^}]*background:\s*var\(--surface\)/);
+      for (const [state, token] of Object.entries(STATE_TOKEN)) assert.match(css, new RegExp(`\\.sess-ac\\[data-st="${state}"\\]\\s*\\{\\s*color:\\s*var\\(${token}\\)`));
+    });
+
+    test('(\u2212) 38: the check can fail: a pale grey on --surface is caught', () => {
+      assert.ok(ratio('#cccccc', THEME.light['--surface']) < 4.5);
+    });
+  }
 
   // ---- F10: the stylesheet (design F10 6.2) ------------------------------------------------------------------------------------------------
   test('(+) F10: session.css has the nika-refit keyframes (fade and zoom from --refit-from), the 120 ms class anchored bottom-left, and no animation under reduced motion', () => {
@@ -10749,7 +11044,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
 
   // -- boot (4.4: 2 to 6)
 
-  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg'];
+  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireTyping', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg'];
   const bootRig = ({ sub = false, bad = false, session = S, pane = null, project = KEY, app = true, search = '' } = {}) => {
     const p = page();
     const log = { calls: [], doc: [] };
@@ -10764,7 +11059,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     const { boot } = mk(['function showEmpty(text)', 'function showNotice(msg)', 'function readOnlyView()', 'function boot()'], ctx);
     return { boot, p, log, ctx };
   };
-  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'ATT.wire', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg', 'kickMirror'];
+  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'wireTyping', 'ATT.wire', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg', 'kickMirror'];
 
   test('(+) 4.4: boot in subagent mode: no terminal column, the Transcript alone, no tabs, no "Skip to message input", the read-only notice, the body class', () => {
     const r = bootRig({ sub: true, search: `?session=${S}&agent=${AG}&project=${KEY}` });

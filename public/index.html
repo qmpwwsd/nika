@@ -164,7 +164,7 @@
                 </div>
                 <p class="help" id="set-compact-result"></p>
                 <p class="help" id="set-compact-cap">On a model with a 200k window, Claude can't compact later than about 83 %, so a higher % acts as about 83 % on those models.</p>
-                <p class="help" id="set-compact-help">Applies only to sessions nika starts: the orchestrator, a resumed orchestrator and spawned agents, from their next start. Running sessions and sessions you start yourself keep Claude Code's own setting. Compact in the session window works at any time.</p>
+                <p class="help" id="set-compact-help">Sessions nika starts get this point from their next start. In any other Claude session nika shows, nika types /compact when the session has waited 60 seconds past this point and you have not typed in nika for it: once each time it grows past the point, at most every 10 minutes. nika can't type into a session in a plain terminal or another tmux server, types nothing while only the browser dashboard runs, and can't compact a session that keeps working: Claude does that itself, or nika at its next wait. Compact in the session window works at any time.</p>
                 <p class="err" id="set-compact-err" hidden></p>
               </section>
 

@@ -670,7 +670,7 @@ describe('the row menu: Remove from the list (app.js rowEl)', () => {
     const sandbox = {
       h, icon, menuEl, hooks: {}, SHAPE: { claudeUrl: /^https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]{1,64}$/ }, sessionHref, isApp, parentOf: () => null, ctxEl: () => new El('span'), labelEl: () => null, agentLabelView: () => null,
       roleTag: () => null, roleTagEl: () => null, state: { modes: { map: {} } }, document: { getSelection: () => ({ isCollapsed: true }) }, location: {},
-      sOf: (x) => (x.live ? 'idle' : 'ended'), rowMode: () => null, canEndRow: () => false, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
+      sOf: (x) => (x.live ? 'idle' : 'ended'), rowMode: () => null, rowNote: () => null, canEndRow: () => false, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
       statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
       copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {}, refresh: REFRESH, removeRow: (...args) => calls.push(args),
     };

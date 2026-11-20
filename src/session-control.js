@@ -6,12 +6,14 @@
 // and never signals a process. End and the commands type only into an empty input box and press Enter only after the box reads
 // exactly what nika typed (claude-tui.md section 5), so a user's draft is never sent, extended or cleared by them. The draft
 // route (writeDraft) is the one place that changes a draft, and it never presses Enter; acceptSuggestion presses only Tab; submit
-// presses only Enter, the one Enter of the page's Send; answerSurvey types one digit and never presses a key.
+// presses only Enter, the one Enter of the page's Send; answerSurvey types one digit and never presses a key. autoCompact (0.5.4, AC) is the one control
+// that nobody asked for: the sweeper of src/autocompact.js calls it for a waiting session past its compact point; it types `/compact` the way the Compact
+// quick action does and presses Enter only on a screen that is still quiet.
 // The input box is read by src/draft.js.
 import { createHash } from 'node:crypto';
 import { CLAUDE_COMMAND } from './ids.js';
 import { clean } from './text.js';
-import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows, rowText } from './mode.js';
+import { MODE_TARGETS, OPTION, PROMPT_ROWS, bypassWindow, lastNonBlank, mentionsBypass, modeFromRows, promptFromRows, rowText, surveyOrFollowUpShown } from './mode.js';
 import { RULE_ROW, SIG, parseDraft, boxSquash, boxInput, normDraft, sameDraft, inEnvelope, chunks, CHUNK_GAP_MS } from './draft.js';
 import { TEXT_MAX, STEPS_MAX, PLAIN_TEXT, PLAN_PICK, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed, stripOf } from './dialog.js';
 import { surveyOf, SURVEY_UNDO_MS } from './survey.js';
@@ -24,7 +26,10 @@ const PROMPT_CHAR = '❯';
 // Claude draws a no-break space after the prompt character (claude-tui.md section 5): for comparing, it is a space.
 const plain = (text) => text.replace(/\xa0/g, ' ');
 const INSERT_PREFIX = /^\s{0,2}-- INSERT --/;
-const CLEAN_ROUNDS = 6; // C-u clears one visual row, so a wrapped line takes one round per row
+export const CLEAN_ROUNDS = 6; // C-u clears one visual row, so a wrapped line takes one round per row
+// autoCompact (0.5.4, AC): after the Enter the screen is read READBACK_TRIES times, READBACK_MS apart (about 2 s), for the turn it starts
+export const READBACK_TRIES = 8;
+export const READBACK_MS = 250;
 const BYPASS_RETRY_MS = 1000; // wait before the one retry of a press out of bypass that was rate limited
 // The hint row of Claude's history search, which `/` opens in vim normal mode (claude-tui.md section 5, Claude Code 2.1.319).
 // It sits at the bottom of that screen, so only the last rows are read: older output cannot pose as it.
@@ -294,8 +299,15 @@ export function createSessionControl({
   // The one place a key leaves this controller. An Escape is refused (409 survey-undo, never sent) while a rating's "Esc to undo" row shows
   // (0.5, F14): Claude would undo the rating with it. Every Escape of Stop, End, a command's history search, the draft route and a dialog's
   // Decline goes through this function, so the guarantee does not depend on each caller remembering it; Stop and End also say so before they start.
+  // autoCompact (0.5.4, AC) counts the requests handed to the sender while it runs (`counting`: pane -> count, present only for that window): a refused
+  // Escape adds nothing, a request the sender then refuses (a 429, a failed send) still counts, because it may have been delivered.
+  const counting = new Map();
   const keys = {
-    send: (pane, body) => (Array.isArray(body?.keys) && body.keys.includes('Escape') && undoHold(pane) ? Promise.resolve(conflict('survey-undo')) : rawKeys.send(pane, body)),
+    send: (pane, body) => {
+      if (Array.isArray(body?.keys) && body.keys.includes('Escape') && undoHold(pane)) return Promise.resolve(conflict('survey-undo'));
+      if (counting.has(pane)) counting.set(pane, counting.get(pane) + 1);
+      return rawKeys.send(pane, body);
+    },
   };
 
   /** True while less than VIM_ESC_GAP_MS has passed since an Escape of Stop or End on the pane (N-2); a clock that went back counts as passed. */
@@ -497,15 +509,15 @@ export function createSessionControl({
    * first. A plain input shows it, and the rest follows. In vim normal mode `/` opens a history search instead, which is
    * closed with one Escape before the usual vim road (`i`, INSERT, the whole text). Any other screen: nika's `/` is removed
    * and nothing else is sent.
+   *
+   * `still(cap)` (0.5.4, AC; default always true): an extra condition on the capture that shows the echo. Enter goes only right after a capture that
+   * reads exactly `text` AND passes `still`; else it is the same as an echo that never matched (nika's own text is removed, 409 not-at-prompt). Only
+   * autoCompact passes one (a quiet screen); End and runCommand pass none.
    */
-  async function typeCommand(pane, first, text, ctx) {
+  async function typeCommand(pane, first, text, ctx, still = () => true) {
     const rows = first.rows;
-    const draft = draftOf(first);
-    // no box, or one nika cannot read (a menu, another screen, an old entry of the history): it cannot tell a draft from nothing, so it types nothing
-    if (draft === null) return { res: conflict(inputRow(inputBox(rows)?.[0]) === null ? 'input-unreadable' : 'input-not-empty') }; // a prompt character glued to text is a row holding text
-    if (draft.reason === 'history' || draft.reason === 'layout') return { res: conflict('input-unreadable') }; // an old entry shows, or rows nika does not know (dim text next to real text included)
-    if (draft.mode === 'bash') return { res: { status: 409, body: { error: 'input-not-empty', message: "Claude's input is in ! mode" } } };
-    if (draft.state !== 'empty') return { res: conflict('input-not-empty') }; // a draft is never sent, extended or cleared
+    const refusal = boxRefusal(first);
+    if (refusal) return { res: refusal };
     let rest = text; // what is still to be typed
     // vim normal mode: the keys would be vim commands. Evidence of vim: the pane's memory, or INSERT seen in this action.
     if ((await vimOf(pane)) || ctx.insert) {
@@ -538,13 +550,26 @@ export function createSessionControl({
         return { failed: sent };
       }
     }
-    const echoed = await settled(pane, (seen, cap) => readsAs(cap, text), ctx);
+    const echoed = await settled(pane, (seen, cap) => readsAs(cap, text) && still(cap), ctx);
     if (!echoed.rows) {
       await cleanUp(pane, text, ctx);
       return echoed.res ? { failed: echoed.res } : { res: conflict('not-at-prompt') };
     }
     const enter = await keys.send(pane, { keys: ['Enter'] });
     return enter.status === 200 ? null : { failed: enter };
+  }
+
+  /**
+   * The 409 for a screen whose input box nika may not type into, else null: no box, one nika cannot read (a menu, another screen, an old entry of the history:
+   * it cannot tell a draft from nothing), a `!` box, or any draft. The check typeCommand makes before any key; autoCompact makes it on each of its two captures.
+   */
+  function boxRefusal(cap) {
+    const draft = draftOf(cap);
+    if (draft === null) return conflict(inputRow(inputBox(cap.rows)?.[0]) === null ? 'input-unreadable' : 'input-not-empty'); // a prompt character glued to text is a row holding text
+    if (draft.reason === 'history' || draft.reason === 'layout') return conflict('input-unreadable'); // an old entry shows, or rows nika does not know (dim text next to real text included)
+    if (draft.mode === 'bash') return { status: 409, body: { error: 'input-not-empty', message: "Claude's input is in ! mode" } };
+    if (draft.state !== 'empty') return conflict('input-not-empty'); // a draft is never sent, extended or cleared
+    return null;
   }
 
   /**
@@ -683,6 +708,79 @@ export function createSessionControl({
       if (typed?.failed) return { status: typed.failed.status, body: typed.failed.body };
       return { status: 200, body: { sent: true } };
     });
+  }
+
+  /**
+   * The first reason a screen is not quiet enough for the typed /compact, else null (0.5.4, AC; design 3.2), in this order: a permission prompt or a
+   * dialog, the feedback survey or its follow-up rows (both 409 prompt-open); no readable footer and no input box (mode-unknown: a dialog may be open);
+   * a turn running in main (busy: the footer's interrupt hint or a spinner row above the box). The box itself (none, an old entry, a `!` box, a draft)
+   * is typeCommand's check, before any key. The slash menu that Claude opens while `/compact` is typed is drawn above the top rule and leaves the mode
+   * line (docs/contracts/claude-tui.md, section 10.1), so it is none of these and the echo screen reads as quiet.
+   */
+  function quietScreen(seen) {
+    if (promptOpen(seen.rows)) return 'prompt-open';
+    if (surveyOrFollowUpShown(seen.rows)) return 'prompt-open';
+    if (unknownScreen(seen)) return 'mode-unknown';
+    const draft = draftOf(seen);
+    if (draft !== null && turnRunning(seen.rows, draft.box.top)) return 'busy';
+    return null;
+  }
+
+  /** The read-back after the Enter of autoCompact: a readable box that now shows a running turn or no longer reads `/compact` (Claude took it). */
+  function taken(cap) {
+    const draft = draftOf(cap);
+    return draft !== null && (turnRunning(cap.rows, draft.box.top) || !readsAs(cap, '/compact'));
+  }
+
+  /**
+   * Types `/compact` into a waiting session on nika's own initiative (0.5.4, AC; design 3.1), for the sweeper of src/autocompact.js; no route calls it.
+   * Under the per-pane lock without waiting (another action running is 409 busy-switching). In order, nothing sent before the last check: no Stop or End
+   * interrupt (409 not-idle); a fresh capture with the registry state; quietScreen and the empty prompt-mode box rule (boxRefusal) on it; the registry state
+   * read again, skipping its cache, must say idle (409 not-idle); no interrupt began meanwhile; a second fresh capture that must be quiet and show an empty
+   * box too (S1: the state read is a whole snapshot; the box rule of the second one is typeCommand's own). Then typeCommand types `/compact` exactly as the Compact quick action does, with Enter only after a capture that reads `/compact` and is still quiet. After
+   * the Enter the screen is read READBACK_TRIES times, READBACK_MS apart: a running turn or a box that no longer reads `/compact` is success (200
+   * { sent: true }); a box that still reads `/compact` gets nika's own text removed (C-u) and is 409 not-taken; an unreadable box is 409 not-confirmed.
+   * Every answer carries `keys`, the number of key requests handed to the sender during the attempt (0 means nothing left nika; a Stop's Escape on the
+   * same pane, outside the lock, counts too, which is the safe side). The keys are those of typeCommand and nothing else.
+   */
+  async function autoCompactIn(pane, ctx) {
+    if (keyGap(pane)) return conflict('not-idle'); // a Stop or End interrupt runs or just sent its Escape
+    const seen = await readIdle(pane, ctx);
+    if (seen.res) return seen.res;
+    const why = quietScreen(seen);
+    if (why) return conflict(why);
+    if (!seen.idle) return conflict('not-idle');
+    const boxed = boxRefusal(seen); // round 2 (S2): each of the two captures shows an empty prompt-mode box, the first one too, before the registry is read again
+    if (boxed) return boxed;
+    if ((await stateNow(pane, { fresh: true })) !== 'idle') return conflict('not-idle'); // skips the registry cache
+    if (keyGap(pane)) return conflict('not-idle'); // a Stop began while the state was read
+    const again = await look(pane, ctx); // the state read is a whole snapshot: the screen is read once more right before the first key
+    if (again.res) return again.res;
+    const why2 = quietScreen(again);
+    if (why2) return conflict(why2);
+    const typed = await typeCommand(pane, again, '/compact', ctx, (cap) => quietScreen(cap) === null);
+    if (typed?.res) return typed.res;
+    if (typed?.failed) return { status: typed.failed.status, body: typed.failed.body };
+    const back = await settled(pane, (rows, cap) => taken(cap), ctx, READBACK_TRIES, READBACK_MS);
+    if (back.res) return { status: back.res.status, body: back.res.body };
+    if (back.rows) return { status: 200, body: { sent: true } };
+    if (back.lastSeen && readsAs(back.lastSeen, '/compact')) {
+      await cleanUp(pane, '/compact', ctx);
+      return conflict('not-taken');
+    }
+    return conflict('not-confirmed');
+  }
+
+  function autoCompact(pane) {
+    return exclusive(pane, async (ctx) => {
+      counting.set(pane, 0);
+      try {
+        const res = await autoCompactIn(pane, ctx);
+        return { ...res, keys: counting.get(pane) };
+      } finally {
+        counting.delete(pane);
+      }
+    }).then((res) => ({ ...res, keys: res.keys ?? 0 })); // a refusal of the lock itself sent nothing
   }
 
   /** Remembers the answer just given (`answered`) and forgets the ones older than answerHoldMs. */
@@ -1429,5 +1527,5 @@ export function createSessionControl({
   /** True while no key may go: a Stop or End interrupt runs, or its Escape went out less than 40 ms ago (N-2). The scroll route (src/scroll.js) checks it inside the lock. */
   const keyGap = (pane) => interrupting.has(pane) || escapeGap(pane);
 
-  return { switchMode, endSession, runCommand, answer, answerSurvey, stop, writeDraft, submit, acceptSuggestion, answerDialog, withPaneLock, keyGap };
+  return { switchMode, endSession, runCommand, autoCompact, answer, answerSurvey, stop, writeDraft, submit, acceptSuggestion, answerDialog, withPaneLock, keyGap };
 }

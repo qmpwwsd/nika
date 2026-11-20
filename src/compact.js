@@ -1,7 +1,8 @@
 // Auto-compact for the sessions nika starts (0.4, ADR 0014, spike S2). Pure: the settings and a model id in, the two launch
 // environment variables out. Claude Code compacts at min(floor(effective x PCT / 100), effective - 13000) with effective =
-// window - 20000, so "P % of the window W" needs PCT = 100 x (W x P / 100) / (W - 20000), and the window must be set explicitly
-// (with the window unset, proactive compaction is off). The PCT is always sent ('100' above the cap, which Claude turns into its own
+// window - 20000, so "P % of the window W" needs PCT = 100 x (W x P / 100) / (W - 20000). With no window variable Claude Code
+// 2.1.328 uses a default window (about 980k effective on 1M models), so a PCT alone would apply to it; nika always sets both.
+// The PCT is always sent ('100' above the cap, which Claude turns into its own
 // cap), so a value inherited from the environment can never stay in force. The values go into a tmux `-e NAME=value` (literal, never format-expanded)
 // or into the env of a no-shell spawn; only what compactEnv() has validated ever gets there.
 import { modelWindow } from './models.js';

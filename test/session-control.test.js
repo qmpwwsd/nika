@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSessionControl, promptSig, boxInput, readDraft } from '../src/session-control.js';
+import { createSessionControl, promptSig, boxInput, readDraft, READBACK_TRIES, READBACK_MS } from '../src/session-control.js';
 import { promptFromRows, rowText, modeFromRows } from '../src/mode.js';
 import { RULE_ROW, parseDraft, boxSquash } from '../src/draft.js';
 import { boxRows, subagentRows } from './helpers.js';
@@ -58,7 +58,9 @@ const toRow = (r) => {
  * press read `unknown`. In vim NORMAL mode the text `/` opens the history search (`history`: the input box is replaced by a
  * list, a filter row and the hint row); Escape closes it unless `historyStuck`. The clock only moves when the controller sleeps.
  * `topRule` is the upper rule row (a named session draws its name into it, see `labelled`), `below` the rows between the
- * lower rule and the mode line (a user status line), `footerTail` the text after the mode phrase.
+ * lower rule and the mode line (a user status line), `footerTail` the text after the mode phrase. `spinner` is a row above the
+ * upper rule (Claude's running-turn row), `menu` rows drawn above the upper rule after it (Claude's slash menu: above the box, the mode line stays,
+ * docs/contracts/claude-tui.md section 5; 0.5.4, AC).
  */
 function world(opts = {}) {
   const w = {
@@ -69,7 +71,7 @@ function world(opts = {}) {
     box: [PLACEHOLDER_BOX], vim: false, vimMode: 'insert', insertWorks: true, swallow: false, afterType: null,
     typeLag: 0, boxStale: null, insertLag: 0, insertLeft: 0, cuWorks: true, captureFailFrom: null,
     history: false, historyStuck: false, escLag: 0, escLeft: 0, hookSlash: false,
-    topRule: RULE, below: [], footerTail: '', survey: null, surveyLeft: 0, followUp: false,
+    topRule: RULE, below: [], footerTail: '', survey: null, surveyLeft: 0, followUp: false, spinner: null, menu: null,
     ...opts,
   };
   w.rows = () => {
@@ -86,7 +88,7 @@ function world(opts = {}) {
     const line = `${inserting ? '-- INSERT -- ' : ''}${PHRASE[shown]}${w.footerTail}`;
     const shownBox = w.boxStale?.left > 0 ? w.boxStale.box : w.box;
     // `survey`: { free?, lag?, takes? }; `followUp`: the rows Claude draws for a few seconds after a rating (M1), which are no survey
-    const above = w.survey ? ['', SURVEY_Q, SURVEY_O, w.survey.free ?? ''] : w.followUp ? ['', FOLLOW_UP_THANKS, FOLLOW_UP_ROW, ''] : [''];
+    const above = [...(w.survey ? ['', SURVEY_Q, SURVEY_O, w.survey.free ?? ''] : w.followUp ? ['', FOLLOW_UP_THANKS, FOLLOW_UP_ROW, ''] : w.spinner ? ['', w.spinner] : ['']), ...(w.menu ?? [])];
     const box = shownBox === null ? [] : [...above, w.topRule, ...shownBox.map(toRow), RULE, ...w.below];
     return rowsOf('earlier output', ...box, line);
   };
@@ -3012,5 +3014,248 @@ describe('End and Stop on a subagent view, the subagent list or the shells pill 
     assert.equal(modeFromRows(w.rows()), 'manual', 'premise');
     assert.deepEqual(await w.control().endSession('%2'), { status: 200, body: { ended: true } });
     assert.deepEqual(keysOf(w), ['text:/', 'text:exit', 'Enter']);
+  });
+});
+
+// 0.5.4 (AC, design sections 3 and 10.1 tests 20 to 30): the controller's autoCompact(pane), the typed /compact of a waiting session. It reuses typeCommand
+// (End's and the commands' typing), so these tests cover what is new: the order of the checks, the second capture, the quiet-screen check right before
+// Enter, the read-back, the key count and the lock. The existing End and runCommand tests above are the "unchanged" half (test 26).
+describe('autoCompact (0.5.4, AC): the typed /compact of a waiting session', () => {
+  const SPIN = '\u273b Thinking\u2026 (12s \u00b7 esc to interrupt)'; // Claude's running-turn row: a spinner glyph, a verb, an ellipsis, the interrupt hint
+  const MENU = ['  /compact    Clear history but keep a summary', '  /config     Open config panel']; // Claude's slash menu (test/dialog.test.js shape)
+  /** Claude takes the Enter: the box empties and the spinner shows. */
+  const takes = (w) => {
+    w.onKeys = (b) => { if (b.keys?.[0] === 'Enter') { w.box = [PLACEHOLDER_BOX]; w.spinner = SPIN; } };
+    return w;
+  };
+  const refused = (error, keys = 0) => ({ status: 409, body: { error }, keys });
+
+  test('(+) test 20: plain mode: / alone, compact, Enter, read back as a running turn: 200 sent true, keys 3; every capture and the registry read are fresh, none cached', async () => {
+    const w = takes(world({}));
+    assert.deepEqual(await w.control().autoCompact('%2'), { status: 200, body: { sent: true }, keys: 3 });
+    assert.deepEqual(w.sent, [{ text: '/' }, { text: 'compact' }, { keys: ['Enter'] }]);
+    assert.ok(w.captures.length >= 2 && w.captures.every((c) => c.o?.fresh === true));
+    assert.ok(w.stateArgs.some((o) => o?.fresh === true), 'the registry read that skips its cache');
+    assert.equal(w.cmdCalls, 0);
+  });
+
+  test('(+) test 27: the read-back also takes an emptied box without a spinner, and a spinner with the box still reading /compact', async () => {
+    const empty = world({});
+    empty.onKeys = (b) => { if (b.keys?.[0] === 'Enter') empty.box = [PLACEHOLDER_BOX]; };
+    assert.deepEqual(await empty.control().autoCompact('%2'), { status: 200, body: { sent: true }, keys: 3 });
+    const spin = world({});
+    spin.onKeys = (b) => { if (b.keys?.[0] === 'Enter') spin.spinner = SPIN; };
+    assert.deepEqual(await spin.control().autoCompact('%2'), { status: 200, body: { sent: true }, keys: 3 });
+  });
+
+  test('(+) test 21: vim normal mode that the pane remembers: i, /compact, Enter; the history search of an unseen vim: /, Escape, i, /compact, Enter', async () => {
+    const known = takes(world({ vim: true, vimMode: 'normal' }));
+    assert.deepEqual(await known.control().autoCompact('%2'), { status: 200, body: { sent: true }, keys: 3 });
+    assert.deepEqual(keysOf(known), ['text:i', 'text:/compact', 'Enter']);
+    const unseen = takes(world({ vim: true, vimMode: 'normal' }));
+    assert.deepEqual(await unseen.control({ vimOf: () => false }).autoCompact('%2'), { status: 200, body: { sent: true }, keys: 5 });
+    assert.deepEqual(keysOf(unseen), ['text:/', 'Escape', 'text:i', 'text:/compact', 'Enter']);
+  });
+
+  test('(\u2212) test 22: a prompt, the survey, its follow-up rows, a dialog, no readable footer, a running spinner, the interrupt hint: the 409 of the quiet check and not one key', async () => {
+    const dialog = dialogWorld({ phase: 'ask' }).screen().rows;
+    const cases = [
+      ['a permission prompt', world({ prompt: true }), 'prompt-open'],
+      ['the feedback survey', world({ survey: {} }), 'prompt-open'],
+      ['the rows after a rating', world({ followUp: true }), 'prompt-open'],
+      ['a question dialog', Object.assign(world({}), { rows: () => dialog }), 'prompt-open'],
+      ['no mode line and no box', world({ box: null, mode: 'unknown' }), 'mode-unknown'],
+      ['a spinner above the box', world({ spinner: SPIN }), 'busy'],
+      ['the interrupt hint in the footer', world({ footerTail: ' \u00b7 esc to interrupt' }), 'busy'],
+      ['a draft in the box (the box check of typeCommand)', world({ box: [`${PROMPT_CHAR} half-written note`] }), 'input-not-empty'],
+      ['no input box on a readable footer', world({ box: null }), 'input-unreadable'],
+    ];
+    for (const [name, w, error] of cases) {
+      assert.deepEqual(await w.control().autoCompact('%2'), refused(error), name);
+      assert.deepEqual(w.sent, [], name);
+    }
+  });
+
+  test('(\u2212) test 22: the registry says busy: 409 not-idle, not one key; and the lock is free again for the next try', async () => {
+    const w = takes(world({ state: 'busy' }));
+    const sc = w.control();
+    assert.deepEqual(await sc.autoCompact('%2'), refused('not-idle'));
+    assert.deepEqual(w.sent, []);
+    w.state = 'idle';
+    assert.equal((await sc.autoCompact('%2')).status, 200);
+  });
+
+  test('(\u2212) test 23: the cached registry read says idle but the fresh one says busy: 409 not-idle, not one key', async () => {
+    const w = takes(world({}));
+    w.stateFn = (n) => (n === 1 ? 'idle' : 'busy');
+    assert.deepEqual(await w.control().autoCompact('%2'), refused('not-idle'));
+    assert.deepEqual(w.sent, []);
+    assert.equal(w.stateArgs[0], undefined, 'the first read may use the cache');
+    assert.deepEqual(w.stateArgs[1], { fresh: true }, 'the second one skips it');
+  });
+
+  test('(\u2212) test 24: the second capture shows a prompt: 409 prompt-open, not one key (the first capture alone is not enough)', async () => {
+    const w = takes(world({}));
+    const prompt = world({ prompt: true }).rows();
+    const base = w.rows;
+    w.rows = () => (w.captures.length === 2 ? prompt : base());
+    assert.deepEqual(await w.control().autoCompact('%2'), refused('prompt-open'));
+    assert.deepEqual(w.sent, []);
+    assert.equal(w.captures.length, 2);
+  });
+
+  test('(\u2212) test 24 (round 2, S2): the FIRST capture shows a draft or no readable box while the second is empty: the box codes of typeCommand, not one key, the second capture never taken', async () => {
+    const bad = [
+      ['a draft in the box', world({ box: [`${PROMPT_CHAR} half-written note`] }), 'input-not-empty'],
+      ['a draft of two rows', world({ box: [`${PROMPT_CHAR} first row`, '  second row'] }), 'input-not-empty'],
+      ['no input box on a readable footer', world({ box: null }), 'input-unreadable'],
+    ];
+    for (const [name, shown, error] of bad) {
+      const w = takes(world({}));
+      const first = shown.rows();
+      const base = w.rows;
+      w.rows = () => (w.captures.length === 1 ? first : base());
+      assert.deepEqual(await w.control().autoCompact('%2'), refused(error), name);
+      assert.deepEqual(w.sent, [], name);
+      assert.equal(w.captures.length, 1, `${name}: the second capture is never taken`);
+      assert.ok(!w.stateArgs.some((o) => o?.fresh === true), `${name}: and the fresh registry read does not run`);
+    }
+  });
+
+  test('(+) test 24 (round 2, S2): both captures show an empty prompt-mode box: two captures and the fresh registry read before the first key, then the typing as before', async () => {
+    const w = takes(world({}));
+    const sc = w.control();
+    const before = [];
+    const send = w.keys.send;
+    w.keys.send = async (pane, body) => { if (before.length === 0) before.push([w.captures.length, w.stateArgs.filter((o) => o?.fresh === true).length]); return send(pane, body); };
+    assert.deepEqual(await sc.autoCompact('%2'), { status: 200, body: { sent: true }, keys: 3 });
+    assert.deepEqual(before, [[2, 1]], 'before the first key: two captures and one fresh registry read');
+    assert.deepEqual(keysOf(w), ['text:/', 'text:compact', 'Enter']);
+  });
+
+  test('(\u2212) test 25: the echo matches but a spinner shows: no Enter, nika\'s own text is removed with C-u, 409 not-at-prompt', async () => {
+    const w = takes(world({}));
+    w.afterType = (b) => { if (b.text === 'compact') w.spinner = SPIN; }; // a turn begins right after the text shows
+    assert.deepEqual(await w.control().autoCompact('%2'), refused('not-at-prompt', 3));
+    assert.deepEqual(keysOf(w), ['text:/', 'text:compact', 'C-u']);
+    assert.deepEqual(w.box, [PLACEHOLDER_BOX], 'the fake box is empty again');
+  });
+
+  test('(+) test 25b: the echo with Claude\'s slash menu open (drawn above the box, the mode line stays) is a quiet screen: Enter goes', async () => {
+    const w = takes(world({}));
+    w.afterType = (b) => { if (b.text === 'compact') w.menu = MENU; };
+    const onKeys = w.onKeys;
+    w.onKeys = (b) => { onKeys(b); if (b.keys?.[0] === 'Enter') w.menu = null; };
+    w.menu = MENU; // premise: the menu is no dialog, no prompt and no survey, and the footer still reads
+    assert.equal(modeFromRows(w.rows()), 'manual');
+    assert.equal(dialogOnScreen(w.rows()), false);
+    assert.equal(readDraft({ rows: w.rows(), cursor: w.cursorIn(w.rows()) }).state, 'empty');
+    w.menu = null;
+    assert.deepEqual(await w.control().autoCompact('%2'), { status: 200, body: { sent: true }, keys: 3 });
+    assert.deepEqual(keysOf(w), ['text:/', 'text:compact', 'Enter']);
+  });
+
+  test('(\u2212) test 25b: the same menu with a spinner row above the box: no Enter; and a footer that stops reading while the menu is up is no echo either: no Enter, fail closed', async () => {
+    const spin = takes(world({}));
+    spin.afterType = (b) => { if (b.text === 'compact') { spin.menu = MENU; spin.spinner = SPIN; } };
+    assert.deepEqual(await spin.control().autoCompact('%2'), refused('not-at-prompt', 3));
+    assert.deepEqual(keysOf(spin), ['text:/', 'text:compact', 'C-u']);
+    // the design assumed the menu replaces the footer and the box still reads; src/draft.js reads no box under an unknown footer, so there is no echo and no Enter
+    const replaced = takes(world({}));
+    replaced.afterType = (b) => { if (b.text === 'compact') replaced.mode = 'unknown'; };
+    assert.deepEqual(await replaced.control().autoCompact('%2'), refused('not-at-prompt', 3));
+    assert.deepEqual(keysOf(replaced), ['text:/', 'text:compact', 'C-u']);
+  });
+
+  test('(\u2212) test 27: the box still reads /compact after READBACK_TRIES reads: C-u removes it, 409 not-taken, keys 4', async () => {
+    const w = world({}); // Claude never takes the Enter
+    const slept = () => w.slept.filter((ms) => ms === READBACK_MS).length;
+    assert.deepEqual(await w.control().autoCompact('%2'), refused('not-taken', 4));
+    assert.deepEqual(keysOf(w), ['text:/', 'text:compact', 'Enter', 'C-u']);
+    assert.equal(slept(), READBACK_TRIES);
+    assert.equal(READBACK_TRIES * READBACK_MS, 2000);
+  });
+
+  test('(\u2212) test 27: no readable box after the Enter: 409 not-confirmed, nothing removed; a capture that fails passes through', async () => {
+    const gone = world({});
+    gone.onKeys = (b) => { if (b.keys?.[0] === 'Enter') gone.box = null; };
+    assert.deepEqual(await gone.control().autoCompact('%2'), refused('not-confirmed', 3));
+    assert.deepEqual(keysOf(gone), ['text:/', 'text:compact', 'Enter']);
+    const down = world({});
+    down.onKeys = (b) => { if (b.keys?.[0] === 'Enter') down.captureFail = { status: 404, body: { error: 'not_found', message: 'gone' } }; };
+    assert.deepEqual(await down.control().autoCompact('%2'), { status: 404, body: { error: 'not_found', message: 'gone' }, keys: 3 });
+  });
+
+  test('(\u2212) test 28: another action runs on the pane: 409 busy-switching and no key of its own', async () => {
+    const w = takes(world({}));
+    const release = hold(w);
+    const sc = w.control();
+    const running = sc.runCommand('%1', '/compact');
+    await tick();
+    assert.deepEqual(await sc.autoCompact('%1'), refused('busy-switching'));
+    assert.deepEqual(w.sent, []);
+    release();
+    await running;
+    assert.deepEqual(keysOf(w), ['text:/', 'text:compact', 'Enter'], 'only the command\'s own keys');
+  });
+
+  test('(\u2212) test 28: a Stop\'s Escape went out less than 40 ms ago: 409 not-idle, not one key; after the gap it goes', async () => {
+    const w = takes(world({ state: 'busy' }));
+    const sc = w.control();
+    assert.equal((await sc.stop('%2')).status, 200);
+    w.state = 'idle';
+    const reads = w.captures.length;
+    assert.deepEqual(await sc.autoCompact('%2'), refused('not-idle'));
+    assert.deepEqual(keysOf(w), ['Escape'], 'only the Stop');
+    assert.equal(w.captures.length, reads, 'refused before the screen is read');
+    w.t += 40;
+    assert.equal((await sc.autoCompact('%2')).status, 200);
+  });
+
+  test('(\u2212) test 28: a Stop begins while the fresh registry state is read: 409 not-idle before the second capture; only the Stop\'s Escape went out (and it counts)', async () => {
+    const w = takes(world({}));
+    const sc = w.control();
+    let stopped = false;
+    w.stateFn = async (n) => {
+      if (n === 2 && !stopped) { // the fresh read of autoCompact: a Stop runs meanwhile
+        stopped = true;
+        w.state = 'busy';
+        assert.equal((await sc.stop('%2')).status, 200);
+        w.state = 'idle';
+        return 'idle';
+      }
+      return w.state;
+    };
+    assert.deepEqual(await sc.autoCompact('%2'), refused('not-idle', 1));
+    assert.deepEqual(keysOf(w), ['Escape']);
+  });
+
+  test('(\u2212) test 29: a rating\'s undo row is up: the history search of an unseen vim cannot be closed, the Escape is refused (409 survey-undo), keys 1', async () => {
+    const w = world({ survey: {} });
+    const sc = w.control({ vimOf: () => false });
+    const rows = w.rows();
+    const sig = surveyOf({ rows, cursor: w.cursorIn(rows) }, { vim: false, insert: false }).sig;
+    assert.equal((await sc.answerSurvey('%2', { n: 1, sig })).status, 200);
+    w.vim = true;
+    w.vimMode = 'normal'; // the pane turns out to be vim, in NORMAL: `/` opens the history search
+    w.t += 100;
+    w.sent.length = 0;
+    assert.deepEqual(await sc.autoCompact('%2'), refused('survey-undo', 1));
+    assert.deepEqual(keysOf(w), ['text:/']);
+    assert.equal(w.history, true, 'the search stays open until the hold ends: nika sends no Escape');
+  });
+
+  test('(+) test 30: keys counts each request handed to the sender, also a refused one (a 429), but not a survey-undo refusal', async () => {
+    const w = world({});
+    w.failSend = (b) => (b.text === 'compact' ? { status: 429, body: { error: 'busy', message: 'slow' } } : null);
+    // the refused `compact` counts (it was handed to the sender), and the probe's slash is removed with one C-u
+    assert.deepEqual(await w.control().autoCompact('%2'), { status: 429, body: { error: 'busy', message: 'slow' }, keys: 3 });
+    assert.deepEqual(keysOf(w), ['text:/', 'text:compact', 'C-u']);
+    const again = takes(world({}));
+    const sc = again.control();
+    assert.equal((await sc.autoCompact('%2')).keys, 3);
+    again.spinner = null;
+    again.box = [PLACEHOLDER_BOX];
+    assert.equal((await sc.autoCompact('%2')).keys, 3, 'the count is per attempt, not a running total');
   });
 });

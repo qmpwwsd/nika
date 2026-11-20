@@ -128,7 +128,7 @@ export function createServer({ config, exec, token, now = Date.now, version, app
     // what the user removed from the lists in the app (0.5.4; both tiers); a config without env reads no file (readHidden)
     const promise = (async () => {
       const hidden = await readHidden(config.env, t);
-      return (await collect({ config, exec, now: t, sinceMs: parseSince(since), since, cache: collectorCache, hidden })).snapshot;
+      return (await collect({ config, exec, now: t, sinceMs: parseSince(since), since, cache: collectorCache, hidden, typed: app !== null })).snapshot; // typed: the app tier only (0.5.4, AC)
     })();
     snapshots.set(since, { at: t, gen, promise });
     promise.catch(() => snapshots.delete(since));

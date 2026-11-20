@@ -3,7 +3,7 @@
 // (read-only, 127.0.0.1:3335) never loads them. Every server string is rendered through h() (textContent).
 import { isApp, getJSON, windowCommand } from './api.js';
 import { h, icon, roleTagEl, ctxEl, subagentItemEl, labelEl } from './dom.js';
-import { modeEl, rowMode, canEndRow } from './modes.js';
+import { modeEl, rowMode, rowNote, canEndRow } from './modes.js';
 import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint, wireWindowKeys } from './shortcuts.js';
 import { copyBanner } from './app-copy.js';
 import { removeRow, removedLineEl } from './removed.js';
@@ -201,6 +201,7 @@ function treeSlot(a, scope, tree) {
 function rowEl(a, g, { scope, showProject = false, tree = null, showEnded = state.showEnded }) {
   const s = sOf(a);
   const mode = isApp ? rowMode(a, state.modes.map) : null;
+  const note = isApp ? rowNote(a, state.compacted) : null; // 0.5.4 AC: the last typed /compact of this row's pane, in the meter's tooltip
   const href = isApp ? sessionHref({ session: a.id, pane: a.pane?.id, project: g.project?.key }) : null;
   const fk = (k, sc = scope) => `${k}:${sc}:${a.id}`;
   const what = s === 'attn' ? reasonOf(a) : s === 'ended' ? endedText(a) : a.lastPrompt || '(no prompt yet)';
@@ -236,7 +237,7 @@ function rowEl(a, g, { scope, showProject = false, tree = null, showEnded = stat
       tree?.collapsed ? h('span', { class: 'tree-hid', 'aria-hidden': 'true' }, `+${tree.hiddenCount}`, tree.hiddenAttn ? h('span', { class: 'attn', text: String(tree.hiddenAttn) }) : null) : null,
       tree?.orphan ? h('span', { class: 'tree-orphan', title: "This agent's parent session is no longer running.", text: 'parent ended' }) : null),
     h('div', { class: 'c-model' }, modelEl(a)),
-    h('div', { class: 'c-ctx' }, ctxEl(a.context)),
+    h('div', { class: 'c-ctx' }, ctxEl(a.context, { note })),
     h('div', { class: 'c-what' },
       labelEl(agentLabelView(a)),
       showProject ? h('span', { class: 'proj-chip', title: g.label, text: g.label.length > 18 ? `${g.label.slice(0, 17)}…` : g.label }) : null,
@@ -398,7 +399,7 @@ function skippedNote() {
 
 let dashSig = '';
 function renderDashboard(force) {
-  const sig = JSON.stringify([state.data.groups, state.data.hidden, state.data.skipped, isApp ? state.projects : null, isApp ? state.modes.map : null, state.filter, state.showEnded, [...state.open], [...state.expanded], state.me?.tmux, state.me?.claude, state.error]);
+  const sig = JSON.stringify([state.data.groups, state.data.hidden, state.data.skipped, isApp ? state.projects : null, isApp ? state.modes.map : null, isApp ? state.compacted : null, state.filter, state.showEnded, [...state.open], [...state.expanded], state.me?.tmux, state.me?.claude, state.error]);
   if (!force && (sig === dashSig || interacting())) return;
   dashSig = sig;
   const body = $('#dash-body');

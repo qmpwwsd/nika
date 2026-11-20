@@ -653,7 +653,7 @@ describe('collect: context (0.4 O5, contract C6)', () => {
    * One pass over a fresh machine: `last` = [session id, tokens, model] lines appended to the transcripts, `compaction` = the
    * setting in nika's own config.json (null: no file), `roles` = the nika role tag of the panes %5 (SID.busy) and %6 (SID.idle).
    */
-  async function run({ last = [], compaction = SETTING, roles = ['', ''], config = (c) => c, sinceMs = 7 * DAY } = {}) {
+  async function run({ last = [], compaction = SETTING, roles = ['', ''], config = (c) => c, sinceMs = 7 * DAY, typed = false, tmuxLines = null } = {}) {
     const fx2 = makeFixture();
     try {
       const where = { [SID.busy]: fx2.wt, [SID.idle]: fx2.repo, [SID.dead]: fx2.repo, [SID.ended]: fx2.repo };
@@ -665,7 +665,7 @@ describe('collect: context (0.4 O5, contract C6)', () => {
         fs.mkdirSync(path.join(cfgRoot, 'nika'), { recursive: true });
         fs.writeFileSync(path.join(cfgRoot, 'nika', 'config.json'), JSON.stringify({ compaction }), { mode: 0o600 });
       }
-      const s = await collect({ config: config({ ...fx2.config, env: { NIKA_CONFIG_DIR: cfgRoot } }), exec: fakeExec({ tmuxLines: PANES(...roles) }), now: NOW, sinceMs });
+      const s = await collect({ config: config({ ...fx2.config, env: { NIKA_CONFIG_DIR: cfgRoot } }), exec: fakeExec({ tmuxLines: tmuxLines ?? PANES(...roles) }), now: NOW, sinceMs, typed });
       return (id) => s.snapshot.groups.flatMap((g) => g.agents).find((a) => a.id === id);
     } finally {
       cleanup(fx2);
@@ -754,6 +754,59 @@ describe('collect: context (0.4 O5, contract C6)', () => {
       const get = await run({ last, compaction, roles: ['agent', ''] });
       assert.deepEqual(get(SID.busy).context, { tokens: 100000, window: 400000, compactAt: 320000, pct: 25, compaction: 'on' }, JSON.stringify(compaction));
     }
+  });
+
+  // 0.5.4 (AC, test 3): the word `typed` is a live session nika did not start, in a pane nika can type into, on the app tier only.
+  describe('typed (0.5.4, AC)', () => {
+    const IDLE = [[SID.idle, 312000, 'claude-sonnet-5-5']];
+    const PANE6 = (command, dead = '0', role = '') => [`%5\twork\t1\t[%5] build-7-1\tzsh`, `%6\twork\t2\tMacBook.local\t${command}\t${role}\t\t\t\t${dead}`];
+
+    test('(+) typed: a live session in a listed, running claude pane without a nika role reads "typed", with the setting\'s point', async () => {
+      const get = await run({ last: IDLE, typed: true });
+      assert.deepEqual(get(SID.idle).context, { tokens: 312000, window: 400000, compactAt: 320000, pct: 78, compaction: 'typed' });
+    });
+
+    test('(+) typed: the point follows the model (160k on a 200k model), and the pane command may be node or a version number', async () => {
+      const small = await run({ last: [[SID.idle, 100000, 'claude-sonnet-4-6']], typed: true });
+      assert.deepEqual([small(SID.idle).context.compaction, small(SID.idle).context.window, small(SID.idle).context.compactAt], ['typed', 200000, 160000]);
+      for (const command of ['node', '2.1.328']) {
+        const get = await run({ last: IDLE, typed: true, tmuxLines: PANE6(command) });
+        assert.equal(get(SID.idle).context.compaction, 'typed', command);
+      }
+    });
+
+    test('(+) typed does not change a session nika started: it still reads "on"', async () => {
+      const get = await run({ last: IDLE, typed: true, roles: ['', 'agent'] });
+      assert.deepEqual([get(SID.idle).context.compaction, get(SID.idle).context.compactAt], ['on', 320000]);
+    });
+
+    test('(\u2212) without the typed flag (the browser tier, nika status) the same session reads "none" with no point', async () => {
+      for (const opts of [{}, { typed: false }]) {
+        const get = await run({ last: IDLE, ...opts });
+        assert.deepEqual(get(SID.idle).context, { tokens: 312000, window: 400000, compactAt: null, pct: 78, compaction: 'none' });
+      }
+    });
+
+    test('(\u2212) typed needs a pane nika can type into: a dead pane, a shell, an unknown pane or an ended session read "none"', async () => {
+      const dead = await run({ last: IDLE, typed: true, tmuxLines: PANE6('claude', '1') });
+      assert.deepEqual([dead(SID.idle).context.compaction, dead(SID.idle).context.compactAt], ['none', null], 'dead pane');
+      const shell = await run({ last: IDLE, typed: true, tmuxLines: PANE6('zsh') });
+      assert.equal(shell(SID.idle).context.compaction, 'none', 'zsh');
+      const lookalike = await run({ last: IDLE, typed: true, tmuxLines: PANE6('claudex') });
+      assert.equal(lookalike(SID.idle).context.compaction, 'none', 'claudex');
+      const gone = await run({ last: IDLE, typed: true, tmuxLines: [] });
+      assert.deepEqual([gone(SID.idle).context.compaction, gone(SID.idle).context.compactAt], ['none', null], 'pane not listed');
+      const ended = await run({ last: [[SID.dead, 312000, 'claude-sonnet-5-5']], typed: true });
+      assert.equal(ended(SID.dead).live, false);
+      assert.deepEqual([ended(SID.dead).context.compaction, ended(SID.dead).context.compactAt], ['none', null], 'ended');
+    });
+
+    test('(\u2212) the setting off reads "off" even with the typed flag; a session with no model id has no window or point', async () => {
+      const off = await run({ last: IDLE, typed: true, compaction: { ...SETTING, enabled: false } });
+      assert.deepEqual(off(SID.idle).context, { tokens: 312000, window: 1000000, compactAt: null, pct: 31.2, compaction: 'off' });
+      const nowin = await run({ last: [[SID.idle, 124000, 'not a model id']], typed: true });
+      assert.deepEqual(nowin(SID.idle).context, { tokens: 124000, window: null, compactAt: null, pct: null, compaction: 'typed' });
+    });
   });
 
   test('(−) a config without env (tests, 0.1 callers) reads no file and uses the defaults', async () => {
