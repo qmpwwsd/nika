@@ -4166,6 +4166,152 @@ describe('F2 (0.5.4, QPF): the form after a refused answer that carried a note',
   });
 });
 
+describe('NT (0.5.4, LC-QPF item 3): a note taken off the form keeps its sentence when Claude\'s notes field then shows open', () => {
+  const NOTES_OPEN_TEXT = "Claude's notes field is open in the terminal. Close it there, then press Try again.";
+  const BOTH = `${NOTES_OPEN_TEXT} ${NOTE_TAKEN_TEXT}`;
+  const withPv = (over = {}, rigOpts = {}) => { const r = rig(rigOpts); r.render(askPv(over)); return r; };
+  const typeNote = (r, v) => { const t = one(r.root, 'dlg-note-text'); t.value = v; t.fire('input'); return t; };
+  const opened = (over = {}) => askPv({ notes: { text: '', editing: true }, ...over }); // the capture that shows Claude's notes field open
+  const refusal = (error, sent) => ({ reply: () => ({ status: 409, body: sent === undefined ? { error } : { error, sent } }) });
+  /** Types a note and presses Answer; the route refuses. Returns the textarea the note was typed in. */
+  const answerWithNote = async (r) => {
+    byText(r.root, 'Add a note').click();
+    const field = typeNote(r, 'round it');
+    byText(r.root, 'Answer').click();
+    await settle();
+    return field;
+  };
+
+  test('(+) the live shape: preview-changed with 2 keys pressed takes the note off, then the capture shows the notes field open: the notes-open sentence and the note-taken sentence, locked with Try again, the note field empty', async () => {
+    const r = withPv({}, refusal('preview-changed', 2));
+    const field = await answerWithNote(r);
+    assert.equal(off(byText(r.root, 'Answer')), false, 'preview-changed does not lock: this is the capture that used to replace the sentence');
+    assert.ok(r.log.problem.at(-1)[0].endsWith(` ${NOTE_TAKEN_TEXT}`), 'the refusal itself says the note was taken off');
+    r.render(opened());
+    assert.deepEqual(r.log.problem.at(-1), [BOTH, 'warn']);
+    assert.equal(off(byText(r.root, 'Answer')), true, 'locked');
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), false, 'with Try again');
+    assert.equal(field.value, '', 'the note is not on the form');
+    assert.equal(one(r.root, 'dlg-note-text'), null);
+    assert.equal(sentBodies(r).length, 1, 'nothing else was sent');
+  });
+
+  test('(+) the live order: the capture with the field open arrives while the answer is still in flight, and the refusal comes after it: the same two sentences', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    byText(r.root, 'Add a note').click();
+    typeNote(r, 'round it');
+    byText(r.root, 'Answer').click();
+    r.render(opened());
+    assert.ok(r.log.problem.every(([m]) => !m.includes('notes field is open')), 'a request in flight is left alone');
+    h.held[0].resolve({ status: 409, body: { error: 'preview-changed', sent: 2 } });
+    await settle();
+    assert.deepEqual(r.log.problem.at(-1), [BOTH, 'warn']);
+    assert.equal(off(byText(r.root, 'Answer')), true);
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), false);
+  });
+
+  test('(+) a refusal that already locks (dialog-unread with 2 keys pressed) keeps its own line with the sentence once; a notes-open capture changes nothing, and after Try again the sentence is gone', async () => {
+    const r = withPv({}, refusal('dialog-unread', 2));
+    await answerWithNote(r);
+    const line = r.log.problem.at(-1)[0];
+    assert.match(line, /^nika can't read Claude's dialog right now/);
+    assert.equal(line.split(NOTE_TAKEN_TEXT).length, 2, 'said once');
+    const shown = r.log.problem.length;
+    r.render(opened());
+    assert.equal(r.log.problem.length, shown, 'a locked form shows nothing new');
+    assert.equal(off(byText(r.root, 'Answer')), true);
+    byText(r.root, 'Try again').click();
+    r.render(opened());
+    assert.deepEqual(r.log.problem.at(-1), [NOTES_OPEN_TEXT, 'warn'], 'the flag ended with Try again');
+  });
+
+  test('(\u2212) no note was taken: the plain notes-open case shows the sentence alone (an answer without a note; a note whose refusal pressed no key)', async () => {
+    const plain = withPv();
+    plain.render(opened());
+    assert.deepEqual(plain.log.problem.at(-1), [NOTES_OPEN_TEXT, 'warn']);
+    const noNote = withPv({}, refusal('preview-changed', 2));
+    byText(noNote.root, 'Answer').click();
+    await settle();
+    assert.ok(!noNote.log.problem.at(-1)[0].includes('took it off this form'), 'the answer carried no note');
+    noNote.render(opened());
+    assert.deepEqual(noNote.log.problem.at(-1), [NOTES_OPEN_TEXT, 'warn']);
+    const kept = withPv({}, refusal('note-mode'));
+    const field = await answerWithNote(kept);
+    assert.equal(field.value, 'round it', 'no key pressed: the note stayed');
+    kept.render(opened());
+    assert.deepEqual(kept.log.problem.at(-1), [NOTES_OPEN_TEXT, 'warn']);
+  });
+
+  test('(\u2212) after Try again, a second capture with the field open shows the sentence alone', async () => {
+    const r = withPv({}, refusal('preview-changed', 2));
+    await answerWithNote(r);
+    r.render(opened());
+    assert.deepEqual(r.log.problem.at(-1), [BOTH, 'warn']);
+    r.render(askPv()); // the user closed the field in the terminal
+    byText(r.root, 'Try again').click();
+    assert.equal(off(byText(r.root, 'Answer')), false, 'live again');
+    r.render(opened());
+    assert.deepEqual(r.log.problem.at(-1), [NOTES_OPEN_TEXT, 'warn']);
+    assert.equal(off(byText(r.root, 'Answer')), true, 'locked again, as before');
+  });
+
+  test('(\u2212) after a move to another step, a capture with the field open there shows the sentence alone', async () => {
+    const r = withPv({}, refusal('preview-changed', 2));
+    await answerWithNote(r);
+    r.render(askPv({ sig: SIG2, question: 'Which size?', notes: { text: '', editing: true } }));
+    assert.deepEqual(r.log.problem.at(-1), [NOTES_OPEN_TEXT, 'warn']);
+    assert.equal(off(byText(r.root, 'Answer')), true);
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), false);
+  });
+
+  // Round 1 (review-NT, S1): "nika took it off this form" must never be said while a newer note sits on the form.
+  /** After a refusal took the first note off: opens the note part again and types `v`. Returns the textarea. */
+  const typeAgain = (r, v) => {
+    byText(r.root, 'Add a note').click();
+    return typeNote(r, v);
+  };
+
+  test('(\u2212) P1: the sentence was set, then a later 409 note-room (no key) kept a newer note: Claude\'s field showing open gives the sentence alone, and the note is back after Try again', async () => {
+    const r = withPv({}, refusal('preview-changed', 2));
+    await answerWithNote(r);
+    assert.ok(r.log.problem.at(-1)[0].endsWith(` ${NOTE_TAKEN_TEXT}`), 'the first refusal took the note off');
+    r.state.reply = () => ({ status: 409, body: { error: 'note-room' } });
+    const field = typeAgain(r, 'second');
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(r.log.problem.at(-1)[0], NOTE_ROOM_TEXT, 'no key pressed: the newer note stayed');
+    assert.equal(field.value, 'second');
+    r.render(opened());
+    assert.deepEqual(r.log.problem.at(-1), [NOTES_OPEN_TEXT, 'warn']);
+    assert.equal(off(byText(r.root, 'Answer')), true, 'still locked with Try again');
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), false);
+    r.render(askPv()); // the user closed the field in the terminal
+    byText(r.root, 'Try again').click();
+    assert.equal(one(r.root, 'dlg-note-text').value, 'second', 'the note on the form is still there');
+  });
+
+  test('(\u2212) P5: a status-0 refusal with a note took it off without locking; the user types a new note, then the field shows open: the sentence alone', async () => {
+    const r = withPv({}, { reply: () => ({ status: 0, body: null }) });
+    await answerWithNote(r);
+    assert.ok(r.log.problem.at(-1)[0].endsWith(` ${NOTE_TAKEN_TEXT}`), 'the failure may have pressed keys: the note was taken off');
+    assert.equal(off(byText(r.root, 'Answer')), false, 'a status 0 does not lock');
+    const field = typeAgain(r, 'first again');
+    r.render(opened());
+    assert.deepEqual(r.log.problem.at(-1), [NOTES_OPEN_TEXT, 'warn']);
+    assert.equal(field.value, 'first again', 'the note on the form is untouched');
+  });
+
+  test('(\u2212) a note typed and then deleted leaves the field empty: the sentence is shown again (the check reads the field, not whether the user touched it)', async () => {
+    const r = withPv({}, refusal('preview-changed', 2));
+    await answerWithNote(r);
+    typeAgain(r, 'second');
+    typeNote(r, '');
+    r.render(opened());
+    assert.deepEqual(r.log.problem.at(-1), [BOTH, 'warn']);
+  });
+});
+
 describe('F1b (0.5.4, QPF): a form the last request changed is dropped when the screen cannot be read', () => {
   const stepsOf = (root) => q(root, 'dlg-tab');
   const pickFirst = (r) => { const i = inputs(r.root, 'radio')[0]; i.checked = true; i.fire('change'); };

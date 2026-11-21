@@ -230,9 +230,10 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }   /* the mode switcher under the message box (spec 9.3) */
 .mode-row .msw-why { flex: 1 1 14em; min-width: 0; }
 .notes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }   /* argument hint, shell hint, draft note, problem line; the echo in here is screen-reader-only; .notes.quiet (top of this file) collapses the row */
-.problem { color: var(--idle); font-weight: 600; overflow-wrap: anywhere; }
-.problem.error { color: var(--danger); }
-.problem:empty { display: none; }
+.problem-line { display: inline-flex; align-items: flex-start; gap: 6px; min-width: 0; color: var(--idle); font-weight: 600; }   /* 0.5.4 (PL): icon, word and message of the problem line; a warning is amber (--idle) with the warn icon, an error is --danger with the error icon; [hidden] (top of this file) hides it */
+.problem-line[data-kind="error"] { color: var(--danger); }
+.problem-line .ic { margin-top: 3px; }
+.problem { overflow-wrap: anywhere; }
 .shell-hint, .arg-hint { color: var(--text); font-weight: 600; }
 /* the draft sync note (W5, W13): one line under the box. Each state has its own colour, icon and word: paused (amber), not mirrored (ink), on hold (attention pink), cursor (blue), queued (green), suggestion (accent), over 16 KB (danger) */
 .dnote { display: inline-flex; align-items: flex-start; gap: 6px; padding: 1px 8px 1px 6px; border-radius: var(--r-sm); color: var(--text); background: var(--surface-3); overflow-wrap: anywhere; }

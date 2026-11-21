@@ -141,10 +141,16 @@ function say(msg) {
 let problemTimer = 0;
 function showProblem(msg, kind = 'warn', ms = 0) {
   const el = $('problem');
+  const line = $('problem-line'); // 0.5.4 (PL): the line has its own icon and word per kind, so a warning and an error differ by more than colour
+  const k = kind === 'error' ? 'error' : 'warn';
   el.textContent = msg;
   el.className = kind === 'error' ? 'problem error' : 'problem';
+  line.hidden = msg === '';
+  line.setAttribute('data-kind', k);
+  $('problem-use').setAttribute('href', k === 'error' ? '#i-error' : '#i-warn');
+  $('problem-label').textContent = k === 'error' ? 'Error:' : 'Warning:';
   clearTimeout(problemTimer);
-  if (ms) problemTimer = setTimeout(() => { el.textContent = ''; }, ms);
+  if (ms) problemTimer = setTimeout(() => { el.textContent = ''; line.hidden = true; }, ms);
 }
 const clearProblem = () => showProblem('');
 

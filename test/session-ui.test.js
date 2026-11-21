@@ -3551,7 +3551,9 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
       const lineRig = (opts) => {
         mock.timers.enable({ apis: ['setTimeout'] });
         const el = { textContent: '', className: '' };
-        const real = vm.runInNewContext(`${fnOf('function showProblem(')}; showProblem`, { $: () => el, problemTimer: 0, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) });
+        const part = () => ({ textContent: '', hidden: false, setAttribute() {} }); // 0.5.4 (PL): the line's wrapper, icon and word are their own elements; #problem is still `el`
+        const parts = { 'problem-line': part(), 'problem-use': part(), 'problem-label': part() };
+        const real = vm.runInNewContext(`${fnOf('function showProblem(')}; showProblem`, { $: (id) => (id === 'problem' ? el : parts[id]), problemTimer: 0, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) });
         const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo'), ...opts });
         Object.assign(r.ctx, { STILL_SENDING: STILL_SENDING_REAL, STILL_SENDING_MS: STILL_SENDING_MS_REAL, showProblem: real, clearProblem: () => real('') });
         return { r, el };
@@ -14110,4 +14112,150 @@ describe('0.5.4 LT: the session window keeps unsent text (wiring)', () => {
     for (const name of ['async function getKept()', 'function putKept(body)', 'async function sendComposer()']) assert.deepEqual(findSinks(fnOf(name)), [], name);
     assert.deepEqual(findSinks(code(JS['draft-sync.js'])), []);
   });
+});
+
+// ---- 0.5.4 PL (LC-QPF, owner answer 2026-11-21): the problem line under the message box has its own icon and word per kind ---------------------------------
+describe('PL (0.5.4): the problem line tells a warning from an error by icon and word, not by colour alone', () => {
+  const SRC = code(JS['session.js']);
+  const css = strip(CSS);
+  const { THEME, ratio } = colourKit();
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const symbol = (n) => new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(HTML)?.[1] ?? null;
+  const rule = (sel) => new RegExp(`(?:^|[\\s}])${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+  afterEach(() => mock.timers.reset());
+
+  /** The page's real showProblem over a fake line: one fake element per id the page has, so the label cannot overwrite the message. */
+  const lineRig = () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const fake = () => { const attrs = {}; return { textContent: '', className: '', hidden: false, attrs, setAttribute(k, v) { attrs[k] = String(v); }, getAttribute(k) { return attrs[k] ?? null; } }; };
+    const nodes = { problem: fake(), 'problem-line': fake(), 'problem-use': fake(), 'problem-label': fake() };
+    nodes['problem-line'].hidden = true;
+    const $ = (id) => { assert.ok(Object.hasOwn(nodes, id), `showProblem looks up ${id}`); return nodes[id]; };
+    const show = vm.runInNewContext(`${fnOf('function showProblem(')}; showProblem`, { $, problemTimer: 0, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) });
+    const seen = () => ({ text: nodes.problem.textContent, hidden: nodes['problem-line'].hidden, kind: nodes['problem-line'].getAttribute('data-kind'), href: nodes['problem-use'].getAttribute('href'), label: nodes['problem-label'].textContent });
+    return { nodes, show, seen };
+  };
+
+  // -- the markup and the sprite
+
+  test('(+) the page wraps the line: icon, word, then the alert with the message, in the notes row between the draft note and the echo; it starts hidden as a warning', () => {
+    assert.match(HTML, /<span class="problem-line" id="problem-line" data-kind="warn" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn" id="problem-use"\/><\/svg><span class="problem-label" id="problem-label">Warning:<\/span> <span class="problem" id="problem" role="alert"><\/span><\/span>/);
+    const order = ['id="arg-hint"', 'id="shell-hint"', 'id="draft-note"', 'id="problem-line"', 'id="problem"', 'id="echo"'].map((n) => HTML.indexOf(n));
+    assert.ok(order.every((n) => n > 0) && order.every((n, i) => i === 0 || n > order[i - 1]), order.join(','));
+  });
+
+  test('(\u2212) the line brings no inline style, no event handler and no second alert region', () => {
+    const block = /<span class="problem-line"[\s\S]*?<\/span><\/span>/.exec(HTML)?.[0] ?? '';
+    assert.ok(block.length > 0, 'the block is there');
+    assert.doesNotMatch(block, /\sstyle=|\son[a-z]+=/);
+    assert.equal(block.split('role="alert"').length - 1, 1, 'only the message is the alert');
+  });
+
+  test('(+) the sprite draws i-error once in the 16 x 16 stroke style like i-info: a circle of r 6.2 with an x, and no fill, stroke or style', () => {
+    assert.equal(HTML.split('<symbol id="i-error"').length - 1, 1);
+    const err = symbol('error');
+    assert.ok(err, 'i-error is in the sprite');
+    assert.doesNotMatch(err, /\b(fill|stroke|style)=/);
+    assert.match(err, /<circle cx="8" cy="8" r="6.2"\/>/);
+    assert.match(err, /<path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"\/>/);
+    assert.equal(new Set([err, symbol('info'), symbol('warn'), symbol('off'), symbol('x')]).size, 5, 'a drawing of its own');
+  });
+
+  // -- showProblem
+
+  test('(+) a warning shows the warn icon, "Warning:" and the message, and the message element holds the message and nothing else', () => {
+    const { show, seen, nodes } = lineRig();
+    show('Claude is busy');
+    assert.deepEqual(seen(), { text: 'Claude is busy', hidden: false, kind: 'warn', href: '#i-warn', label: 'Warning:' });
+    assert.equal(nodes.problem.className, 'problem');
+    show('also a warning', 'warn');
+    assert.deepEqual(seen(), { text: 'also a warning', hidden: false, kind: 'warn', href: '#i-warn', label: 'Warning:' });
+  });
+
+  test('(+) an error shows the error icon, "Error:" and the message; the next warning takes the warning look back', () => {
+    const { show, seen, nodes } = lineRig();
+    show('nika could not send this', 'error');
+    assert.deepEqual(seen(), { text: 'nika could not send this', hidden: false, kind: 'error', href: '#i-error', label: 'Error:' });
+    assert.equal(nodes.problem.className, 'problem error');
+    show('try again later', 'warn');
+    assert.deepEqual(seen(), { text: 'try again later', hidden: false, kind: 'warn', href: '#i-warn', label: 'Warning:' });
+    assert.equal(nodes.problem.className, 'problem');
+  });
+
+  test('(\u2212) an empty message hides the whole line: no icon or word is left showing', () => {
+    const { show, seen, nodes } = lineRig();
+    show('nika could not send this', 'error');
+    assert.equal(nodes['problem-line'].hidden, false, 'shown with a message');
+    show('');
+    assert.equal(nodes['problem-line'].hidden, true);
+    assert.equal(seen().text, '');
+    show('x', 'warn');
+    assert.equal(nodes['problem-line'].hidden, false);
+    show('', 'error');
+    assert.equal(nodes['problem-line'].hidden, true, 'whatever the kind');
+  });
+
+  test('(\u2212) after the timeout the text is gone and the line is hidden, and not a moment before; a newer message is not cut short by the older timer', () => {
+    const { show, seen, nodes } = lineRig();
+    show('too many keys', 'warn', 3000);
+    mock.timers.tick(2999);
+    assert.equal(seen().hidden, false);
+    assert.equal(seen().text, 'too many keys');
+    mock.timers.tick(1);
+    assert.equal(nodes['problem-line'].hidden, true);
+    assert.equal(seen().text, '');
+    show('first', 'warn', 3000);
+    mock.timers.tick(1000);
+    show('second', 'error');
+    mock.timers.tick(5000);
+    assert.deepEqual(seen(), { text: 'second', hidden: false, kind: 'error', href: '#i-error', label: 'Error:' });
+  });
+
+  test('(+) the notes row stays quiet for an empty message and opens for a shown one: syncNotes reads the message element', () => {
+    const { show, nodes } = lineRig();
+    const $ = (id) => ({ 'arg-hint': { hidden: true }, 'shell-hint': { hidden: true }, 'draft-note': { hidden: true }, problem: nodes.problem, notes: { classList: { toggle(name, on) { $.quiet = on; } } } })[id];
+    const { syncNotes } = vm.runInNewContext(`${fnOf('function syncNotes()')}; ({ syncNotes })`, { $ });
+    show('Claude is busy');
+    syncNotes();
+    assert.equal($.quiet, false);
+    show('');
+    syncNotes();
+    assert.equal($.quiet, true);
+  });
+
+  test('(\u2212) showProblem stays free of DOM sinks and builds no element', () => {
+    const fn = fnOf('function showProblem(');
+    assert.doesNotMatch(fn, /createElement|\.style\b|\.cssText/);
+    for (const [name, re] of SINKS) assert.doesNotMatch(fn, re, name);
+  });
+
+  // -- the look
+
+  test('(+) .problem-line carries the colour: --idle for a warning, --danger for an error, bold as the line was, the icon beside the first line; tokens only', () => {
+    const line = rule('.problem-line');
+    assert.match(line, /(^|[\s;])color:\s*var\(--idle\)/);
+    assert.match(line, /font-weight:\s*600/);
+    assert.match(line, /display:\s*inline-flex/);
+    assert.match(rule('.problem-line[data-kind="error"]'), /(^|[\s;])color:\s*var\(--danger\)/);
+    assert.match(rule('.problem-line .ic'), /margin-top:\s*3px/);
+    assert.doesNotMatch([line, rule('.problem-line[data-kind="error"]'), rule('.problem-line .ic')].join(' '), /#[0-9a-f]{3,8}\b|rgb|hsl/i);
+  });
+
+  test('(\u2212) the message element has no colour of its own (one source for the colour), and the page\'s global [hidden] rule is what hides the line', () => {
+    assert.doesNotMatch(rule('.problem'), /(^|[\s;])color:/);
+    assert.doesNotMatch(css, /\.problem\.error|\.problem:empty/);
+    assert.match(css, /(^|\n)\[hidden\]\s*\{\s*display:\s*none\s*!important/);
+  });
+
+  for (const name of Object.keys(THEME)) {
+    test(`(+) contrast (${name}): the word and the message are 4.5:1 on the notes row's background (the composer's --surface), for a warning and for an error`, () => {
+      assert.match(rule('.composer'), /background:\s*var\(--surface\)/, 'the notes row sits on the composer');
+      const v = THEME[name];
+      for (const colour of ['--idle', '--danger']) assert.ok(ratio(v[colour], v['--surface']) >= 4.5, `${colour} on ${v['--surface']}: ${ratio(v[colour], v['--surface']).toFixed(2)}`);
+    });
+  }
 });

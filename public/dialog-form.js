@@ -419,7 +419,7 @@ export function createDialogForm(io) {
   const now = io.now ?? (() => Date.now());
   const after = io.after ?? ((fn, ms) => setTimeout(fn, ms));
   const cancel = io.cancel ?? ((t) => clearTimeout(t));
-  let F = null; // the form on screen: { dialog, sig, phase, word, busy, busyEl, locked, retry, kept, terminal, chipSig, reason, notes, parts }
+  let F = null; // the form on screen: { dialog, sig, phase, word, busy, busyEl, locked, retry, noteTaken, kept, terminal, chipSig, reason, notes, parts }
   let last = null; // the arguments of the last render: the replay after a request and the timer use them
   let reading = null; // { since, timer, expired, drawn }: a dialog nika cannot read yet, with no form shown before it
   let visible = false;
@@ -498,8 +498,10 @@ export function createDialogForm(io) {
     if (out.dropNote && F === f) { // 0.5.4 (QPF, F2): keys were (or may have been) pressed, so Claude's notes field may already hold the note; Answer must never type `n` and it again
       f.parts.clearNote?.();
       keep.delete(keyOf(f.dialog));
+      f.noteTaken = true; // 0.5.4 (NT): the guard below must not hide why the note left the form
     }
     if (out.ok) {
+      f.noteTaken = false;
       io.clearProblem();
       if (out.sent > 0) io.say(`Sent ${out.sent} ${out.sent === 1 ? 'key' : 'keys'} to ${io.paneId}`);
       if (out.announce) io.announce(out.announce); // a move says nothing; the step it lands on is announced when it is drawn
@@ -527,7 +529,7 @@ export function createDialogForm(io) {
     f.locked = true;
     f.retry = true;
     f.phase = 'failed';
-    io.showProblem(L409['notes-open'][0], problemKind(409));
+    io.showProblem(f.noteTaken && (f.parts.noteDraft?.() ?? '') === '' ? `${L409['notes-open'][0]} ${NOTE_TAKEN}` : L409['notes-open'][0], problemKind(409)); // 0.5.4 (NT): a refusal took the note off this form, and Claude's field now shows open: the user still learns why the note left; with a newer note on the form (S1) it would be false
     paint();
   }
 
@@ -535,6 +537,7 @@ export function createDialogForm(io) {
   function retry(f) {
     if (F !== f || f.busy || !f.retry) return;
     f.retry = false;
+    f.noteTaken = false;
     f.locked = false;
     f.phase = 'live';
     f.word = '';
@@ -988,7 +991,7 @@ export function createDialogForm(io) {
       keep.clear();
       keepFor = headers;
     }
-    const f = { dialog, sig: dialog.sig, phase: 'live', word: '', busy: false, busyEl: null, moving: false, locked: false, retry: false, kept: false, terminal: dialog.bypass, chipSig: '' };
+    const f = { dialog, sig: dialog.sig, phase: 'live', word: '', busy: false, busyEl: null, moving: false, locked: false, retry: false, noteTaken: false, kept: false, terminal: dialog.bypass, chipSig: '' };
     f.chipHolder = h('span', { class: 'dlg-chiph' });
     f.reason = h('span', { class: 'ask-reason' });
     f.terminalNote = h('p', { class: 'dlg-note', hidden: true }, icon('info'), h('span', { text: TERMINAL_NOTE }));
