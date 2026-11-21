@@ -4,12 +4,19 @@
 // its own: session.js hands createDraftSync a box, a PUT function, a clock and a note sink, so Node tests every rule
 // (test/draft-sync.test.js). The capture's `draft` and every route answer are data: cleanDraft re-checks the shape, and no
 // word of the server ever reaches the page (the notes and problem lines below are fixed copy).
+// 0.5.4 (LT): the unsent text that this sync does not mirror into Claude's input (too long, refused, or waiting for a box) is also kept on the server for the
+// pane (PUT .../kept-draft), and put back into the box when the window opens again (restore). The same rules live here, so Node tests them too.
 // Keep this file ASCII: write every symbol as an escape.
-import { cellWidth } from './mirror-render.js';
+import { cellWidth, LIMITS, utf8Bytes } from './mirror-render.js';
 import { SURVEY_UNDO_LINE } from './quick-actions.js';
 
 export const QUIET_MS = 1500; // local quiet before the terminal's text is pulled into the box
 export const PUSH_MS = 250; // after the last local edit, the box is pushed
+export const KEEP_MS = 500; // after the last change of what should be kept; above PUSH_MS, so a text the sync pushes is never kept
+const KEEP_MAX = LIMITS.paste; // 16 KB of UTF-8, Send's paste limit: a copy that Send could not send is not kept
+const KEEP_RETRY_MS = 2000; // after a failed keep write
+const RESTORE_RETRY_MS = 2000; // between the two tries of the restore, and between two capture re-tries after a 404
+const RESTORE_AGAIN_MAX = 3; // capture re-tries of a restore that never saw the server's copy (a 404), then it ends as a failure
 const TEXT_MAX = 4096; // a draft the capture can carry is far smaller; anything bigger is not ours
 const SIG = /^[0-9a-f]{16}$/;
 const STATES = new Set(['empty', 'text', 'unreadable']);
@@ -98,6 +105,57 @@ export const screenCanon = (draft) => (draft.mode === 'bash' ? '!' : '') + draft
 /** Spaces at the very end stay out of Claude's box: a trailing space there makes the box unreadable (the cursor sits past the text). */
 const pushText = (text) => text.replace(/[ \t\u00a0]+$/, '');
 
+// ---- the kept text (0.5.4, LT) ------------------------------------------------------------------------------------------------
+
+const KEEP_STRIP = new RegExp(BAD_CONTROL.source, 'g');
+
+/** `s` with every lone surrogate replaced by U+FFFD. No regex: a lookbehind is missing in older web views, and a regex without it misses two lone surrogates in a row. */
+function wellFormed(s) {
+  if (typeof s.toWellFormed === 'function') return s.toWellFormed();
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s.charCodeAt(i);
+    const next = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+    if (c >= 0xd800 && c <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      out += s[i] + s[i + 1];
+      i += 1;
+    } else {
+      out += c >= 0xd800 && c <= 0xdfff ? '\ufffd' : s[i];
+    }
+  }
+  return out;
+}
+
+/**
+ * The box's text as Send's paste would deliver it, which is what is kept: CRLF and CR are a newline, every character the keys route strips (C0 but tab and newline, DEL,
+ * C1) is gone, a lone surrogate is U+FFFD, trailing newlines go (planSend trims them). Bidi marks, joiners, tabs, inner newlines and trailing spaces stay as typed.
+ */
+export function keepForm(value) {
+  return wellFormed(String(value ?? '').replace(/\r\n?/g, '\n').replace(KEEP_STRIP, '')).replace(/\n+$/, '');
+}
+
+/** The server's `kept` as the page may use it, or null: a plain object with a non-empty text that is already in its kept form and at most 16 KB, and a boolean `shell`. Copies the two fields. */
+export function cleanKept(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const { text, shell } = raw;
+  if (typeof text !== 'string' || text === '' || typeof shell !== 'boolean') return null;
+  if (keepForm(text) !== text || utf8Bytes(text) > KEEP_MAX) return null;
+  return { text, shell };
+}
+
+/** The text is above the 16 KB that Send can send and nika can keep. `text` is in its kept form. */
+const isOver = (text) => utf8Bytes(text) > KEEP_MAX;
+
+/** What a copy is called when two are compared: '' for nothing, else the text with a mark for the Shell flag. */
+export const keyOf = (k) => (k === null ? '' : (k.shell ? '!' : '-') + k.text);
+
+export const RESTORING_TEXT = 'nika is bringing back the text you had not sent. Try again in a moment.';
+export const RESTORED_TEXT = 'Restored the text you had not sent.';
+export const RESTORE_TEXT_FAILED = "nika couldn't bring back the text you had not sent. Leave this session and open it again to try once more.";
+export const RESTORE_TEXT_SKIPPED = 'You started typing before nika could bring back the text you had not sent, so it was not put back.';
+export const KEEP_FAILED = "nika couldn't keep the text you have not sent. It is lost if you leave this session before you send it.";
+export const KEEP_NO_PROJECT = "nika can't keep unsent text for this session because it can't tell the session's project. It is lost if you leave before you send it.";
+
 // ---- the capture's draft ------------------------------------------------------------------------------------------------
 
 /** The capture's `draft` as the page may use it, or null (older server, malformed: no cut, no sync). Copies the fields; nothing else is kept. */
@@ -153,14 +211,17 @@ export function caretAfter(before, after, caret) {
  * { kind, icon, label, text } for the one note, or null. kind: paused (the screen's draft cannot be read), long (outside the envelope),
  * hold (a write is refused: a prompt is open or Stop runs), cursor (a write is refused: Claude works and its cursor is not at the end of the
  * input), queued (Claude holds our message and takes it at its next step), suggest (Claude offers a prompt suggestion: Tab accepts it).
- * Every kind has its own colour (session.css), icon and word.
+ * over (the text is above 16 KB: Send cannot send it and nika cannot keep it; 0.5.4 LT). Every kind has its own colour (session.css), icon and word.
  */
 export function noteView(note) {
   if (!note) return null;
   if (note.kind === 'paused') {
     return { kind: 'paused', icon: 'pause', label: 'Sync paused:', text: `Claude's input holds ${reasonText(note.reason)}. Edit or clear it in the terminal.` };
   }
-  if (note.kind === 'long') return { kind: 'long', icon: 'info', label: 'Not mirrored:', text: 'Long text goes to Claude when you send it.' };
+  if (note.kind === 'long') return { kind: 'long', icon: 'info', label: 'Not mirrored:', text: 'This text goes to Claude when you send it.' };
+  if (note.kind === 'over') {
+    return { kind: 'over', icon: 'warn', label: 'Not kept:', text: "Over 16 KB: Send can't send it, and nika can't keep it if you leave. Shorten it or send it in parts." };
+  }
   if (note.kind === 'hold') {
     return { kind: 'hold', icon: 'dialog', label: 'On hold:', text: "A prompt is open or Stop is running. Your text goes into Claude's input when that is over." };
   }
@@ -317,9 +378,12 @@ const unreadableDraft = (reason, like) => ({
 /**
  * io: now() -> ms; after(fn, ms) -> handle; cancel(handle); box() -> { value, shell }; setBox(value, shell) (a pull: no `input` event);
  * put({ text, base }) -> Promise<{ status, body }> (never rejects); suggest({ text }) -> Promise<{ status, body }> (the accept route; never rejects);
- * note(view | null); problem(message); gone() (the route said 404).
+ * note(view | null); problem(message, ms?); gone() (the route said 404).
+ * 0.5.4 (LT): keep({ text, shell }) -> Promise<{ status, body }> (the kept-text PUT; never rejects); fetchKept() -> Promise<{ status, body }> (the bounded GET; never
+ * rejects); announce(message) (for screen readers).
  * The page calls capture() with every handled capture, edited() at every edit of the box (typing, the Shell toggle, a palette insert,
- * Clear), composition(on) around an IME composition, reset() when the connection came back, stop() when the pane is gone.
+ * Clear), composition(on) around an IME composition, reset() when the connection came back, stop() when the pane is gone, restore() when the window opens
+ * (and on a back/forward return), flushKeep() when it is left.
  */
 export function createDraftSync(io) {
   // seenSig: the screen's sig at the last time box and screen matched or were pulled (null: none yet on this connection; '' after sent() or an
@@ -330,6 +394,16 @@ export function createDraftSync(io) {
   const D = {
     seenSig: null, adopted: false, screen: null, cols: 0, dirty: false, editedAt: -Infinity, sentAt: 0, capturedAt: -Infinity, flight: null, timer: null, composing: false,
     sending: false, stopped: false, retryAt: 0, fails: 0, told: false, held: null, blocked: false, shown: '', // held: null | 'hold' | 'cursor' (the last write was refused); told: the problem line already showed in this run of failures
+    // The kept text (0.5.4, LT). keeping: the latch (what is kept stays kept until the text is mirrored, pulled, sent or emptied); kept: the copy the server holds ('' nothing,
+    // keyOf of a copy, null unknown); keepTimer / keepFor: the armed write and the copy it is armed for; keepFlight / keepSoon: a write is on its way / a clear was asked meanwhile;
+    // keepFails / keepTold / keepRetryAt: failures in a row, the problem line was shown, no write before; keepOff: the route cannot be used (404, 409); keepHold: a restore failed, no
+    // write until the first edit (the server's copy stays); restoring: the GET runs; restoreAgain: the last restore ended on 404 or a throw, so the next reset() asks again; restored: the box holds put-back text; edits: edited() calls so far.
+    // The copies this page wrote itself (MF-2, owner answer A): own: the keys of its writes, the newest 6 (a write that failed or whose answer is lost may have landed, so it counts as its own);
+    // saved: the last copy the page knows the server held for its box: its own confirmed write, a leave-time write that answered 200, or what a restore found and settled on ('' at the start: an empty box matches it).
+    // A restore that never saw the server's copy (404, stopped, throw) leaves a chain (SF-4): restoreAgain (reset() asks again), againEdits (the edit count of the first try: typing since is "typed before nika could bring
+    // back"), restoreAt (a capture re-try is due from then on; Infinity: none pending; 404 and stopped only), againTries (capture re-tries of this chain, at most RESTORE_AGAIN_MAX).
+    keeping: false, kept: null, keepTimer: null, keepFor: '', keepFlight: false, keepSoon: false, keepFails: 0, keepTold: false, keepRetryAt: 0, keepOff: false, keepHold: false,
+    restoring: false, restoreAgain: false, restored: false, edits: 0, own: [], saved: '', againEdits: 0, restoreAt: Infinity, againTries: 0,
   };
   const now = () => io.now();
 
@@ -359,11 +433,19 @@ export function createDraftSync(io) {
     io.setBox(d.text, d.mode === 'bash');
   }
 
+  /** One look at the sync (pull, push, notes) and one at the kept text. Every caller keeps calling this. */
   function step() {
+    syncStep();
+    keepStep();
+  }
+
+  function syncStep() {
     cancelTimer();
+    if (D.restoring) return; // no pull, no push, no note change while the kept text is being brought back
+    const over = D.dirty && isOver(keepForm(io.box().value)); // a text over 16 KB can be neither kept nor sent: its note wins in every state of the screen (SF-5)
     const d = D.screen;
-    if (d === null) { show(null); return; } // no box on screen (a prompt, a dialog): the text stays, the push waits
-    if (d.state === 'unreadable') { show({ kind: 'paused', reason: d.reason }); return; } // never pulled over, never written over
+    if (d === null) { show(over ? { kind: 'over' } : null); return; } // no box on screen (a prompt, a dialog): the text stays, the push waits
+    if (d.state === 'unreadable') { show(over ? { kind: 'over' } : { kind: 'paused', reason: d.reason }); return; } // never pulled over, never written over
     const box = io.box();
     const want = canon(box.value, box.shell);
     if (sameDraft(screenCanon(d), want)) { // in sync
@@ -379,7 +461,9 @@ export function createDraftSync(io) {
     }
     const text = pushText(want);
     const long = !fits(text, D.cols);
-    if (D.dirty && (long || D.blocked)) show({ kind: 'long' });
+    // put-back text (0.5.4, LT) is pushed by itself only into an empty Claude input: over Claude's other text it waits for the user's first edit, and for Send
+    const hold = D.blocked || (D.restored && d.state !== 'empty');
+    if (D.dirty && (long || hold)) show({ kind: over ? 'over' : 'long' }); // over: its own note, recomputed at every step (0.5.4, LT)
     else if (D.dirty && D.held !== null) show({ kind: D.held });
     else show(null);
     if (D.flight || D.composing || D.sending || D.stopped) return; // our own write is landing, an IME is open, a Send runs: its end runs step again
@@ -392,7 +476,7 @@ export function createDraftSync(io) {
       else arm(wait);
       return;
     }
-    if (!D.dirty || D.fails >= 3 || D.blocked || long) return; // nika wins while the user types here; long text goes on Send
+    if (!D.dirty || D.fails >= 3 || hold || long) return; // nika wins while the user types here; long text goes on Send
     const due = Math.max(D.editedAt + PUSH_MS, D.retryAt);
     if (due > now()) { arm(due - now()); return; }
     write(text, d.sig);
@@ -486,12 +570,206 @@ export function createDraftSync(io) {
   function edited() {
     D.dirty = true;
     D.editedAt = now();
+    D.edits += 1;
     D.retryAt = 0;
     D.fails = 0;
     D.told = false;
     D.held = null;
     D.blocked = false;
+    D.restored = false; // after the user's own edit the normal rules apply again
+    D.keepFails = 0; // a new text gets fresh tries, and the first edit after a failed restore releases the hold
+    D.keepRetryAt = 0;
+    if (D.restoreAt === Infinity) D.keepHold = false; // a capture re-try pending: the server's copy was never seen, so no write may reach it before the re-try answers
     step();
+  }
+
+  // ---- the kept text (0.5.4, LT) -----------------------------------------------------------------------------------------------
+
+  const cancelKeep = () => {
+    if (D.keepTimer !== null) io.cancel(D.keepTimer);
+    D.keepTimer = null;
+  };
+
+  /**
+   * What the server should hold now: { want: { text, shell } } or { want: null }; { over: true } for a text above 16 KB (it is not kept). Only unsent text is kept (dirty), and only
+   * text the sync does not mirror: one outside the envelope or refused (400), put back, or waiting (no box, a paused box, a refused write, three failures). The latch makes save
+   * and clear asymmetric: keeping starts when the text is not mirrored and stops only when dirty goes false or the box is emptied, so a leave while a shortened text is on its
+   * way to Claude still brings back the newest text.
+   */
+  function wantKeep() {
+    if (!D.dirty) return { want: null };
+    const box = io.box();
+    const text = keepForm(box.value);
+    if (text.trim() === '') return { want: null };
+    const waiting = D.screen === null || D.screen.state === 'unreadable' || D.held !== null || D.fails >= 3;
+    const notMirrored = !fits(pushText(canon(box.value, box.shell)), D.cols) || D.blocked || D.restored || waiting;
+    if (!D.keeping && !notMirrored) return { want: null };
+    if (isOver(text)) return { want: null, over: true };
+    return { want: { text, shell: box.shell === true } };
+  }
+
+  function keepStep(immediate = false) {
+    if (D.stopped || D.restoring || D.keepOff || D.keepHold) return;
+    const { want, over } = wantKeep();
+    D.keeping = want !== null || over === true;
+    const key = keyOf(want);
+    if (D.keepFlight) { if (immediate) D.keepSoon = true; return; } // a write is on its way, so what the server holds is not known yet: its answer runs keepStep again (at once if asked)
+    if (D.kept !== null && key === D.kept) { cancelKeep(); return; } // the server already holds exactly this (or nothing)
+    if (D.keepFails >= 3 && !immediate) return; // three failures wait for an edit; a send's clear still goes
+    if (immediate) { cancelKeep(); keepWrite(want); return; }
+    if (D.keepTimer !== null && D.keepFor === key) return; // already armed for this text
+    cancelKeep();
+    D.keepFor = key;
+    D.keepTimer = io.after(() => { D.keepTimer = null; keepStep(true); }, Math.max(KEEP_MS, D.keepRetryAt - now()));
+  }
+
+  /** One keep write at a time. A copy is `want`, or null for the clear. */
+  async function keepWrite(want) {
+    D.keepFlight = true;
+    const wrote = keyOf(want);
+    if (!D.own.includes(wrote)) { D.own.push(wrote); if (D.own.length > 6) D.own.shift(); } // bounded: the newest 6 distinct keys (a clear is the key '')
+    let r;
+    try {
+      r = await io.keep({ text: want?.text ?? '', shell: want?.shell ?? false });
+    } catch {
+      r = null;
+    }
+    D.keepFlight = false;
+    r = r && typeof r === 'object' ? r : { status: 0, body: null };
+    if (r.status === 200) {
+      D.kept = wrote;
+      D.saved = wrote;
+      D.keepFails = 0;
+      D.keepTold = false;
+      D.keepRetryAt = 0;
+    } else if (r.status === 404) {
+      D.keepOff = true; // the pane is gone: the sync's own 404 flow speaks
+    } else if (r.status === 409) {
+      D.keepOff = true; // no project: nothing can be kept for this pane
+      io.problem(KEEP_NO_PROJECT, 8000);
+    } else if (r.status === 429) {
+      D.kept = null;
+      D.keepRetryAt = now() + 1000;
+    } else {
+      D.kept = null;
+      D.keepFails += 1;
+      D.keepRetryAt = now() + KEEP_RETRY_MS;
+      if (D.keepFails >= 2 && !D.keepTold) { D.keepTold = true; io.problem(KEEP_FAILED, 8000); }
+    }
+    const soon = D.keepSoon;
+    D.keepSoon = false;
+    keepStep(soon); // a send's clear that was asked during this write goes at once
+  }
+
+  /** The window is being left: what is pending goes now (the PUT outlives the page). It does not wait for a write on its way. */
+  function flushKeep() {
+    if (D.stopped || D.restoring || D.keepOff || D.keepHold) return;
+    const { want } = wantKeep();
+    if (!D.keepFlight && D.kept !== null && keyOf(want) === D.kept) return; // D.kept is the copy from before a write that is on its way: it says nothing then
+    cancelKeep();
+    const was = D.saved;
+    const key = keyOf(want);
+    try { // the copy counts as saved only on its own 200, and only if nothing newer was saved meanwhile (MF-2b: an unanswered or failed write is not a save)
+      Promise.resolve(io.keep({ text: want?.text ?? '', shell: want?.shell ?? false })).then((r) => { if (r?.status === 200 && D.saved === was) D.saved = key; }).catch(() => {});
+    } catch { /* the page is leaving */ }
+  }
+
+  /** The GET's answer as the page may use it: { ok: true, kept: null | { text, shell } } or { ok: false, status }. */
+  async function readKept() {
+    let r;
+    try {
+      r = await io.fetchKept();
+    } catch {
+      r = null;
+    }
+    const status = r && typeof r === 'object' && Number.isInteger(r.status) ? r.status : 0;
+    const body = r && typeof r === 'object' ? r.body : null;
+    if (status === 200 && body && typeof body === 'object' && !Array.isArray(body) && Object.hasOwn(body, 'kept')) {
+      if (body.kept === null) return { ok: true, kept: null };
+      const kept = cleanKept(body.kept);
+      if (kept !== null) return { ok: true, kept };
+    }
+    return { ok: false, status };
+  }
+
+  /**
+   * Brings back the text the server kept: at boot and on a back/forward return (first tries, each starting a new chain), and again (`retry`) from reset() and, after a 404, from captures. While it runs nothing is pulled,
+   * pushed or written (a Send meanwhile is refused by the page). One retry after 2 s unless the pane is gone (404). The box is never cleared: nothing kept (an evicted or dropped
+   * tray) leaves it as it is. A copy that differs from a box with text goes in only when another page wrote it and the box still holds what this page saved (MF-2, below). It never
+   * rejects. A try that does not end on a known answer (404, a failure, a throw) leaves the server's copy unknown and holds every keep write until the user's first edit: the text on
+   * the server is never cleared for a restore that did not see it.
+   */
+  async function restore(retry = false) { // retry: a capture re-try or reset() asking again; the boot restore and a back/forward return are first tries and start a new chain
+    if (D.restoring || D.stopped) return;
+    D.restoring = true;
+    if (!retry) D.againTries = 0; // a new chain
+    const edits = retry ? D.againEdits : D.edits; // taken before any wait (an edit made while a write is on its way is seen too); a re-try keeps the first try's count: typing since is "typed before nika could bring back"
+    D.restoreAgain = false;
+    D.restoreAt = Infinity; // no capture re-try is pending while this try runs
+    cancelTimer();
+    cancelKeep();
+    const unknown = () => { D.kept = null; D.keepHold = true; };
+    const again = (fromCapture) => { D.restoreAgain = true; D.againEdits = edits; if (fromCapture) D.restoreAt = now() + RESTORE_RETRY_MS; }; // reset() asks again; the next capture too, when the pane may answer at once
+    try {
+      if (D.flight) {
+        try { await D.flight; } catch { /* write() already took the answer */ }
+      }
+      let k = await readKept();
+      if (!k.ok && k.status !== 404) {
+        await new Promise((res) => { io.after(res, RESTORE_RETRY_MS); });
+        k = await readKept();
+      }
+      if (D.stopped) { // the answer was never used (MF-1b): the server's copy is still unseen, so the next reset() asks again
+        unknown();
+        again(true);
+        return;
+      }
+      if (!k.ok && k.status === 404) { // the pane is gone, or nika's tmux list could not be read: the capture's own flow speaks; reset() and the next captures ask again, at most RESTORE_AGAIN_MAX times
+        unknown();
+        if (D.againTries >= RESTORE_AGAIN_MAX) { io.problem(RESTORE_TEXT_FAILED, 8000); return; } // the chain ends as a failure: nothing asks again, the first edit lifts the hold
+        again(true);
+        return;
+      }
+      if (!k.ok) { // the server's copy stays for the next try: nothing is written until the user's first edit
+        io.problem(RESTORE_TEXT_FAILED, 8000);
+        unknown();
+        return;
+      }
+      D.keepHold = false; // an answer: what the server holds is known from here on
+      if (k.kept === null) { D.kept = ''; return; }
+      const box = io.box();
+      const mine = keepForm(box.value);
+      const key = keyOf(k.kept);
+      const boxKey = keyOf(mine.trim() === '' ? null : { text: mine, shell: box.shell === true });
+      if (key === boxKey) { D.kept = key; D.saved = key; return; }
+      if (D.edits !== edits) { // the user typed before the answer: their box wins, and the next keep step saves it or clears the old copy
+        io.problem(RESTORE_TEXT_SKIPPED, 8000);
+        D.kept = key;
+        return;
+      }
+      // MF-2 (owner answer A): the server's copy goes into a box only when it came from another page and the box still holds the copy this page saved (an empty box at the start matches
+      // the empty start). A copy this page wrote itself (an old one when the leave-time write did not land, or one whose answer was lost), or a box with text this page never saved,
+      // keeps the box: the next keep step saves it (or clears the old copy). No line: the user typed nothing during the restore.
+      if (D.own.includes(key) || boxKey !== D.saved) { D.kept = key; return; }
+      io.setBox(k.kept.text, k.kept.shell); // the pull path: no input event, the caret at the end; focus never moves
+      D.dirty = true;
+      D.editedAt = now();
+      D.restored = true;
+      D.blocked = false;
+      D.fails = 0;
+      D.held = null;
+      D.keeping = true;
+      D.kept = key;
+      D.saved = key; // the box holds exactly what the server holds
+      io.announce(RESTORED_TEXT);
+    } catch {
+      unknown(); // a throw inside (the box, the put-back, the live region): same as a failure, and reset() tries again (no capture re-try)
+      again(false);
+      try { io.problem(RESTORE_TEXT_FAILED, 8000); } catch { /* the page is going away */ }
+    } finally {
+      D.restoring = false;
+      step();
+    }
   }
 
   return {
@@ -500,6 +778,11 @@ export function createDraftSync(io) {
       D.screen = draft;
       D.capturedAt = now();
       D.cols = Number.isInteger(cols) ? cols : 0;
+      if (D.restoreAt !== Infinity && !D.stopped && now() >= D.restoreAt) { // a restore that never saw the server's copy: the pane answers, ask again (one GET per RESTORE_RETRY_MS at most)
+        D.againTries += 1;
+        restore(true);
+        return;
+      }
       step();
     },
     edited,
@@ -513,15 +796,25 @@ export function createDraftSync(io) {
       D.seenSig = null;
       D.screen = null;
       D.stopped = false;
+      D.keepOff = false; // a 404 while tmux was down must not switch the keeping off for good
       D.fails = 0;
       D.told = false;
       D.retryAt = 0;
       show(null);
+      if (D.restoreAgain) { // the last restore never saw the server's text (404, stopped, or a throw): ask again now that the pane answers, with a new count of capture re-tries
+        D.againTries = 0;
+        restore(true);
+      }
     },
     stop() {
       cancelTimer();
+      cancelKeep();
       D.stopped = true;
     },
+    restore,
+    flushKeep,
+    /** The kept text is being brought back (the page refuses Send meanwhile). */
+    restoring: () => D.restoring,
     /** Send starts: the background sync holds still until endSend. */
     beginSend() {
       D.sending = true;
@@ -560,6 +853,7 @@ export function createDraftSync(io) {
       D.seenSig = '';
       D.adopted = false;
       cancelTimer();
+      keepStep(true); // the kept copy is cleared at once, not after KEEP_MS
     },
     endSend() {
       D.sending = false;
@@ -572,6 +866,7 @@ export function createDraftSync(io) {
      * its text (nika wins while the user types here). A refusal that carries a draft adopts it, so the terminal's text is pulled by the usual rule.
      */
     async accept(text) {
+      if (D.restoring) return { ok: false, status: null, message: RESTORING_TEXT }; // a suggestion must not land in a box the restore then replaces
       if (D.flight) {
         try { await D.flight; } catch { /* write() already took the answer */ }
       }

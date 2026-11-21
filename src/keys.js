@@ -13,13 +13,15 @@ import { chunks, CHUNK_GAP_MS } from './draft.js';
 import { tmuxFailure } from './tmuxerr.js';
 
 const MAX_TEXT = 1024; // characters
-const MAX_PASTE = 16 * 1024; // UTF-8 bytes
+export const MAX_PASTE = 16 * 1024; // UTF-8 bytes (0.5.4, LT: the kept unsent text of src/attachments.js is bounded by the same number)
 const MAX_KEYS = 8;
 const RATE = 20; // requests per pane per WINDOW_MS
 const WINDOW_MS = 1000;
 
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
 const PASTE_STRIP = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g; // all of it except \t and \n (ESC included)
+/** The same set without the `g` flag (a `g` regex keeps `lastIndex` between `test()` calls): 0.5.4 (LT), the kept unsent text may hold none of it. */
+export const PASTE_BAD = new RegExp(PASTE_STRIP.source);
 
 const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const invalid = (message) => ({ status: 400, body: { error: 'invalid', message } });

@@ -922,7 +922,18 @@ describe('paneWriteDisarms', () => {
     assert.equal(paneWriteDisarms(`${P('fit')}?x=1`, 'POST'), false, 'a query string is not part of the route');
   });
 
-  test('(+) a route added later disarms by default (only the three above are exempt)', () => {
+  test('(+) 0.5.4 LT: the save of the page\'s own unsent text (kept-draft) keeps a pending glide, whatever the method', () => {
+    for (const method of ['PUT', 'GET', 'POST', 'DELETE', undefined]) assert.equal(paneWriteDisarms(P('kept-draft'), method), false, `${method} kept-draft`);
+    assert.equal(paneWriteDisarms('/api/app/pane/%251/kept-draft', 'PUT'), false, 'the design\'s own example');
+    assert.equal(paneWriteDisarms(`${P('kept-draft')}?x=1`, 'PUT'), false, 'a query string is not part of the route');
+  });
+
+  test('(−) 0.5.4 LT: the draft write into Claude\'s input and the names next to kept-draft still end a glide', () => {
+    assert.equal(paneWriteDisarms('/api/app/pane/%251/draft', 'PUT'), true);
+    for (const tail of ['draft', 'kept-draftx', 'kept', 'kept-drafts', 'Kept-draft', 'x-kept-draft', 'kept_draft']) assert.equal(paneWriteDisarms(P(tail), 'PUT'), true, tail);
+  });
+
+  test('(+) a route added later disarms by default (only the routes above are exempt)', () => {
     assert.equal(paneWriteDisarms(P('brand-new-thing'), 'POST'), true);
     assert.equal(paneWriteDisarms(P('scrollx'), 'POST'), true, 'a longer name is another route');
     assert.equal(paneWriteDisarms(P('capture2'), 'PUT'), true);

@@ -4,6 +4,8 @@
 // ever logged, and the only read-back is readImage (0.5.1, T61): the bytes of an unsent image attachment to the pane that owns it.
 // 0.5.4 (AT): the store also keeps a small tray per pane in MEMORY (the ids of the pane's unsent files and the last part of each file name
 // through clean(), the chip's label), so the session window can list them again when it opens. Nothing of it is written to disk or logged.
+// 0.5.4 (LT): the same tray also holds the text the session window's message box has and the sync does not copy into Claude's input (its kept form
+// and the Shell flag; at most 16 KB), so it comes back with the window. Memory only; no log line holds any part of it.
 // Writes go through src/fwrite.js, reads through src/fsafe.js. Keep this file ASCII.
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -16,11 +18,13 @@ import { loadConfig } from './store.js';
 import { PANE_ID, PROJECT_KEY } from './ids.js';
 import { imageTypeOf } from './image.js';
 import { createLimiter } from './limiter.js';
+import { MAX_PASTE, PASTE_BAD } from './keys.js';
 
 export const UPLOAD_CAP = 12 * 1024 * 1024; // request body: base64 of 8 MiB is 11 184 812 chars plus the JSON frame
 export const MAX_BYTES = 8 * 1024 * 1024; // decoded, per file
 export const PER_MESSAGE = 6;
 export const TRAYS_MAX = 64; // trays (one per pane) kept in memory; making the 65th forgets the oldest, in memory only
+export const KEPT_CAP = 34 * 1024; // the kept-text route's body: 16 KB of `"` or `\` doubles in JSON (32 768 bytes) plus the frame
 export const ID = /^[0-9a-f]{16}$/;
 /** The full pasted path: one token for Claude, no space, quote, backslash, `@`, `!`, `#` or control (design 5.3). */
 export const PATH_OK = /^\/[A-Za-z0-9._/+-]{1,200}$/;
@@ -67,6 +71,29 @@ function normOwner(o) {
 const sameOwner = (a, b) => a === null || b === null || (a.session !== null && a.session === b.session) || (a.pid !== null && a.pid === b.pid);
 /** A known owner taking over from the one a tray holds: a part the new one does not know (`null`) keeps the old value, so a half-known claim never erases a known pid or session. */
 const mergeOwner = (cur, owner) => ({ pid: owner.pid ?? cur?.pid ?? null, session: owner.session ?? cur?.session ?? null });
+/** A tray with no chip and no kept text holds nothing: it is deleted (0.5.4, LT). */
+const isEmpty = (t) => t.items.length === 0 && t.text === null;
+/** A pane id and a claim's key of the shapes nika makes (the claim itself comes from nika's own snapshot, never from a request). */
+const claimOk = (pane, claim) => typeof pane === 'string' && PANE_ID.test(pane) && typeof claim?.key === 'string' && PROJECT_KEY.test(claim.key);
+
+/**
+ * The text the session window may ask nika to keep (0.5.4, LT): a non-empty, well-formed string of at most 16 KB (Send's paste limit, UTF-8 bytes) without a control
+ * character other than newline and tab (the set the paste route strips). One check for the route, the store and the answer of the read.
+ */
+export const keptTextOk = (text) => typeof text === 'string' && text.length > 0 && text.isWellFormed() && !PASTE_BAD.test(text) && Buffer.byteLength(text) <= MAX_PASTE;
+
+const KEPT_BODY = 'body must be { text, shell }';
+const KEPT_SHELL = 'shell must be true or false';
+const KEPT_TEXT = 'text must be at most 16 KB without control characters other than newline and tab';
+/** The body of PUT .../kept-draft: exactly `{ text, shell }`, `shell` a boolean, `text` empty (the clear) or keepable. null = fine, else the 400, with a fixed message that never echoes the text. */
+export function checkKeptBody(body) {
+  const bad = (message) => ({ status: 400, body: { error: 'invalid', message } });
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return bad(KEPT_BODY);
+  if (Object.keys(body).length !== 2 || !Object.hasOwn(body, 'text') || !Object.hasOwn(body, 'shell')) return bad(KEPT_BODY);
+  if (typeof body.shell !== 'boolean') return bad(KEPT_SHELL);
+  if (body.text !== '' && !keptTextOk(body.text)) return bad(KEPT_TEXT);
+  return null;
+}
 
 /**
  * What the bytes are, from the magic at offset 0 (never from the name): `{ type, ext }` with type png|jpeg|gif|webp|pdf|text, or
@@ -119,7 +146,7 @@ export function createAttachments({
   setTimer = (fn, ms) => setInterval(fn, ms), clearTimer = clearInterval, log = (line) => process.stderr.write(`${line}\n`),
 } = {}) {
   const records = new Map(); // id -> { id, pane, key, path, type, size, at, sent }; only what this process issued, oldest dropped past RECORDS_MAX
-  const trays = new Map(); // pane -> { key, owner, items: [{ id, name, gone? }] } (0.5.4, AT): memory only; the names are never written or logged
+  const trays = new Map(); // pane -> { key, owner, items: [{ id, name, gone? }], text: null | { text, shell } } (0.5.4, AT and LT): memory only; the names and the text are never written or logged
   const stamps = []; // admission times of the last minute
   let inflight = false;
   let writing = null; // the key folder the one save in flight writes into: no prune (startup, timer or the save's own) removes it
@@ -148,7 +175,7 @@ export function createAttachments({
   function newTray(pane, key, owner) {
     trays.delete(pane);
     if (trays.size >= TRAYS_MAX) trays.delete(trays.keys().next().value);
-    const t = { key, owner, items: [] };
+    const t = { key, owner, items: [], text: null };
     trays.set(pane, t);
     return t;
   }
@@ -157,13 +184,13 @@ export function createAttachments({
 
   /**
    * The user removed or sent `id` on this pane: it leaves the tray, and so do the gone items (the "not restored" note ends). The tray goes
-   * with its last item. Any id works for the note: a removal of an unknown id still ends it.
+   * with its last item unless it still holds kept text (0.5.4, LT). Any id works for the note: a removal of an unknown id still ends it.
    */
   function release(pane, id) {
     const t = trays.get(pane);
     if (!t) return;
     t.items = t.items.filter((i) => i.id !== id && !i.gone);
-    if (t.items.length === 0) trays.delete(pane);
+    if (isEmpty(t)) trays.delete(pane);
   }
 
   /** The tray and its unsent files go (its session ended). Files that were sent are Claude's and stay; a refused removal is logged as a code and left for pruning. */
@@ -331,7 +358,7 @@ export function createAttachments({
     }
   }
 
-  return {
+  const api = {
     /** Design 3.2 steps 4 to 11. `pane` and `key` come from nika's own snapshot, never from the request; resolves `{ status, body }`. */
     async save({ pane, key, name, data }) {
       const bad = checkUploadBody({ name, data });
@@ -421,8 +448,17 @@ export function createAttachments({
       }
     },
 
-    /** Is there a tray for this pane? Synchronous, no I/O. */
-    hasTray: (pane) => typeof pane === 'string' && trays.has(pane),
+    /**
+     * Is there a tray for this pane? Synchronous, no I/O. A tray that only holds kept text (no item, a text) answers false (0.5.4, LT): the list route must still answer 200
+     * empty for it, as it did before the text existed. A bound tray with neither answers true, as in AT.
+     */
+    hasTray: (pane) => {
+      const t = typeof pane === 'string' ? trays.get(pane) : undefined;
+      return t !== undefined && !(t.items.length === 0 && t.text !== null);
+    },
+
+    /** Does this pane's tray hold kept text? Synchronous, no I/O (0.5.4, LT). */
+    hasText: (pane) => typeof pane === 'string' && trays.get(pane)?.text != null,
 
     /**
      * Binds the pane's tray to its project key and the Claude in it (`claim` = `{ key, owner }` from nika's own snapshot, never a request): makes the tray if there is none,
@@ -460,7 +496,7 @@ export function createAttachments({
         }
         if (owner !== null) t.owner = mergeOwner(t.owner, owner);
         if (t.items.length === 0) {
-          trays.delete(pane);
+          if (isEmpty(t)) trays.delete(pane); // a tray that holds kept text stays
           return out;
         }
         const checked = [];
@@ -494,6 +530,65 @@ export function createAttachments({
       return out;
     },
 
+    /**
+     * Keeps the message box's text for the pane (0.5.4, LT): `value` is `{ text, shell }` (keep) or `null` (clear). Resolves true only when the text was stored. A keep binds the
+     * tray first, as the upload does (a tray of another key or another Claude is dropped, its unsent files deleted), and a value that is not keepable (keptTextOk, a boolean
+     * `shell`) stores nothing and logs `BAD_TEXT`. A clear makes no tray; a differing tray is dropped. The tray goes when it holds nothing else. Never rejects; the text is never logged.
+     */
+    async keepText(pane, claim, value) {
+      try {
+        if (!claimOk(pane, claim)) return false;
+        if (value === null) {
+          const t = trays.get(pane);
+          if (!t) return false;
+          const owner = normOwner(claim.owner);
+          if (t.key !== claim.key || !sameOwner(t.owner, owner)) {
+            await dropTray(pane);
+            return false;
+          }
+          if (owner !== null) t.owner = mergeOwner(t.owner, owner);
+          t.text = null;
+          if (isEmpty(t)) trays.delete(pane);
+          return false;
+        }
+        if (value === undefined || typeof value !== 'object' || !keptTextOk(value.text) || typeof value.shell !== 'boolean') {
+          note({ code: 'BAD_TEXT' });
+          return false;
+        }
+        normOwner(claim.owner); // read once here: a claim that cannot be read stores nothing (bindTray swallows such an error and would leave the old tray unchecked)
+        await api.bindTray(pane, claim); // never rejects
+        const t = trays.get(pane);
+        if (!t || t.key !== claim.key) return false; // defensive: bindTray left no tray, or the old project's
+        t.text = { text: value.text, shell: value.shell };
+        return true;
+      } catch (err) {
+        note(err);
+        return false;
+      }
+    },
+
+    /**
+     * The kept text of the pane as a copy `{ text, shell }`, or null (0.5.4, LT). No tray reads null and makes none; a tray of another key or another Claude is dropped first (its
+     * unsent files deleted) and reads null. Never rejects.
+     */
+    async readText(pane, claim) {
+      try {
+        if (!claimOk(pane, claim)) return null;
+        const t = trays.get(pane);
+        if (!t) return null;
+        const owner = normOwner(claim.owner);
+        if (t.key !== claim.key || !sameOwner(t.owner, owner)) {
+          await dropTray(pane);
+          return null;
+        }
+        if (owner !== null) t.owner = mergeOwner(t.owner, owner);
+        return t.text === null ? null : { text: t.text.text, shell: t.text.shell };
+      } catch (err) {
+        note(err);
+        return null;
+      }
+    },
+
     /** For every tray whose pane `isGone(pane)` names (gone from tmux, or dead): the tray goes and its unsent files are deleted. Resolves how many; never rejects. */
     async dropPanes(isGone) {
       let n = 0;
@@ -525,4 +620,5 @@ export function createAttachments({
 
     stop,
   };
+  return api;
 }

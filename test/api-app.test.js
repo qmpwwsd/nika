@@ -5604,7 +5604,7 @@ const GROUP_KEY = 'b1b2b3b4b5b6b7b8'; // a project key for a snapshot group (any
 
 /** A store that records its calls; `over` replaces a method (a function, or a value to return / an Error to throw). */
 function fakeStore(over = {}) {
-  const f = { calls: [], order: [], binds: [], lists: [], drops: [] }; // order: the method names in call order, bindTray included
+  const f = { calls: [], order: [], binds: [], lists: [], drops: [], keeps: [], reads: [] }; // order: the method names in call order, bindTray included
   const method = (name, fallback) => async (...args) => {
     f.calls.push([name, ...args]);
     f.order.push(name);
@@ -5630,6 +5630,20 @@ function fakeStore(over = {}) {
     return typeof given === 'function' ? given(...args) : given !== undefined ? given : { files: [], gone: [] };
   };
   f.hasTray = (pane) => (typeof over.hasTray === 'function' ? over.hasTray(pane) : over.hasTray === true);
+  // the kept text of a pane (0.5.4, LT): recorded apart from `calls` and `order`, like the tray. The default keep stores (true) a text and, like the real store, answers false for a clear.
+  f.keepText = async (...args) => {
+    f.keeps.push(args);
+    const given = over.keepText;
+    if (given instanceof Error) throw given;
+    return typeof given === 'function' ? given(...args) : given !== undefined ? given : args[2] !== null;
+  };
+  f.readText = async (...args) => {
+    f.reads.push(args);
+    const given = over.readText;
+    if (given instanceof Error) throw given;
+    return typeof given === 'function' ? given(...args) : given !== undefined ? given : null;
+  };
+  f.hasText = (pane) => (typeof over.hasText === 'function' ? over.hasText(pane) : over.hasText === true);
   f.dropPanes = async (isGone) => { f.drops.push(isGone); return 0; };
   return f;
 }
@@ -6435,6 +6449,354 @@ describe('attachments: list (GET, 0.5.4 AT)', () => {
     assert.equal((await list(b)).status, 200);
     const { a: none } = await bootScreens({ over: { attachments: null, collect: async () => keyedSnapshot('%6') } });
     assert.equal((await list(none, '%3')).status, 404, 'a server with no store at all: the eligibility check still answers');
+  });
+});
+
+describe('kept draft (GET/PUT, 0.5.4 LT)', () => {
+  const kept = (a, id = '%6', opts) => att(a, id, 'kept-draft', opts);
+  const put = (a, json, id = '%6', more = {}) => kept(a, id, { method: 'PUT', json, ...more });
+  const oneClaim = (agent = { pid: 4101, id: 'sess-row' }) => ({ groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' }, ...agent }] }] });
+  const twice = { groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }, { key: 'c1c2c3c4c5c6c7c8', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+  const CLAIM = { key: GROUP_KEY, owner: { pid: 4101, session: 'sess-row' } };
+  const MARK = 'kqzwxv91'; // a marker no fixed message, code or log line contains
+  const euros = (n) => '\u20ac'.repeat(n); // 3 UTF-8 bytes each
+  const M_BODY = 'body must be { text, shell }';
+  const M_SHELL = 'shell must be true or false';
+  const M_TEXT = 'text must be at most 16 KB without control characters other than newline and tab';
+  const boot1 = (store, snapshot = oneClaim(), over = {}) => bootScreens({ over: { attachments: store, collect: async () => snapshot, ...over } });
+
+  test('(+) R1: PUT { text, shell } is 200 { kept: true }, no-store, and the store gets (id, { key, owner }, exactly { text, shell }); a clear passes null and answers { kept: false }', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    const r = await put(a, { text: 'two\nlines\tand tab', shell: true });
+    assert.deepEqual([r.status, r.body], [200, { kept: true }]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.deepEqual(store.keeps, [['%6', CLAIM, { text: 'two\nlines\tand tab', shell: true }]]);
+    assert.deepEqual(Object.keys(store.keeps[0][2]).sort(), ['shell', 'text']);
+    const c = await put(a, { text: '', shell: false });
+    assert.deepEqual([c.status, c.body], [200, { kept: false }]);
+    assert.deepEqual(store.keeps.at(-1), ['%6', CLAIM, null]);
+    assert.equal(store.keeps.length, 2);
+    assert.deepEqual(store.calls, [], 'the older call list is untouched');
+  });
+
+  test('(+) R1: a store that answers false (nothing was stored) is 200 { kept: false }; a pane nika started is eligible with its start key and no owner', async () => {
+    const no = fakeStore({ keepText: () => false });
+    const { a } = await boot1(no);
+    assert.deepEqual((await put(a, { text: 'x', shell: false })).body, { kept: false });
+    const store = fakeStore();
+    const { a: b } = await bootScreens({ over: { attachments: store } });
+    b.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    assert.deepEqual((await put(b, { text: 'x', shell: false }, '%8')).body, { kept: true });
+    assert.deepEqual(store.keeps, [['%8', { key: w.project.key, owner: null }, { text: 'x', shell: false }]]);
+  });
+
+  test('(+) R1: only a real boolean true counts as kept: a store answer of 1 or "yes" is { kept: false }', async () => {
+    for (const answer of [1, 'yes', {}, undefined]) {
+      const store = fakeStore({ keepText: () => answer });
+      const { a } = await boot1(store);
+      assert.deepEqual((await put(a, { text: 'x', shell: false })).body, { kept: false }, String(answer));
+    }
+  });
+
+  test('(−) R2: a wrong body is 400 invalid with a fixed message that holds none of the text, and the store is not called', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    const bodies = [
+      [{}, M_BODY], [{ text: 'x' }, M_BODY], [{ shell: true }, M_BODY], [{ text: `${MARK}`, shell: false, extra: 1 }, M_BODY], [{ text: MARK, extra: 1 }, M_BODY], [{ shell: true, other: 1 }, M_BODY],
+      [{ text: MARK, shell: 'true' }, M_SHELL], [{ text: MARK, shell: 1 }, M_SHELL], [{ text: MARK, shell: null }, M_SHELL],
+      [{ text: 5, shell: false }, M_TEXT], [{ text: null, shell: false }, M_TEXT], [{ text: [MARK], shell: false }, M_TEXT],
+      [{ text: `${MARK}\u0007`, shell: false }, M_TEXT], [{ text: `${MARK}\r`, shell: false }, M_TEXT], [{ text: `${MARK}\u001b`, shell: false }, M_TEXT],
+      [{ text: `${MARK}\u007f`, shell: false }, M_TEXT], [{ text: `${MARK}\u0085`, shell: false }, M_TEXT], [{ text: `${MARK}\ud800`, shell: false }, M_TEXT],
+      [{ text: MARK + euros(5462), shell: false }, M_TEXT], [{ text: '', shell: 'no' }, M_SHELL],
+    ];
+    for (const [json, message] of bodies) {
+      const r = await put(a, json);
+      assert.deepEqual([r.status, r.body.error, r.body.message], [400, 'invalid', message], JSON.stringify(json).slice(0, 60));
+      assert.equal(r.raw.includes(MARK), false, 'the answer never echoes the text');
+    }
+    for (const json of [null, [], 'x', 5, [{ text: MARK, shell: true }]]) {
+      const r = await put(a, json);
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], JSON.stringify(json));
+    }
+    assert.deepEqual(store.keeps, []);
+    assert.deepEqual(store.reads, []);
+  });
+
+  test('(−) R2: the body is checked before the pane: a wrong body for a pane that is not eligible is 400, a good one is 404', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    assert.equal((await put(a, { text: 'x' }, '%99')).status, 400);
+    assert.equal((await put(a, { text: 'x', shell: false }, '%99')).status, 404);
+    assert.deepEqual(store.keeps, []);
+  });
+
+  test('(+) R3: 16 384 quotes (over 32 KB of JSON) are 200, not 413; exactly 16 384 bytes of text are kept, 16 385 are 400', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    const quotes = '"'.repeat(16384);
+    const r = await put(a, { text: quotes, shell: false });
+    assert.deepEqual([r.status, r.body], [200, { kept: true }]);
+    assert.equal(store.keeps[0][2].text, quotes);
+    assert.ok(JSON.stringify({ text: quotes, shell: false }).length > 32 * 1024);
+    assert.equal((await put(a, { text: euros(5461) + 'a', shell: true })).status, 200);
+    assert.equal((await put(a, { text: euros(5461) + 'ab', shell: true })).status, 400);
+  });
+
+  test('(−) R3: a body over 34 KB is 413, text/plain is 415, no secret is 403, a foreign Origin is 403; the store is not asked', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    assert.equal((await put(a, { text: 'x'.repeat(35 * 1024), shell: false })).status, 413);
+    assert.equal((await put(a, { text: 'x', shell: false }, '%6', { json: undefined, body: '{"text":"x","shell":false}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    for (const headers of [{ 'x-nika-app': null }, { 'x-nika-app': WRONG_SAME_LENGTH }, { origin: 'http://evil.example' }, { 'sec-fetch-site': 'cross-site' }]) {
+      assert.equal((await put(a, { text: 'x', shell: false }, '%6', { headers })).status, 403, JSON.stringify(headers));
+      assert.equal((await kept(a, '%6', { headers })).status, 403, `GET ${JSON.stringify(headers)}`);
+    }
+    assert.deepEqual([store.keeps, store.reads], [[], []]);
+  });
+
+  test('(−) R3: POST and DELETE are 405 for the path, the verbs it has are GET and PUT', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    for (const method of ['POST', 'DELETE']) {
+      const r = await kept(a, '%6', { method, json: {} });
+      assert.equal(r.status, 405, method);
+      assert.match(r.headers.allow, /GET/);
+      assert.match(r.headers.allow, /PUT/);
+    }
+    assert.deepEqual([store.keeps, store.reads], [[], []]);
+  });
+
+  test('(−) R4: a pane that is not in the tmux list, runs a shell, is not live Claude or was not started is 404 for PUT and GET, a malformed id too; the store is not asked', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6', '%5') } });
+    for (const id of ['%5', '%8', '%99']) {
+      assert.equal((await put(a, { text: 'x', shell: false }, id)).status, 404, `PUT ${id}`);
+      assert.equal((await kept(a, id)).status, 404, `GET ${id}`);
+    }
+    for (const path of ['/api/app/pane/abc/kept-draft', '/api/app/pane/%2599x/kept-draft']) {
+      assert.equal((await a.call('PUT', path, { json: { text: 'x', shell: false } })).status, 404, path);
+      assert.equal((await a.call('GET', path)).status, 404, path);
+    }
+    assert.deepEqual([store.keeps, store.reads, store.calls], [[], [], []]);
+  });
+
+  test('(+) R5: 8 PUTs in a second pass, a second later it is served again, another pane has its own count, and a GET is never counted', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    for (let i = 0; i < 20; i += 1) assert.equal((await kept(a)).status, 200, `GET ${i}`);
+    for (let i = 0; i < 8; i += 1) assert.equal((await put(a, { text: `t${i}`, shell: false })).status, 200, `PUT ${i}`);
+    assert.equal(store.keeps.length, 8);
+    assert.equal((await put(a, { text: 'other pane', shell: false }, '%8')).status, 200, 'another pane');
+    assert.equal((await kept(a)).status, 200, 'a GET is still served while the PUT bucket is full');
+    a.clock.t += 1001;
+    assert.equal((await put(a, { text: 'again', shell: false })).status, 200);
+    assert.equal(store.keeps.length, 10);
+  });
+
+  test('(−) R5: the 9th PUT in a second is 429 busy with a fixed message and reaches no store; a wrong body does not use a slot', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    for (let i = 0; i < 3; i += 1) assert.equal((await put(a, { text: 'x' })).status, 400, 'a refused body');
+    for (let i = 0; i < 8; i += 1) assert.equal((await put(a, { text: `t${i}`, shell: false })).status, 200, `PUT ${i}`);
+    const ninth = await put(a, { text: `${MARK}`, shell: false });
+    assert.deepEqual([ninth.status, ninth.body], [429, { error: 'busy', message: 'at most 8 text saves per second per pane' }]);
+    assert.equal(store.keeps.length, 8, 'the refused request reached nothing');
+    assert.equal(ninth.raw.includes(MARK), false);
+    assert.equal((await put(a, { text: '', shell: false })).status, 429, 'a clear counts like a keep');
+    a.clock.t += 600;
+    assert.equal((await put(a, { text: 'x', shell: false })).status, 429, 'the window is a full second, not half of it');
+    a.clock.t += 401;
+    assert.equal((await put(a, { text: 'x', shell: false })).status, 200, 'and it is served again after it');
+  });
+
+  test('(−) R5: the KEPT bucket and the fit buckets are apart: a full one does not refuse the other', async () => {
+    const fit = fakeFit();
+    const store = fakeStore();
+    const { a } = await boot1(store, oneClaim(), { createFit: fit.factory });
+    for (let i = 0; i < 8; i += 1) assert.equal((await put(a, { text: `t${i}`, shell: false })).status, 200);
+    assert.equal((await put(a, { text: 'x', shell: false })).status, 429, 'the KEPT bucket is full');
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200, 'a fit PUT is served');
+    assert.equal((await fitPane(a, '%6', { method: 'DELETE' })).status, 200, 'and a fit DELETE');
+    const fit2 = fakeFit();
+    const store2 = fakeStore();
+    const { a: b } = await boot1(store2, oneClaim(), { createFit: fit2.factory });
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(b, '%6', { json: FIT_BODY })).status, 200);
+    assert.equal((await fitPane(b, '%6', { json: FIT_BODY })).status, 429, 'the fit PUT bucket is full');
+    assert.equal((await put(b, { text: 'x', shell: false })).status, 200, 'a kept PUT is served');
+  });
+
+  test('(+) R6: with no claim or two, a clear of a pane that holds no text is 200 { kept: false } and a GET is 200 { kept: null }; the store is not asked', async () => {
+    const noKey = { groups: [{ key: 'BAD KEY', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+    for (const snapshot of [twice, noKey]) {
+      const store = fakeStore();
+      const { a } = await boot1(store, snapshot);
+      const c = await put(a, { text: '', shell: false });
+      assert.deepEqual([c.status, c.body], [200, { kept: false }], JSON.stringify(snapshot).slice(0, 50));
+      const g = await kept(a);
+      assert.deepEqual([g.status, g.body], [200, { kept: null }]);
+      assert.deepEqual([store.keeps, store.reads, store.binds, store.calls], [[], [], [], []]);
+    }
+    const started = fakeStore(); // a started pane whose key is not a project key
+    const { a } = await bootScreens({ over: { attachments: started } });
+    a.ctx.started.set('%8', { key: 'not a key', name: 'x', sessionId: null, role: 'agent' });
+    assert.deepEqual((await kept(a, '%8')).body, { kept: null });
+    assert.deepEqual([started.keeps, started.reads], [[], []]);
+  });
+
+  test('(−) R6: with no claim or two, a PUT of a text is 409 no-project, and a GET of a pane that holds text is 409 no-project; nothing is stored, read or deleted', async () => {
+    for (const snapshot of [twice, { groups: [{ key: 'BAD KEY', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] }]) {
+      const store = fakeStore({ hasText: true });
+      const { a } = await boot1(store, snapshot);
+      const p = await put(a, { text: MARK, shell: false });
+      assert.deepEqual([p.status, p.body.error], [409, 'no-project']);
+      assert.equal(p.raw.includes(MARK), false);
+      const c = await put(a, { text: '', shell: false });
+      assert.deepEqual([c.status, c.body.error], [409, 'no-project'], 'a clear of a pane that holds text is not taken either');
+      const g = await kept(a);
+      assert.deepEqual([g.status, g.body.error], [409, 'no-project']);
+      assert.deepEqual([store.keeps, store.reads, store.binds, store.calls], [[], [], [], []], 'nothing is asked');
+      const empty = fakeStore(); // a pane that holds no text: a PUT of a text is still not taken (only a clear is a harmless 200)
+      const { a: b } = await boot1(empty, snapshot);
+      const q = await put(b, { text: MARK, shell: false });
+      assert.deepEqual([q.status, q.body.error], [409, 'no-project']);
+      assert.deepEqual([empty.keeps, empty.binds], [[], []]);
+      assert.ok(store.drops.length > 0 && store.drops.every((isGone) => isGone('%6') === false), 'and the eligibility hook keeps the pane\'s tray: it is listed and live');
+    }
+  });
+
+  test('(+) R7: GET is 200 { kept: { text, shell } } with exactly those two fields; a store answer of null is { kept: null }; the store gets (id, { key, owner })', async () => {
+    const store = fakeStore({ readText: () => ({ text: 'a\nb\tc', shell: true, extra: 'x', path: '/srv/x' }) });
+    const { a } = await boot1(store);
+    const r = await kept(a);
+    assert.deepEqual([r.status, r.body], [200, { kept: { text: 'a\nb\tc', shell: true } }]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.deepEqual(Object.keys(r.body.kept).sort(), ['shell', 'text']);
+    assert.deepEqual(store.reads, [['%6', CLAIM]]);
+    const none = fakeStore({ readText: () => null });
+    const { a: b } = await boot1(none);
+    assert.deepEqual([(await kept(b)).status, (await kept(b)).body], [200, { kept: null }]);
+  });
+
+  test('(+) R7: the edges that are valid: exactly 16 384 bytes, a lone newline and tab, shell false', async () => {
+    for (const text of [euros(5461) + 'a', '\n', '\t', ' ', 'x']) {
+      const store = fakeStore({ readText: () => ({ text, shell: false }) });
+      const { a } = await boot1(store);
+      assert.deepEqual((await kept(a)).body, { kept: { text, shell: false } }, JSON.stringify(text).slice(0, 20));
+    }
+  });
+
+  test('(−) R7: a store answer with a control character, over 16 KB, an empty or non-string text, a non-boolean shell or a non-object is { kept: null }', async () => {
+    const bad = [
+      { text: 'x\u0007', shell: false }, { text: 'x\r', shell: false }, { text: 'x\u001b', shell: false }, { text: 'x\u007f', shell: false }, { text: 'x\u0085', shell: false }, { text: 'x\ud800', shell: false },
+      { text: euros(5462), shell: false }, { text: '', shell: false }, { text: 5, shell: false }, { text: null, shell: false }, { text: ['x'], shell: false }, { text: 'x', shell: 'false' },
+      { text: 'x', shell: 0 }, { text: 'x', shell: null }, { text: 'x' }, { shell: true }, {}, [], 'x', 7, true, undefined,
+      Object.assign(['x'], { text: 'x', shell: false }), // an array that carries the two fields is not an object answer
+    ];
+    for (const answer of bad) {
+      const store = fakeStore({ readText: () => answer });
+      const { a } = await boot1(store);
+      const r = await kept(a);
+      assert.deepEqual([r.status, r.body], [200, { kept: null }], JSON.stringify(answer));
+    }
+  });
+
+  test('(−) R8: a store that throws on PUT and on GET is 500 internal; the log is the node code only, and neither the answer nor the log holds the text', async () => {
+    const boom = Object.assign(new Error(`EACCES /srv/nika/${MARK}`), { code: 'EACCES' });
+    const store = fakeStore({ keepText: boom, readText: boom });
+    const { a } = await boot1(store);
+    let p;
+    let g;
+    const lines = await capturingLog(async () => {
+      p = await put(a, { text: `${MARK} text`, shell: false });
+      g = await kept(a);
+    });
+    assert.deepEqual([p.status, p.body], [500, { error: 'internal', message: 'internal error' }]);
+    assert.deepEqual([g.status, g.body], [500, { error: 'internal', message: 'internal error' }]);
+    assert.equal(/kqzwxv|srv|EACCES/.test(p.raw + g.raw), false);
+    assert.deepEqual(lines, ['nika: attachments: EACCES\n', 'nika: attachments: EACCES\n']);
+  });
+
+  test('(−) R8: the dispatcher\'s own catch is never reached: a store that throws a plain Error is 500 internal and the log line is the fallback code ERR', async () => {
+    const store = fakeStore({ keepText: new Error(`plain ${MARK}`), readText: new Error(`plain ${MARK}`) });
+    const { a } = await boot1(store);
+    let p;
+    let g;
+    const lines = await capturingLog(async () => {
+      p = await put(a, { text: 'x', shell: false });
+      g = await kept(a);
+    });
+    assert.deepEqual([p.status, g.status], [500, 500]);
+    assert.deepEqual(lines, ['nika: attachments: ERR\n', 'nika: attachments: ERR\n'], 'the code only, and not the dispatcher\'s "<method> <path> failed" line');
+  });
+
+  test('(−) R9: a marker text through every PUT and GET path, the 400s, the 404s, the 409s, the 429 and the throws, leaves no slice of it in any log line or answer (the GET that gives a kept text back is R7)', async () => {
+    const text = `${MARK}-the-secret-words`;
+    const slices = [];
+    for (let i = 0; i + 8 <= text.length; i += 1) slices.push(text.slice(i, i + 8));
+    const seen = [];
+    const statuses = new Set();
+    const run = async (store, snapshot, fn) => {
+      const { a } = await boot1(store, snapshot);
+      const lines = await capturingLog(async () => { seen.push(...(await fn(a))); });
+      seen.push(...lines);
+    };
+    const raws = (rs) => {
+      for (const r of rs) statuses.add(r.status);
+      return rs.map((r) => r.raw);
+    };
+    await run(fakeStore(), oneClaim(), async (a) => raws([await put(a, { text, shell: true }), await kept(a), await put(a, { text, shell: 'x' }), await put(a, { text: `${text}\u0007`, shell: false }), await put(a, { text, shell: false }, '%99'), await kept(a, '%99')]));
+    await run(fakeStore({ hasText: true }), twice, async (a) => raws([await put(a, { text, shell: false }), await kept(a)]));
+    await run(fakeStore(), oneClaim(), async (a) => {
+      const out = [];
+      for (let i = 0; i < 9; i += 1) out.push(await put(a, { text, shell: false }));
+      return raws(out);
+    });
+    const boom = Object.assign(new Error(`EACCES ${text}`), { code: 'EACCES' });
+    await run(fakeStore({ keepText: boom, readText: boom }), oneClaim(), async (a) => raws([await put(a, { text, shell: false }), await kept(a)]));
+    await run(fakeStore({ keepText: new Error(text), readText: new Error(text) }), oneClaim(), async (a) => raws([await put(a, { text, shell: false }), await kept(a)]));
+    assert.deepEqual([...statuses].sort(), [200, 400, 404, 409, 429, 500], 'every kind of answer was collected');
+    for (const s of slices) assert.equal(seen.some((line) => line.includes(s)), false, `no line holds "${s}"`);
+  });
+
+  test('(−) neither method is a user action: no PUT (200, 400, 409, 429) and no GET stamps the pane\'s typing time, and neither touches the session controller', async () => {
+    const ac = fakeAutoCompact();
+    const store = fakeStore();
+    const { a, control } = await bootScreens({ over: { createAutoCompact: ac.factory, attachments: store, collect: async () => oneClaim() } });
+    a.clock.t += 5000;
+    assert.equal((await put(a, { text: 'x', shell: false })).status, 200);
+    assert.equal((await put(a, { text: 'x' })).status, 400);
+    assert.equal((await kept(a)).status, 200);
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity, 'no stamp');
+    for (let i = 0; i < 8; i += 1) await put(a, { text: 'x', shell: false });
+    assert.equal((await put(a, { text: 'x', shell: false })).status, 429);
+    const { a: b } = await bootScreens({ over: { createAutoCompact: ac.factory, attachments: fakeStore({ hasText: true }), collect: async () => twice } });
+    assert.equal((await put(b, { text: 'x', shell: false })).status, 409);
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity, 'still none');
+    assert.deepEqual(control.calls, [], 'Claude\'s pane is never touched');
+  });
+
+  test('(+) end to end with the real store: a PUT is read back by a GET (the text, the Shell flag), a clear empties it, and another project\'s claim reads nothing', async () => {
+    const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-kept-'));
+    after(() => fs.rmSync(stateRoot, { recursive: true, force: true }));
+    const env = { HOME: stateRoot, XDG_STATE_HOME: stateRoot };
+    const store = createAttachments({ env, loadKeepDays: async () => 7, setTimer: () => null, clearTimer: () => {}, log: () => {} });
+    const { a } = await boot1(store);
+    assert.deepEqual((await kept(a)).body, { kept: null }, 'nothing yet');
+    const text = `${'long words '.repeat(100)}\nand a second line\t`;
+    assert.deepEqual((await put(a, { text, shell: true })).body, { kept: true });
+    const back = await kept(a);
+    assert.deepEqual([back.status, back.body], [200, { kept: { text, shell: true } }]);
+    assert.deepEqual((await put(a, { text: '', shell: false })).body, { kept: false });
+    assert.deepEqual((await kept(a)).body, { kept: null }, 'the clear emptied it');
+    assert.deepEqual((await put(a, { text: 'again', shell: false })).body, { kept: true });
+    a.clock.t += 1500;
+    const other = oneClaim({ pid: 9999, id: 'sess-other' });
+    other.groups[0].key = 'c1c2c3c4c5c6c7c8';
+    const { a: b } = await boot1(store, other);
+    assert.deepEqual((await kept(b)).body, { kept: null }, 'a claim of another project reads nothing');
+    assert.deepEqual((await kept(a)).body, { kept: null }, 'and it dropped the tray with the old project\'s text');
   });
 });
 

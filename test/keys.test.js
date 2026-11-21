@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKeys, badSend } from '../src/keys.js';
+import { createKeys, badSend, MAX_PASTE, PASTE_BAD } from '../src/keys.js';
 import { KEY_NAME } from '../src/ids.js';
 import { CHUNK_GAP_MS } from '../src/draft.js';
 
@@ -462,5 +462,38 @@ describe('createKeys.send: the send flag and the look before each later chunk (T
     assert.equal(looks, 0);
     const plain = await make(fakeTmux()).send('%5', { text: words });
     assert.equal(plain.status, 200);
+  });
+});
+
+describe('PASTE_BAD and MAX_PASTE (0.5.4, LT): the kept text uses the paste route\'s own rules', () => {
+  const expectedBad = (c) => c <= 0x08 || (c >= 0x0b && c <= 0x1f) || (c >= 0x7f && c <= 0x9f);
+
+  test('(+) MAX_PASTE is the 16 KB the paste route takes', async () => {
+    assert.equal(MAX_PASTE, 16 * 1024);
+    const exec = fakeTmux();
+    assert.equal((await make(exec).send('%7', { paste: 'a'.repeat(MAX_PASTE) })).status, 200);
+    assert.equal((await make(fakeTmux()).send('%7', { paste: 'a'.repeat(MAX_PASTE + 1) })).status, 400);
+  });
+
+  test('(+) PASTE_BAD matches exactly the characters the paste route strips: C0 but tab and newline, DEL and C1 (carriage return included, which it turns into a newline first)', async () => {
+    for (let c = 0; c <= 0xa0; c += 1) {
+      const ch = String.fromCharCode(c);
+      assert.equal(PASTE_BAD.test(ch), expectedBad(c), `U+${c.toString(16).padStart(4, '0')}`);
+      if (c === 0x0d) continue; // a lone CR is turned into LF before the strip
+      const exec = fakeTmux();
+      await make(exec).send('%7', { paste: `a${ch}b` });
+      const kept = exec.inputs[0].toString('utf8');
+      assert.equal(kept === 'ab', expectedBad(c), `the route strips U+${c.toString(16).padStart(4, '0')} exactly when PASTE_BAD matches it`);
+    }
+    for (const sample of ['\u2028', '\u200d', '\u202e', '\u00a0', '\u20ac', '\ud83d\ude00']) assert.equal(PASTE_BAD.test(sample), false, JSON.stringify(sample));
+  });
+
+  test('(\u2212) PASTE_BAD does not match a tab or a newline, and a run of calls answers the same every time (no g flag, no lastIndex)', () => {
+    assert.equal(PASTE_BAD.test('\t'), false);
+    assert.equal(PASTE_BAD.test('\n'), false);
+    assert.equal(PASTE_BAD.test('plain text\nwith\ttabs'), false);
+    assert.equal(PASTE_BAD.global, false);
+    for (let i = 0; i < 6; i += 1) assert.equal(PASTE_BAD.test('a\u0007b'), true, `call ${i + 1}`);
+    for (let i = 0; i < 3; i += 1) assert.equal(PASTE_BAD.test('abc'), false);
   });
 });

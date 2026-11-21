@@ -13,7 +13,7 @@ import { acView, cleanNote } from './ctx.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
 import { roleTag, savedPick, subagentView, subagentGroups, subagentHref, SUBAGENT_ID, agentLabelView, subLabelView } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
-import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage, STILL_SENDING, STILL_SENDING_MS } from './draft-sync.js';
+import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage, STILL_SENDING, STILL_SENDING_MS, RESTORING_TEXT } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
   quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
@@ -2613,6 +2613,10 @@ async function sendComposer() {
     showProblem(STILL_SENDING, 'warn', STILL_SENDING_MS);
     return;
   }
+  if (DS.restoring()) { // the text kept for this session is being brought back (0.5.4, LT): nothing is sent and the box stays as it is
+    showProblem(RESTORING_TEXT, 'warn', 4000);
+    return;
+  }
   const note = SV?.sendNote();
   if (note) {
     // a feedback question is open above the box (0.5, F14): nothing is sent and the text stays in the box
@@ -2744,6 +2748,24 @@ async function putDraft(body) {
   return call(`/api/app/pane/${encodeURIComponent(paneId)}/draft`, { method: 'PUT', json: body });
 }
 
+const KEPT_TIMEOUT_MS = 3000; // the bounded GET of the kept text: a page that cannot get an answer in 3 s tries once more, then gives up (draft-sync.js restore)
+
+/** The kept text of this pane (0.5.4, LT), cut after KEPT_TIMEOUT_MS (no AbortSignal.timeout: older web views lack it). An abort answers { status: 0 } like any failure. */
+async function getKept() {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), KEPT_TIMEOUT_MS);
+  try {
+    return await call(`/api/app/pane/${encodeURIComponent(paneId)}/kept-draft`, { signal: ctl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The page's unsent text, kept on the server (0.5.4, LT). `keepalive` lets the request outlive a page that is being left. It never types into Claude: no redraw hold. */
+function putKept(body) {
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/kept-draft`, { method: 'PUT', json: body, keepalive: true });
+}
+
 /** Tab or the right arrow on Claude's suggestion (F10, R2 #3: it waits for nika's own redraw hold like the sync's write; the server decides on its own fresh capture). */
 async function suggestDraft(body) {
   if (HOLD.active) await HOLD.wait();
@@ -2764,8 +2786,11 @@ const DS = createDraftSync({
   put: putDraft,
   suggest: suggestDraft,
   note: renderDraftNote,
-  problem: (message) => showProblem(message, 'warn', 6000),
+  problem: (message, ms = 6000) => showProblem(message, 'warn', ms),
   gone: setGone,
+  keep: putKept,
+  fetchKept: getKept,
+  announce,
 });
 
 // ---- attachments (0.5, design W2): chips under the message box; the logic and the copy: attach.js ----------------------------
@@ -2817,7 +2842,7 @@ async function acceptSuggestion(text) {
     clearProblem();
     say(`Accepted Claude's suggestion: ${text}`);
   } else {
-    showProblem(r.message, problemKind(r.status), 6000);
+    showProblem(r.message, problemKind(r.status), r.message === RESTORING_TEXT ? 4000 : 6000); // the kept text being brought back (0.5.4, LT): 4000 ms, as Send's line
   }
 }
 
@@ -3397,6 +3422,9 @@ function boot() {
     DF = createDialogForm({ root: $('dialog-form'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, showProblem, clearProblem, setGone, composer, refresh: renderAttn });
     SV = createSurveyPanel({ root: $('survey-panel'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, clearProblem, setGone, composer });
     watchPanels();
+    DS.restore(); // 0.5.4 LT: the unsent text kept for this pane comes back; the hold is up before the first capture below is handled
+    window.addEventListener('pageshow', (e) => { if (e?.persisted === true) DS.restore(); }); // back from the back/forward cache: the server's copy may be newer
+    window.addEventListener('pagehide', () => DS.flushKeep()); // what is pending goes now; the PUT outlives the page (keepalive)
     $('pb-pane').textContent = paneId;
     $('term').setAttribute('aria-label', `Live terminal of ${A.name}, pane ${paneId}`);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');

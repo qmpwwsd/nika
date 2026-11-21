@@ -992,7 +992,7 @@ describe('session.js hooks (noteScreen, renderMode, sendComposer), run in a vm',
     const log = { problems: [], gate: 0, jobs: 0 };
     const ta = { value: 'hello', disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, SV: note === undefined ? null : { sendNote: () => note },
+      sending: false, composer: () => ta, DS: { restoring: () => false }, SV: note === undefined ? null : { sendNote: () => note }, // DS: 0.5.4 LT, Send asks whether the kept text is being brought back
       showProblem: (m, k) => log.problems.push([m, k]),
       sendGate: () => { log.gate += 1; throw new Error('past the survey gate'); },
       W: { promptOpen: false, prompt: null, pane: 'ok' }, A: { kind: 'idle' }, DF: null, hasAnswerButtons: () => false,

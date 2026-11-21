@@ -192,7 +192,7 @@ export function applyMirror(container, model, cursor) {
 
 // ---- input encoding ---------------------------------------------------------------------------------------------
 
-const utf8Bytes = (s) => new TextEncoder().encode(s).length;
+export const utf8Bytes = (s) => new TextEncoder().encode(s).length; // draft-sync.js measures the kept text with it (0.5.4, LT)
 
 /**
  * Composer text -> request bodies for POST /pane/:id/keys, or a refusal. Empty -> no body (just the Enter). One plain line of at most

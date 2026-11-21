@@ -13,6 +13,7 @@ import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint,
 import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
 import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal, submitMessage as submitMessageReal, STILL_SENDING as STILL_SENDING_REAL, STILL_SENDING_MS as STILL_SENDING_MS_REAL } from '../public/draft-sync.js';
+import { createDraftSync as createDraftSyncReal, RESTORING_TEXT as RESTORING_TEXT_REAL } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META, modeKey as modeKeyReal } from '../public/modes.js';
 import {
   createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal,
@@ -1353,7 +1354,7 @@ describe('Task 14b: wiring of the page rules', () => {
       sending: false, composer: () => ta, DF: null, SV: null, S: { on: shell }, W: { promptOpen, prompt, pane, mode: 'default', confirmed: true }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => el(), say: (m) => log.said.push(m),
       paneId: '%12', setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
-      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120, gone: false }, ATT: { pending: () => false },
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {}, restoring: () => false }, draftSendPlan: draftSendPlanReal, M: { cols: 120, gone: false }, ATT: { pending: () => false },
       ...sendIo(log),
     };
     return { log, ta, ctx, send: mk(SEND_FUNCS, ctx).sendComposer };
@@ -2988,6 +2989,25 @@ describe('0.5: the cut and the draft note (markup and stylesheet)', () => {
     assert.match(css, /\.dnote b\s*\{[^}]*font-weight:\s*(600|700)/);
   });
 
+  test('(+) SF-1: the over note has its own rule: --danger on --danger-soft, a colour no other note kind uses, and its icon i-warn is drawn by the page', () => {
+    const KINDS = ['paused', 'long', 'hold', 'cursor', 'queued', 'suggest'];
+    assert.match(css, /\.dnote\[data-k="over"\]\s*\{[^}]*color:\s*var\(--danger\)[^}]*background:\s*var\(--danger-soft\)/);
+    for (const k of KINDS) {
+      const rule = new RegExp(`\\.dnote\\[data-k="${k}"\\]\\s*\\{([^}]*)\\}`).exec(css)[1];
+      assert.doesNotMatch(rule, /--danger/, `${k} does not use the over note's colours`);
+    }
+    assert.match(HTML, /<symbol id="i-warn"/);
+    assert.equal(noteViewReal({ kind: 'over' }).icon, 'warn');
+    for (const k of KINDS) assert.notEqual(noteViewReal({ kind: k, reason: 'tall' }).icon, 'warn', `${k} has another icon`);
+    assert.doesNotMatch(css, /\.dnote\[data-k="over"\][^{]*\{[^}]*(?:#|rgb\()/, 'tokens only, no literal colour');
+  });
+
+  test('(+) SF-5 (N-b): the comment above the note rules names every kind with its colour, the over note included', () => {
+    const note = /\/\*\s*the draft sync note[^*]*\*\//.exec(CSS)?.[0] ?? '';
+    assert.ok(note.length > 0, 'the comment is there');
+    for (const word of ['paused (amber)', 'not mirrored (ink)', 'on hold (attention pink)', 'cursor (blue)', 'queued (green)', 'suggestion (accent)', 'over 16 KB (danger)']) assert.ok(note.includes(word), word);
+  });
+
   test('(−) no inline style anywhere for the new parts, and the new files stay out of the sinks', () => {
     assert.doesNotMatch(HTML, /\sstyle\s*=/i);
     assert.deepEqual(findSinks(JS['draft-sync.js']), []);
@@ -3236,6 +3256,64 @@ describe('0.5: the note, the pull and the edits (wiring)', () => {
     assert.deepEqual(r.el.kids, []);
   });
 
+  // -- 0.5.4 (LT, round 2, SF-5): the sync shows the `over` note while a permission prompt, a question dialog or a survey is on screen, and while the screen is
+  // unreadable. That only helps if the page keeps the notes row (#notes) and the draft note (#draft-note) visible then. These four tests are the proof.
+  test('(+) SF-5: #notes is a direct child of the composer, next to the permission prompt, the question dialog and the survey panel, never inside one', () => {
+    const at = HTML.indexOf('id="composer-box"');
+    assert.ok(at > 0);
+    const open = HTML.lastIndexOf('<div', at);
+    for (const id of ['prompt-btns', 'dialog-form', 'survey-panel', 'notes']) {
+      const to = HTML.indexOf(`id="${id}"`, at);
+      assert.ok(to > at, id);
+      const slice = HTML.slice(open, HTML.lastIndexOf('<div', to)); // from the composer's open tag up to the div that carries the id
+      const depth = (slice.match(/<div\b/g) ?? []).length - (slice.match(/<\/div>/g) ?? []).length;
+      assert.equal(depth, 1, `${id}: only the composer is open around it`);
+    }
+    assert.doesNotMatch(HTML, /id="notes"[^>]*\bhidden\b/);
+    assert.match(HTML, /<span class="dnote" id="draft-note" role="status" hidden><\/span>/, 'the draft note is hidden only until the sync gives it a note');
+  });
+
+  test('(−) SF-5: no stylesheet rule hides the notes row or the draft note, and none ties them to a prompt, a dialog, a survey or the layout of a panel', () => {
+    const css = strip(CSS);
+    let seen = 0;
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const sel = m[1].trim();
+      if (!/\.notes\b|#notes\b|\.dnote\b|#draft-note\b/.test(sel)) continue;
+      seen += 1;
+      assert.doesNotMatch(sel, /\.ask\b|#prompt-btns|#dialog-form|#survey-panel|\.dlg\b|\.svy\b|\.attn-note|#attn-note|data-lay|:has\(|:not\(\[hidden\]\) ~/, `${sel}: no panel in the selector`);
+      if (/\.notes\.quiet/.test(sel)) continue; // the one collapse, driven by syncNotes from the four parts (W11)
+      assert.doesNotMatch(m[2], /display:\s*none|visibility:\s*hidden|opacity:\s*0|clip|(?:max-)?height:\s*0/, `${sel}: does not hide`);
+    }
+    assert.ok(seen >= 8, 'the notes row and the draft note rules were found');
+    assert.doesNotMatch(css, /\.ask[^{}]*~[^{}]*(?:\.notes|#notes|\.dnote|#draft-note)|\.composer\s*>\s*\.ask[^{}]*\+/, 'no sibling rule from a panel to the notes row');
+  });
+
+  test('(+) SF-5: only syncNotes, watchNotes and renderDraftNote touch the notes row and the draft note, and none of them reads a panel', () => {
+    const where = (id) => [...SRC.matchAll(new RegExp(`\\$\\('${id}'\\)`, 'g'))].map((m) => /^\s*function (\w+)/.exec(SRC.slice(SRC.lastIndexOf('\nfunction ', m.index)))?.[1] ?? '?');
+    assert.deepEqual([...new Set(where('notes'))].sort(), ['syncNotes', 'watchNotes']);
+    assert.deepEqual([...new Set(where('draft-note'))].sort(), ['renderDraftNote', 'syncNotes']);
+    assert.doesNotMatch(SRC, /getElementById\('(?:notes|draft-note)'\)|querySelector\('(?:#notes|\.notes|#draft-note|\.dnote)'\)/, 'no second way to reach them');
+    for (const head of ['function syncNotes()', 'function watchNotes()', 'function renderDraftNote(view)']) {
+      assert.doesNotMatch(fnOf(head), /prompt-btns|dialog-form|survey-panel|attn-note|promptShown|PANEL_IDS|\bDF\b|data-lay|LAY\b/, `${head} reads no panel state`);
+    }
+  });
+
+  test('(+) SF-5: with a permission prompt or a question dialog up, the over note is drawn and the notes row opens (no panel node is even given to syncNotes)', () => {
+    const r = noteRig();
+    const nodes = { 'arg-hint': { hidden: true }, 'shell-hint': { hidden: true }, 'draft-note': r.el, problem: { textContent: '' }, notes: { quiet: null, classList: { toggle(name, on) { assert.equal(name, 'quiet'); nodes.notes.quiet = on; } } } };
+    const { syncNotes } = mk(['function syncNotes()'], { $: (id) => { assert.ok(Object.hasOwn(nodes, id), `syncNotes asked for ${id}`); return nodes[id]; } });
+    syncNotes();
+    assert.equal(nodes.notes.quiet, true, 'nothing shows: the row is quiet');
+    r.renderDraftNote(noteViewReal({ kind: 'over' })); // what the sync hands the page in the prompt state and in the dialog state alike
+    syncNotes();
+    assert.equal(r.el.hidden, false);
+    assert.equal(r.el.attrs['data-k'], 'over');
+    assert.equal(nodes.notes.quiet, false, 'the row is open, so the note is on screen');
+    r.renderDraftNote(null);
+    syncNotes();
+    assert.equal(nodes.notes.quiet, true, 'and it closes again once the note goes');
+  });
+
   test('(+) the page hands the sync its box, a PUT to the draft route, the clock, the note and the gone state', () => {
     const src = fnOf('const DS = createDraftSync({').length ? SRC.slice(SRC.indexOf('const DS = createDraftSync({'), SRC.indexOf('});', SRC.indexOf('const DS = createDraftSync({')) + 3) : '';
     assert.match(src, /box: \(\) => \(\{ value: composer\(\)\.value, shell: S\.on \}\)/);
@@ -3358,6 +3436,7 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
       setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
       DS: {
         screen: () => screen,
+        restoring: () => false,
         beginSend: () => log.order.push('begin'), endSend: () => log.order.push('end'), sent: () => log.order.push('sent'),
         submitted: (r) => { log.order.push('submitted'); log.told.push(jsonClone(r)); },
         send: async (text) => { log.order.push('push'); log.pushed.push(text); return pushAnswer; },
@@ -4135,7 +4214,7 @@ describe('W4: Claude\'s prompt suggestion in the message box (wiring)', () => {
     const api = mk(['async function acceptSuggestion(text)'], {
       enqueueJob: async (run) => { log.push('job'); return run(); }, DS: { accept: async (t) => { log.push(`accept ${t}`); return answer; } },
       renderSuggestion: () => log.push('render'), clearProblem: () => log.push('clear'), say: (m) => log.push(`say ${m}`),
-      showProblem: (m, kind, ms) => log.push(`problem ${m} | ${kind} | ${ms}`), problemKind: problemKindReal,
+      showProblem: (m, kind, ms) => log.push(`problem ${m} | ${kind} | ${ms}`), problemKind: problemKindReal, RESTORING_TEXT: RESTORING_TEXT_REAL,
     });
     return { ...api, log };
   };
@@ -4156,6 +4235,20 @@ describe('W4: Claude\'s prompt suggestion in the message box (wiring)', () => {
     const local = acc({ ok: false, status: null, message: 'x' });
     await local.acceptSuggestion(SUG);
     assert.match(local.log.at(-1), /\| warn \|/, 'nothing was sent: a warning, not an error');
+  });
+
+  test('(+) N1: Tab while the kept text is being brought back shows the fixed line as a warn for 4000 ms, like Send (not the 6000 ms of the other refusals)', async () => {
+    const r = acc({ ok: false, status: null, message: RESTORING_TEXT_REAL });
+    await r.acceptSuggestion(SUG);
+    assert.deepEqual(r.log, ['job', `accept ${SUG}`, 'render', `problem ${RESTORING_TEXT_REAL} | warn | 4000`]);
+  });
+
+  test('(−) N1: any other refusal keeps its 6000 ms, even one with status null; a 409 that happens to carry other words too', async () => {
+    for (const answer of [{ ok: false, status: null, message: 'x' }, { ok: false, status: 409, message: RESTORING_TEXT_REAL.slice(0, 20) }, { ok: false, status: 404, message: 'The session is gone.' }]) {
+      const r = acc(answer);
+      await r.acceptSuggestion(SUG);
+      assert.match(r.log.at(-1), /\| 6000$/);
+    }
   });
 
   test('(−) the accept path sends no key itself: it goes only through DS.accept (the guarded route), never deliver, sendKey or the keys route', () => {
@@ -4576,6 +4669,25 @@ describe('F4-T2: the terminal chip has its own plum hue (tokens.css --fit-term*)
     const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
     assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
     assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
+  });
+});
+
+// ---- 0.5.4 LT fix round 1 (review-LT, SF-1): the over-size note reuses --danger and --danger-soft, so only contrast is asserted ------------------------------
+describe('LT round 1: the "Not kept" (over 16 KB) note meets contrast with the existing danger tokens', () => {
+  const { THEME, ratio } = colourKit();
+  for (const name of Object.keys(THEME)) {
+    test(`(+) contrast (${name}): --danger text is 4.5:1 on --danger-soft and on the surfaces the note can sit on`, () => {
+      const v = THEME[name];
+      for (const ground of ['--danger-soft', '--surface', '--bg', '--surface-2', '--surface-3', '--attn-row']) {
+        assert.ok(ratio(v['--danger'], v[ground]) >= 4.5, `${ground} ${v[ground]}: ${ratio(v['--danger'], v[ground]).toFixed(2)}`);
+      }
+    });
+  }
+
+  test('(−) no new token for it: tokens.css still has exactly the three --danger lines (light and the two dark blocks)', () => {
+    assert.equal([...TOKENS.matchAll(/--danger-soft:/g)].length, 3);
+    assert.equal([...TOKENS.matchAll(/--danger:/g)].length, 3);
+    assert.doesNotMatch(TOKENS, /--over[a-z-]*:|--not-kept[a-z-]*:/);
   });
 });
 
@@ -11033,7 +11145,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
       sending: false, composer: () => ta, DF: form, SV: null, S: { on: false }, W: { promptOpen: true, prompt, pane: 'ok' }, A: { kind: 'attn' }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
-      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} },
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {}, restoring: () => false },
       ATT: { pending: att.pending, send: (v) => { log.atts.push(v); } },
       ...sendIo(log),
     };
@@ -11071,7 +11183,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
       sending: false, composer: () => ta, DF: null, SV: null, S: { on: false }, W: { promptOpen: false, prompt: null, pane: 'ok', mode: 'default', confirmed: true }, A: { kind: 'idle' }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem() {}, $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
-      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, ATT: { pending: () => false },
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {}, restoring: () => false }, ATT: { pending: () => false },
       ...sendIo(log),
     };
     await mk(SEND_FUNCS, ctx).sendComposer();
@@ -11360,9 +11472,10 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
   const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireTyping', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg'];
   const bootRig = ({ sub = false, bad = false, session = S, pane = null, project = KEY, app = true, search = '' } = {}) => {
     const p = page();
-    const log = { calls: [], doc: [] };
+    const log = { calls: [], doc: [], win: [] };
     const spy = (name) => (...args) => { log.calls.push(name); return args; };
     const ctx = {
+      DS: { restore: spy('DS.restore'), flushKeep: spy('DS.flushKeep') }, window: { addEventListener: (type, fn) => log.win.push([type, fn]) }, // 0.5.4 LT
       isApp: () => app, $: p.$, SUB: sub, BAD_AGENT: bad, agentId: sub ? AG : null, sessionId: session, paneId: pane, projectKey: project, location: { search }, URLSearchParams,
       MAC: false, P: { on: false }, windowCommand() {}, notices: [], MID: ' \u00b7 ', ATT: { wire: spy('ATT.wire'), restore: spy('ATT.restore') }, FIT: { planner: null }, DF: null, SV: null, A: { name: 'the agent' },
       composer: () => ({ focus() {} }), onPageKey() {}, openKbd() {}, announce() {}, setGone() {}, call() {}, say() {}, showProblem() {}, clearProblem() {}, renderAttn() {}, showOverlay() {}, DOTS: '...',
@@ -11478,6 +11591,83 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     const badAgent = bootRig({ bad: true, pane: '%12', search: `?session=${S}&agent=..%2Fx&pane=%2512` });
     badAgent.boot();
     assert.ok(!badAgent.log.calls.includes('ATT.restore'));
+  });
+
+  // -- 0.5.4 LT: the unsent text kept for the pane comes back at boot (the sync: draft-sync.js restore)
+
+  const winCount = (r, type) => r.log.win.filter(([t]) => t === type).length;
+  const pageshowOf = (r) => r.log.win.find(([t]) => t === 'pageshow')[1];
+  const pagehideOf = (r) => r.log.win.find(([t]) => t === 'pagehide')[1];
+
+  test('(+) 0.5.4 LT: a pane window asks for its kept text once, after the fit and the panels are wired and before the first capture is asked for, and listens to pageshow and pagehide once each', () => {
+    const r = bootRig({ pane: '%12', search: `?session=${S}&pane=%2512` });
+    r.boot();
+    assert.deepEqual(r.log.calls.filter((n) => n === 'DS.restore'), ['DS.restore']);
+    assert.ok(r.log.calls.indexOf('DS.restore') > r.log.calls.indexOf('wireFit'), 'after wireFit');
+    assert.ok(r.log.calls.indexOf('DS.restore') > r.log.calls.indexOf('watchPanels'), 'after the panels are watched');
+    assert.ok(r.log.calls.indexOf('DS.restore') < r.log.calls.indexOf('kickMirror'), 'the hold is up before the first capture is asked for');
+    assert.deepEqual([winCount(r, 'pageshow'), winCount(r, 'pagehide')], [1, 1]);
+    assert.deepEqual(r.log.calls.filter((n) => n === 'DS.flushKeep'), [], 'nothing is flushed by the boot itself');
+  });
+
+  test('(−) 0.5.4 LT: a subagent window, a window with no pane, the browser tier and a bad agent id ask for nothing and listen to nothing', () => {
+    for (const opts of [
+      { sub: true, search: `?session=${S}&agent=${AG}&pane=%2512` }, { search: `?session=${S}` }, { app: false, pane: '%12', search: `?session=${S}&pane=%2512` },
+      { bad: true, pane: '%12', search: `?session=${S}&agent=..%2Fx&pane=%2512` }, { sub: true, session: null, search: `?agent=${AG}&pane=%2512` },
+    ]) {
+      const r = bootRig(opts);
+      r.boot();
+      assert.deepEqual(r.log.calls.filter((n) => n.startsWith('DS.')), [], JSON.stringify(opts));
+      assert.deepEqual(r.log.win, [], JSON.stringify(opts));
+    }
+  });
+
+  test('(+) 0.5.4 LT: a bad session id with a pane still restores (the kept text is the pane\'s)', () => {
+    const r = bootRig({ session: null, pane: '%12', search: '?session=nope&pane=%2512' });
+    r.boot();
+    assert.deepEqual(r.log.calls.filter((n) => n === 'DS.restore'), ['DS.restore']);
+  });
+
+  test('(+) 0.5.4 LT: pageshow from the back/forward cache restores again, and only when persisted is the boolean true', () => {
+    const r = bootRig({ pane: '%12', search: `?session=${S}&pane=%2512` });
+    r.boot();
+    const show = pageshowOf(r);
+    const restores = () => r.log.calls.filter((n) => n === 'DS.restore').length;
+    assert.equal(restores(), 1);
+    show({ persisted: true });
+    assert.equal(restores(), 2);
+    show({ persisted: true });
+    assert.equal(restores(), 3);
+  });
+
+  test('(−) 0.5.4 LT: pageshow of a first load, with no event or with a persisted that is not true, asks for nothing', () => {
+    const r = bootRig({ pane: '%12', search: `?session=${S}&pane=%2512` });
+    r.boot();
+    const show = pageshowOf(r);
+    for (const e of [{ persisted: false }, {}, undefined, null, { persisted: 'true' }, { persisted: 1 }, { persisted: [] }, { persisted: {} }]) show(e);
+    assert.equal(r.log.calls.filter((n) => n === 'DS.restore').length, 1, 'only the boot asked');
+  });
+
+  test('(+) 0.5.4 LT: pagehide flushes what is pending, once per event, and never asks for a restore', () => {
+    const r = bootRig({ pane: '%12', search: `?session=${S}&pane=%2512` });
+    r.boot();
+    const hide = pagehideOf(r);
+    hide({ persisted: true });
+    hide({ persisted: false });
+    assert.deepEqual(r.log.calls.filter((n) => n === 'DS.flushKeep'), ['DS.flushKeep', 'DS.flushKeep']);
+    assert.equal(r.log.calls.filter((n) => n === 'DS.restore').length, 1);
+  });
+
+  test('(+) 0.5.4 LT: boot source: DS.restore() only inside the pane branch, before kickMirror(0), once outside the pageshow handler', () => {
+    const boot = fnOf('function boot()');
+    const pane = boot.slice(boot.indexOf('if (paneId) {'), boot.indexOf("split.classList.add('no-term')"));
+    assert.ok(pane.includes('DS.restore();'));
+    assert.ok(pane.indexOf('DS.restore();') < pane.indexOf('kickMirror(0);'));
+    assert.equal([...boot.matchAll(/DS\.restore\(/g)].length, 2, 'the boot call and the pageshow one');
+    assert.equal([...boot.matchAll(/DS\.flushKeep\(/g)].length, 1);
+    assert.doesNotMatch(boot.slice(0, boot.indexOf('if (paneId) {')), /DS\.(restore|flushKeep)/);
+    assert.match(pane, /addEventListener\('pageshow', \(e\) => \{ if \(e\?\.persisted === true\) DS\.restore\(\); \}\)/);
+    assert.match(pane, /addEventListener\('pagehide', \(\) => DS\.flushKeep\(\)\)/);
   });
 
   test('(−) a window with a bad session id says so as before', () => {
@@ -13680,5 +13870,185 @@ describe('0.5.1 C: image tiles in the transcript and their wiring (design sectio
     for (const re of [/\.att-open\s*\{[^}]*background:\s*none[^}]*cursor:\s*pointer/, /\.hx-img:focus-visible[^{]*\{[^}]*var\(--focus\)/, /\.hx-imgs\s*\{[^}]*flex-wrap:\s*wrap/, /\.hx-img\s*\{[^}]*cursor:\s*pointer/,
       /\.hx-thumb\s*\{[^}]*max-height:\s*180px/, /\.hx-img-ph,\s*\.hx-img-off\s*\{[^}]*var\(--text-muted\)/, /dialog\.dlg-img\s*\{[^}]*width:\s*min\(1200px/, /dialog\.dlg-img::backdrop\s*\{[^}]*var\(--scrim\)/,
       /\.img-stage\s*\{[^}]*overflow:\s*auto/, /\.img-stage img\s*\{[^}]*max-width:\s*100%/, /\.img-state\s*\{[^}]*display:\s*flex/, /@media \(max-width:\s*600px\)\s*\{\s*dialog\.dlg-img/]) assert.match(block, re, String(re));
+  });
+});
+
+describe('0.5.4 LT: the session window keeps unsent text (wiring)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const constOf = (name) => vm.runInNewContext(`${SRC.match(new RegExp(`const ${name} = [^;]+;`))[0]}; ${name}`);
+  const flush = async () => { for (let i = 0; i < 6; i += 1) await Promise.resolve(); };
+
+  afterEach(() => mock.timers.reset());
+
+  // ---- the bounded GET and the PUT
+
+  const keptRig = (answer) => {
+    mock.timers.reset(); // a test may build two rigs
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const log = { calls: [], signals: [] };
+    const ctx = {
+      paneId: '%12', KEPT_TIMEOUT_MS: constOf('KEPT_TIMEOUT_MS'), AbortController, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+      call: (path, opts) => {
+        log.calls.push([path, opts]);
+        if (opts?.signal) log.signals.push(opts.signal);
+        if (answer) return answer(opts);
+        return new Promise((res) => { opts.signal.addEventListener('abort', () => res({ status: 0, body: null })); }); // never answers: the abort ends it, like the real call
+      },
+    };
+    return { ...mk(['async function getKept()', 'function putKept(body)'], ctx), log };
+  };
+
+  test('(+) the bounded GET: kept-draft of the pane, a signal, no method; cut at exactly 3000 ms and answered as a status 0 like any failure', async () => {
+    assert.equal(constOf('KEPT_TIMEOUT_MS'), 3000);
+    const r = keptRig();
+    const p = r.getKept();
+    await flush();
+    assert.equal(r.log.calls.length, 1);
+    const [path, opts] = r.log.calls[0];
+    assert.equal(path, '/api/app/pane/%2512/kept-draft');
+    assert.deepEqual(Object.keys(opts), ['signal']);
+    assert.equal(typeof opts.signal.aborted, 'boolean');
+    mock.timers.tick(2999);
+    assert.equal(opts.signal.aborted, false, 'not yet at 2999 ms');
+    mock.timers.tick(1);
+    assert.equal(opts.signal.aborted, true, 'cut at 3000 ms');
+    assert.deepEqual(jsonClone(await p), { status: 0, body: null });
+  });
+
+  test('(−) the bounded GET: an answer clears the timer (no abort later), and a call that rejects clears it too', async () => {
+    const ok = keptRig(() => Promise.resolve({ status: 200, body: { kept: null } }));
+    assert.deepEqual(jsonClone(await ok.getKept()), { status: 200, body: { kept: null } });
+    mock.timers.tick(10000);
+    assert.equal(ok.log.signals[0].aborted, false, 'the timer went with the answer');
+    const bad = keptRig(() => Promise.reject(new Error('boom')));
+    await assert.rejects(bad.getKept(), /boom/);
+    mock.timers.tick(10000);
+    assert.equal(bad.log.signals[0].aborted, false, 'the timer went with the failure too');
+  });
+
+  test('(+) the PUT: kept-draft of the pane with the body as given and keepalive, and the answer is the call\'s', async () => {
+    const r = keptRig(() => Promise.resolve({ status: 200, body: { kept: true } }));
+    const body = { text: 'unsent words', shell: true };
+    const answer = await r.putKept(body);
+    assert.deepEqual(jsonClone(answer), { status: 200, body: { kept: true } });
+    const [path, opts] = r.log.calls[0];
+    assert.equal(path, '/api/app/pane/%2512/kept-draft');
+    assert.deepEqual(jsonClone(opts), { method: 'PUT', json: { text: 'unsent words', shell: true }, keepalive: true });
+    assert.equal(opts.json, body, 'the body is passed on as it is');
+  });
+
+  test('(−) the PUT carries no signal and no timer: it must outlive a page that is being left', async () => {
+    const r = keptRig(() => Promise.resolve({ status: 200, body: { kept: false } }));
+    await r.putKept({ text: '', shell: false });
+    assert.equal(r.log.signals.length, 0);
+    assert.equal(Object.hasOwn(r.log.calls[0][1], 'signal'), false);
+    assert.equal(fnOf('function putKept(body)').includes('setTimeout'), false);
+  });
+
+  // ---- the io the page hands the sync
+
+  const dsIo = () => {
+    const log = { problems: [], cleared: 0 };
+    const el = { textContent: '' };
+    const fakes = {
+      pullIntoBox() {}, putDraft() {}, suggestDraft() {}, renderDraftNote() {}, setGone() {}, putKept() {}, getKept() {}, announce() {}, composer: () => ({ value: '' }), S: { on: false },
+      showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem: () => { log.cleared += 1; }, $: () => el, Date, setTimeout, clearTimeout,
+    };
+    const src = SRC.slice(SRC.indexOf('const DS = createDraftSync({'), SRC.indexOf('\n});', SRC.indexOf('const DS = createDraftSync({')) + 4);
+    let io = null;
+    vm.runInNewContext(src, { ...fakes, createDraftSync: (given) => { io = given; return {}; } });
+    return { io, log, el, fakes };
+  };
+
+  test('(+) the sync gets the kept-text io: the PUT, the bounded GET and the live region by name', () => {
+    const { io, fakes } = dsIo();
+    assert.equal(io.keep, fakes.putKept);
+    assert.equal(io.fetchKept, fakes.getKept);
+    assert.equal(io.announce, fakes.announce);
+    assert.equal(io.put, fakes.putDraft, 'the draft write is the same as before');
+    assert.equal(io.setBox, fakes.pullIntoBox, 'and so is the put-back path: a pull');
+    assert.equal(Object.hasOwn(io, 'clearLine'), false, 'no clearLine any more: the over-size state is a note of the sync, not a problem line (round 1, SF-1)');
+  });
+
+  test('(+) problem(message) is a warn line for 6000 ms as before; a second argument sets the time (0 stays until replaced)', () => {
+    const { io, log } = dsIo();
+    io.problem('one');
+    io.problem('two', 0);
+    io.problem('three', 8000);
+    assert.deepEqual(log.problems, [['one', 'warn', 6000], ['two', 'warn', 0], ['three', 'warn', 8000]]);
+  });
+
+  // ---- Send while the text is being brought back
+
+  const sendRig = ({ restoring, sending = false, attPending = false, sendNote = null }) => {
+    const log = { problems: [], atts: 0, reached: false };
+    const ta = { disabled: false, value: 'unsent words' };
+    const ctx = {
+      composer: () => ta, sending, DS: { restoring: () => restoring }, RESTORING_TEXT: RESTORING_TEXT_REAL, STILL_SENDING: STILL_SENDING_REAL, STILL_SENDING_MS: STILL_SENDING_MS_REAL,
+      showProblem: (m, k, ms) => log.problems.push([m, k, ms]),
+      SV: { sendNote: () => { log.reached = true; return sendNote ?? 'STOP-HERE'; } },
+      ATT: { pending: () => attPending, send: () => { log.atts += 1; } },
+    };
+    return { ...mk(['async function sendComposer()'], ctx), log };
+  };
+
+  test('(+) Send while the kept text is being brought back: the fixed line as a warn for 4000 ms, and nothing else is asked (not the survey, not the attachments)', async () => {
+    const r = sendRig({ restoring: true, attPending: true });
+    await r.sendComposer();
+    assert.deepEqual(r.log.problems, [[RESTORING_TEXT_REAL, 'warn', 4000]]);
+    assert.equal(r.log.reached, false, 'the later gates were not reached');
+    assert.equal(r.log.atts, 0, 'ATT.send was not called, so no attachment goes without the text');
+  });
+
+  test('(−) Send with no restore running goes on to the next gate as before; the line is not shown', async () => {
+    const r = sendRig({ restoring: false });
+    await r.sendComposer();
+    assert.equal(r.log.reached, true);
+    assert.deepEqual(r.log.problems, [['STOP-HERE', 'error', undefined]]);
+  });
+
+  test('(−) the "still sending" line comes first: a Send in flight is told so, even while a restore runs', async () => {
+    const r = sendRig({ restoring: true, sending: true });
+    await r.sendComposer();
+    assert.deepEqual(r.log.problems, [[STILL_SENDING_REAL, 'warn', STILL_SENDING_MS_REAL]]);
+  });
+
+  test('(+) the restore check sits after the in-flight check and before the survey, the gate and the attachment hand-over', () => {
+    const f = fnOf('async function sendComposer()');
+    const at = (s) => f.indexOf(s);
+    assert.ok(at('if (sending)') >= 0 && at('if (sending)') < at('DS.restoring()'));
+    assert.ok(at('DS.restoring()') < at('SV?.sendNote()') && at('DS.restoring()') < at('sendGate(') && at('DS.restoring()') < at('ATT.pending()'));
+    assert.equal([...f.matchAll(/DS\.restoring\(\)/g)].length, 1);
+  });
+
+  // ---- a kept text is a value, never markup
+
+  test('(+) a kept text that looks like markup is put back as the box\'s value: no element is made from it, and the draft sync is told through the same pull as any other', async () => {
+    const MARKUP = '<img src=x onerror=alert(1)>';
+    const ta = { value: '', selectionStart: 0, setSelectionRange() {} };
+    let created = 0;
+    const pulls = [];
+    const { pullIntoBox } = mk(['function pullIntoBox(value, shell)'], {
+      composer: () => ta, document: { activeElement: null, createElement() { created += 1; return {}; } }, caretAfter: caretAfterReal, setShell: (s) => pulls.push(s), grow() {}, updateChip() {}, closePalette() {},
+    });
+    const ds = createDraftSyncReal({
+      now: () => 0, after: () => 1, cancel() {}, box: () => ({ value: ta.value, shell: false }), setBox: pullIntoBox, put: async () => ({ status: 200, body: {} }), suggest: async () => ({ status: 200, body: {} }),
+      note() {}, problem() {}, gone() {}, keep: async () => ({ status: 200, body: { kept: true } }), fetchKept: async () => ({ status: 200, body: { kept: { text: MARKUP, shell: true } } }), announce() {},
+    });
+    await ds.restore();
+    assert.equal(ta.value, MARKUP, 'the text is the value, byte for byte');
+    assert.deepEqual(pulls, [true]);
+    assert.equal(created, 0, 'no element was created');
+  });
+
+  test('(−) the page code that handles the kept text makes no element and parses no markup', () => {
+    for (const name of ['async function getKept()', 'function putKept(body)', 'async function sendComposer()']) assert.deepEqual(findSinks(fnOf(name)), [], name);
+    assert.deepEqual(findSinks(code(JS['draft-sync.js'])), []);
   });
 });

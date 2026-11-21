@@ -25,7 +25,7 @@ import { badSend } from './keys.js';
 import { tagPane, pickState, claudePane, inProject } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
 import { createScroll, checkScrollBody } from './scroll.js';
-import { ID, UPLOAD_CAP, MAX_BYTES, PER_MESSAGE, checkUploadBody } from './attachments.js';
+import { ID, UPLOAD_CAP, MAX_BYTES, PER_MESSAGE, checkUploadBody, KEPT_CAP, checkKeptBody, keptTextOk } from './attachments.js';
 import { createAttachSend, checkAttachBody, logLine } from './attach-send.js';
 import { createAutoCompact } from './autocompact.js';
 import { SIG } from './draft.js';
@@ -33,7 +33,8 @@ import { SIG } from './draft.js';
 const ELIGIBILITY_TTL_MS = 1000; // pane list + live-agent snapshot, so a 4 Hz capture does not run collect() 4 times a second
 const TEMPLATES_MAX = 50;
 const MODES_AT_ONCE = 4; // captures in flight for GET /modes
-const FIT_WINDOW_MS = 1000; // the window of the per-pane fit rate limit (FIT_RATE requests)
+const RATE_WINDOW_MS = 1000; // the window of the per-pane rate limits: the fit routes (FIT_RATE requests) and the kept-text save (KEPT_RATE)
+const KEPT_RATE = 8; // kept-text saves (PUT .../kept-draft) per pane per second (0.5.4, LT): the page saves at most every 500 ms, so 8 leaves room for a leave, a return and a retry
 const COMMAND_MAX = 200; // characters of a slash command typed into Claude
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // C0, DEL, C1
 const WINDOW_ACTIONS = ['quit', 'close', 'minimize', 'zoom-in', 'zoom-out', 'zoom-reset']; // what the shell can do to its window (contract §3, §5)
@@ -45,6 +46,11 @@ const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const IMAGE_TYPE_NAMES = Object.values(IMAGE_MEDIA); // png, jpeg, gif, webp: the types an image route may answer with
 const ATTACH_TYPE_NAMES = new Set([...IMAGE_TYPE_NAMES, 'pdf', 'text']); // the six types the store gives a file
 const LABEL_MAX = 255; // a chip label (the last part of the file name, through clean())
+
+/** The answer of GET .../kept-draft, rebuilt from whatever the store gave (0.5.4, LT): { kept: { text, shell } } only for a plain object with a keepable text and a boolean `shell`, else { kept: null }. */
+function keptAnswer(given) {
+  return { kept: isPlain(given) && keptTextOk(given.text) && typeof given.shell === 'boolean' ? { text: given.text, shell: given.shell } : null };
+}
 
 /** The answer of GET .../attachments, rebuilt from whatever the store gave (0.5.4, AT): exactly { files: [{ id, name, type, size }], gone: [name] }, at most PER_MESSAGE of each. */
 function trayAnswer(given) {
@@ -126,7 +132,8 @@ async function listTemplates(dir) {
  *                           createFit, the same for the factory in fit.js;
  *                           createScroll, the same for the factory in scroll.js;
  *                           readImage, a test seam for the one in collect/history.js (the picture a history entry names; default: the real one);
- *                           attachments, the attachment store (src/attachments.js, built by appio.js: save, lookup, remove, markSent, readImage, and the pane trays of 0.5.4, AT: bindTray, hasTray, listTray, dropPanes);
+ *                           attachments, the attachment store (src/attachments.js, built by appio.js: save, lookup, remove, markSent, readImage, and the pane trays of 0.5.4, AT: bindTray, hasTray, listTray, dropPanes,
+ *                           and the kept text of 0.5.4, LT: keepText, readText, hasText);
  *                           createAttachSend, the same seam for the factory in attach-send.js;
  *                           createAutoCompact, the same for the sweeper of the typed /compact in autocompact.js (0.5.4, AC; built here, ticked by appio.js, exposed as ctx.autoCompact);
  *                           log(line), where the attachment lines (`nika: attachments: <code>`) go: appio's stderr, the same as the store's (default: process.stderr) }
@@ -262,24 +269,24 @@ export function createAppApi({ secret, ctx, deps }) {
   ctx.fit = fit;
   // The scroll controller (0.5, W3, ADR 0018): one lock with every other control action, and no key while a Stop/End interrupt runs (keyGap).
   const scroller = (deps.createScroll ?? createScroll)({ mirror: deps.mirror, keys: deps.keys, lock: control.withPaneLock, keyGap: control.keyGap, now: () => ctx.now() });
-  const fitHits = new Map(); // `<METHOD> <pane id>` → timestamps of the fit requests inside the last FIT_WINDOW_MS (PUT and DELETE each have their own bucket)
+  const rateHits = new Map(); // `<bucket> <pane id>` -> timestamps of the requests inside the last RATE_WINDOW_MS (the fit PUT, the fit DELETE and the kept-text save each have their own bucket)
 
   /**
-   * FIT_RATE requests per method and pane per second, a sliding window like src/keys.js; buckets that went quiet are forgotten on every call.
-   * DELETE has its own bucket: a page that closes right after a burst of heartbeats must still give its window back.
+   * `max` requests per bucket and pane per second, a sliding window like src/keys.js; buckets that went quiet are forgotten on every call.
+   * The fit DELETE has its own bucket: a page that closes right after a burst of heartbeats must still give its window back. The kept-text save ('KEPT', 0.5.4, LT) shares none.
    */
-  function fitAllowed(method, pane) {
-    const id = `${method} ${pane}`;
+  function rateAllowed(bucket, pane, max) {
+    const id = `${bucket} ${pane}`;
     const t = ctx.now();
-    for (const [k, v] of fitHits) {
-      const recent = v.filter((ts) => ts > t - FIT_WINDOW_MS);
-      if (recent.length) fitHits.set(k, recent);
-      else fitHits.delete(k);
+    for (const [k, v] of rateHits) {
+      const recent = v.filter((ts) => ts > t - RATE_WINDOW_MS);
+      if (recent.length) rateHits.set(k, recent);
+      else rateHits.delete(k);
     }
-    const recent = fitHits.get(id) ?? [];
-    if (recent.length >= FIT_RATE) return false;
+    const recent = rateHits.get(id) ?? [];
+    if (recent.length >= max) return false;
     recent.push(t);
-    fitHits.set(id, recent);
+    rateHits.set(id, recent);
     return true;
   }
 
@@ -729,6 +736,43 @@ export function createAppApi({ secret, ctx, deps }) {
     return control.writeDraft(id, body);
   });
 
+  // Kept text (0.5.4, LT): the message box's unsent text that the draft sync did not copy into Claude's input (long, or short but waiting), kept in the pane's tray in memory so the
+  // session window can put it back when it opens again. Order: body 400, pane 404, rate 429 (its own bucket), claim, then the store. With no claim or two, a clear of a pane that holds no
+  // text is 200 { kept: false } and anything else 409 no-project, changing nothing. Not a user's action (no typing stamp: it is not a keystroke to Claude), and it never touches
+  // Claude's pane. The text is never logged (a store error is logged as its code only) and the 400 messages are fixed. App tier only.
+  route('PUT', /^\/api\/app\/pane\/([^/]+)\/kept-draft$/, KEPT_CAP, async ({ params, body }) => {
+    const bad = checkKeptBody(body);
+    if (bad) return bad;
+    const { id, failure } = await eligiblePane(params[0]);
+    if (failure) return failure;
+    if (!rateAllowed('KEPT', id, KEPT_RATE)) return err(429, 'busy', `at most ${KEPT_RATE} text saves per second per pane`);
+    const claim = await paneClaim(id);
+    try {
+      if (claim.key === null) return body.text === '' && !deps.attachments.hasText(id) ? { status: 200, body: { kept: false } } : err(409, 'no-project', "nika can't tell this session's project");
+      const kept = await deps.attachments.keepText(id, claim, body.text === '' ? null : { text: body.text, shell: body.shell });
+      return { status: 200, body: { kept: kept === true } };
+    } catch (e) {
+      attachLog(logLine(e));
+      return err(500, 'internal', 'internal error');
+    }
+  });
+
+  // The kept text for the session window when it opens (or comes back from the back/forward cache). Order: pane 404, then the claim. With no claim or two, a pane that holds no text answers
+  // 200 { kept: null } and one that holds text 409 no-project, deleting nothing. The answer is rebuilt as exactly { kept: { text, shell } | null }, never passed through. No rate limit
+  // (the page asks once per open) and no typing stamp. App tier only.
+  route('GET', /^\/api\/app\/pane\/([^/]+)\/kept-draft$/, 0, async ({ params }) => {
+    const { id, failure } = await eligiblePane(params[0]);
+    if (failure) return failure;
+    const claim = await paneClaim(id);
+    try {
+      if (claim.key === null) return deps.attachments.hasText(id) ? err(409, 'no-project', "nika can't tell this session's project") : { status: 200, body: { kept: null } };
+      return { status: 200, body: keptAnswer(await deps.attachments.readText(id, claim)) };
+    } catch (e) {
+      attachLog(logLine(e));
+      return err(500, 'internal', 'internal error');
+    }
+  });
+
   // Send's Enter (0.5, W13): the one Enter of the page's Send, never the keys route. The controller presses it under the pane lock, only on a fresh screen
   // with no prompt and no dialog (and, with `base`, the box the page synced), in any registry state, and sends no other key. Nothing of the body is logged.
   route('POST', /^\/api\/app\/pane\/([^/]+)\/submit$/, CAP.submit, async ({ params, body }) => {
@@ -748,7 +792,7 @@ export function createAppApi({ secret, ctx, deps }) {
     if (checked.error) return err(400, 'invalid', checked.error);
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
-    if (!fitAllowed('PUT', id)) return err(429, 'busy', `at most ${FIT_RATE} fit requests per second per pane`);
+    if (!rateAllowed('PUT', id, FIT_RATE)) return err(429, 'busy', `at most ${FIT_RATE} fit requests per second per pane`);
     // 0.5.4 (P2): a page that opens, or asks to fit again (open true), also picks up a config.json edited by hand. The mode never comes from the request.
     if (checked.value.open === true) fit.setMode((await loadConfig(ctx.env)).config.fit.mode);
     return fit.hold(id, checked.value);
@@ -758,7 +802,7 @@ export function createAppApi({ secret, ctx, deps }) {
   route('DELETE', /^\/api\/app\/pane\/([^/]+)\/fit$/, CAP.small, async ({ params }) => {
     const id = segment(params[0], PANE_ID);
     if (!id) return err(400, 'invalid', 'invalid pane id');
-    if (!fitAllowed('DELETE', id)) return err(429, 'busy', `at most ${FIT_RATE} fit requests per second per pane`);
+    if (!rateAllowed('DELETE', id, FIT_RATE)) return err(429, 'busy', `at most ${FIT_RATE} fit requests per second per pane`);
     return fit.release(id);
   });
 

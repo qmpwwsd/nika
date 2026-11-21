@@ -234,7 +234,7 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .problem.error { color: var(--danger); }
 .problem:empty { display: none; }
 .shell-hint, .arg-hint { color: var(--text); font-weight: 600; }
-/* the draft sync note (W5, W13): one line under the box. Each state has its own colour, icon and word: paused (amber), not mirrored (ink), on hold (attention pink), cursor (blue), queued (green), suggestion (accent) */
+/* the draft sync note (W5, W13): one line under the box. Each state has its own colour, icon and word: paused (amber), not mirrored (ink), on hold (attention pink), cursor (blue), queued (green), suggestion (accent), over 16 KB (danger) */
 .dnote { display: inline-flex; align-items: flex-start; gap: 6px; padding: 1px 8px 1px 6px; border-radius: var(--r-sm); color: var(--text); background: var(--surface-3); overflow-wrap: anywhere; }
 .dnote .ic { margin-top: 3px; }
 .dnote b { font-weight: 600; }
@@ -244,6 +244,7 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .dnote[data-k="cursor"] { color: var(--fit-other); background: var(--fit-other-soft); }
 .dnote[data-k="queued"] { color: var(--busy); background: var(--busy-soft); }
 .dnote[data-k="suggest"] { color: var(--accent); background: var(--accent-soft); }
+.dnote[data-k="over"] { color: var(--danger); background: var(--danger-soft); } /* 0.5.4 LT: a text over 16 KB (not kept, cannot be sent) */
 
 /* command palette (spec 9.7): opens upward from the message box, anchored to its left and right edges; focus never leaves the textarea */
 .btn.ghost { border-color: transparent; background: transparent; }
