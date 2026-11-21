@@ -50,6 +50,8 @@ const CHECKBOX = /^\[([ \u2714])\] (.+)$/;
 const BUTTON_ROW = /^(?:\u276f {4}| {5})(Next|Submit)$/; // the multi question's button row: indent 5, pointer in the first column when focused
 const STRIP_START = /^ {0,2}(?:\u2190 +)?[\u2610\u2612\u2714] /;
 const WARN_ROW = /^\u26a0 You have not answered all questions$/;
+// 0.5.4 (QPF, F1a): seen live on Claude 2.1.329/2.1.330 (LC-QPB), drawn only in the Review with no Ready row; the 2.1.326 text above stays for the shape that has one.
+const WARN_ROW_NEW = /^\u26a0 Some questions are unanswered$/;
 const PAIR_Q = /^ {0,2}\u25cf (.+)$/;
 const PAIR_A = /^ {2,6}\u2192 (.+)$/;
 const REVIEW_OPTION = /^(\u276f| ) ([12])\. (Submit answers|Cancel)$/;
@@ -72,6 +74,7 @@ const PV_CHAT_ROW = /^(\u276f| ) Chat about this$/; // unnumbered; the pointer i
 const PV_FALLBACK = "(can't show the full preview \u00b7 compare the labels and descriptions instead)";
 const PV_NOTES_HINT = 'press n to add notes'; // Claude's hint on the Notes row: no note
 const PV_NOTES_PLACEHOLDER = 'Add notes on this design\u2026'; // the empty notes field (editing)
+const PV_NOTES_OPEN = width(`Notes: ${PV_NOTES_PLACEHOLDER}`); // the cells the open, empty field takes from the Notes column (32): 0.5.4 QPF F2, the width check before nika types `n`
 const EDITOR_HINT = /\bctrl\+g to edit in /; // the footer's hint while Claude's own input has the focus (a text row, Chat, a Next button, the notes field)
 
 const spaced = (text) => text.replace(/\u00a0/g, ' ').trimEnd();
@@ -441,6 +444,9 @@ function readPreview(c, shape) {
   return {
     question, options, focus: chatRow[1] === '\u276f' ? 'chat' : marked.length === 1 ? marked[0] : null, exempt,
     preview: { rows: fallback ? [] : inner, hidden, fallback }, notes: { text: noteText, editing },
+    // 0.5.4 (QPF, F2): whether Claude's open, empty notes field would still end before the pane's last cell (the reader's own `wide` line: a row as wide as the pane may be cut). Never shown:
+    // not in the sig, the view or the capture. The open field's column was never larger than the closed one's, so measuring the closed step is the safe side.
+    noteRoom: X + PV_NOTES_OPEN < cols,
   };
 }
 
@@ -459,7 +465,8 @@ function readReview(c) {
   if (x > last || texts[x].trim() !== 'Review your answers') { bad.add('layout'); return null; }
   x += 1;
   skip();
-  const warn = x <= last && WARN_ROW.test(texts[x].trim());
+  const warnNew = x <= last && WARN_ROW_NEW.test(texts[x].trim());
+  const warn = warnNew || (x <= last && WARN_ROW.test(texts[x].trim()));
   if (warn) { x += 1; skip(); }
   const raw = [];
   let part = 'q';
@@ -468,7 +475,7 @@ function readReview(c) {
   // stays an answer. Either way the two options are then checked as before.
   let from = -1; // the row the option rows start at
   for (; x <= last; x += 1) {
-    if (texts[x].trim() === 'Ready to submit your answers?') { from = x + 1; break; }
+    if (texts[x].trim() === 'Ready to submit your answers?') { from = x + 1; if (warnNew) bad.add('layout'); break; } // the new warning was seen only without the Ready row: with it the shape is unknown
     if (REVIEW_OPTION.exec(texts[x])?.[2] === '1') { from = x; break; }
     if (!texts[x].trim()) continue;
     const bm = BAR_ROW.exec(texts[x]);
@@ -559,13 +566,28 @@ function readAsk(shape, rows, cols) {
       S = {
         kind: 'ask', at: 'question', tabs, i: marked.length === 1 ? marked[0] : 0, single: !several, question: body.question, multi: body.multi ?? false,
         options: body.options, textRow: body.textRow ?? null, chat: body.chat ?? null, button: body.button ?? null, focus: body.focus, insert, bypass, top: s - 1,
-        ...(preview ? { preview: body.preview, notes: body.notes } : {}),
+        ...(preview ? { preview: body.preview, notes: body.notes, noteRoom: body.noteRoom } : {}),
       };
     }
   }
   if (body !== null && foot.length > 1) for (const x of foot) body.exempt.add(x); // the rows of a wrapped footer reach the pane width legitimately (wrapProven)
   if (body !== null && reachesCols(texts, s, last, cols, body.exempt)) bad.add('wide');
   return { bad, S };
+}
+
+/**
+ * 0.5.4 (QPF, F3): Claude wrapped the plan's prompt over two or three rows (it does at 85 columns, LC-QPB): the last plain rule above the footer is followed by 2 or 3 rows at indent 3
+ * that read PLAN_PROMPT when joined with spaces, and they end above the footer. Such a plan is `wide` (it may be cut at the edge), never `cut`: more rows cannot show it.
+ */
+function promptWrapped(texts, ready, stop) {
+  let r = stop - 1;
+  while (r > ready && !PLAIN_RULE.test(texts[r])) r -= 1;
+  if (r <= ready) return false;
+  for (const k of [2, 3]) {
+    const part = texts.slice(r + 1, r + 1 + k);
+    if (r + k < stop && part.every((t) => /^ {3}\S/.test(t)) && part.map((t) => t.trim()).join(' ') === PLAN_PROMPT) return true;
+  }
+  return false;
 }
 
 /** The plan approval. */
@@ -576,6 +598,8 @@ function readPlan(shape, rows, cols) {
   const stop = foot[0];
   const last = foot.at(-1);
   if (!Number.isInteger(cols) || cols < MIN_COLS || foot.length > 1) bad.add('wide');
+  if (promptWrapped(texts, ready, stop)) { bad.add('wide'); return { bad, S: null }; } // QPF F3: the prompt sits just above the options, which are on screen whenever the footer is, so this runs before any cut check
+  if (bad.has('wide')) return { bad, S: null }; // QPF F3b: a plan that is too narrow or whose footer already wraps is `wide` at any height, so it is never `cut` and never grows
   let x = ready + 1;
   while (x < stop && !texts[x].trim()) x += 1;
   if (x < stop && texts[x].trim() === PLAN_INTRO) x += 1;
@@ -587,7 +611,8 @@ function readPlan(shape, rows, cols) {
   while (to < stop && !DASHED_RULE.test(texts[to])) to += 1;
   let p = to + 1;
   while (p < stop && texts[p].trim() !== PLAN_PROMPT) p += 1;
-  if (to >= stop || p >= stop) { bad.add('cut'); return { bad, S: null }; }
+  if (to >= stop) { bad.add('cut'); return { bad, S: null }; } // the closing dashed rule is not on screen: more rows can show it
+  if (p >= stop) { bad.add('layout'); return { bad, S: null }; } // QPF F3c: both dashed rules are on screen, so the plan is not cut off at the top: a missing or unknown prompt row is a shape nika does not read
   const between = texts.slice(to + 1, p).filter((t) => t.trim());
   if (between.length !== 1 || !PLAIN_RULE.test(between[0])) bad.add('layout');
   const top = to + 1 + texts.slice(to + 1, p).findIndex((t) => t.trim()); // 0.5.1 E: the screen row of that plain rule (used only when the step is read, i.e. when it is the single row)

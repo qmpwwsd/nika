@@ -28,7 +28,7 @@ const KEEP_MAX = 8; // questions whose unsent input is kept while you look at ot
 const STEPS_NOTE = "Opens this step in Claude's dialog. Nothing is answered.";
 const AGAIN_NOTE = 'Already answered. Answer again to change it, or choose another step.';
 const TYPED_NOTE = 'To change typed text, use the terminal.';
-const CHAT_TITLE = "Closes Claude's question so you can talk it over. Answers already given stay; questions not answered yet are dropped.";
+const CHAT_TITLE = "Closes Claude's questions so you can talk them over with Claude instead. Answers you already gave may not reach Claude.";
 const CHAT_LINE = 'Chat about this: use the terminal';
 const NOTE_LABEL = 'Note for Claude (optional)';
 const PV_FALLBACK_NOTE = "Claude can't show this preview at this size: compare the labels instead.";
@@ -72,7 +72,9 @@ const L409 = {
   'notes-open': ["Claude's notes field is open in the terminal. Close it there, then press Try again.", true, true],
   'note-mismatch': ["Your note didn't arrive exactly as typed, so nika stopped before pressing Enter. Fix it in the terminal.", true],
   'note-mode': ["nika can only type a note once it knows Claude's input is not in vim mode. Answer without the note, or add it in the terminal.", false],
+  'note-room': ["Claude's notes field doesn't fit this pane's width, so nika typed nothing. Answer without the note, make the pane wider, or add the note in the terminal.", false], // 0.5.4 (QPF, F2): no key was pressed, the note stays in the form
 };
+const NOTE_TAKEN = "Your note may already be in Claude's notes field, so nika took it off this form. Check the terminal."; // 0.5.4 (QPF, F2): keys were pressed (or may have been) after the note was typed
 const L400 = {
   'terminal-only': ['Answer this in the terminal.', true],
   invalid: [GENERIC, false],
@@ -83,26 +85,27 @@ const DONE = {
   submitted: { word: 'Submitted', say: (name) => `Submitted ${name}'s answers.` },
   chosen: { word: 'Answered', say: (name) => `Sent your choice to ${name}.` },
   declined: { word: 'Declined', say: () => 'Declined.' },
-  chat: { word: 'Sent to chat', say: (name) => `Sent Chat about this to ${name}.` }, // 0.5.4 (QP): Claude's question is closed, the answers given stay
+  chat: { word: 'Sent to chat', say: (name) => `Sent Chat about this to ${name}.` }, // 0.5.4 (QP): Claude's question is closed; answers already given may not reach Claude (LC-QPB)
 };
 
 /**
  * What a route answer means for the form: { ok, phase ('answered' | 'failed'), lock (stay off until the sig changes), message (the problem line,
  * '' = none), kind ('warn' | 'error'), gone (the pane is gone), word (the chip word of an answered step), announce (null for a move), sent, retry (the lock
- * ends when the user presses Try again: 409 dialog-focus, dialog-touched and (0.5.4, QP) dialog-unread and notes-open only) }. Only the status, the
- * `error` code, `done` and `sent` are read; no text of the response is ever shown (design W1 6.4).
+ * ends when the user presses Try again: 409 dialog-focus, dialog-touched and (0.5.4, QP) dialog-unread and notes-open only), dropNote (0.5.4, QPF: the request
+ * carried a note, was refused, and keys were or may have been pressed, so the form takes the note off: a 400, 409 or 429 without `sent` pressed none) }. Only the
+ * status, the `error` code, `done`, `sent` and whether the request had a `note` are read; no text of the response is ever shown (design W1 6.4).
  */
-export function dialogOutcome({ status, code, done, sent, name = 'the agent' } = {}) {
+export function dialogOutcome({ status, code, done, sent, note, name = 'the agent' } = {}) {
   const keys = Number.isInteger(sent) && sent > 0 && sent <= 99 ? sent : 0;
   if (status === 200 && done === 'moved') { // a step move (0.5.1): nothing is answered and nothing is announced; the next capture draws the new step and says it
-    return { ok: true, phase: 'moving', lock: true, retry: false, message: '', kind: '', gone: false, word: '', announce: null, sent: keys };
+    return { ok: true, phase: 'moving', lock: true, retry: false, message: '', kind: '', gone: false, word: '', announce: null, sent: keys, dropNote: false };
   }
   if (status === 200 && done === 'focused') { // 0.5.4 (QP): Claude's focus moved to the option asked for; nothing is answered, the form stays live and the next capture shows it
-    return { ok: true, phase: 'live', lock: false, retry: false, message: '', kind: '', gone: false, word: '', announce: null, sent: keys };
+    return { ok: true, phase: 'live', lock: false, retry: false, message: '', kind: '', gone: false, word: '', announce: null, sent: keys, dropNote: false };
   }
   if (status === 200) {
     const d = Object.hasOwn(DONE, done) ? DONE[done] : DONE.next;
-    return { ok: true, phase: 'answered', lock: true, retry: false, message: '', kind: '', gone: false, word: d.word, announce: d.say(name), sent: keys };
+    return { ok: true, phase: 'answered', lock: true, retry: false, message: '', kind: '', gone: false, word: d.word, announce: d.say(name), sent: keys, dropNote: false };
   }
   let row = [GENERIC, false];
   if (status === 409 && Object.hasOwn(L409, code)) row = L409[code];
@@ -111,9 +114,11 @@ export function dialogOutcome({ status, code, done, sent, name = 'the agent' } =
   else if (status === 404) row = ['The session is gone.', false];
   else if (status === 0 || status >= 500) row = ["nika couldn't reach tmux.", false];
   const [line, lock, retry = false] = row;
-  const message = line && keys ? `${line} nika had pressed ${keys} ${keys === 1 ? 'key' : 'keys'} in the pane before it stopped.` : line;
+  const dropNote = note === true && (keys > 0 || !(status === 400 || status === 409 || status === 429)); // 0.5.4 (QPF, F2): a refusal that pressed no key (the route adds `sent` whenever it pressed one) leaves the note where it is
+  const said = line && keys ? `${line} nika had pressed ${keys} ${keys === 1 ? 'key' : 'keys'} in the pane before it stopped.` : line;
+  const message = dropNote ? (said ? `${said} ${NOTE_TAKEN}` : NOTE_TAKEN) : said;
   const already = status === 409 && code === 'already-answered'; // someone answered it (a second window): it is answered, not failed
-  return { ok: false, phase: already ? 'answered' : 'failed', lock, retry: retry === true && status === 409, message, kind: message ? problemKind(status) : '', gone: status === 404, word: already ? 'Answered' : '', announce: '', sent: keys };
+  return { ok: false, phase: already ? 'answered' : 'failed', lock, retry: retry === true && status === 409, message, kind: message ? problemKind(status) : '', gone: status === 404, word: already ? 'Answered' : '', announce: '', sent: keys, dropNote };
 }
 
 // ---- the capture's `dialog`, cleaned ---------------------------------------------------------------------------------------------
@@ -489,7 +494,11 @@ export function createDialogForm(io) {
     f.busy = false;
     f.busyEl = null;
     f.moving = false;
-    const out = dialogOutcome({ status: r.status, code: r.body?.error, done: r.body?.done, sent: r.body?.sent, name: name() });
+    const out = dialogOutcome({ status: r.status, code: r.body?.error, done: r.body?.done, sent: r.body?.sent, note: body.note !== undefined, name: name() });
+    if (out.dropNote && F === f) { // 0.5.4 (QPF, F2): keys were (or may have been) pressed, so Claude's notes field may already hold the note; Answer must never type `n` and it again
+      f.parts.clearNote?.();
+      keep.delete(keyOf(f.dialog));
+    }
     if (out.ok) {
       io.clearProblem();
       if (out.sent > 0) io.say(`Sent ${out.sent} ${out.sent === 1 ? 'key' : 'keys'} to ${io.paneId}`);
@@ -545,7 +554,7 @@ export function createDialogForm(io) {
     const typed = d.other ? d.typed : null; // Claude's own text row: shown, never edited (0.5.1)
     const draft = typed === null ? keep.get(keyOf(d)) : undefined; // unsent input from an earlier visit; Claude's typed text wins over it
     const pinned = []; // inputs that stay aria-disabled whatever the state (the Other box of a multi-select with typed text)
-    const picked = (o) => (draft ? draft.picks.includes(o.n) : o.checked);
+    const picked = (o) => (draft?.picks ? draft.picks.includes(o.n) : o.checked); // a held note (F1b) has no picks
     const read = () => ({ picks: boxes.filter((b) => b.input.checked).map((b) => b.n), text: other?.input.checked ? other.txt.value : '' });
     const leading = () => typed === null && other?.input.checked === true && DIGIT_LEAD.test(edges(other.txt.value)); // text that would be sent starts with a digit
     const sync = () => {
@@ -711,18 +720,19 @@ export function createDialogForm(io) {
       }
       paint();
     }
+    function onNoteInput() {
+      const v = noteInput.value;
+      const t = typable(v);
+      if (t !== v) noteInput.value = t;
+      noteCount.hidden = t.length < COUNT_FROM;
+      noteCount.textContent = `${t.length}/${NOTE_MAX}`;
+      syncNote();
+    }
     function makeNote() {
       noteCount = h('span', { class: 'dlg-count', hidden: true });
       noteInput = h('input', {
         type: 'text', id: 'dlg-note-text', class: 'dlg-text dlg-note-text', maxlength: String(NOTE_MAX), autocomplete: 'off', spellcheck: 'false',
-        oninput: () => {
-          const v = noteInput.value;
-          const t = typable(v);
-          if (t !== v) noteInput.value = t;
-          noteCount.hidden = t.length < COUNT_FROM;
-          noteCount.textContent = `${t.length}/${NOTE_MAX}`;
-          syncNote();
-        },
+        oninput: onNoteInput,
         onkeydown: (e) => {
           if (e.key !== 'Enter' || e.isComposing || e.shiftKey) return;
           e.preventDefault();
@@ -738,6 +748,17 @@ export function createDialogForm(io) {
       drawNote(true);
       syncNote(); // a closed field sends nothing and warns of nothing: Answer and the warning are drawn again
       if (open) noteInput.focus({ preventScroll: true });
+    }
+    /** 0.5.4 (QPF, F2): keys were (or may have been) pressed after the note was typed, so Claude's field may hold it already: the field is emptied and closed, and the next Answer carries no note. */
+    function clearNote() {
+      if (noteInput !== null) {
+        noteInput.value = '';
+        noteCount.hidden = true;
+        noteCount.textContent = '';
+      }
+      noteOpen = false;
+      drawNote(true);
+      syncNote();
     }
     function drawNote(force = false) {
       const mode = noteMode();
@@ -805,6 +826,7 @@ export function createDialogForm(io) {
         }
       }
       if (out.gone) io.setGone();
+      if (out.ok && F === f && last?.dialog?.state === 'unreadable') render(last); // 0.5.4 (QPF, F1b): an unreadable capture was drawn while this request ran (the form was kept); the 200 made it stale, and no new capture may come
       if (F !== f) return;
       repaint(f.parts.live ?? true);
       paint();
@@ -862,10 +884,21 @@ export function createDialogForm(io) {
     const strip = d0.tabs.length >= 2 ? stripEls(d0, (j) => onStep(f, j)) : null;
     const nodes = strip === null ? [] : [...strip.nodes];
     nodes.push(h('fieldset', { class: 'dlg-fs' }, legend, ...radios.map((r) => r.row), figure, notePart), h('div', { class: 'dlg-btns' }, primary, decline, chat));
+    const held = keep.get(keyOf(d0)); // 0.5.4 (QPF, F1b): the note typed before an unreadable screen took this step's form away; it comes back only into an empty, closed field on a step nika may type into
+    keep.delete(keyOf(d0));
+    if (held?.note && d0.notes.text === null && !d0.notes.editing && !d0.bypass) {
+      makeNote();
+      noteOpen = true;
+      noteInput.value = held.note;
+      onNoteInput();
+    }
     return {
       nodes, heading: legend, inputs: radios.map((r) => r.input), texts: [], choices: [chat], primary, decline, steps: strip?.steps ?? [], pinned: [],
       canSend: () => !fr.busy && answerBody(f.dialog, read()) !== null, // a pick that is not Claude's focus, Chat's focus and a note that starts with a digit all give no body
       snapshot: () => null, repaint, follow,
+      assumed: () => fr.assumed !== null, // Claude's focus was moved by our last request and no capture has shown it yet (F1b)
+      noteDraft: () => noteInput?.value ?? '', // F1b: the text typed so far (a step move keeps none: snapshot stays null)
+      clearNote,
     };
   }
 
@@ -948,7 +981,7 @@ export function createDialogForm(io) {
 
   function build(dialog) {
     const prev = F;
-    const focused = prev !== null && root.contains(document.activeElement);
+    const focused = root.contains(document.activeElement); // 0.5.4 (QPF, F1b): also a root that kept the focus through Reading (prev is null then)
     const onStepTab = focused ? document.activeElement.getAttribute?.('data-tab') ?? null : null; // a step button had the focus: the same step's button gets it back
     const headers = headersOf(dialog);
     if (keepFor !== headers) { // another dialog (other tab headers): the drafts belong to the old one
@@ -999,12 +1032,30 @@ export function createDialogForm(io) {
     show(false);
   }
 
+  /** 0.5.4 (QPF, F1b): the last request changed Claude's dialog (any 200, or already-answered), or moved its focus, and no capture has shown the result yet. A request still running decides when it ends. */
+  const staleForm = (f) => !f.busy && (f.phase === 'answered' || f.phase === 'moving' || f.parts.assumed?.() === true);
+
+  /** The stale form goes: what the screen shows is not what the form offers. A note typed for a focus nika had just moved is held for the same question (never one that was sent). */
+  function dropStale() {
+    const f = F;
+    if (f.phase !== 'answered' && f.phase !== 'moving' && f.parts.assumed?.() === true) {
+      const n = f.parts.noteDraft?.() ?? '';
+      if (n !== '') keep.set(keyOf(f.dialog), { note: n });
+    }
+    if (root.contains(document.activeElement)) root.focus({ preventScroll: true }); // the root has tabindex -1 and stays shown with Reading in it
+    F = null;
+    root.replaceChildren();
+  }
+
   /** `growing` (F16): nika is giving Claude's pane more rows for this question, so Reading goes on past READING_MS and the banner waits. */
   function unreadable(dialog, growing) {
-    if (F !== null) { // a shown form stays; it only says it cannot read the screen for now
-      F.kept = true;
-      paint();
-      return;
+    if (F !== null) {
+      if (!staleForm(F)) { // a live form the screen cannot show for now stays; it only says so
+        F.kept = true;
+        paint();
+        return;
+      }
+      dropStale(); // then on through Reading, as for a dialog that was never read
     }
     if (reading === null) reading = { since: now(), timer: null, expired: false, drawn: false };
     const left = READING_MS - (now() - reading.since);
@@ -1024,6 +1075,7 @@ export function createDialogForm(io) {
       return;
     }
     if (visible) { // the banner takes over from here on
+      if (root.contains(document.activeElement)) io.composer().focus({ preventScroll: true }); // a hidden root cannot hold the focus
       root.replaceChildren();
       show(false);
     }

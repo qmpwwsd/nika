@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createServer } from '../src/server.js';
+import { createSessionControl } from '../src/session-control.js';
 import { createAppApi } from '../src/api-app.js';
 import { readHistory, readSubagentHistory } from '../src/collect/history.js';
 import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator } from '../src/store.js';
@@ -4507,7 +4508,9 @@ describe('POST /api/app/pane/:id/dialog', () => {
   /** The real controller on a synthetic Claude: GET capture gives the sig, POST dialog answers one step, the screen changes the way Claude's does. */
   async function live(opts) {
     const world = dialogWorld(opts);
-    const { a, mirror } = await bootScreens({ fake: false });
+    // `mem.plain` (0.5.4, QPF): the app learns that a pane's input is not vim from the draft route's probe; a note test says so up front
+    const over = opts?.mem?.plain === true ? { createSessionControl: (o) => createSessionControl({ ...o, plainOf: () => true }) } : {};
+    const { a, mirror } = await bootScreens({ fake: false, over });
     let shots = 0;
     mirror.capture = async () => {
       shots += 1;
@@ -4604,6 +4607,23 @@ describe('POST /api/app/pane/:id/dialog', () => {
     const n = await open.post({ sig: o.sig, chat: true });
     assert.deepEqual([n.status, n.body.error], [409, 'notes-open']);
     assert.deepEqual(open.world.keysLog(), []);
+  });
+
+  test('(\u2212) 0.5.4 (QPF) end to end: a note on a 52-column pane is 409 note-room and nothing is sent; the capture carries no noteRoom; the same answer without the note goes out; at 119 columns the note goes through', async () => {
+    const narrow = await live({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1, cols: 52, pvX: 29, pvXOpen: 27, mem: { vim: false, plain: true } });
+    const s = await narrow.sig();
+    assert.equal(s.state, 'ready');
+    assert.equal(JSON.stringify(s).includes('noteRoom'), false, 'the page never gets it');
+    const r = await narrow.post({ sig: s.sig, view: s.preview.view, picks: [1], note: 'round it' });
+    assert.deepEqual([r.status, r.body], [409, { error: 'note-room' }]);
+    assert.deepEqual(narrow.world.keysLog(), []);
+    const plain = await narrow.post({ sig: s.sig, view: s.preview.view, picks: [1] });
+    assert.deepEqual([plain.status, plain.body.done], [200, 'next']);
+    const wide = await live({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1, mem: { vim: false, plain: true } });
+    const w = await wide.sig();
+    const ok = await wide.post({ sig: w.sig, view: w.preview.view, picks: [1], note: 'round it' });
+    assert.deepEqual([ok.status, ok.body.done], [200, 'next']);
+    assert.deepEqual(wide.world.keysLog(), ['text:n', 'text:round it', 'Enter']);
   });
 
   test('(−) nothing of the answer text, the picks or the sig reaches a log line, on success and on an internal error', async () => {

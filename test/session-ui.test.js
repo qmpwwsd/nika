@@ -4832,6 +4832,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     'function fitBaseFresh()',
     // 0.5.4 P2: whether nika resizes the window now (the gates of the room, the grow, FX2 and FX3)
     'function fitResizes()',
+    // 0.5.4 QPF F6: the form is told `growing` again whenever it changed, also outside a tick
+    'function growSync()',
   ];
   /** An element that also answers contains() (the fake El has no tree search): the panel's focus and dismissal rules ask it. */
   class Box extends El {
@@ -4890,7 +4892,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       LAY: { v: null }, PANEL_IDS: ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note'], layoutOf: layoutOfReal, panelFrame: panelFrameReal, // 0.5.2 R2
       // F16: the grow's state, the pure rules, what the form is told, the page's dialog and a clock the test sets (growTick reads Date.now())
       GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal, growWanted: growWantedReal,
-      W: { dialog: null, pane: 'ok' }, renderMode: () => log.df.push(fns.growing()), Date: { now: () => clk.now },
+      // 0.5.4 QPF F6: the page's renderMode records what the form was told (GROWING_SHOWN); the stub does the same and logs it
+      W: { dialog: null, pane: 'ok' }, GROWING_SHOWN: false, renderMode: () => { const g = fns.growing(); ctx.GROWING_SHOWN = g; log.df.push(g); }, Date: { now: () => clk.now },
       GL: { arm: null, timer: 0 }, // F17: no arm here (a spy goes in where a test needs one)
       P: { on: false }, // F11: Type into pane, read by the real drawMirror
       panelNow: () => null, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL, // 0.5.1 E: no panel up in the fit rig (the crop has its own tests)
@@ -8229,8 +8232,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(fnOf('function handleCapture(r)'), /if \(r\.status === 304\) \{\s*recovered\(\);\s*try \{\s*growTick\(\);\s*\} catch \{[^}]*\}\s*return;\s*\}/);
     assert.match(fnOf('function setGone()'), /M\.gone = true;\s*GR = GROW_IDLE;/);
     assert.match(SRC, /if \(r\.status === 403\) \{\s*M\.fatal = true;\s*clearTimeout\(M\.timer\);\s*SC\.planner\?\.close\(\);\s*GR = GROW_IDLE;/);
-    assert.match(fnOf('function renderMode()'), /DF\?\.render\(\{ pane: W\.pane, dialog: W\.dialog, name: A\.name, attention: A\.attention, growing: growing\(\) \}\);/);
-    assert.match(fnOf('function growing()'), /return GR\.phase === 'stepping' && FIT\.state === 'fitted';/);
+    assert.match(fnOf('function renderMode()'), /const g = growing\(\);\s*GROWING_SHOWN = g;\s*DF\?\.render\(\{ pane: W\.pane, dialog: W\.dialog, name: A\.name, attention: A\.attention, growing: g \}\);/); // 0.5.4 QPF F6 (requirement change): what the form is told is kept
+    assert.match(fnOf('function growing()'), /return GR\.phase === 'stepping' && FIT\.state === 'fitted' && fitResizes\(\);/); // 0.5.4 QPF F6 (requirement change): also false while the mode is Terminal or Off
     assert.match(SRC, /^let GR = GROW_IDLE;/m);
     assert.match(JS['session.js'], /import \{[^}]*\bGROW_IDLE, growStep, growRebase, growAsk, scaleRows, growWanted\b[^}]*\} from '\.\/fit-ui\.js';/);
   });
@@ -8968,7 +8971,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     r.ctx.W.prompt = null;
     vm.runInNewContext(`${fnOf('function renderAttn()')}; ({ renderAttn })`, r.ctx);
     r.ctx.DF = createDialogFormReal({ root, paneId: '%1', path: (t) => `/x/${t}`, call: async () => ({ status: 200, body: {} }), announce() {}, say() {}, showProblem() {}, clearProblem() {}, setGone() {}, composer: () => ({ focus() {} }), refresh: () => r.ctx.renderAttn(), now: () => r.clk.now, after: r.ctx.setTimeout, cancel: r.ctx.clearTimeout });
-    r.ctx.renderMode = () => r.ctx.DF.render({ pane: r.ctx.W.pane, dialog: r.ctx.W.dialog, name: r.ctx.A.name, attention: r.ctx.A.attention, growing: r.growing() });
+    r.ctx.renderMode = () => { const g = r.growing(); r.ctx.GROWING_SHOWN = g; r.ctx.DF.render({ pane: r.ctx.W.pane, dialog: r.ctx.W.dialog, name: r.ctx.A.name, attention: r.ctx.A.attention, growing: g }); };
     return { r, root, note, text };
   };
   /** A drawn capture, in the page's order: the mode/form render (noteScreen) first, then the fit's look (fitCaptured). */
@@ -9128,7 +9131,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
 
   test('(+) M-20 the code: FIT starts with mode auto, the planner is given a mode sink, fitChip puts the mode back to auto with the chip, and the chip\'s data-k is the view\'s look', () => {
     assert.match(SRC, /const FIT = \{[^\n]*\bmode: 'auto'[^\n]*\};/);
-    assert.match(fnOf('function wireFit()'), /mode: \(m\) => \{ FIT\.mode = m; \},/);
+    assert.match(fnOf('function wireFit()'), /mode: \(m\) => \{ FIT\.mode = m; growSync\(\); \},/); // 0.5.4 QPF F6 (requirement change): the form hears of a mode change at once
     assert.match(fnOf('function fitChip(view, opts)'), /FIT\.state = view \? view\.state : null;\s*if \(!view\) FIT\.mode = 'auto';/);
     assert.match(fnOf('function renderFit(view, opts)'), /el\.setAttribute\('data-k', view\.look\);/);
     assert.doesNotMatch(fnOf('function renderFit(view, opts)'), /view\.state/);
@@ -9141,7 +9144,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(fnOf('function growTick()'), /fitted: FIT\.state === 'fitted' && resizes,/); // round 4: one call, used for the input and for the guard below
     assert.match(fnOf('function fitBaseFresh()'), /FIT\.state === 'blocked' \|\| !fitResizes\(\) \|\| !fitFocused\(\) \|\| boxShortened\(\)\) return;/);
     assert.match(fnOf('function fitPanelClosed()'), /FIT\.state === 'blocked' \|\| !fitResizes\(\) \|\| !fitFocused\(\)\) return;/);
-    assert.equal([...SRC.matchAll(/\bfitResizes\(\)/g)].length, 5, 'the declaration and the four places');
+    assert.equal([...SRC.matchAll(/\bfitResizes\(\)/g)].length, 6, 'the declaration, growing() (0.5.4 QPF F6) and the four places');
     assert.doesNotMatch(fnOf('function fitResizes()'), /setTimeout|addEventListener|call\(|fetch\(|document\.|innerHTML/);
   });
 
@@ -9449,6 +9452,136 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
       r.fitBaseFresh();
       assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: fresh ? 30 : 16 }, name);
     }
+  });
+
+  // ---- 0.5.4 QPF F6: the `growing` tag after Fit leaves Auto or Fill -------------------------------------------------------------------------------
+  // The form reads `growing` only when the page draws it. The grow tick drew the page again only when `growing()` changed inside the tick; the chip and the mode sink changed
+  // FIT.state / FIT.mode outside it, so with no new capture (304s) the preview tag kept "Showing more lines". growSync draws the page again whenever it differs from what the form was told.
+  const f6Rig = async (more) => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 }), ...more] });
+    await firstStep(r);
+    await r.clk.advance(0); // the step's own answer is taken in
+    assert.deepEqual(r.log.df, [true], 'premise: the step started and the form was told');
+    return r;
+  };
+  const answerNext = async (r) => { r.ctx.FIT.planner.beat(); await r.clk.advance(0); }; // a fit answer with no capture
+
+  test('(+) F6: the mode sink hears Terminal while a grow steps and the fit says fitted: the form is told `growing` is false once, with no capture', async () => {
+    const r = await f6Rig([answerM('fitted', 'terminal', { cols: 100, rows: 60 })]);
+    await answerNext(r);
+    assert.equal(r.ctx.FIT.mode, 'terminal');
+    assert.equal(r.ctx.FIT.state, 'fitted', 'the same chip: the sink alone told the page');
+    assert.deepEqual(r.log.df, [true, false]);
+  });
+
+  test('(+) F6: the chip goes to off (state and mode): one render, false', async () => {
+    const r = await f6Rig([OFF_ANSWER]);
+    await answerNext(r);
+    assert.equal(r.ctx.FIT.state, 'off');
+    assert.deepEqual(r.log.df, [true, false]);
+  });
+
+  test('(+) F6: the chip changes state while the mode stays Auto (the fit is terminal now): one render, false; the sink had nothing to tell', async () => {
+    const r = await f6Rig([answerAt('terminal', { cols: 100, rows: 60 })]);
+    await answerNext(r);
+    assert.deepEqual([r.ctx.FIT.state, r.ctx.FIT.mode], ['terminal', 'auto']);
+    assert.deepEqual(r.log.df, [true, false]);
+  });
+
+  test('(+) F6: the grow ends in growTick (the question is whole): one render, false', async () => {
+    const r = await f6Rig([]);
+    paneAt(r, 60);
+    showDialog(r, WHOLE);
+    r.fitCaptured();
+    assert.deepEqual(r.log.df, [true, false]);
+    r.growTick();
+    r.growTick();
+    assert.deepEqual(r.log.df, [true, false], 'told once');
+  });
+
+  test('(+) F6: a chip answer that comes during a redraw hold still tells the form at once; the chip itself waits for the frame', async () => {
+    const r = await f6Rig([answerAt('terminal', { cols: 100, rows: 60 })]);
+    assert.equal(r.ctx.HOLD.active, true, 'premise: the grown size started a hold');
+    await answerNext(r);
+    assert.deepEqual(r.log.df, [true, false]);
+    assert.notEqual(r.ctx.FIT.held, null, 'the chip is held');
+    assert.equal(r.ctx.HOLD.active, true, 'and so is the frame');
+  });
+
+  test('(\u2212) F6: answers that keep Auto (or Fill) and `fitted` while the grow steps render nothing more, however many come', async () => {
+    const r = await f6Rig([answerAt('fitted', { cols: 100, rows: 60 }), answerM('fitted', 'fill', { cols: 100, rows: 60 }), answerM('fitted', 'fill', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 60 })]);
+    for (let i = 0; i < 4; i += 1) await answerNext(r);
+    assert.equal(r.ctx.FIT.mode, 'auto', 'the last answer is Auto again');
+    assert.deepEqual(r.log.df, [true]);
+    for (let i = 0; i < 3; i += 1) { await r.clk.advance(250); r.handleCapture({ status: 304, body: null }); }
+    assert.deepEqual(r.log.df, [true]);
+  });
+
+  test('(\u2212) F6: growing() needs the mode too: false for Terminal and Off with a step running and the state fitted; true for Auto and Fill', async () => {
+    const r = await growRig();
+    r.ctx.GR = { ...GROW_IDLE_REAL, phase: 'stepping', rows: 60 };
+    r.ctx.FIT.state = 'fitted';
+    for (const [mode, expected] of [['auto', true], ['fill', true], ['terminal', false], ['off', false]]) {
+      r.ctx.FIT.mode = mode;
+      assert.equal(r.growing(), expected, mode);
+    }
+    r.ctx.FIT.mode = 'auto';
+    for (const phase of ['idle', 'held', 'spent']) {
+      r.ctx.GR = { ...GROW_IDLE_REAL, phase };
+      assert.equal(r.growing(), false, phase);
+    }
+  });
+
+  /** The page's own renderMode with its panels stubbed: what the form is told, and whether the page remembers it. */
+  const modeRig = () => {
+    const log = { told: [] };
+    const none = () => {};
+    const ctx = {
+      paneId: '%12', SW: { busy: null, pressed: null, parts: [1] }, W: { pane: 'ok', dialog: null, survey: null, promptOpen: false, mode: 'default', confirmed: true, msg: null }, A: { kind: 'idle', name: 'builder-1', attention: '' },
+      switcherState: () => ({ reason: null }), renderTag: none, renderSegments: none, renderWhy: none, renderQuick: none, renderAttn: none, renderPrompt: none, panelsChanged: none,
+      DF: { render: (a) => log.told.push(a.growing) }, SV: { render: none },
+      GR: { ...GROW_IDLE_REAL, phase: 'stepping', rows: 60 }, FIT: { state: 'fitted', mode: 'auto' }, GROWING_SHOWN: false,
+    };
+    const fns = vm.runInNewContext(`${['function renderMode()', 'function growing()', 'function growSync()', 'function fitResizes()'].map(fnOf).join('\n')}; ({ renderMode, growing, growSync })`, ctx);
+    return { ctx, log, ...fns };
+  };
+
+  test('(+) F6: the page\'s renderMode records what the form was told, so growSync renders again only for a change (M-F6-4)', () => {
+    const m = modeRig();
+    m.growSync();
+    assert.deepEqual(m.log.told, [true]);
+    assert.equal(m.ctx.GROWING_SHOWN, true);
+    m.growSync();
+    m.growSync();
+    assert.deepEqual(m.log.told, [true], 'the same state: no second render');
+    m.ctx.FIT.mode = 'terminal';
+    m.growSync();
+    assert.deepEqual(m.log.told, [true, false]);
+    assert.equal(m.ctx.GROWING_SHOWN, false);
+    m.growSync();
+    assert.deepEqual(m.log.told, [true, false]);
+    m.ctx.FIT.mode = 'auto';
+    m.growSync();
+    assert.deepEqual(m.log.told, [true, false, true], 'and back');
+  });
+
+  test('(\u2212) F6: before the page is built (no pane, no switcher parts) growSync asks renderMode, which draws nothing and remembers nothing', () => {
+    const m = modeRig();
+    m.ctx.SW.parts = [];
+    m.growSync();
+    m.growSync();
+    assert.deepEqual(m.log.told, []);
+    assert.equal(m.ctx.GROWING_SHOWN, false);
+  });
+
+  test('(+) F6 the code: growSync is called where Fit changes (the mode sink, fitChip before its hold check) and ends growTick; the tick keeps no `before` of its own', () => {
+    assert.match(fnOf('function growSync()'), /if \(growing\(\) !== GROWING_SHOWN\) renderMode\(\);/);
+    assert.match(fnOf('function fitChip(view, opts)'), /FIT\.state = view \? view\.state : null;\s*if \(!view\) FIT\.mode = 'auto';\s*growSync\(\);\s*if \(view && HOLD\.active\) \{/);
+    assert.match(fnOf('function growTick()'), /growSync\(\);\s*\}\s*$/);
+    assert.doesNotMatch(fnOf('function growTick()'), /const before = growing\(\)|growing\(\) !== before/);
+    assert.equal([...SRC.matchAll(/\bgrowSync\(\)/g)].length, 4, 'the declaration and the three calls');
+    assert.match(SRC, /^let GROWING_SHOWN = false;/m);
+    assert.deepEqual(findSinks(['function growing()', 'function growSync()'].map(fnOf).join('\n')), []);
   });
 });
 
@@ -10854,12 +10987,14 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     ctx.growing = () => true;
     mk(['function renderMode()'], ctx).renderMode();
     assert.equal(args.growing, true, 'what growing() says goes to the form as it is');
+    assert.equal(ctx.GROWING_SHOWN, true, '0.5.4 QPF F6: and the page remembers what the form was told');
   });
 
   test('(−) P3: before the form exists (no pane, or boot not done) renderMode draws no form and does not fail', () => {
     const ctx = {
       paneId: '%12', SW: { parts: [{}], busy: null }, W: { pane: 'ok', mode: 'default', confirmed: true, msg: null }, A: { kind: 'idle', name: 'x', attention: '' }, switcherState: () => ({ reason: '' }),
       renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, panelsChanged() {}, DF: null, SV: null,
+      growing: () => false, // 0.5.4 QPF F6 (requirement change): renderMode reads growing() before it asks whether there is a form, to remember what the form was told
     };
     assert.doesNotThrow(() => mk(['function renderMode()'], ctx).renderMode());
   });

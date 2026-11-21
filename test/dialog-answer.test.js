@@ -7,6 +7,7 @@ import { checkDialogBody } from '../src/session-control.js';
 import { STEPS_MAX, TEXT_MAX } from '../src/dialog.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
 import { span } from './helpers.js';
+import { width } from '../src/draft.js';
 
 const SIG = '0123456789abcdef';
 const PLAIN = { vim: false, plain: true }; // nika's memory of a pane whose input is not vim: it may type when it starts on the text row
@@ -1854,5 +1855,232 @@ describe('a question step with a preview (0.5.4, QP): the route', () => {
     unread.before = (n, world) => { if (n === 2) world.tabs[1].options[0].label = 'Oval\u2026'; }; // clipped: the step is no longer read whole
     assert.deepEqual(await unread.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-unread' } });
     assert.deepEqual(unread.log, []);
+  });
+});
+
+// ---- 0.5.4, QPF step 2 (F1a): the route through Claude 2.1.329/2.1.330's partial Review (`v330`: the new warning, no Ready row, the unanswered question left out) ----
+describe('answerDialog: the partial Review of Claude 2.1.329/2.1.330 (0.5.4, QPF, F1a)', () => {
+  const rowOf = (r) => r.map((s) => s.t).join('');
+  /** Four questions: the Tools question (a middle one) is left unanswered, and the last, single-select one is the current tab. */
+  const partial = (extra = {}) => dialogWorld({ v330: true, tabs: [{ ...TAB.project, answered: true, picked: 1 }, TAB.tools, { ...TAB.mode, answered: true, picked: 2 }, TAB.name], i: 3, ...extra });
+
+  test('(+) answer three of four with Next on the last: 200 review; then Submit answers: 200 submitted', async () => {
+    const w = partial();
+    ok(await w.answer({ picks: [1] }), 'review', 1);
+    assert.equal(w.phase, 'review');
+    assert.equal(w.read().warn, true, 'the page would get a readable partial Review');
+    assert.equal(w.read().pairs.length, 3);
+    ok(await w.answer({ submit: true }), 'submitted', 1);
+    assert.deepEqual(w.keysLog(), ['text:1', 'Enter']);
+    safe(w);
+  });
+
+  test('(\u2212) the same Review with a mangled warning row is unreadable: 409 dialog-unread, nothing sent', async () => {
+    const w = partial({ phase: 'review' });
+    const was = w.screen;
+    w.screen = () => {
+      const s = was();
+      return { ...s, rows: s.rows.map((r) => (rowOf(r) === '\u26a0 Some questions are unanswered' ? [{ ...r[0], t: '\u26a0 Some questions are unanswered.' }] : r)) };
+    };
+    assert.equal(w.read().unreadable, 'layout');
+    assert.deepEqual(await w.answer({ sig: SIG, submit: true }), { status: 409, body: { error: 'dialog-unread' } });
+    assert.deepEqual(w.log, []);
+  });
+});
+
+// ---- 0.5.4, QPF step 3 (F3): a plan whose prompt wraps is `wide`, never `cut` ----
+describe('a plan whose prompt wraps (0.5.4, QPF, F3)', () => {
+  test('(+) the fake plan at 85 columns (the prompt wrapped, the whole plan on screen) is unreadable/wide; a choice is 409 dialog-unread and nothing is sent', async () => {
+    const w = dialogWorld({ phase: 'plan', cols: 85 });
+    assert.deepEqual(w.read(), { unreadable: 'wide', kind: 'plan' });
+    assert.deepEqual(await w.answer({ sig: SIG, choice: 1 }), { status: 409, body: { error: 'dialog-unread' } });
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(\u2212) the same plan at 86 and 120 columns reads, and a choice goes through', async () => {
+    for (const cols of [86, 120]) {
+      const w = dialogWorld({ phase: 'plan', cols });
+      assert.equal(w.read().kind, 'plan', `${cols} columns`);
+      assert.equal(w.read().unreadable, undefined, `${cols} columns`);
+    }
+    const w = dialogWorld({ phase: 'plan', cols: 120 });
+    ok(await w.answer({ choice: 1 }), 'chosen', 1);
+  });
+
+  test('(+) F3b: a plan whose path row wraps the footer is unreadable/wide at any height', () => {
+    const w = dialogWorld({ phase: 'plan', cols: 106, planPath: `<plans>/${'demo-api-plan-'.repeat(10)}.md` });
+    assert.deepEqual(w.read(), { unreadable: 'wide', kind: 'plan' });
+  });
+});
+
+// ---- 0.5.4, QPF step 4 (F2): a note is typed only where Claude's open notes field fits the pane ----
+describe('a note on a narrow pane: 409 note-room (0.5.4, QPF, F2)', () => {
+  const pv = (o = {}) => dialogWorld({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1, mem: PLAIN, ...o });
+  const pv52 = (o = {}) => pv({ cols: 52, pvX: 29, pvXOpen: 27, ...o });
+  const answerPv = (w, picks, extra = {}) => w.answer({ picks, view: w.view(), ...extra });
+  const NOTE = 'round it';
+
+  test('(+) 52 columns: the step reads closed and not open (the cut placeholder), so a note is 409 note-room before any key -- no `sent`, the read phase alone refuses (one capture)', async () => {
+    const w = pv52();
+    assert.equal(w.read().unreadable, undefined);
+    assert.equal(w.read().noteRoom, false);
+    w.tabs[1].noteOpen = true;
+    assert.equal(w.read().unreadable, 'wide', 'the open field is what LC-QPB saw: unreadable');
+    w.tabs[1].noteOpen = false;
+    assert.deepEqual(await answerPv(w, [1], { note: NOTE }), { status: 409, body: { error: 'note-room' } });
+    assert.deepEqual([w.log, w.keysLog(), w.captures], [[], [], 1], 'nothing typed, and refused on the first look');
+    assert.equal(w.tabs[1].noteOpen, false);
+  });
+
+  test('(+) the boundary on the route (X 34): at 67 columns the note goes through, at 66 it is 409 note-room with nothing sent', async () => {
+    const roomy = pv({ cols: 67 });
+    ok(await answerPv(roomy, [1], { note: NOTE }), 'next', 3);
+    assert.deepEqual([roomy.keysLog(), roomy.tabs[1].note], [['text:n', `text:${NOTE}`, 'Enter'], NOTE]);
+    const tight = pv({ cols: 66 });
+    assert.deepEqual(await answerPv(tight, [1], { note: NOTE }), { status: 409, body: { error: 'note-room' } });
+    assert.deepEqual(tight.log, []);
+  });
+
+  test('(+) the same note at 119 columns goes through: 200 next and the note arrived', async () => {
+    const w = pv({ cols: 119 });
+    ok(await answerPv(w, [1], { note: NOTE }), 'next', 3);
+    assert.equal(w.tabs[1].note, NOTE);
+  });
+
+  test('(+) the pane narrows from 119 to 66 columns between the read phase and the first round: 409 note-room, no key (the round checks again)', async () => {
+    const w = pv({ cols: 119 });
+    w.before = (n, world) => { if (n === 2) world.cols = 66; }; // read 1 is the request's first look, read 2 the first round's
+    assert.deepEqual(await answerPv(w, [1], { note: NOTE }), { status: 409, body: { error: 'note-room' } });
+    assert.deepEqual([w.log, w.captures], [[], 2], 'refused by the round, not by the read phase');
+  });
+
+  test('(\u2212) at 52 columns an answer with no note goes out (200 next), a Decline and a focus move too: the width is measured only for a note', async () => {
+    const pick = pv52();
+    ok(await answerPv(pick, [1]), 'next', 1);
+    assert.deepEqual(pick.keysLog(), ['Enter']);
+    const decline = pv52();
+    ok(await decline.answer({ cancel: true }), 'declined', 1);
+    const focus = pv52();
+    ok(await focus.answer({ focus: 2 }), 'focused', 1);
+  });
+
+  test('(\u2212) at 52 columns a note on a step that already shows a note is 400 invalid, as before (the width is never measured there)', async () => {
+    const w = pv52();
+    w.tabs[1].note = 'saved';
+    assert.deepEqual(code(await answerPv(w, [1], { note: NOTE })), [400, 'invalid']);
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(\u2212) the older refusals keep their order at 52 columns: a stale view is preview-changed, a pane not known plain is note-mode, bypass is terminal-only (before note-room)', async () => {
+    const stale = pv52();
+    const view = stale.view();
+    stale.tabs[1].preview.rows[0] = ['( oval )', 'x'];
+    assert.deepEqual(code(await stale.answer({ picks: [1], view, note: NOTE })), [409, 'preview-changed']);
+    const mode = pv52({ mem: { vim: false, plain: false } });
+    assert.deepEqual(code(await answerPv(mode, [1], { note: NOTE })), [409, 'note-mode']);
+    const bypass = pv52();
+    assert.deepEqual(code(await answerPv(bypass, [1], { note: 'bypass this' })), [400, 'terminal-only']);
+  });
+});
+
+// ---- 0.5.4, QPF step 1: the fake world draws the shapes the QP live check (LC-QPB) showed. These tests pin the fake itself, so the later steps can trust it. ----
+describe('the fake world draws what the QP live check showed (0.5.4, QPF)', () => {
+  const rowOf = (r) => r.map((s) => s.t).join('');
+  const textsOf = (w) => w.screen().rows.map(rowOf);
+  const MID = '·';
+  const WARN_OLD = '⚠ You have not answered all questions';
+  const WARN_NEW = '⚠ Some questions are unanswered';
+  const READY = 'Ready to submit your answers?';
+  const four = (n) => [TAB.project, TAB.tools, TAB.mode, TAB.name].map((t, j) => ({ ...t, answered: j < n, picked: j < n && !t.multi ? 1 : null, checked: j < n && t.multi ? [1] : [] }));
+  const review = (o) => dialogWorld({ phase: 'review', tabs: four(3), ...o });
+
+  test('(+) v330: the Review has no Ready row and, with a question unanswered, the new warn row; the unanswered question is left out', () => {
+    const t = textsOf(review({ v330: true }));
+    assert.ok(t.includes(WARN_NEW), 'the 2.1.329/330 warn row');
+    assert.ok(!t.includes(WARN_OLD) && !t.includes(READY), 'neither the old warn text nor a Ready row');
+    assert.equal(t.filter((x) => x.startsWith(' ● ')).length, 3, 'three pairs for three answered questions');
+  });
+
+  test('(−) v330 with every question answered has no warn row; v328 alone keeps the old warn text; no option keeps the old text and the Ready row', () => {
+    const all = textsOf(review({ v330: true, tabs: four(4) }));
+    assert.ok(!all.includes(WARN_NEW) && !all.includes(WARN_OLD) && !all.includes(READY));
+    const v328 = textsOf(review({ v328: true }));
+    assert.ok(v328.includes(WARN_OLD) && !v328.includes(WARN_NEW) && !v328.includes(READY));
+    const plain = textsOf(review());
+    assert.ok(plain.includes(WARN_OLD) && plain.includes(READY));
+  });
+
+  const pv52 = (o = {}) => dialogWorld({ cols: 52, pvX: 29, pvXOpen: 27, tabs: [TAB.project, TAB.shape], i: 1, ...o });
+  const notesAt = (t) => t.findIndex((x) => /^ *Notes:/.test(x));
+
+  test('(+) 52 columns, closed: the box top and the Notes hint start at column 29, the hint wraps to the next row at column 36', () => {
+    const t = textsOf(pv52());
+    assert.equal(t.find((x) => x.includes('┌')).indexOf('┌'), 29);
+    const n = notesAt(t);
+    assert.equal(t[n], `${' '.repeat(29)}Notes: press n to add`);
+    assert.equal(t[n + 1], `${' '.repeat(36)}notes`);
+  });
+
+  test('(+) 52 columns, open and empty: everything moves to column 27 and Claude cuts the placeholder so the row is 52 cells wide and ends in an ellipsis', () => {
+    const w = pv52();
+    w.tabs[1].noteOpen = true;
+    const t = textsOf(w);
+    assert.equal(t.find((x) => x.includes('┌')).indexOf('┌'), 27);
+    const n = notesAt(t);
+    assert.equal(t[n], `${' '.repeat(27)}Notes: Add notes on this…`);
+    assert.equal(width(t[n]), 52);
+    assert.ok(!/^ *Notes:/.test(t[n + 1]) && t[n + 1].trim() === '', 'one row: the placeholder is cut, not wrapped');
+  });
+
+  test('(+) 119 columns (column 34), open and empty: the placeholder is whole and the row ends at column 66; text in an open field wraps at the pane width', () => {
+    const w = dialogWorld({ cols: 119, tabs: [TAB.project, TAB.shape], i: 1 });
+    w.tabs[1].noteOpen = true;
+    const t = textsOf(w);
+    assert.equal(t[notesAt(t)], `${' '.repeat(34)}Notes: Add notes on this design…`);
+    assert.equal(width(t[notesAt(t)]), 66);
+    w.tabs[1].noteText = words(30);
+    const t2 = textsOf(w);
+    const n = notesAt(t2);
+    assert.ok(t2[n + 1].startsWith(' '.repeat(41)) && t2[n + 1][41] !== ' ', 'the wrapped rest starts at column 41');
+    assert.ok(t2.slice(n, n + 3).every((x) => width(x) <= 118), 'wrapped at the pane width');
+  });
+
+  test('(−) without pvX the geometry is the old one: column 34, one Notes row at 120 columns, open or closed', () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.shape], i: 1 });
+    const t = textsOf(w);
+    assert.equal(t.find((x) => x.includes('┌')).indexOf('┌'), 34);
+    assert.equal(t[notesAt(t)], `${' '.repeat(34)}Notes: press n to add notes`);
+    w.tabs[1].noteOpen = true;
+    assert.equal(textsOf(w).find((x) => x.includes('┌')).indexOf('┌'), 34);
+  });
+
+  const PROMPT = 'Claude has written up a plan and is ready to execute. Would you like to proceed?';
+  const planTexts = (o) => textsOf(dialogWorld({ phase: 'plan', ...o }));
+  /** The rows between the plan's closing plain rule and its first option: where the prompt is drawn. */
+  const promptRows = (t) => {
+    const first = t.findIndex((x) => /^ {3}[\u276f ] 1\. /.test(x));
+    const rule = t.findLastIndex((x, j) => j < first && /^ *\u2500+$/.test(x));
+    return t.slice(rule + 1, first).filter((x) => x.trim() !== '');
+  };
+
+  test('(+) a plan at 85 columns draws its prompt in two rows at indent 3 that join to the prompt; at 86 and 120 columns it is one row; at 40 columns three rows', () => {
+    const two = promptRows(planTexts({ cols: 85 }));
+    assert.equal(two.length, 2);
+    assert.ok(two.every((x) => /^ {3}\S/.test(x)) && two.every((x) => width(x) <= 84));
+    assert.equal(two.map((x) => x.trim()).join(' '), PROMPT);
+    for (const cols of [86, 120]) assert.deepEqual(promptRows(planTexts({ cols })), [`   ${PROMPT}`]);
+    const three = promptRows(planTexts({ cols: 40 }));
+    assert.equal(three.length, 3);
+    assert.equal(three.map((x) => x.trim()).join(' '), PROMPT);
+  });
+
+  test('(+) planPath: a long plan path goes on a second footer row at indent 3, cut at the pane width; the default path is one footer row', () => {
+    const long = `<plans>/${'demo-api-plan-'.repeat(10)}.md`;
+    const wide = planTexts({ cols: 106, planPath: long });
+    assert.equal(wide.at(-2), `   ctrl+g to edit in Vim ${MID}`);
+    assert.equal(width(wide.at(-1)), 106);
+    assert.ok(wide.at(-1).startsWith('   <plans>/demo-api-plan-'));
+    assert.equal(planTexts({ cols: 106 }).at(-1), `   ctrl+g to edit in Vim ${MID} <plans>/demo-api.md`);
+    assert.equal(planTexts({ cols: 106, planPath: '<plans>/demo-api.md' }).at(-1), `   ctrl+g to edit in Vim ${MID} <plans>/demo-api.md`);
   });
 });

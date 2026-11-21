@@ -601,7 +601,9 @@ function renderMode() {
   renderQuick();
   renderAttn();
   renderPrompt();
-  DF?.render({ pane: W.pane, dialog: W.dialog, name: A.name, attention: A.attention, growing: growing() });
+  const g = growing();
+  GROWING_SHOWN = g;
+  DF?.render({ pane: W.pane, dialog: W.dialog, name: A.name, attention: A.attention, growing: g });
   SV?.render({ pane: W.pane, survey: W.survey, blocked: W.promptOpen || A.kind === 'attn', name: A.name }); // never beside a prompt, a dialog or the attention note
   panelsChanged(); // last: it reads what the three panels just decided to show: the bar, then the mirror (the crop follows the panel)
 }
@@ -1792,6 +1794,7 @@ const PANEL_IDS = Object.freeze(['prompt-btns', 'dialog-form', 'survey-panel', '
 const LAY = { v: null }; // R2: #sess-term[data-lay]: 'crop' | 'panel' | null (crop.js layoutOf)
 // F16: the grow of a cut-off question (fit-ui.js growStep): more rows for the pane while the question is open, the size back when it closes
 let GR = GROW_IDLE;
+let GROWING_SHOWN = false; // 0.5.4 (QPF, F6): what the dialog form was last told as `growing` (renderMode keeps it)
 // F10, design F10 4: after nika's own resize the last good frame stays drawn until a capture at the new size shows Claude's input box, for 1.2 s at most
 const HOLD = createRedrawHold({
   after: (fn, ms) => setTimeout(fn, ms),
@@ -1992,9 +1995,14 @@ function fitCaptured() {
   growTick();
 }
 
-/** F16: whether a step of the grow runs and the fit is `fitted`: the dialog form keeps its Reading note while it does. */
+/** F16: whether a step of the grow runs and the fit is `fitted`: the dialog form keeps its Reading note while it does. 0.5.4 (QPF, F6): and nika still sizes the window (not Terminal or Off). */
 function growing() {
-  return GR.phase === 'stepping' && FIT.state === 'fitted';
+  return GR.phase === 'stepping' && FIT.state === 'fitted' && fitResizes();
+}
+
+/** 0.5.4 (QPF, F6): the page is drawn again whenever `growing()` differs from what the form was last told, wherever Fit changed (the grow tick, the mode sink, the chip). */
+function growSync() {
+  if (growing() !== GROWING_SHOWN) renderMode();
 }
 
 /**
@@ -2006,7 +2014,6 @@ function growTick() {
   if (!FIT.planner || !FIT.base || M.gone || M.fatal) return;
   fitPanelClosed(); // FX2: a panel that a commit was measured under has closed: the base is measured again before the grow looks at it
   const was = GR.phase === 'stepping' || GR.phase === 'held';
-  const before = growing();
   const resizes = fitResizes();
   let ask = null;
   if (!resizes && GR.phase !== 'idle') { // 0.5.4 P2 (SF-1): the mode became Terminal or Off while a grow ran: nika no longer sizes the window, so the grow ends here and asks nothing, not even the way back
@@ -2024,7 +2031,7 @@ function growTick() {
     FIT.planner.size(want.cols, want.rows, { now: true });
   }
   if ((GR.phase === 'stepping' || GR.phase === 'held') !== was && FIT.pop) drawFitPop();
-  if (growing() !== before) renderMode(); // no capture may come for a while (a redraw hold keeps them back): the form must not let its Reading note run out meanwhile
+  growSync(); // no capture may come for a while (a redraw hold keeps them back): the form must not let its Reading note run out meanwhile
 }
 
 // ---- the redraw hold (F10, design F10 4): the last good frame stays up while Claude repaints after nika's own resize ----
@@ -2052,6 +2059,7 @@ function fitSized(pane) {
 function fitChip(view, opts) {
   FIT.state = view ? view.state : null;
   if (!view) FIT.mode = 'auto'; // 0.5.4 P2: no chip, no answer to know a mode from (a 403): the page is back to its start
+  growSync(); // 0.5.4 (QPF, F6): the form hears of the new state now; the hold keeps back the frame and the chip, not the form
   if (view && HOLD.active) {
     FIT.held = { view, opts };
     return;
@@ -2302,7 +2310,7 @@ function wireFit() {
     fitAgain: fitAgainEvent,
     focused: fitFocused, // F9: the focus every request carries
     sized: fitSized, // F10: the pane size of each answer starts the redraw hold
-    mode: (m) => { FIT.mode = m; }, // 0.5.4 P2: the mode of every fit answer, before the chip (the room and the grow read it; a chip draws only on a change of key)
+    mode: (m) => { FIT.mode = m; growSync(); }, // 0.5.4 P2: the mode of every fit answer, before the chip (the room and the grow read it; a chip draws only on a change of key); QPF F6: the form hears of it at once
   });
   wireFitPop();
   if (typeof ResizeObserver === 'function') {

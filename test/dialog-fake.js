@@ -62,7 +62,9 @@ const answerOf = (t) => (t.multi ? [...t.options.filter((_, j) => t.checked.incl
 
 const PV = { tl: '\u250c', tr: '\u2510', bl: '\u2514', br: '\u2518', v: '\u2502', h: '\u2500', lt: '\u251c', rt: '\u2524', cut: '\u2702' };
 const PV_FALLBACK = "(can't show the full preview \u00b7 compare the labels and descriptions instead)";
-const PV_X = 34;
+const PV_X = 34; // the default box column; a world sets `pvX` (closed) and `pvXOpen` (while the notes field is open): Claude's columns differ with the pane width (LC-QPB)
+const PV_ELLIPSIS = '\u2026'; // the ellipsis Claude ends a cut placeholder with
+const PV_PLACEHOLDER = 'Add notes on this design'; // the empty notes field's text, without its ellipsis
 
 /** A preview step the way 2.1.328 draws it: the options at column 0 with the focused option's box beside them, Notes, Chat, the footer wrapped at the pane width. */
 function previewRows(w) {
@@ -71,7 +73,8 @@ function previewRows(w) {
   const chat = w.focus === 'chat';
   const pv = tab.preview;
   const shown = chat ? k : w.focus; // with Chat focused the box still shows the last option's preview
-  const W = Math.min(pv.fallback ? width(PV_FALLBACK) + 4 : 44, w.cols - PV_X - 2); // the fallback line is one row: its box is as wide as that needs
+  const X = tab.noteOpen ? w.pvXOpen ?? w.pvX ?? PV_X : w.pvX ?? PV_X; // the box column, which is also the Notes column (0.5.4, QPF: it differs between a closed and an open field on a narrow pane)
+  const W = Math.min(pv.fallback ? width(PV_FALLBACK) + 4 : 44, w.cols - X - 2); // the fallback line is one row: its box is as wide as that needs
   const lines = pv.fallback ? [PV_FALLBACK] : pv.rows[shown - 1] ?? [];
   const hidden = pv.fallback ? 0 : Array.isArray(pv.hidden) ? pv.hidden[shown - 1] ?? 0 : pv.hidden ?? 0;
   const box = [PV.tl + PV.h.repeat(W - 2) + PV.tr];
@@ -84,13 +87,23 @@ function previewRows(w) {
   const rows = [line('\u23fa I have a question first.'), [], [span('\u2500'.repeat(w.cols), DIM)], stripRow(w, w.i, w.tabs.length > 1), [], [span(tab.question, { b: true, fg: 231 })], []];
   for (let i = 0; i < Math.max(k, box.length); i += 1) {
     const right = box[i] ?? '';
-    if (i >= k) { rows.push(right === '' ? [] : [span(' '.repeat(PV_X) + right, DIM)]); continue; }
+    if (i >= k) { rows.push(right === '' ? [] : [span(' '.repeat(X) + right, DIM)]); continue; }
     const on = w.focus === i + 1 || (chat && w.lastOption === i + 1); // Chat's pointer is added; the option keeps its own
     const left = `${ptr(on)} ${i + 1}. ${tab.options[i].label}${tab.picked === i + 1 ? ' \u2714' : ''}`;
-    rows.push([span(ptr(on), ACC), span(` ${i + 1}.`, DIM), span(` ${tab.options[i].label}${tab.picked === i + 1 ? ' \u2714' : ''}`, on ? ACC : {}), span(' '.repeat(Math.max(0, PV_X - width(left)))), span(right, DIM)]);
+    rows.push([span(ptr(on), ACC), span(` ${i + 1}.`, DIM), span(` ${tab.options[i].label}${tab.picked === i + 1 ? ' \u2714' : ''}`, on ? ACC : {}), span(' '.repeat(Math.max(0, X - width(left)))), span(right, DIM)]);
   }
-  const noteText = tab.noteOpen ? (tab.noteText === '' ? 'Add notes on this design\u2026' : tab.noteText) : tab.note !== null ? tab.note : 'press n to add notes';
-  rows.push([], line(`${' '.repeat(PV_X)}Notes: ${noteText}`), [], [span('\u2500'.repeat(w.cols), DIM)], line(`${chat ? '\u276f' : ' '} Chat about this`), []);
+  // The Notes rows: `Notes: <text>` wrapped word by word at the pane width (the first row at X, the rest at X + 7: LC-QPB d-2, b-3). The open, empty field is one row and, when it would
+  // reach the pane's edge, Claude cuts the placeholder so the row ends exactly at the last cell with an ellipsis (LC-QPB d-3b); it is never wrapped.
+  const notesRows = [];
+  if (tab.noteOpen && tab.noteText === '') {
+    const room = w.cols - X - 'Notes: '.length; // cells left for the placeholder
+    const text = width(PV_PLACEHOLDER) + 1 <= room ? PV_PLACEHOLDER + PV_ELLIPSIS : PV_PLACEHOLDER.slice(0, Math.max(0, room - 1)) + PV_ELLIPSIS;
+    notesRows.push(line(`${' '.repeat(X)}Notes: ${text}`));
+  } else {
+    const noteText = tab.noteOpen ? tab.noteText : tab.note !== null ? tab.note : 'press n to add notes';
+    wrap(`Notes: ${noteText}`, w.cols - 1 - X, w.cols - 1 - (X + 7)).forEach((t, j) => notesRows.push(line(`${' '.repeat(j === 0 ? X : X + 7)}${t}`)));
+  }
+  rows.push([], ...notesRows, [], [span('\u2500'.repeat(w.cols), DIM)], line(`${chat ? '\u276f' : ' '} Chat about this`), []);
   const sw = w.tabs.length > 1;
   const foot = `Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 n to add notes${sw ? ' \u00b7 Tab to switch questions' : ''}${tab.noteOpen ? ' \u00b7 ctrl+g to edit in Vim' : ''} \u00b7 Esc to cancel`;
   let cur = '';
@@ -143,11 +156,23 @@ function askRows(w) {
 function reviewRows(w) {
   const done = w.tabs.filter((t) => t.answered);
   const rows = [line('⏺ Reviewing.'), [], [span('─'.repeat(w.cols), DIM)], stripRow(w, 'submit', true), [], [span('Review your answers', { b: true, fg: 231 })], []];
-  if (done.length < w.tabs.length) rows.push([span('⚠ You have not answered all questions', { fg: 220 })], []);
+  // 2.1.329/2.1.330 (v330, LC-QPB) word the warning `Some questions are unanswered`; 2.1.326 and the v328 option keep `You have not answered all questions`
+  if (done.length < w.tabs.length) rows.push([span(w.v330 ? '⚠ Some questions are unanswered' : '⚠ You have not answered all questions', { fg: 220 })], []);
   for (const t of done) rows.push([span(` ● ${t.question}`)], [span(`   → ${answerOf(t)}`, { fg: 114 })]);
-  // 2.1.328 draws no `Ready to submit your answers?` row (QP1): the options follow the answers after one blank row
-  rows.push([], ...(w.v328 ? [] : [[span('Ready to submit your answers?', DIM)], []]), line(`${ptr(w.rf === 1)} 1. Submit answers`), line(`${ptr(w.rf === 2)} 2. Cancel`));
+  // 2.1.328 and later draw no `Ready to submit your answers?` row (QP1): the options follow the answers after one blank row
+  rows.push([], ...(w.v328 || w.v330 ? [] : [[span('Ready to submit your answers?', DIM)], []]), line(`${ptr(w.rf === 1)} 1. Submit answers`), line(`${ptr(w.rf === 2)} 2. Cancel`));
   return rows;
+}
+
+const PLAN_PROMPT = 'Claude has written up a plan and is ready to execute. Would you like to proceed?';
+
+/** The plan's footer: one row, or (planPath wider than the pane) the hint row and the path on a second row at indent 3, cut at the pane width (LC-QPB m-2). */
+function planFooter(w) {
+  const path = w.planPath ?? '<plans>/demo-api.md';
+  const one = `   ctrl+g to edit in Vim · ${path}`;
+  if (width(one) <= w.cols - 1) return [[span(one, DIM)]];
+  const row = [...`   ${path}`].reduce((acc, ch) => (width(acc + ch) <= w.cols ? acc + ch : acc), '');
+  return [[span('   ctrl+g to edit in Vim ·', DIM)], [span(row, DIM)]];
 }
 
 function planRows(w) {
@@ -161,11 +186,12 @@ function planRows(w) {
     ...w.plan.prose.map((p) => line(`   ${p}`)),
     [span(`  ${'╌'.repeat(edge)}`, { fg: 239 })], ...Array(6).fill([]),
     [span(`  ${'─'.repeat(edge)}`, { fg: 73 })],
-    [span('   Claude has written up a plan and is ready to execute. Would you like to proceed?', DIM)], [],
+    // A narrow pane wraps the prompt: Claude broke an 83-cell row at 85 columns (LC-QPB m-6), so the fake wraps it six cells before the pane's edge (cols <= 85), at indent 3, directly under the rule
+    ...wrap(PLAN_PROMPT, w.cols - 6, w.cols - 6).map((p) => [span(`   ${p}`, DIM)]), [],
     ...w.plan.labels.map((l, j) => line(`   ${ptr(w.pf === j + 1)} ${j + 1}. ${l}`)),
     line(`   ${ptr(w.pf === n3)} ${n3}. ${w.plan.text ?? PLAN_TEXT_LABEL}`),
     [span('        shift+tab to approve with this feedback', DIM)], [],
-    [span('   ctrl+g to edit in Vim · <plans>/demo-api.md', DIM)],
+    ...planFooter(w),
   ];
 }
 
@@ -330,6 +356,11 @@ function key(w, name) {
  *   tabs     the form (TAB.project by default); i the current tab; focus the focused slot (1..k, k+1 the text row, 'button', k+2 chat)
  *   rf, pf   the review's and the plan's focus; plan { labels, prose, text }
  *   v328     the Review is drawn the way Claude Code 2.1.328 does: no `Ready to submit your answers?` row (default: the 2.1.326 shape)
+ *   v330     the Review is drawn the way Claude Code 2.1.329/2.1.330 do (0.5.4, QPF): the v328 layout, and the warning reads `Some questions are unanswered`
+ *   pvX, pvXOpen  the box column of a preview step (also its Notes column), closed and while the notes field is open (default 34, the same): 29 and 27 at 52 columns, as LC-QPB saw;
+ *            the open, empty field is cut at the pane's edge with an ellipsis when `Notes: Add notes on this design...` would reach it
+ *   planPath the plan file named in the plan's footer (default `<plans>/demo-api.md`); when it is wider than the pane it goes on a second footer row
+ *            (a plan prompt wider than the pane minus six cells is drawn wrapped, at indent 3)
  *   vim      Claude's input is vim (INSERT shows while the text row has focus and vimMode is 'insert'); mem { vim, plain } is nika's memory
  *   cols     the pane width; state the registry state (default 'attn')
  *   lag      captures after a key that still show the screen from before it (a late redraw)

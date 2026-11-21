@@ -1456,6 +1456,7 @@ export function createSessionControl({
       const unfit = bodyMisfit(S0, want, target);
       if (unfit) return invalid(unfit);
       if (want.note !== undefined && S0.notes.text !== null) return invalid('this step already shows a note'); // Claude keeps it; the answer carries no note
+      if (want.note !== undefined && S0.noteRoom !== true) return refuse('note-room'); // 0.5.4 (QPF, F2): Claude's open notes field would not fit this pane's width (it cuts the placeholder, which nika cannot read): nothing is sent
       const id0 = identityOf(S0);
       const noteView = noteTarget === undefined ? undefined : viewOf(S0, noteTarget); // the view of the step once the note is typed
 
@@ -1515,6 +1516,7 @@ export function createSessionControl({
         if (noteTarget === undefined) return enter(want.view);
         if (!S.notes.editing) {
           if (S.notes.text !== null) return { error: 'dialog-touched' };
+          if (S.noteRoom !== true) return { error: 'note-room' }; // 0.5.4 (QPF, F2): the pane may have narrowed since the read phase; no key has gone out on this road yet (a note request sends `n` first)
           // the reader reads an empty note (the placeholder) only in an open field, so `text === ''` also proves the field opened
           return { send: { text: 'n' }, hit: (S2) => same(S2) && S2.notes.text === '' && S2.focus === f && JSON.stringify(S2.preview) === JSON.stringify(S.preview) };
         }

@@ -2889,6 +2889,29 @@ describe('dialogOutcome: retry says which locks end when the user presses Try ag
   });
 });
 
+// ---- round 1 (QPF, S2): design 1.6 item 6, the (\u2212) half. It sits before the Try again tests on purpose: a requestFocus that draws a readable `last` again loops without end (each pass
+// sends a request), and the first test that reaches the loop must be this named one, not a heap crash further down the file. The held reply keeps a second request from ever resolving, so the loop shows as a second call.
+describe('S2 (0.5.4, QPF, round 1): a focused 200 does not draw a readable capture again', () => {
+  const FOCUSED_200 = { status: 200, body: { done: 'focused', sent: 1 } };
+
+  test('(\u2212) S2: a focused 200 arrives while a readable capture of the same step is the last one: no capture is drawn again, one POST, the pick stays on its target', async () => {
+    const h = holdReply0();
+    const r = rig({ reply: h.reply });
+    r.render(askPv());
+    const pick = inputs(r.root, 'radio')[1];
+    pick.checked = true;
+    pick.fire('change');
+    await settle();
+    assert.equal(r.log.calls.length, 1, 'the request is on its way');
+    r.render(askPv({ focus: 1 })); // a readable capture of the same step meanwhile: Claude is still at 1
+    h.held[0].resolve(FOCUSED_200);
+    await settle();
+    assert.equal(r.log.calls.length, 1, 'the readable capture is not drawn again after the 200');
+    assert.equal(inputs(r.root, 'radio')[1].checked, true, 'the pick stays on its target');
+    assert.equal(inputs(r.root, 'radio')[0].checked, false);
+  });
+});
+
 describe('Try again: the form takes answers again after nika refused one because Claude\'s dialog was touched in the terminal (0.5.2 R4)', () => {
   const RETRY_NOTE = 'Once the terminal is back as it was, nika can try again.';
   const LINE = {
@@ -3298,7 +3321,8 @@ describe('dialogOutcome and endOutcome: the copy of the preview step (0.5.4, QP)
     assert.deepEqual([mismatch.message, mismatch.lock, mismatch.retry], ["Your note didn't arrive exactly as typed, so nika stopped before pressing Enter. Fix it in the terminal.", true, false]);
     const mode = o(409, 'note-mode');
     assert.deepEqual([mode.message, mode.lock, mode.retry], ["nika can only type a note once it knows Claude's input is not in vim mode. Answer without the note, or add it in the terminal.", false, false]);
-    assert.equal(new Set([changed.message, open.message, mismatch.message, mode.message]).size, 4);
+    const room = o(409, 'note-room'); // 0.5.4 (QPF, round 1, N1): the fifth fixed line
+    assert.equal(new Set([changed.message, open.message, mismatch.message, mode.message, room.message]).size, 5);
   });
 
   test('(+) the keys nika pressed before it stopped are added to the new codes too', () => {
@@ -3659,7 +3683,7 @@ describe('a question step with a preview: notes, Chat about this and the stale l
     assert.equal(off(byText(r.root, 'Answer')), true, 'still open: locked again');
   });
 
-  test('(+) the new answers have their fixed lines: preview-changed and note-mode re-enable the form (the note stays in its field), notes-open and note-mismatch lock it, only notes-open has Try again', async () => {
+  test('(+) the new answers have their fixed lines: preview-changed and note-mode re-enable the form, notes-open and note-mismatch lock it, only notes-open has Try again; with keys pressed the note is taken off the form (0.5.4, QPF, F2)', async () => {
     const cases = [['preview-changed', false, false], ['note-mode', false, false], ['notes-open', true, true], ['note-mismatch', true, false]];
     for (const [code, locked, retry] of cases) {
       const r = withPv({}, { reply: () => ({ status: 409, body: { error: code, sent: 2 } }) });
@@ -3668,11 +3692,11 @@ describe('a question step with a preview: notes, Chat about this and the stale l
       byText(r.root, 'Answer').click();
       await settle();
       assert.equal(r.log.problem.at(-1)[1], 'warn', code);
-      assert.match(r.log.problem.at(-1)[0], / nika had pressed 2 keys in the pane before it stopped\.$/, code);
+      assert.match(r.log.problem.at(-1)[0], / nika had pressed 2 keys in the pane before it stopped\. Your note may already be in Claude's notes field, so nika took it off this form\. Check the terminal\.$/, code); // 0.5.4 (QPF, F2): keys were pressed, so the note is taken off the form
       assert.equal(off(byText(r.root, 'Answer')), locked, code);
       assert.equal(hiddenUp(byText(r.root, 'Try again')), !retry, code);
-      assert.equal(one(r.root, 'dlg-note-text'), field, `${code}: the same field`);
-      assert.equal(field.value, 'round it', `${code}: the note text stays`);
+      assert.equal(one(r.root, 'dlg-note-text'), null, `${code}: the note part is closed`);
+      assert.equal(field.value, '', `${code}: the note text is cleared`);
     }
   });
 
@@ -3680,7 +3704,7 @@ describe('a question step with a preview: notes, Chat about this and the stale l
     const r = withPv({}, { reply: () => ({ status: 200, body: { done: 'chat', sent: 4 } }) });
     const chat = byText(r.root, 'Chat about this');
     assert.deepEqual(hrefs(chat), ['#i-text']);
-    assert.match(chat.attrs.title, /Closes Claude's question so you can talk it over/);
+    assert.equal(chat.attrs.title, "Closes Claude's questions so you can talk them over with Claude instead. Answers you already gave may not reach Claude."); // 0.5.4 (QPF, F4): exact, owner ruling
     chat.click();
     chat.click();
     await settle();
@@ -3988,5 +4012,601 @@ describe('a question step with a preview: gates and corner cases (0.5.4, QP)', (
     assert.equal(answerBody(d, { chat: 1 }), null);
     assert.equal(answerBody(d, { chat: 'true' }), null);
     assert.deepEqual(answerBody(d, { chat: true }), { sig: SIG, chat: true });
+  });
+});
+
+// ---- 0.5.4 (QPF): F4 the Chat copy, F2 the note after a refusal, F1b the form the screen can no longer show -----------------------------------------
+
+const NOTE_TAKEN_TEXT = "Your note may already be in Claude's notes field, so nika took it off this form. Check the terminal.";
+const NOTE_ROOM_TEXT = "Claude's notes field doesn't fit this pane's width, so nika typed nothing. Answer without the note, make the pane wider, or add the note in the terminal.";
+const CHAT_TITLE_TEXT = "Closes Claude's questions so you can talk them over with Claude instead. Answers you already gave may not reach Claude.";
+
+describe('F4 (0.5.4, QPF): Chat about this says answers already given may not reach Claude', () => {
+  test('(+) the button title is the owner\'s text, exactly; the source carries no promise that answers stay', () => {
+    const r = rig();
+    r.render(askPv());
+    assert.equal(byText(r.root, 'Chat about this').attrs.title, CHAT_TITLE_TEXT);
+    assert.doesNotMatch(SRC, /already given stay|answers given stay|answers stay|talk it over/i, 'title and comment alike');
+    assert.match(SRC, /answers already given may not reach Claude \(LC-QPB\)/);
+  });
+
+  test('(\u2212) the title does not say anything stays, and does not mention dropped questions', () => {
+    const r = rig();
+    r.render(askPv());
+    const title = byText(r.root, 'Chat about this').attrs.title;
+    assert.doesNotMatch(title, /stay/i);
+    assert.doesNotMatch(title, /dropped/i);
+  });
+});
+
+describe('F2 (0.5.4, QPF): dialogOutcome drops a note that may already be in Claude\'s field, and holds one nika never typed', () => {
+  const o = (status, code, extra = {}) => dialogOutcome({ status, code, note: true, ...extra });
+
+  test('(+) keys pressed, or a failure that may have pressed some (status 0, 5xx): dropNote, and the message ends with the fixed sentence', () => {
+    const unread = o(409, 'dialog-unread', { sent: 1 });
+    assert.equal(unread.dropNote, true);
+    assert.equal(unread.message, `nika can't read Claude's dialog right now, so it stopped. Check the terminal, then press Try again. nika had pressed 1 key in the pane before it stopped. ${NOTE_TAKEN_TEXT}`);
+    for (const [status, code, sent] of [[409, 'note-mismatch', 2], [409, 'preview-changed', 2], [0, undefined, undefined], [500, undefined, undefined], [409, 'not-taken', 3]]) {
+      const x = o(status, code, { sent });
+      assert.equal(x.dropNote, true, `${status} ${code}`);
+      assert.ok(x.message.endsWith(` ${NOTE_TAKEN_TEXT}`), `${status} ${code}: ${x.message}`);
+      assert.equal(x.message.split(NOTE_TAKEN_TEXT).length, 2, `${status} ${code}: said once`);
+    }
+    assert.equal(o(0).message, `nika couldn't reach tmux. ${NOTE_TAKEN_TEXT}`);
+    assert.equal(o(409, 'already-answered', { sent: 1 }).dropNote, true, 'a step that was answered with keys pressed: the note is off the form too');
+    assert.equal(o(409, 'already-answered', { sent: 1 }).phase, 'answered');
+  });
+
+  test('(\u2212) a refusal before any key (400, 409, 429 without `sent`) holds the note: no dropNote, no sentence', () => {
+    for (const [status, code] of [[409, 'note-room'], [409, 'note-mode'], [409, 'notes-open'], [409, 'already-answered'], [409, 'preview-changed'], [409, 'dialog-changed'], [400, 'invalid'], [400, 'terminal-only'], [429, undefined]]) {
+      const x = o(status, code);
+      assert.equal(x.dropNote, false, `${status} ${code}`);
+      assert.ok(!x.message.includes('took it off this form'), `${status} ${code}`);
+    }
+    assert.equal(o(409, 'note-room').message, NOTE_ROOM_TEXT);
+    assert.equal(o(409, 'already-answered').message, '', 'already-answered without keys still shows no line');
+  });
+
+  test('(\u2212) a request that carried no note drops nothing and says nothing about one; neither does a success', () => {
+    for (const note of [undefined, false, 'yes', 1, null]) {
+      const x = dialogOutcome({ status: 409, code: 'note-mismatch', sent: 2, note });
+      assert.equal(x.dropNote, false, String(note));
+      assert.ok(!x.message.includes('took it off this form'), String(note));
+    }
+    assert.equal(dialogOutcome({ status: 500 }).dropNote, false);
+    for (const done of ['next', 'review', 'submitted', 'chosen', 'declined', 'chat', 'moved', 'focused']) {
+      assert.equal(o(200, undefined, { done, sent: 2 }).dropNote, false, done);
+    }
+  });
+
+  test('(+) note-room is a fixed, unlocked line, like note-mode', () => {
+    const x = o(409, 'note-room');
+    assert.deepEqual([x.ok, x.phase, x.lock, x.retry, x.kind, x.message], [false, 'failed', false, false, 'warn', NOTE_ROOM_TEXT]);
+    assert.equal(o(400, 'note-room').message, "nika couldn't send this answer. Check it and try again.", 'another status gets the generic line');
+  });
+});
+
+describe('F2 (0.5.4, QPF): the form after a refused answer that carried a note', () => {
+  const withPv = (over = {}, rigOpts = {}) => { const r = rig(rigOpts); r.render(askPv(over)); return r; };
+  const typeNote = (r, v) => { const t = one(r.root, 'dlg-note-text'); t.value = v; t.fire('input'); return t; };
+
+  test('(+) keys were pressed: the note input is empty, the note part closed and the sentence shown; Try again, then Answer, posts no note', async () => {
+    const r = withPv({}, { reply: () => ({ status: 409, body: { error: 'dialog-unread', sent: 1 } }) });
+    byText(r.root, 'Add a note').click();
+    const field = typeNote(r, 'round it');
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r), [{ sig: SIG, view: VIEW, picks: [1], note: 'round it' }]);
+    assert.equal(r.log.problem.at(-1)[0].endsWith(` ${NOTE_TAKEN_TEXT}`), true);
+    assert.equal(field.value, '', 'the text is gone');
+    assert.equal(one(r.root, 'dlg-note-text'), null, 'the field is not drawn');
+    assert.equal(byText(r.root, 'Add a note').attrs['aria-expanded'], 'false');
+    assert.equal(field.parent.all(withClass('dlg-count'))[0].hidden, true, 'the counter went with it');
+    byText(r.root, 'Try again').click();
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(sentBodies(r).length, 2);
+    assert.deepEqual(sentBodies(r)[1], { sig: SIG, view: VIEW, picks: [1] }, 'no note is typed again into a field Claude may have open');
+  });
+
+  test('(+) a failure that may have pressed keys (status 0, a 500) takes the note off the form too', async () => {
+    for (const reply of [{ status: 0, body: null }, { status: 500, body: null }]) {
+      const r = withPv({}, { reply: () => reply });
+      byText(r.root, 'Add a note').click();
+      const field = typeNote(r, 'round it');
+      byText(r.root, 'Answer').click();
+      await settle();
+      assert.equal(field.value, '', String(reply.status));
+      assert.equal(one(r.root, 'dlg-note-text'), null, String(reply.status));
+      assert.ok(r.log.problem.at(-1)[0].endsWith(NOTE_TAKEN_TEXT), String(reply.status));
+    }
+  });
+
+  test('(+) 409 note-room: the form is live again, the note stays in the same field, and the note-room line is shown', async () => {
+    const r = withPv({}, { reply: () => ({ status: 409, body: { error: 'note-room' } }) });
+    byText(r.root, 'Add a note').click();
+    const field = typeNote(r, 'round it');
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(r.log.problem.at(-1), [NOTE_ROOM_TEXT, 'warn']);
+    assert.equal(off(byText(r.root, 'Answer')), false, 'live again');
+    assert.equal(one(r.root, 'dlg-note-text'), field);
+    assert.equal(field.value, 'round it');
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(sentBodies(r).length, 2);
+    assert.equal(sentBodies(r)[1].note, 'round it', 'a second try sends the note it still has');
+  });
+
+  test('(\u2212) an answer that carried no note says nothing about one, and a typed note beside a no-note body stays', async () => {
+    const r = withPv({}, { reply: () => ({ status: 409, body: { error: 'dialog-unread', sent: 1 } }) });
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.ok(!r.log.problem.at(-1)[0].includes('took it off this form'));
+    const refused = withPv({}, { reply: () => ({ status: 409, body: { error: 'note-mode' } }) });
+    byText(refused.root, 'Add a note').click();
+    const field = typeNote(refused, 'round it');
+    byText(refused.root, 'Answer').click();
+    await settle();
+    assert.equal(field.value, 'round it', 'no key pressed: the note stays');
+    assert.ok(!refused.log.problem.at(-1)[0].includes('took it off this form'));
+  });
+
+  test('(\u2212) the dialog closed while the request ran: the refusal clears nothing and the page stays quiet', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    byText(r.root, 'Add a note').click();
+    typeNote(r, 'round it');
+    byText(r.root, 'Answer').click();
+    r.render(null);
+    h.held[0].resolve({ status: 409, body: { error: 'dialog-unread', sent: 1 } });
+    await settle();
+    assert.equal(r.df.shown(), false);
+    assert.equal(r.root.kids.length, 0);
+  });
+});
+
+describe('F1b (0.5.4, QPF): a form the last request changed is dropped when the screen cannot be read', () => {
+  const stepsOf = (root) => q(root, 'dlg-tab');
+  const pickFirst = (r) => { const i = inputs(r.root, 'radio')[0]; i.checked = true; i.fire('change'); };
+  const answered = async (done, status = 200) => {
+    const r = rig({ reply: () => (status === 200 ? { status, body: { done, sent: 1 } } : { status, body: { error: done, sent: 1 } }) });
+    r.render(ask());
+    pickFirst(r);
+    byText(r.root, 'Send answer').click();
+    await settle();
+    return r;
+  };
+  const readingNow = (r) => {
+    assert.equal(r.root.attrs['data-s'], 'reading');
+    assert.equal(buttons(r.root).length, 0, 'no form control is left');
+    assert.equal(one(r.root, 'dlg-fs'), null);
+    assert.equal(chip(r.root).textContent, 'Reading');
+    assert.equal(r.df.live(), false);
+  };
+  const withPv = (over = {}, rigOpts = {}) => { const r = rig(rigOpts); r.render(askPv(over)); return r; };
+  const typeNote = (r, v) => { const t = one(r.root, 'dlg-note-text'); t.value = v; t.fire('input'); return t; };
+  const pickPv = (r, n) => { const i = inputs(r.root, 'radio')[n - 1]; i.checked = true; i.fire('change'); };
+  const FOCUSED = { status: 200, body: { done: 'focused', sent: 1 } };
+
+  test('(+) every answer that changes Claude\'s step (next, review, submitted, chosen, declined, chat) then an unreadable screen: Reading at once, the banner after READING_MS', async () => {
+    for (const done of ['next', 'review', 'submitted', 'chosen', 'declined', 'chat']) {
+      const r = await answered(done);
+      r.render(unreadable());
+      readingNow(r);
+      const before = r.log.refresh;
+      r.advance(READING_MS - 1);
+      assert.equal(r.df.shown(), true, `${done}: still Reading`);
+      r.advance(1);
+      assert.equal(r.df.shown(), false, `${done}: the banner takes over`);
+      assert.equal(r.root.hidden, true, done);
+      assert.ok(r.log.refresh > before, `${done}: the page redraws its banner`);
+    }
+  });
+
+  test('(+) a step move (done: moved) then an unreadable screen: Reading', async () => {
+    const r = rig({ reply: () => ({ status: 200, body: { done: 'moved', sent: 2 } }) });
+    r.render(multi({ tabs: [{ header: 'Project', answered: true }, { header: 'Mode', answered: false }, { header: 'Scope', answered: false }], current: 0 }));
+    stepsOf(r.root)[1].click();
+    await settle();
+    assert.equal(r.root.attrs['data-s'], 'moving');
+    r.render(unreadable());
+    readingNow(r);
+  });
+
+  test('(+) 409 already-answered then an unreadable screen: Reading', async () => {
+    const r = await answered('already-answered', 409);
+    assert.equal(chip(r.root).textContent, 'Answered');
+    r.render(unreadable());
+    readingNow(r);
+  });
+
+  test('(+) a focused 200, then an unreadable screen before any readable capture: Reading; the same question read again rebuilds the form with the note typed before', async () => {
+    const r = withPv({}, { reply: () => FOCUSED });
+    byText(r.root, 'Add a note').click();
+    typeNote(r, 'round it');
+    pickPv(r, 2);
+    await settle();
+    r.render(unreadable());
+    readingNow(r);
+    focus.el = r.box;
+    r.render(askPv({ focus: 2 }));
+    const field = one(r.root, 'dlg-note-text');
+    assert.ok(field, 'the note field is open again');
+    assert.equal(field.value, 'round it');
+    assert.equal(byText(r.root, 'Add a note').attrs['aria-expanded'], 'true');
+    assert.equal(one(r.root, 'dlg-count').hidden, true);
+    assert.equal(focus.el, r.box, 'restoring the note does not take the focus');
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r).at(-1), { sig: SIG, view: VIEW, picks: [2], note: 'round it' });
+  });
+
+  test('(\u2212) a held note comes back once: a form rebuilt for the same question (another sig) starts without it', async () => {
+    const r = withPv({}, { reply: () => FOCUSED });
+    byText(r.root, 'Add a note').click();
+    typeNote(r, 'round it');
+    pickPv(r, 2);
+    await settle();
+    r.render(unreadable());
+    r.render(askPv({ focus: 2 }));
+    assert.equal(one(r.root, 'dlg-note-text').value, 'round it');
+    r.render(askPv({ sig: SIG2, focus: 2 }));
+    assert.equal(one(r.root, 'dlg-note-text'), null, 'the held note came back once, not again for a rebuilt form');
+  });
+
+  test('(+) a focus request in flight, an unreadable capture drawn (the form is kept), then the 200: Reading at once, with no further capture', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    pickPv(r, 2);
+    await settle();
+    r.render(unreadable());
+    assert.equal(r.root.attrs['data-s'], 'ready', 'kept while the request runs');
+    assert.ok(one(r.root, 'dlg-fs'));
+    h.held[0].resolve(FOCUSED);
+    await settle();
+    readingNow(r);
+    assert.equal(r.log.calls.length, 1, 'no capture was needed');
+  });
+
+  test('(+) focus inside the form at the drop: the form root holds it through Reading; a readable capture then hands it to the new step\'s heading', async () => {
+    const r = await answered('next');
+    inputs(r.root, 'radio')[0].focus();
+    r.render(unreadable());
+    assert.equal(focus.el, r.root);
+    r.render(ask({ sig: SIG2, question: 'Which cache?' }));
+    assert.equal(focus.el.tag, 'legend');
+    assert.equal(focus.el.textContent, 'Which cache?');
+  });
+
+  test('(+) the drop, then READING_MS passes: the banner takes over and the composer has the focus (a hidden root cannot hold it)', async () => {
+    const r = await answered('next');
+    inputs(r.root, 'radio')[0].focus();
+    r.render(unreadable());
+    assert.equal(focus.el, r.root);
+    const before = r.log.boxFocus;
+    r.advance(READING_MS);
+    assert.equal(r.df.shown(), false);
+    assert.equal(focus.el, r.box);
+    assert.equal(r.log.boxFocus, before + 1);
+  });
+
+  test('(\u2212) a focus the user moved elsewhere stays there: before the drop, and during Reading', async () => {
+    const r = await answered('next');
+    focus.el = r.box;
+    r.render(unreadable());
+    assert.equal(focus.el, r.box, 'the drop moves no focus that was outside the form');
+    r.render(ask({ sig: SIG2, question: 'Which cache?' }));
+    assert.equal(focus.el, r.box, 'nor does the next form');
+    const s = await answered('next');
+    s.root.focus();
+    s.render(unreadable());
+    focus.el = s.box;
+    s.render(ask({ sig: SIG2, question: 'Which cache?' }));
+    assert.equal(focus.el, s.box, 'the user moved the focus to the composer during Reading');
+  });
+
+  // ---- QPF S1 (round 1, then taken out by the Q1 = C ruling): a note being typed when the form drops comes back with its text, and the heading gets the focus, whatever had it at the drop ---------------
+  const droppedWith = async (focusOn, over = {}) => { // a typed note, the focus request answered (assumed), the focus put by `focusOn`, then an unreadable screen
+    const r = withPv({}, { reply: () => FOCUSED });
+    byText(r.root, 'Add a note').click();
+    const field = typeNote(r, 'round it');
+    pickPv(r, 2);
+    await settle();
+    if (focusOn) focusOn(r, field).focus();
+    r.render(unreadable());
+    return { r, field, over };
+  };
+
+  test('(\u2212) S1: the focus is in the note input at the drop, a readable capture of the same step follows: the note is back, the heading has the focus, not the note field (where Enter sends)', async () => {
+    const { r, field } = await droppedWith((_, f) => f);
+    assert.equal(focus.el, r.root, 'the root holds the focus through Reading');
+    readingNow(r);
+    r.render(askPv({ focus: 2 }));
+    const back = one(r.root, 'dlg-note-text');
+    assert.ok(back && back !== field, 'a new field');
+    assert.equal(back.value, 'round it');
+    assert.equal(focus.el.tag, 'legend', 'the heading has the focus: the page never moves it into a field where Enter sends');
+    assert.equal(focus.el.textContent, 'Which shape?');
+    assert.notEqual(focus.el, back);
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(sentBodies(r).at(-1), { sig: SIG, view: VIEW, picks: [2], note: 'round it' });
+  });
+
+  test('(\u2212) S1: the focus is on a radio or on the form root at the drop: after the rebuild the heading has it, not the note field (the note is back all the same)', async () => {
+    for (const [why, on] of [['a radio', (r) => inputs(r.root, 'radio')[0]], ['the root', (r) => r.root]]) {
+      const { r } = await droppedWith(on);
+      r.render(askPv({ focus: 2 }));
+      const back = one(r.root, 'dlg-note-text');
+      assert.equal(back.value, 'round it', `${why}: the note comes back`);
+      assert.equal(focus.el.tag, 'legend', why);
+      assert.equal(focus.el.textContent, 'Which shape?', why);
+      assert.notEqual(focus.el, back, why);
+    }
+  });
+
+  test('(\u2212) S1: the focus is in the note input but the field is empty: nothing is held and the heading has the focus', async () => {
+    const r = withPv({}, { reply: () => FOCUSED });
+    byText(r.root, 'Add a note').click();
+    const field = typeNote(r, '');
+    pickPv(r, 2);
+    await settle();
+    field.focus();
+    r.render(unreadable());
+    r.render(askPv({ focus: 2 }));
+    assert.equal(one(r.root, 'dlg-note-text'), null, 'no note to bring back');
+    assert.equal(focus.el.tag, 'legend');
+  });
+
+  test('(\u2212) S1: a held note that is not restored (the step shows a saved note, has its field open, or is terminal-only) never takes the focus', async () => {
+    const cases = [['a saved note', { notes: { text: 'saved', editing: false } }], ['the field open', { notes: { text: '', editing: true } }], ['the field open, no text read', { notes: { text: null, editing: true } }], ['terminal only', { bypass: true }]];
+    for (const [why, over] of cases) {
+      const { r } = await droppedWith((_, f) => f);
+      r.render(askPv({ focus: 2, ...over }));
+      assert.equal(one(r.root, 'dlg-note-text'), null, `${why}: no field`);
+      assert.equal(focus.el.tag, 'legend', `${why}: the heading has the focus`);
+    }
+  });
+
+  test('(\u2212) S1: a focus the user moved elsewhere during Reading stays there; the note field does not take it', async () => {
+    const { r } = await droppedWith((_, f) => f);
+    focus.el = r.box;
+    r.render(askPv({ focus: 2 }));
+    assert.equal(one(r.root, 'dlg-note-text').value, 'round it', 'the note is back');
+    assert.equal(focus.el, r.box);
+  });
+
+  // ---- QPF N7 (round 2, pins since Q1 = C): a held note never takes the focus, also when Claude returns to its step after another one ----
+  test('(\u2212) N7: the drop with the note focused, the next capture shows another step, the user focuses a radio there, then Claude returns to the first step: the heading has the focus, the note is back, the field does not take it', async () => {
+    const { r } = await droppedWith((_, f) => f);
+    assert.equal(focus.el, r.root, 'the root holds the focus through Reading');
+    r.render(askPv({ sig: SIG2, current: 1, question: 'Which size?' })); // Claude moved on without the page asking
+    assert.equal(focus.el.tag, 'legend');
+    assert.equal(focus.el.textContent, 'Which size?');
+    inputs(r.root, 'radio')[0].focus(); // the user works on the other step
+    assert.equal(focus.el.tag, 'input');
+    r.render(askPv({ focus: 2 })); // and Claude is back on the first step
+    const back = one(r.root, 'dlg-note-text');
+    assert.equal(back.value, 'round it', 'the held note is back');
+    assert.equal(focus.el.tag, 'legend', 'the heading has the focus: a held key answers nothing unseen');
+    assert.equal(focus.el.textContent, 'Which shape?');
+    assert.notEqual(focus.el, back);
+  });
+
+  test('(\u2212) N7: a restored note that was held while its field had the focus, and the user has the first step\'s button focused when Claude returns: the step button keeps the focus, not the note field', async () => {
+    const { r } = await droppedWith((_, f) => f);
+    r.render(askPv({ sig: SIG2, current: 1, question: 'Which size?' }));
+    const mine = stepsOf(r.root).find((b) => b.getAttribute('data-tab') === '0');
+    assert.ok(mine, 'the first step has its button in the strip');
+    mine.focus(); // focused, not clicked: nothing is sent
+    assert.equal(r.log.calls.length, 1, 'only the focus request of the setup');
+    r.render(askPv({ focus: 2 }));
+    const back = one(r.root, 'dlg-note-text');
+    assert.equal(back.value, 'round it', 'the held note is back');
+    assert.equal(focus.el.tag, 'button');
+    assert.equal(focus.el.getAttribute('data-tab'), '0');
+    assert.equal(stepsOf(r.root).includes(focus.el), true, 'a button of the new strip');
+    assert.notEqual(focus.el, back);
+  });
+
+  // ---- QPF N7b, FLOW-A and PROBE-6 (round 3, pins since Q1 = C): after a drop the heading gets the focus, never the note field, so Enter cannot answer an option the user did not pick ----
+  test('(\u2212) N7b: the drop with the note focused, the next capture shows another step, the user clicks that step\'s background (the root takes the focus), then Claude returns to the first step: the heading has the focus, the note is back, the field does not take it', async () => {
+    const { r } = await droppedWith((_, f) => f);
+    r.render(askPv({ sig: SIG2, current: 1, question: 'Which size?' })); // Claude moved on without the page asking
+    assert.equal(focus.el.tag, 'legend');
+    assert.equal(focus.el.textContent, 'Which size?');
+    r.root.focus(); // a click on text that is not a control: the browser focuses the form root (tabindex -1)
+    assert.equal(focus.el, r.root);
+    r.render(askPv({ focus: 2 })); // and Claude is back on the first step
+    const back = one(r.root, 'dlg-note-text');
+    assert.equal(back.value, 'round it', 'the held note is back');
+    assert.equal(focus.el.tag, 'legend', 'the heading has the focus: a held key answers nothing unseen');
+    assert.equal(focus.el.textContent, 'Which shape?');
+    assert.notEqual(focus.el, back);
+  });
+
+  const enterHere = async (r) => { for (const el of [focus.el, r.root]) el.fire('keydown', { key: 'Enter' }); await settle(); }; // Enter where the focus is, and on the form (no handler there)
+
+  test('(\u2212) FLOW-A: the user picks 2, then 3 while the request for 2 runs, and types a note in its field; an unreadable capture, then the 200 for 2 drops the form before 3 is asked; Claude is on 2 when the step is read again: the heading has the focus, the note is back, Enter posts nothing', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    byText(r.root, 'Add a note').click();
+    pickPv(r, 2);
+    await settle();
+    pickPv(r, 3); // waits behind the request for 2
+    await settle();
+    const field = typeNote(r, 'round it');
+    field.focus();
+    field.fire('keydown', { key: 'Enter' });
+    await settle();
+    assert.equal(r.log.calls.length, 1, 'before the drop Enter sends nothing: 3 is not where Claude is');
+    r.render(unreadable());
+    assert.equal(r.root.attrs['data-s'], 'ready', 'kept while the request runs');
+    h.held[0].resolve(FOCUSED);
+    await settle();
+    readingNow(r);
+    assert.equal(r.log.calls.length, 1, 'the request for 3 was never sent');
+    r.render(askPv({ focus: 2 }));
+    const back = one(r.root, 'dlg-note-text');
+    assert.equal(back.value, 'round it', 'the held note is back');
+    assert.equal(focus.el.tag, 'legend', 'the heading has the focus, not the note field');
+    assert.equal(focus.el.textContent, 'Which shape?');
+    assert.notEqual(focus.el, back);
+    await enterHere(r);
+    assert.equal(r.log.calls.length, 1, 'Enter answers nothing');
+  });
+
+  test('(\u2212) PROBE-6: the drop with the note focused, then a readable capture of the same step shows Claude on another option than the user picked (1, not 2): the heading has the focus, the note is back, Enter posts nothing', async () => {
+    const { r } = await droppedWith((_, f) => f);
+    r.render(askPv({ focus: 1 }));
+    const back = one(r.root, 'dlg-note-text');
+    assert.equal(back.value, 'round it', 'the held note is back');
+    assert.equal(inputs(r.root, 'radio')[0].checked, true, 'the form shows where Claude is');
+    assert.equal(focus.el.tag, 'legend', 'the heading has the focus, not the note field');
+    assert.equal(focus.el.textContent, 'Which shape?');
+    assert.notEqual(focus.el, back);
+    await enterHere(r);
+    assert.equal(r.log.calls.length, 1, 'Enter answers nothing (the one call is the focus request of the setup)');
+  });
+
+  test('(\u2212) no request yet: an unreadable screen keeps the form, with its note, and no Reading', () => {
+    const r = rig();
+    r.render(ask());
+    const form = one(r.root, 'dlg-fs');
+    r.render(unreadable({ reason: 'cut' }));
+    assert.equal(one(r.root, 'dlg-fs'), form);
+    assert.equal(r.root.attrs['data-s'], 'ready');
+    const kept = r.root.all((n) => withClass('dlg-note')(n) && /can't read Claude's dialog/.test(n.textContent))[0];
+    assert.equal(kept.hidden, false);
+    r.advance(READING_MS * 3);
+    assert.equal(r.df.shown(), true);
+  });
+
+  test('(\u2212) 409 dialog-unread with keys sent: the form stays kept with its lock and Try again', async () => {
+    const r = await answered('dialog-unread', 409);
+    const form = one(r.root, 'dlg-fs');
+    r.render(unreadable());
+    assert.equal(one(r.root, 'dlg-fs'), form);
+    assert.equal(r.root.attrs['data-s'], 'failed');
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), false);
+    const kept = r.root.all((n) => withClass('dlg-note')(n) && /can't read Claude's dialog/.test(n.textContent))[0];
+    assert.equal(kept.hidden, false);
+  });
+
+  test('(\u2212) every failed answer (409, 400, 429, 500, network) keeps its form, message and Try again when the screen is unreadable', async () => {
+    for (const [status, error] of [[409, 'dialog-touched'], [409, 'not-taken'], [400, 'invalid'], [429, undefined], [500, undefined], [0, undefined]]) {
+      const r = rig({ reply: () => ({ status, body: error ? { error } : null }) });
+      r.render(ask());
+      pickFirst(r);
+      byText(r.root, 'Send answer').click();
+      await settle();
+      const form = one(r.root, 'dlg-fs');
+      r.render(unreadable());
+      assert.equal(one(r.root, 'dlg-fs'), form, `${status} ${error}`);
+      assert.notEqual(r.root.attrs['data-s'], 'reading', `${status} ${error}`);
+    }
+  });
+
+  test('(\u2212) a focused 200, then a readable capture of the same sig (the focus is settled), then unreadable: the form stays kept', async () => {
+    const r = withPv({}, { reply: () => FOCUSED });
+    pickPv(r, 2);
+    await settle();
+    r.render(askPv({ focus: 2 }));
+    const form = one(r.root, 'dlg-fs');
+    r.render(unreadable());
+    assert.equal(one(r.root, 'dlg-fs'), form);
+    assert.notEqual(r.root.attrs['data-s'], 'reading');
+  });
+
+  test('(\u2212) a step\'s unsent input stays for a later visit: the drop does not clear what other steps hold', async () => {
+    const BODY = (over = {}) => multi({ tabs: [{ header: 'Project', answered: true }, { header: 'Mode', answered: false }, { header: 'Scope', answered: false }], current: 0, ...over });
+    const r = rig({ reply: () => ({ status: 200, body: { done: 'moved', sent: 2 } }) });
+    r.render(BODY());
+    inputs(r.root, 'checkbox')[0].checked = true;
+    inputs(r.root, 'checkbox')[0].fire('change');
+    stepsOf(r.root)[1].click();
+    await settle();
+    r.render(BODY({ sig: SIG2, current: 1, question: 'Which mode?' }));
+    r.state.reply = () => ({ status: 200, body: { done: 'next', sent: 1 } });
+    inputs(r.root, 'checkbox')[0].checked = true;
+    inputs(r.root, 'checkbox')[0].fire('change');
+    byText(r.root, 'Answer').click();
+    await settle();
+    r.render(unreadable());
+    readingNow(r);
+    r.render(BODY());
+    assert.equal(inputs(r.root, 'checkbox')[0].checked, true, 'the first step\'s unsent pick is still there');
+  });
+
+  test('(\u2212) a held note is not put into a step that shows a saved note, has its field open in the terminal, or is terminal-only; nothing of it comes back later', async () => {
+    const cases = [['a saved note', { notes: { text: 'saved', editing: false } }], ['the field open', { notes: { text: '', editing: true } }], ['the field open, no text read', { notes: { text: null, editing: true } }], ['terminal only', { bypass: true }]];
+    for (const [why, over] of cases) {
+      const r = withPv({}, { reply: () => FOCUSED });
+      byText(r.root, 'Add a note').click();
+      typeNote(r, 'round it');
+      pickPv(r, 2);
+      await settle();
+      r.render(unreadable());
+      r.render(askPv({ focus: 2, ...over }));
+      assert.equal(one(r.root, 'dlg-note-text'), null, why);
+      r.render(askPv({ focus: 2 }));
+      assert.equal(one(r.root, 'dlg-note-text'), null, `${why}: and not when the step is plain again`);
+      assert.equal(byText(r.root, 'Add a note').attrs['aria-expanded'], 'false', why);
+    }
+  });
+
+  test('(+) an unreadable screen while an answer is on its way keeps the form until the 200; the 200 then drops it (Reading)', async () => {
+    const h = holdReply0();
+    const r = rig({ reply: h.reply });
+    r.render(ask());
+    pickFirst(r);
+    byText(r.root, 'Send answer').click();
+    const form = one(r.root, 'dlg-fs');
+    r.render(unreadable());
+    assert.equal(one(r.root, 'dlg-fs'), form, 'the request decides when it ends');
+    h.held[0].resolve({ status: 200, body: { done: 'next', sent: 1 } });
+    await settle();
+    readingNow(r);
+  });
+
+  test('(\u2212) a note whose answer was sent is not held: the 200 answered the step, the note went with it', async () => {
+    const h = holdReply0();
+    const r = withPv({}, { reply: h.reply });
+    byText(r.root, 'Add a note').click();
+    typeNote(r, 'round it');
+    pickPv(r, 2);
+    r.render(askPv({ focus: 2 })); // Claude's focus shows at 2 while the request still runs
+    h.held[0].resolve(FOCUSED);
+    await settle();
+    byText(r.root, 'Answer').click(); // the next request is held too
+    r.render(unreadable());
+    assert.ok(one(r.root, 'dlg-note-text'), 'still on screen while the answer runs');
+    h.held[1].resolve({ status: 200, body: { done: 'next', sent: 3 } });
+    await settle();
+    readingNow(r);
+    r.render(askPv({ focus: 2 }));
+    assert.equal(one(r.root, 'dlg-note-text'), null);
+  });
+
+  test('(\u2212) a preview step\'s note does not survive a step move (as in 0.5.4 QP); a note held for a question does not break a plain step with the same place', async () => {
+    const r = rig({ reply: () => ({ status: 200, body: { done: 'moved', sent: 2 } }) });
+    r.render(askPv());
+    byText(r.root, 'Add a note').click();
+    typeNote(r, 'round it');
+    stepsOf(r.root)[1].click();
+    await settle();
+    r.render(askPv({ sig: SIG2, current: 1, question: 'Which size?' }));
+    r.render(askPv());
+    assert.equal(one(r.root, 'dlg-note-text'), null, 'the step move kept no note');
+    const h = withPv({}, { reply: () => FOCUSED });
+    byText(h.root, 'Add a note').click();
+    typeNote(h, 'round it');
+    pickPv(h, 2);
+    await settle();
+    h.render(unreadable());
+    assert.doesNotThrow(() => h.render(ask({ tabs: tabs(2), current: 0, final: false, question: 'Which shape?', other: false })));
+    assert.ok(one(h.root, 'dlg-fs'), 'the plain step is drawn');
+    assert.equal(one(h.root, 'dlg-note-text'), null);
   });
 });

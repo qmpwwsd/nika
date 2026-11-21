@@ -3827,6 +3827,14 @@ describe('0.5.4 QP + O2: previewHidden, cutPlan and growWanted', () => {
     for (const v of [null, undefined, 'cut', 7, true, []]) assert.equal(cutPlan(v), false, String(v));
   });
 
+  test('(\u2212) 0.5.4 QPF F3: a plan that is unreadable as `wide` (a wrapped prompt or footer) or as `layout` (both dashed rules on screen, no prompt row) is not grown for', () => {
+    for (const reason of ['wide', 'layout']) {
+      assert.equal(growWanted({ ...PLAN_CUT, reason }), false, reason);
+      assert.equal(cutPlan({ ...PLAN_CUT, reason }), false, reason);
+    }
+    assert.equal(growWanted(PLAN_CUT), true, 'a cut plan still is');
+  });
+
   test('(+) growWanted is the union: a cut question, a preview with hidden lines, a cut plan; (\u2212) nothing else', () => {
     assert.equal(growWanted({ state: 'unreadable', kind: 'ask', reason: 'cut' }), true);
     assert.equal(growWanted(PV()), true);

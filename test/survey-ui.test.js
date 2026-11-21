@@ -961,6 +961,7 @@ describe('session.js hooks (noteScreen, renderMode, sendComposer), run in a vm',
     const ctx = {
       paneId: '%12', SW: { parts: [{}], busy: null }, W, A: { kind: 'idle', name: 'builder-1', attention: '', ...over.A }, switcherState: () => ({ reason: '' }),
       renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, panelsChanged() {}, DF: null,
+      growing: () => false, // 0.5.4 QPF F6 (requirement change): renderMode reads growing() before it asks whether there is a form, to remember what the form was told
       SV: over.SV === undefined ? { render: (a) => calls.push(norm(a)) } : over.SV,
     };
     return { calls, W, render: mk(['function renderMode()'], ctx).renderMode };
