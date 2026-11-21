@@ -25,7 +25,7 @@ import { badSend } from './keys.js';
 import { tagPane, pickState, claudePane, inProject } from './orchestrate.js';
 import { createFit, checkFitBody, FIT_RATE } from './fit.js';
 import { createScroll, checkScrollBody } from './scroll.js';
-import { ID, UPLOAD_CAP, PER_MESSAGE, checkUploadBody } from './attachments.js';
+import { ID, UPLOAD_CAP, MAX_BYTES, PER_MESSAGE, checkUploadBody } from './attachments.js';
 import { createAttachSend, checkAttachBody, logLine } from './attach-send.js';
 import { createAutoCompact } from './autocompact.js';
 import { SIG } from './draft.js';
@@ -43,6 +43,28 @@ const CAP = { small: 4 * 1024, submit: 1024, settings: 16 * 1024, keys: 20 * 102
 const answersPrompt = (b) => (Array.isArray(b.keys) && (b.keys.includes('Enter') || b.keys.includes('BTab'))) || (typeof b.text === 'string' && /[0-9]/.test(b.text)) || (b.paste !== undefined && b.paste !== null);
 const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const IMAGE_TYPE_NAMES = Object.values(IMAGE_MEDIA); // png, jpeg, gif, webp: the types an image route may answer with
+const ATTACH_TYPE_NAMES = new Set([...IMAGE_TYPE_NAMES, 'pdf', 'text']); // the six types the store gives a file
+const LABEL_MAX = 255; // a chip label (the last part of the file name, through clean())
+
+/** The answer of GET .../attachments, rebuilt from whatever the store gave (0.5.4, AT): exactly { files: [{ id, name, type, size }], gone: [name] }, at most PER_MESSAGE of each. */
+function trayAnswer(given) {
+  const out = { files: [], gone: [] };
+  if (!isPlain(given)) return out;
+  if (Array.isArray(given.files)) {
+    for (const f of given.files) {
+      if (out.files.length >= PER_MESSAGE) break;
+      if (isPlain(f) && typeof f.id === 'string' && ID.test(f.id) && ATTACH_TYPE_NAMES.has(f.type) && Number.isInteger(f.size) && f.size >= 1 && f.size <= MAX_BYTES
+        && typeof f.name === 'string' && f.name.length <= LABEL_MAX) out.files.push({ id: f.id, name: f.name, type: f.type, size: f.size });
+    }
+  }
+  if (Array.isArray(given.gone)) {
+    for (const name of given.gone) {
+      if (out.gone.length >= PER_MESSAGE) break;
+      if (typeof name === 'string' && name.length <= LABEL_MAX) out.gone.push(name);
+    }
+  }
+  return out;
+}
 const err = (status, error, message) => ({ status, body: { error, message } });
 // App copy (ADR 0011): fixed codes and texts only, never a path or OS error text (the module's errors carry just a code)
 const COPY_ERRORS = {
@@ -104,7 +126,7 @@ async function listTemplates(dir) {
  *                           createFit, the same for the factory in fit.js;
  *                           createScroll, the same for the factory in scroll.js;
  *                           readImage, a test seam for the one in collect/history.js (the picture a history entry names; default: the real one);
- *                           attachments, the attachment store (src/attachments.js, built by appio.js: save, lookup, remove, markSent, readImage);
+ *                           attachments, the attachment store (src/attachments.js, built by appio.js: save, lookup, remove, markSent, readImage, and the pane trays of 0.5.4, AT: bindTray, hasTray, listTray, dropPanes);
  *                           createAttachSend, the same seam for the factory in attach-send.js;
  *                           createAutoCompact, the same for the sweeper of the typed /compact in autocompact.js (0.5.4, AC; built here, ticked by appio.js, exposed as ctx.autoCompact);
  *                           log(line), where the attachment lines (`nika: attachments: <code>`) go: appio's stderr, the same as the store's (default: process.stderr) }
@@ -149,6 +171,9 @@ export function createAppApi({ secret, ctx, deps }) {
       // a typing stamp (0.5.4, AC) goes only when a GOOD tmux listing no longer lists the pane (the id may be reused), the sweeper's forget-unlisted rule: a registry read
       // that missed a live session (a failed readdir, a session file read mid-write) must not delete it, or C6 (no user action in the last 60 s) could be skipped
       if (!error) for (const id of [...touched.keys()]) if (!panes.has(id)) touched.delete(id);
+      // the unsent attachments of a pane (0.5.4, AT) go with its session: only a GOOD listing that no longer lists the pane, or lists it dead, drops its tray (a pane
+      // that is listed but not eligible for a moment keeps it: deleting files is worse than keeping them). Not awaited: dropPanes never rejects
+      if (!error && typeof deps.attachments?.dropPanes === 'function') deps.attachments.dropPanes((p) => { const row = panes.get(p); return !row || row.dead === true; });
       return e;
     })();
     eligibility = { at: t, promise };
@@ -277,14 +302,20 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   /**
-   * The repository key a pane's attachments are filed under: from nika's own snapshot when exactly one live agent claims the pane,
-   * else the key of a pane nika started; never from the request. null = unknown or ambiguous (two claims), the route answers 409.
+   * What a pane's attachments are filed under: `{ key, owner }`, from nika's own snapshot, never from the request. `key` is the repository key when exactly one
+   * live agent claims the pane, else the key of a pane nika started; null = unknown or ambiguous (two claims), the route answers 409. `owner` (0.5.4, AT) is the
+   * Claude that holds the pane, `{ pid, session }`: the claiming row's pid, and the session in the pane (`hostId ?? id`: after /compact the row is the background
+   * child's, whose `hostId` is the session the pane had); null when no row claims it (a pane nika started whose entry is not written yet) or neither part is known.
    */
-  async function paneKey(id) {
+  async function paneClaim(id) {
     const claims = [];
-    for (const g of (await loadEligibility()).snapshot?.groups ?? []) for (const a of g.agents) if (a.live && a.pane?.id === id) claims.push(g.key);
-    const key = claims.length === 0 ? ctx.started.get(id)?.key : claims.length === 1 ? claims[0] : null;
-    return typeof key === 'string' && PROJECT_KEY.test(key) ? key : null;
+    for (const g of (await loadEligibility()).snapshot?.groups ?? []) for (const a of g.agents) if (a.live && a.pane?.id === id) claims.push({ key: g.key, agent: a });
+    const key = claims.length === 0 ? ctx.started.get(id)?.key : claims.length === 1 ? claims[0].key : null;
+    if (typeof key !== 'string' || !PROJECT_KEY.test(key)) return { key: null, owner: null };
+    const a = claims.length === 1 ? claims[0].agent : null;
+    const pid = Number.isInteger(a?.pid) && a.pid > 0 ? a.pid : null;
+    const session = typeof (a?.hostId ?? a?.id) === 'string' ? (a.hostId ?? a.id) : null;
+    return { key, owner: pid === null && session === null ? null : { pid, session } };
   }
 
   // --- projects ---
@@ -742,6 +773,23 @@ export function createAppApi({ secret, ctx, deps }) {
     return scroller.scroll(id, body);
   });
 
+  // 0.5.4 (AT): the pane's unsent attachments, for the session window when it opens (or comes back from the back/forward cache), so the chips return after the
+  // page was left. Order: pane 404 (eligible Claude panes only), then the claim. With no claim or two, a pane without a tray answers 200 empty (it can never have
+  // stored a file) and one with a tray 409 no-project, deleting nothing. The answer is rebuilt as exactly { files: [{ id, name, type, size }], gone: [name] }, never a
+  // path; a throw is logged as its code only. Not a user's action (no typing stamp). App tier only.
+  route('GET', /^\/api\/app\/pane\/([^/]+)\/attachments$/, 0, async ({ params }) => {
+    const { id, failure } = await eligiblePane(params[0]);
+    if (failure) return failure;
+    const claim = await paneClaim(id);
+    try {
+      if (claim.key === null) return deps.attachments.hasTray(id) ? err(409, 'no-project', "nika can't tell this session's project") : { status: 200, body: trayAnswer(null) };
+      return { status: 200, body: trayAnswer(await deps.attachments.listTray(id, claim)) };
+    } catch (e) {
+      attachLog(logLine(e));
+      return err(500, 'internal', 'internal error');
+    }
+  });
+
   // Attachments (0.5, W2): upload (JSON { name, data }, base64), delete before sending, and the send that pastes the stored paths into Claude's input
   // and presses Enter. App tier only. Order: body 400, pane 404, project 409, then the store or the sender. Exactly one route serves a stored file
   // back, the image read below (T61), and nothing of name, data, path or id is logged: a store error is logged as its code only.
@@ -751,10 +799,11 @@ export function createAppApi({ secret, ctx, deps }) {
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
     stamp(id);
-    const key = await paneKey(id);
-    if (key === null) return err(409, 'no-project', "nika can't tell this session's project");
+    const claim = await paneClaim(id);
+    if (claim.key === null) return err(409, 'no-project', "nika can't tell this session's project");
     try {
-      return await deps.attachments.save({ pane: id, key, name: body.name, data: body.data });
+      await deps.attachments.bindTray(id, claim); // the pane's tray for the return (0.5.4, AT): bound to this project and this Claude before the file lands in it
+      return await deps.attachments.save({ pane: id, key: claim.key, name: body.name, data: body.data });
     } catch (e) {
       attachLog(logLine(e));
       return err(500, 'write-failed', 'write failed');
@@ -770,9 +819,15 @@ export function createAppApi({ secret, ctx, deps }) {
     const { id, failure } = await eligiblePane(params[0]);
     if (failure) return failure;
     stamp(id);
-    const key = await paneKey(id);
-    if (key === null) return err(409, 'no-project', "nika can't tell this session's project");
-    const reqId = deps.picker.startFiles({ pane: id, key, room: body.room });
+    const claim = await paneClaim(id);
+    if (claim.key === null) return err(409, 'no-project', "nika can't tell this session's project");
+    try {
+      await deps.attachments.bindTray(id, claim); // as the upload does: the files the chooser saves land in this pane's tray
+    } catch (e) {
+      attachLog(logLine(e));
+      return err(500, 'write-failed', 'write failed');
+    }
+    const reqId = deps.picker.startFiles({ pane: id, key: claim.key, room: body.room });
     return reqId ? { status: 202, body: { reqId } } : err(429, 'busy', 'a file chooser is already open');
   });
 

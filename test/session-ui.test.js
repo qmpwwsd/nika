@@ -4579,6 +4579,85 @@ describe('F4-T2: the terminal chip has its own plum hue (tokens.css --fit-term*)
   });
 });
 
+// ---- 0.5.4 AT (design-054-at 4): the "Not restored" note of the attachment tray: its own violet hue, its own icon, its own words ----------------------------
+describe('AT: the "Not restored" note has its own violet hue (tokens.css --att-gone*) and its own icon (session.html i-file-off)', () => {
+  const css = strip(CSS);
+  const { THEME, ratio, dE, MIN_DE } = colourKit();
+  const NAMES = ['--att-gone', '--att-gone-soft', '--att-gone-line'];
+  const symbol = (n) => new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(HTML)?.[1] ?? null;
+  const rule = (sel) => new RegExp(`(?:^|[\\s}])${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+
+  test('(+) the three tokens are plain 6-digit hex in the light block and in both dark blocks, the dark blocks agree, and each is tuned per theme', () => {
+    for (const [name, v] of Object.entries(THEME)) for (const n of NAMES) assert.match(v[n] ?? '', /^#[0-9a-f]{6}$/i, `${n} in ${name}`);
+    for (const n of NAMES) assert.equal(THEME.dark[n], THEME.darkPinned[n], n);
+    for (const n of NAMES) assert.notEqual(THEME.light[n], THEME.dark[n], `${n} is tuned per theme`);
+  });
+
+  for (const name of Object.keys(THEME)) {
+    test(`(+) contrast (${name}): the label and icon are 4.5:1 on the fill and on the surfaces the note can sit on; the edge is 3:1; the body text is 4.5:1 on the fill`, () => {
+      const v = THEME[name];
+      for (const ground of [v['--att-gone-soft'], v['--surface'], v['--bg'], v['--surface-2'], v['--surface-3'], v['--attn-row']]) {
+        assert.ok(ratio(v['--att-gone'], ground) >= 4.5, `text on ${ground}: ${ratio(v['--att-gone'], ground).toFixed(2)}`);
+      }
+      for (const ground of [v['--bg'], v['--surface'], v['--surface-2']]) {
+        assert.ok(ratio(v['--att-gone-line'], ground) >= 3, `edge on ${ground}: ${ratio(v['--att-gone-line'], ground).toFixed(2)}`);
+      }
+      assert.ok(ratio(v['--text'], v['--att-gone-soft']) >= 4.5, `--text on the fill: ${ratio(v['--text'], v['--att-gone-soft']).toFixed(2)}`);
+    });
+
+    test(`(+) distinct (${name}): the colour is at least ${MIN_DE} OKLab away from accent, busy, idle, attention, danger, ended, the muted grey, the Fit chips, every --m-* mode colour and --rm`, () => {
+      const v = THEME[name];
+      const peers = ['--accent', '--busy', '--idle', '--attn', '--danger', '--ended', '--text-muted', '--fit-other', '--fit-term', '--fit-fill', '--fit-set', '--fit-off', ...Object.keys(v).filter((k) => /^--m-[a-z]+$/.test(k)), ...(v['--rm'] ? ['--rm'] : [])];
+      assert.ok(peers.length >= 12 + 8, `the mode colours were found: ${peers.length}`);
+      for (const p of peers) assert.ok(dE(v['--att-gone'], v[p]) >= MIN_DE, `${p} ${v[p]}: ${dE(v['--att-gone'], v[p]).toFixed(3)}`);
+    });
+  }
+
+  test('(+) the sprite draws i-file-off once, in the 16 x 16 stroke style: the i-file page plus a diagonal, a different drawing from i-file, i-warn and i-off', () => {
+    assert.equal(HTML.split('<symbol id="i-file-off"').length - 1, 1);
+    const off = symbol('file-off');
+    assert.ok(off, 'i-file-off is in the sprite');
+    assert.doesNotMatch(off, /\b(fill|stroke|style)=/);
+    const d = (body) => /<path d="([^"]*)"\/>/.exec(body)?.[1];
+    assert.equal(d(off), `${d(symbol('file'))}M1.8 1.8l12.4 12.4`);
+    assert.equal(new Set([off, symbol('file'), symbol('warn'), symbol('off')]).size, 4);
+  });
+
+  test('(+) .att-gone reads --att-gone-soft for its fill and --att-gone-line for its edge, its icon and bold label read --att-gone, and its text keeps --text', () => {
+    const note = rule('.att-gone');
+    assert.match(note, /background:\s*var\(--att-gone-soft\)/);
+    assert.match(note, /border:\s*1px solid var\(--att-gone-line\)/);
+    assert.match(note, /(^|[\s;])color:\s*var\(--text\)/);
+    assert.match(note, /display:\s*flex/);
+    assert.match(rule('.att-gone .ic, .att-gone b'), /(^|[\s;])color:\s*var\(--att-gone\)/);
+    assert.match(rule('.att-gone .ic'), /flex:\s*none/);
+    const p = rule('.att-gone p');
+    assert.match(p, /margin:\s*0/);
+    assert.match(p, /overflow-wrap:\s*anywhere/);
+  });
+
+  test('(−) .att-gone takes no status colour: no --idle, --danger, --busy or --attn in its rules; the warn alert still reads --idle (it is not changed)', () => {
+    const rules = css.split('\n').filter((l) => /\.att-gone/.test(l)).join('\n');
+    assert.ok(rules.length > 0);
+    assert.doesNotMatch(rules, /--idle|--danger|--busy|--attn|--accent/);
+    assert.match(TOKENS, /\.alert\[data-kind="warn"\]\s*\{\s*background:\s*var\(--idle-soft\);\s*border-color:\s*var\(--idle-line\);\s*\}/);
+    assert.match(TOKENS, /\.alert\[data-kind="warn"\] \.ic\s*\{\s*color:\s*var\(--idle\);\s*\}/);
+  });
+
+  test('(−) the new tokens are used by the .att-gone rules only, defined once per theme block, and tokens.css stays ASCII with no color-mix() or :has()', () => {
+    const users = ['session.css', 'app.css', 'tokens.css'].flatMap((f) => (read(f).match(/var\(--att-gone[a-z-]*\)/g) ?? []).map((u) => `${f} ${u}`));
+    assert.deepEqual(users.filter((u) => !u.startsWith('session.css')), []);
+    assert.equal(users.length, 3, users.join(', ')); // fill, edge, and the colour of the label and the icon
+    const lines = read('session.css').split('\n').filter((l) => /var\(--att-gone/.test(l)).map((l) => l.slice(0, l.indexOf(' {')));
+    assert.deepEqual(lines, ['.att-gone', '.att-gone .ic, .att-gone b']);
+    for (const n of NAMES) assert.equal([...TOKENS.matchAll(new RegExp(`${n}:`, 'g'))].length, 3, `${n}: the light block and the two dark blocks`);
+    const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
+    assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
+    assert.doesNotMatch(HTML.slice(HTML.indexOf('<symbol id="i-file-off"'), HTML.indexOf('</symbol>', HTML.indexOf('<symbol id="i-file-off"'))), /[^\x00-\x7f]/);
+  });
+});
+
 // ---- 0.5.4 P2 (design-052d 2.4): the three looks that name the Fit mode: fill, term-set and off-set (tokens.css --fit-fill*, --fit-set*, --fit-off*; session.html i-fit-pin, i-term-pin, i-fit-off) ----
 describe('0.5.4 P2: the chip looks fill, term-set and off-set have their own tokens, icons and rules (M-21)', () => {
   const css = strip(CSS);
@@ -11150,7 +11229,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     const spy = (name) => (...args) => { log.calls.push(name); return args; };
     const ctx = {
       isApp: () => app, $: p.$, SUB: sub, BAD_AGENT: bad, agentId: sub ? AG : null, sessionId: session, paneId: pane, projectKey: project, location: { search }, URLSearchParams,
-      MAC: false, P: { on: false }, windowCommand() {}, notices: [], MID: ' \u00b7 ', ATT: { wire: spy('ATT.wire') }, FIT: { planner: null }, DF: null, SV: null, A: { name: 'the agent' },
+      MAC: false, P: { on: false }, windowCommand() {}, notices: [], MID: ' \u00b7 ', ATT: { wire: spy('ATT.wire'), restore: spy('ATT.restore') }, FIT: { planner: null }, DF: null, SV: null, A: { name: 'the agent' },
       composer: () => ({ focus() {} }), onPageKey() {}, openKbd() {}, announce() {}, setGone() {}, call() {}, say() {}, showProblem() {}, clearProblem() {}, renderAttn() {}, showOverlay() {}, DOTS: '...',
       document: { body: node('body'), title: '', querySelector: (sel) => (sel === '.skip-2' ? p.$('skip-2') : null), addEventListener: (type) => log.doc.push(type) },
       ...Object.fromEntries(BOOT_SPIES.map((n) => [n, spy(n)])),
@@ -11158,7 +11237,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     const { boot } = mk(['function showEmpty(text)', 'function showNotice(msg)', 'function readOnlyView()', 'function boot()'], ctx);
     return { boot, p, log, ctx };
   };
-  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'wireTyping', 'ATT.wire', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg', 'kickMirror'];
+  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'wireTyping', 'ATT.wire', 'ATT.restore', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg', 'kickMirror'];
 
   test('(+) 4.4: boot in subagent mode: no terminal column, the Transcript alone, no tabs, no "Skip to message input", the read-only notice, the body class', () => {
     const r = bootRig({ sub: true, search: `?session=${S}&agent=${AG}&project=${KEY}` });
@@ -11232,6 +11311,8 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     for (const name of MIRROR.filter((n) => n !== 'kickMirror')) assert.ok(withPane.log.calls.includes(name), name);
     assert.ok(withPane.log.calls.includes('watchNotes'), 'the notes row is watched in a session window too');
     assert.ok(withPane.log.calls.includes('kickMirror'));
+    assert.deepEqual(withPane.log.calls.filter((n) => n === 'ATT.restore'), ['ATT.restore'], '0.5.4 AT: the unsent attachments of the pane are asked for once, at boot');
+    assert.ok(withPane.log.calls.indexOf('ATT.restore') > withPane.log.calls.indexOf('ATT.wire'), 'after the tray is wired');
     assert.equal(withPane.ctx.document.body.classList.contains('sub-view'), false);
     assert.equal(withPane.p.$('sess-st').hidden, false, 'the status slot is the session window\'s');
     const paneless = bootRig({ search: `?session=${S}` });
@@ -11240,6 +11321,28 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     assert.equal(paneless.p.$('split').classList.contains('no-term'), true);
     assert.ok(paneless.log.calls.includes('wireSubs'), 'the list is part of every window that has a transcript');
     assert.ok(!paneless.log.calls.includes('kickMirror'));
+    assert.ok(!paneless.log.calls.includes('ATT.restore'), '0.5.4 AT: a window with no pane has no attachments to ask for');
+  });
+
+  test('(+) 0.5.4 AT: boot asks for the pane\'s attachments in the pane branch only (after wireFit, before the pane-less branch), once', () => {
+    const boot = fnOf('function boot()');
+    assert.equal([...boot.matchAll(/ATT\.restore\(\)/g)].length, 1);
+    const pane = boot.slice(boot.indexOf('if (paneId) {'), boot.indexOf("split.classList.add('no-term')"));
+    assert.ok(pane.includes('ATT.restore();'), 'inside if (paneId)');
+    assert.ok(pane.indexOf('wireFit();') >= 0 && pane.indexOf('wireFit();') < pane.indexOf('ATT.restore();'), 'after wireFit()');
+    assert.doesNotMatch(boot.slice(0, boot.indexOf('if (paneId) {')), /ATT\.restore/);
+  });
+
+  test('(−) 0.5.4 AT: a bad session id with a pane still restores (the tray is the pane\'s); the browser tier and a bad agent id never do', () => {
+    const bad = bootRig({ session: null, pane: '%12', search: '?session=nope&pane=%2512' });
+    bad.boot();
+    assert.ok(bad.log.calls.includes('ATT.restore'));
+    const browser = bootRig({ app: false, pane: '%12', search: `?session=${S}&pane=%2512` });
+    browser.boot();
+    assert.ok(!browser.log.calls.includes('ATT.restore'));
+    const badAgent = bootRig({ bad: true, pane: '%12', search: `?session=${S}&agent=..%2Fx&pane=%2512` });
+    badAgent.boot();
+    assert.ok(!badAgent.log.calls.includes('ATT.restore'));
   });
 
   test('(−) a window with a bad session id says so as before', () => {

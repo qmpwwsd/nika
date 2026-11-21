@@ -2766,7 +2766,6 @@ const ATT = createAttachTray({
   paneId,
   path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`,
   call,
-  appFetch,
   ds: DS,
   enqueueJob,
   waitHold,
@@ -3395,6 +3394,7 @@ function boot() {
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');
     kickMirror(0);
     composer().focus({ preventScroll: true });
+    ATT.restore(); // 0.5.4 AT: the attachments of an unsent message come back when you return to the session (the tray is wired above; focus stays where it is)
   } else {
     split.classList.add('no-term');
     split.dataset.tab = 'hist';

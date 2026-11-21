@@ -62,6 +62,8 @@
   --fit-off: #4a5160; --fit-off-soft: #eceef2; --fit-off-line: #747c8a;
   /* 0.5.4 RM (design-053-rm 6.2): the removed state of the lists (Remove from the list, the removed line, the Show removed dialog); a brown no status, permission mode or Fit chip uses; checked in test/removed-ui.test.js (text 4.5:1, edge 3:1, 0.05 OKLab from every other colour) */
   --rm: #6e4630; --rm-soft: #f5ebe4; --rm-line: #a07258;
+  /* 0.5.4 AT (design-054-at 4): the "Not restored" note of the attachment tray (a copy nika no longer has); a violet no status, permission mode or Fit chip uses; checked in test/session-ui.test.js (text 4.5:1, edge 3:1, 0.05 OKLab from every other colour) */
+  --att-gone: #77529c; --att-gone-soft: #f4effa; --att-gone-line: #9576b6;
   --shell: var(--text); --on-shell: var(--surface);
 }
 
@@ -98,6 +100,7 @@
     --fit-set: #b9adf6; --fit-set-soft: #251f40; --fit-set-line: #8a7dd6;
     --fit-off: #b8bfcc; --fit-off-soft: #262a33; --fit-off-line: #828b9b;
     --rm: #c9b08f; --rm-soft: #2f2820; --rm-line: #9c8264;
+    --att-gone: #bc8eeb; --att-gone-soft: #2e2439; --att-gone-line: #8f70b0;
   }
 }
 
@@ -136,6 +139,7 @@
   --fit-set: #b9adf6; --fit-set-soft: #251f40; --fit-set-line: #8a7dd6;
   --fit-off: #b8bfcc; --fit-off-soft: #262a33; --fit-off-line: #828b9b;
   --rm: #c9b08f; --rm-soft: #2f2820; --rm-line: #9c8264;
+  --att-gone: #bc8eeb; --att-gone-soft: #2e2439; --att-gone-line: #8f70b0;
 }
 
 /* permission modes (docs/design/spec.md 2.8.1, 2.8.5, 9.3): one class per mode sets the local trio the tag, the frame, the

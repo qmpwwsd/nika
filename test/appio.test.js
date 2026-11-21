@@ -514,6 +514,7 @@ describe('file chooser', () => {
   const MIB = 1024 * 1024;
   const uid = typeof process.getuid === 'function' ? process.getuid() : null;
   let nth = 0;
+  let paneSeq = 0;
 
   /** A picker on a real attachment store in its own temp state dir; `sent` = what it wrote to the shell, `logs` = every line the store logged. */
   function rig() {
@@ -533,8 +534,8 @@ describe('file chooser', () => {
     };
     const storeDir = path.join(base, 'state', 'nika', 'attachments');
     const stored = () => (fs.existsSync(storeDir) ? fs.readdirSync(storeDir).flatMap((k) => fs.readdirSync(path.join(storeDir, k))) : []);
-    /** Starts a files request, answers it with `paths`, waits for the end; resolves { reqId, answer }. */
-    async function pick(paths, { room = 6, pane = '%6', key = KEY } = {}) {
+    /** Starts a files request, answers it with `paths`, waits for the end; resolves { reqId, answer }. 0.5.4 (AT): a pane's tray holds six unsent files, so a pick that names no pane gets a pane of its own (these tests pick many files in a row). */
+    async function pick(paths, { room = 6, pane = `%${60 + (paneSeq += 1)}`, key = KEY } = {}) {
       const reqId = picker.startFiles({ pane, key, room });
       assert.match(reqId, /^[0-9a-f-]{36}$/);
       await picker.onFiles({ type: 'files', reqId, paths });
@@ -667,6 +668,25 @@ describe('file chooser', () => {
     assert.equal(six.answer.files.length, 6);
   });
 
+  // 0.5.4 (AT): the store keeps a tray of unsent files per pane and holds six; the chooser's save door meets the same cap
+  test('(−) 0.5.4 AT: a pick on a pane whose tray already holds six files answers tray-full for the extra entry (a failed entry, no path) and stores no more', async () => {
+    const r = rig();
+    const first = await r.pick([1, 2, 3, 4, 5, 6].map((n) => r.put(`f${n}.md`, `text ${n}\n`)), { pane: '%6', room: 6 });
+    assert.deepEqual(first.answer.files.map((f) => f.ok), [true, true, true, true, true, true]);
+    const more = await r.pick([r.put('seventh.md', 'text 7\n')], { pane: '%6', room: 1 });
+    assert.deepEqual(more.answer.files, [{ ok: false, name: 'seventh.md', error: 'tray-full' }]);
+    assert.equal(r.stored().length, 6);
+    assert.deepEqual(r.logs, []);
+  });
+
+  test('(+) 0.5.4 AT: the cap is per pane: the same pick on another pane is stored', async () => {
+    const r = rig();
+    await r.pick([1, 2, 3, 4, 5, 6].map((n) => r.put(`f${n}.md`, `text ${n}\n`)), { pane: '%6', room: 6 });
+    const other = await r.pick([r.put('seventh.md', 'text 7\n')], { pane: '%7', room: 1 });
+    assert.equal(other.answer.files[0].ok, true);
+    assert.equal(r.stored().length, 7);
+  });
+
   // ---- an entry that cannot be read fails alone ----
 
   test('(−) each unusable entry fails on its own and the good file next to it is still saved', async () => {
@@ -784,8 +804,9 @@ describe('file chooser', () => {
   test('(+) F3: a public key and the look-alikes of the new kinds are picked as before: id_rsa.pub, id_ed25519.pub, id_rsa_backup.txt, my.keystore.md, notes.envrc.txt, p12.txt, netrc, .netrc.bak', async () => {
     const r = rig();
     const paths = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt', 'netrc', '.netrc.bak'].map((n) => r.put(n, `${n}\n`));
-    const { answer } = await r.pick(paths, { room: 8 });
-    assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true, true, true, true, true]);
+    const first = await r.pick(paths.slice(0, 4), { room: 4 }); // a pane's tray holds six (0.5.4 AT): two picks of four, on two panes
+    const second = await r.pick(paths.slice(4), { room: 4 });
+    assert.deepEqual([...first.answer.files, ...second.answer.files].map((f) => f.ok), [true, true, true, true, true, true, true, true]);
   });
 
   test('(−) the name decides before any open: a FIFO or a dangling link named .env or *.key answers secret-file, not unreadable', async () => {
@@ -869,7 +890,7 @@ describe('file chooser', () => {
 
   test('(+) a pick answers the same GET again and again (the page may ask twice) and a new request replaces the old one', async () => {
     const r = rig();
-    const { reqId, answer } = await r.pick([r.put('a.md')]);
+    const { reqId, answer } = await r.pick([r.put('a.md')], { pane: '%6' });
     assert.deepEqual(r.picker.filesStatus('%6', reqId), answer);
     const next = r.picker.startFiles({ pane: '%6', key: KEY, room: 1 });
     assert.equal(r.picker.filesStatus('%6', reqId), null);

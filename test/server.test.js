@@ -163,7 +163,7 @@ describe('focus pane', () => {
 });
 
 describe('browser tier: /api/app is not mounted', () => {
-  const PATHS = ['/api/app', '/api/app/', '/api/app/me', '/api/app/projects', '/api/app/settings', '/api/app/spawn', '/api/app/pane/%256/keys', '/api/app/rules/apply', '/api/app/window',
+  const PATHS = ['/api/app', '/api/app/', '/api/app/me', '/api/app/projects', '/api/app/settings', '/api/app/spawn', '/api/app/pane/%256/keys', '/api/app/pane/%251/attachments', '/api/app/rules/apply', '/api/app/window',
     `/api/app/session/${SID.busy}/history`, `/api/app/session/${SID.busy}/subagents/aaa111/history`];
 
   test('(−) every /api/app path is 404 for GET, POST, PUT and DELETE, with or without an X-Nika-App header', async () => {

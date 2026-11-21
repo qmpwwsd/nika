@@ -372,6 +372,11 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
    It never takes the dimmed look of "input off" (.btn:disabled, opacity 0.5); the ID selector beats the disabled and hover rules. */
 #att-btn[aria-busy="true"] { opacity: 1; cursor: progress; border-style: dashed; border-color: var(--busy); background: var(--busy-soft); color: var(--busy); }
 .att-pick { margin: 0; font-size: var(--fs-small); font-weight: 600; color: var(--busy); overflow-wrap: anywhere; }
+/* 0.5.4 AT: the note that names the attachments nika no longer has when you return to a session: its own violet, the file-off icon and the words "Not restored:" (never the warn alert) */
+.att-gone { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--att-gone-line); border-radius: var(--r-md); background: var(--att-gone-soft); color: var(--text); font-size: var(--fs-small); }
+.att-gone .ic, .att-gone b { color: var(--att-gone); }
+.att-gone .ic { flex: none; margin-top: 1px; }
+.att-gone p { margin: 0; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
   #att-btn .spin, .att .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
 }

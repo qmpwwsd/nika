@@ -12,7 +12,7 @@ import { createServer } from '../src/server.js';
 import { createAppApi } from '../src/api-app.js';
 import { readHistory, readSubagentHistory } from '../src/collect/history.js';
 import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator } from '../src/store.js';
-import { createAttachments } from '../src/attachments.js';
+import { createAttachments, MAX_BYTES } from '../src/attachments.js';
 import { collect, findSession, findSessions } from '../src/model.js';
 import { listCommands as realListCommands } from '../src/collect/commands.js';
 import { startOrchestrator } from '../src/orchestrate.js';
@@ -73,6 +73,7 @@ function makeDeps(over = {}) {
     mirror: { capture: rec('capture', async (pane, inm) => (inm === '"abc"' ? { status: 304, body: null, etag: 'abc' } : { status: 200, body: { cols: 80, rows: [], cursor: { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' })) },
     keys: { send: rec('keys', async (pane, body) => (body.text === 'busy' ? { status: 429, body: { error: 'busy', message: 'x' } } : body.text === 'bad' ? { status: 400, body: { error: 'invalid', message: 'x' } } : { status: 200, body: { sent: { text: 1, paste: 0, keys: 0 } } })) },
     picker: { start: () => null, status: () => null },
+    attachments: fakeStore(), // the routes bind a pane's tray (0.5.4, AT), so every server has a store; a test that looks at one passes its own
     window: rec('window', async () => {}),
     appCopy: {
       state: rec('appCopyState', async () => APP_COPY),
@@ -5583,9 +5584,10 @@ const GROUP_KEY = 'b1b2b3b4b5b6b7b8'; // a project key for a snapshot group (any
 
 /** A store that records its calls; `over` replaces a method (a function, or a value to return / an Error to throw). */
 function fakeStore(over = {}) {
-  const f = { calls: [] };
+  const f = { calls: [], order: [], binds: [], lists: [], drops: [] }; // order: the method names in call order, bindTray included
   const method = (name, fallback) => async (...args) => {
     f.calls.push([name, ...args]);
+    f.order.push(name);
     const given = over[name];
     if (given instanceof Error) throw given;
     return typeof given === 'function' ? given(...args) : given !== undefined ? given : fallback(...args);
@@ -5595,6 +5597,20 @@ function fakeStore(over = {}) {
   f.lookup = method('lookup', () => null);
   f.readImage = method('readImage', () => null);
   f.markSent = (...args) => { f.calls.push(['markSent', ...args]); };
+  // the tray of a pane (0.5.4, AT): recorded apart from `calls`, so the exact call lists of the older tests do not change
+  f.bindTray = async (...args) => {
+    f.binds.push(args);
+    f.order.push('bindTray');
+    if (over.bindTray instanceof Error) throw over.bindTray;
+  };
+  f.listTray = async (...args) => {
+    f.lists.push(args);
+    const given = over.listTray;
+    if (given instanceof Error) throw given;
+    return typeof given === 'function' ? given(...args) : given !== undefined ? given : { files: [], gone: [] };
+  };
+  f.hasTray = (pane) => (typeof over.hasTray === 'function' ? over.hasTray(pane) : over.hasTray === true);
+  f.dropPanes = async (isGone) => { f.drops.push(isGone); return 0; };
   return f;
 }
 
@@ -5729,7 +5745,7 @@ describe('attachments: upload', () => {
     assert.equal(store.calls.length, 0);
     assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'x', data: 'A'.repeat(11 * 1024 * 1024) } })).status, 200);
     assert.equal((await att(a, '%6', 'attachments', { method: 'POST', body: JSON.stringify(UPLOAD), headers: { 'content-type': 'text/plain' } })).status, 415);
-    assert.equal((await att(a, '%6', 'attachments', { method: 'GET' })).status, 405);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'DELETE' })).status, 405); // GET is the list since 0.5.4 (AT); the upload route takes POST only
     assert.equal((await att(a, '%6', 'attachments', { method: 'PUT', json: UPLOAD })).status, 405);
     assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD, headers: { 'x-nika-app': null } })).status, 403);
     assert.equal(store.calls.length, 1, 'only the 11 MiB body got through');
@@ -6186,6 +6202,219 @@ describe('images: the session and subagent routes (0.5.1, C; T59)', () => {
     assert.equal(await call(sess(S, '0:0')), 404);
     assert.equal(await call(sub(S, 'aaa111', '0:0')), 404);
     assert.equal(await call(`/api/app/pane/%256/attachments/${ATT}/image`), 404);
+  });
+});
+
+describe('attachments: list (GET, 0.5.4 AT)', () => {
+  const list = (a, id = '%6', opts) => att(a, id, 'attachments', opts);
+  const F = (n, over = {}) => ({ id: n.toString(16).padStart(16, '0'), name: `f${n}.png`, type: 'png', size: 10 + n, ...over });
+  /** A snapshot with one live agent on %6; `agent` adds fields (pid, id, hostId). */
+  const oneClaim = (agent = {}) => ({ groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' }, ...agent }] }] });
+  const twice = { groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }, { key: 'c1c2c3c4c5c6c7c8', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+  const noKey = { groups: [{ key: 'BAD KEY', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+  const EMPTY = { files: [], gone: [] };
+
+  test('(+) R1: 200 with exactly { files: [{ id, name, type, size }], gone: [name] }: extra fields dropped, 7 files cut to 6, gone strings only', async () => {
+    const seven = [1, 2, 3, 4, 5, 6, 7].map((n) => ({ ...F(n), path: '/srv/x/secret', extra: n }));
+    const store = fakeStore({ listTray: () => ({ files: seven, gone: ['gone.pdf', 7, null, 'b'.repeat(256), 'two.txt', {}], extra: 'x', path: '/srv' }) });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    const r = await list(a);
+    assert.deepEqual([r.status, r.body], [200, { files: [1, 2, 3, 4, 5, 6].map((n) => F(n)), gone: ['gone.pdf', 'two.txt'] }]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.deepEqual(Object.keys(r.body.files[0]).sort(), ['id', 'name', 'size', 'type']);
+  });
+
+  test('(+) R1: all six types pass; at most 6 gone names', async () => {
+    const types = ['png', 'jpeg', 'gif', 'webp', 'pdf', 'text'];
+    const store = fakeStore({ listTray: () => ({ files: types.map((type, n) => F(n + 1, { type })), gone: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] }) });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    const r = await list(a);
+    assert.deepEqual(r.body.files.map((f) => f.type), types);
+    assert.deepEqual(r.body.gone, ['a', 'b', 'c', 'd', 'e', 'f']);
+  });
+
+  test('(+) R1: the edges that are valid: a file name and a gone name of exactly 255 units, a size of 1 and of 8 MiB', async () => {
+    const store = fakeStore({ listTray: () => ({ files: [F(1, { name: 'n'.repeat(255), size: 1 }), F(2, { size: MAX_BYTES })], gone: ['g'.repeat(255)] }) });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    const r = await list(a);
+    assert.deepEqual(r.body.files.map((f) => [f.name.length, f.size]), [[255, 1], [F(2).name.length, MAX_BYTES]]);
+    assert.deepEqual(r.body.gone.map((n) => n.length), [255]);
+  });
+
+  test('(−) R1: an entry with a bad id, an unknown type, size 0, a size over 8 MiB, a fractional size or a non-string or over-long name is dropped, and a junk answer lists nothing', async () => {
+    const bad = [
+      F(2, { id: 'ZZZZZZZZZZZZZZZZ' }), F(3, { id: 'abc' }), F(4, { id: '0123456789ABCDEF' }), F(5, { type: 'svg' }), F(6, { type: 'PNG' }), F(7, { type: undefined }),
+      F(8, { size: 0 }), F(9, { size: MAX_BYTES + 1 }), F(10, { size: 1.5 }), F(11, { size: '5' }), F(12, { size: -3 }), F(13, { name: 5 }), F(14, { name: 'n'.repeat(256) }), F(15, { name: null }),
+      null, 'x', [], 7,
+    ];
+    const store = fakeStore({ listTray: () => ({ files: [...bad, F(1), F(16, { size: MAX_BYTES }), F(17, { size: 1 })], gone: [] }) });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    assert.deepEqual((await list(a)).body.files, [F(1), F(16, { size: MAX_BYTES }), F(17, { size: 1 })]);
+    for (const answer of [null, 'x', 7, [], { files: 'x', gone: 7 }, { files: {}, gone: {} }, {}]) {
+      const junk = fakeStore({ listTray: () => answer });
+      const { a: b } = await bootScreens({ over: { attachments: junk, collect: async () => keyedSnapshot('%6') } });
+      const r = await list(b);
+      assert.deepEqual([r.status, r.body], [200, EMPTY], JSON.stringify(answer));
+    }
+  });
+
+  test('(+) R2: the claim is { key, owner: { pid, session } } of the one live agent; the session is the hostId after /compact, else the row\'s id; a pid that is not an integer above 0 is null', async () => {
+    const cases = [
+      [{ pid: 4101, id: 'sess-row' }, { pid: 4101, session: 'sess-row' }],
+      [{ pid: 4101, id: 'sess-row', hostId: null }, { pid: 4101, session: 'sess-row' }],
+      [{ pid: 4101, id: 'sess-row', hostId: 'sess-host' }, { pid: 4101, session: 'sess-host' }], // after /compact: the session in the pane, not the child's
+      [{ pid: 0, id: 'sess-row' }, { pid: null, session: 'sess-row' }],
+      [{ pid: 1.5, id: 'sess-row' }, { pid: null, session: 'sess-row' }],
+      [{ pid: '77', id: 'sess-row' }, { pid: null, session: 'sess-row' }],
+      [{ pid: 4101 }, { pid: 4101, session: null }],
+      [{ pid: 4101, id: 5 }, { pid: 4101, session: null }],
+      [{}, null],
+    ];
+    for (const [agent, owner] of cases) {
+      const store = fakeStore();
+      const { a } = await bootScreens({ over: { attachments: store, collect: async () => oneClaim(agent) } });
+      assert.equal((await list(a)).status, 200);
+      assert.deepEqual(store.lists, [['%6', { key: GROUP_KEY, owner }]], JSON.stringify(agent));
+    }
+  });
+
+  test('(+) R2: a pane nika started with no registry entry has its start key and no owner', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    assert.equal((await list(a, '%8')).status, 200);
+    assert.deepEqual(store.lists, [['%8', { key: w.project.key, owner: null }]]);
+  });
+
+  test('(−) R2: with no claim or two, a pane without a tray lists empty (200) and the store is not asked; a pane with a tray is 409 no-project and keeps it', async () => {
+    for (const snapshot of [twice, noKey, { groups: [{ agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] }]) {
+      const without = fakeStore();
+      const { a } = await bootScreens({ over: { attachments: without, collect: async () => snapshot } });
+      const r = await list(a);
+      assert.deepEqual([r.status, r.body], [200, EMPTY], JSON.stringify(snapshot).slice(0, 60));
+      assert.deepEqual([without.lists, without.calls, without.binds], [[], [], []]);
+      const withTray = fakeStore({ hasTray: true });
+      const { a: b } = await bootScreens({ over: { attachments: withTray, collect: async () => snapshot } });
+      const r2 = await list(b);
+      assert.deepEqual([r2.status, r2.body.error], [409, 'no-project']);
+      assert.deepEqual([withTray.lists, withTray.calls, withTray.binds], [[], [], []], 'nothing is asked, nothing is deleted');
+      assert.ok(withTray.drops.length > 0 && withTray.drops.every((isGone) => isGone('%6') === false), 'and the eligibility hook keeps the pane\'s tray: it is listed and live');
+    }
+    const started = fakeStore(); // a started pane whose key is not a project key
+    const { a } = await bootScreens({ over: { attachments: started } });
+    a.ctx.started.set('%8', { key: 'not a key', name: 'x', sessionId: null, role: 'agent' });
+    assert.deepEqual([(await list(a, '%8')).status, started.lists], [200, []]);
+  });
+
+  test('(−) R3: a pane that is not in the tmux list, runs a shell, is not live Claude or was not started is 404; a malformed id too; the store is not asked', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6', '%5') } });
+    for (const id of ['%5', '%8', '%99']) assert.equal((await list(a, id)).status, 404, id);
+    assert.equal((await a.call('GET', '/api/app/pane/abc/attachments')).status, 404);
+    assert.equal((await a.call('GET', '/api/app/pane/%2599x/attachments')).status, 404);
+    assert.deepEqual([store.lists, store.calls], [[], []]);
+  });
+
+  test('(−) R3: PUT and DELETE are 405, no secret is 403, and a GET with a body-less request needs no body', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await list(a, '%6', { method: 'PUT', json: {} })).status, 405);
+    assert.equal((await list(a, '%6', { method: 'DELETE' })).status, 405);
+    assert.equal((await list(a, '%6', { headers: { 'x-nika-app': null } })).status, 403);
+    assert.deepEqual(store.lists, []);
+    assert.equal((await list(a)).status, 200);
+  });
+
+  test('(−) R3: a store that throws is 500 internal; the log has the node code only, and neither the answer nor the log carries a name, a path or an id', async () => {
+    const boom = Object.assign(new Error('EACCES /srv/nika/attachments/secret-name.png'), { code: 'EACCES' });
+    const store = fakeStore({ listTray: boom });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    let r;
+    const lines = await capturingLog(async () => { r = await list(a); });
+    assert.deepEqual([r.status, r.body], [500, { error: 'internal', message: 'internal error' }]);
+    assert.equal(/secret-name|srv|EACCES/.test(r.raw), false);
+    assert.deepEqual(lines, ['nika: attachments: EACCES\n']);
+  });
+
+  test('(+) R4: upload binds the pane\'s tray with the claim before it saves', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => oneClaim({ pid: 4101, id: 'sess-row' }) } });
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD })).status, 200);
+    assert.deepEqual(store.binds, [['%6', { key: GROUP_KEY, owner: { pid: 4101, session: 'sess-row' } }]]);
+    assert.deepEqual(store.order, ['bindTray', 'save']);
+    assert.equal(store.calls[0][1].key, GROUP_KEY);
+  });
+
+  test('(−) R4: upload with no project is 409 and neither binds nor saves; a bindTray that throws is 500 write-failed with a code in the log, and nothing is saved', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => twice } });
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD })).status, 409);
+    assert.deepEqual([store.order, store.binds], [[], []]);
+    const boom = fakeStore({ bindTray: Object.assign(new Error('EACCES /srv/x'), { code: 'EACCES' }) });
+    const { a: b } = await bootScreens({ over: { attachments: boom, collect: async () => keyedSnapshot('%6') } });
+    let r;
+    const lines = await capturingLog(async () => { r = await att(b, '%6', 'attachments', { method: 'POST', json: UPLOAD }); });
+    assert.deepEqual([r.status, r.body.error], [500, 'write-failed']);
+    assert.deepEqual(lines, ['nika: attachments: EACCES\n']);
+    assert.deepEqual(boom.calls, [], 'save was not reached');
+  });
+
+  test('(+) R5: the chooser binds the pane\'s tray with the claim before it starts', async () => {
+    const store = fakeStore();
+    const picker = fakePicker();
+    const startFiles = picker.startFiles;
+    picker.startFiles = (arg) => { store.order.push('startFiles'); return startFiles(arg); };
+    const { a } = await bootScreens({ over: { picker, attachments: store, collect: async () => oneClaim({ pid: 4101, id: 'sess-row', hostId: 'sess-host' }) } });
+    assert.equal((await att(a, '%6', PICK, { method: 'POST', json: { room: 2 } })).status, 202);
+    assert.deepEqual(store.binds, [['%6', { key: GROUP_KEY, owner: { pid: 4101, session: 'sess-host' } }]]);
+    assert.deepEqual(store.order, ['bindTray', 'startFiles']);
+  });
+
+  test('(−) R5: the chooser with no project is 409 and binds nothing; a bindTray that throws starts no chooser', async () => {
+    const store = fakeStore();
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, attachments: store, collect: async () => twice } });
+    assert.equal((await att(a, '%6', PICK, { method: 'POST', json: { room: 1 } })).status, 409);
+    assert.deepEqual([store.binds, picker.starts], [[], []]);
+    const boom = fakeStore({ bindTray: Object.assign(new Error('EACCES /srv/x'), { code: 'EACCES' }) });
+    const { a: b } = await bootScreens({ over: { picker, attachments: boom, collect: async () => keyedSnapshot('%6') } });
+    let r;
+    const lines = await capturingLog(async () => { r = await att(b, '%6', PICK, { method: 'POST', json: { room: 1 } }); });
+    assert.deepEqual([r.status, r.body.error], [500, 'write-failed']);
+    assert.deepEqual(lines, ['nika: attachments: EACCES\n'], 'the code only, no path');
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(+) R6: a pane gone from a good tmux listing, or dead, has its tray dropped: the predicate is true for it and false for a listed pane', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await list(a)).status, 200);
+    assert.equal(store.drops.length, 1);
+    assert.deepEqual(['%3', '%6', '%5', '%8'].map((p) => store.drops[0](p)), [true, false, false, false], '%3 is not listed; %6 live, %5 a shell and %8 not claimed are listed, so they keep their trays');
+    a.deps.state.panes.set('%3', { command: 'claude', dead: true });
+    a.clock.t += 2000;
+    assert.equal((await list(a)).status, 200);
+    assert.equal(store.drops.length, 2);
+    assert.deepEqual(['%3', '%6'].map((p) => store.drops[1](p)), [true, false], 'a dead pane is dropped');
+    a.deps.state.panes.set('%3', { command: 'claude', dead: false });
+    a.clock.t += 2000;
+    await list(a);
+    assert.equal(store.drops[2]('%3'), false, 'and a live one is not');
+  });
+
+  test('(−) R6: a failed tmux listing drops nothing; a store without dropPanes is fine', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    a.deps.state.panes = new Map(); // what listPanes gives while tmux is down
+    a.deps.state.error = 'no server running';
+    assert.equal((await list(a)).status, 404);
+    assert.deepEqual(store.drops, [], 'no pane is listed, and still no tray is dropped');
+    const bare = fakeStore();
+    bare.dropPanes = undefined;
+    const { a: b } = await bootScreens({ over: { attachments: bare, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await list(b)).status, 200);
+    const { a: none } = await bootScreens({ over: { attachments: null, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await list(none, '%3')).status, 404, 'a server with no store at all: the eligibility check still answers');
   });
 });
 
@@ -6806,11 +7035,13 @@ describe('typed /compact: user actions stamp the pane on arrival (0.5.4, AC test
     assert.equal(ac.seen.touchedAt('%6'), -Infinity);
   });
 
-  test('(\u2212) the fit heartbeat and release, the chooser poll, the image read, the modes poll and a plain capture stamp nothing', async () => {
+  test('(\u2212) the fit heartbeat and release, the attachment list, the chooser poll, the image read, the modes poll and a plain capture stamp nothing', async () => {
     const { a, ac } = await rig();
     a.clock.t += 5000;
     assert.equal((await a.call('PUT', url('%6', 'fit'), { json: FIT_BODY })).status, 200);
     assert.equal((await a.call('DELETE', url('%6', 'fit'), { json: {} })).status, 200);
+    assert.equal((await a.call('GET', url('%6', 'attachments'))).status, 200); // the list the page asks for at every open (0.5.4, AT): no user action
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity, 'the list alone left no stamp');
     assert.equal((await a.call('GET', url('%6', `attachments/pick/${REQ_ID}`))).status, 404);
     assert.equal((await a.call('GET', url('%6', `attachments/${ATT}/image`))).status, 404);
     assert.equal((await a.call('GET', '/api/app/modes')).status, 200);

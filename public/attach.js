@@ -8,6 +8,8 @@
 // Rules: every name and every line is text (h() and textContent, never markup); no inline style (classes and data attributes only); the
 // server's own words never show (every code maps to a fixed line below); the page talks to the server only through the io session.js
 // hands in. The pure rules come first and are tested alone; createAttachTray is the DOM side and does nothing at import.
+// 0.5.4 (AT): the files of an unsent message stay on the server's side when the page leaves. The page lists them when it opens (and when the
+// back/forward cache brings it back), builds the same ready chips an upload makes, and names a file the server no longer has in one note.
 // Keep this file ASCII: write every symbol as an escape.
 import { h, icon } from './dom.js';
 import { draftSendPlan, STILL_SENDING, STILL_SENDING_MS } from './draft-sync.js';
@@ -23,10 +25,13 @@ const MID = String.fromCharCode(0xb7);
 const BIDI_AND_CONTROLS = new RegExp(`[${[[0, 0x1f], [0x7f, 0x9f], [0x200e, 0x200f], [0x202a, 0x202e], [0x2066, 0x2069]].map(([a, b]) => `${String.fromCharCode(a)}-${String.fromCharCode(b)}`).join('')}]`, 'g'); // C0, DEL, C1 and the bidi marks
 const NAME_MAX = 255;
 const POLL_MS = 300; // between two looks at the open file dialog
+const RETRY_MS = 2000; // between the list of the pane's attachments and its one retry
+const RESTORE_TIMEOUT_MS = 3000; // one list request is cut after this long, so a server that never answers cannot lock the tray (about 8 s at most with the retry)
+const GONE_NAME_MAX = 60; // a name in the "not restored" note is clipped to this many units
 const REQ_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // The error codes of a picked file, as the status the upload copy below reads them by (one table of words for both doors).
 const PICK_STATUS = {
-  'too-big': 413, too_large: 413, 'wrong-type': 415, empty: 400, 'secret-file': 400, 'no-project': 409, 'path-unusable': 409, 'folder-unsafe': 409, 'storage-full': 507, 'disk-full': 507,
+  'too-big': 413, too_large: 413, 'wrong-type': 415, empty: 400, 'secret-file': 400, 'no-project': 409, 'path-unusable': 409, 'folder-unsafe': 409, 'tray-full': 409, 'storage-full': 507, 'disk-full': 507,
 };
 
 // ---- the copy (section 8.6 and 6): fixed lines, picked by status and code only ------------------------------------------------------------
@@ -53,6 +58,7 @@ const UPLOAD_409 = {
   'no-project': { short: 'Try again', line: "nika can't tell this session's project yet. Try again in a moment." },
   'path-unusable': { short: "Can't store", line: PATH_LINE },
   'folder-unsafe': { short: "Can't store", line: "nika's attachments folder isn't safe to write to (a link, or another owner). Nothing was saved." },
+  'tray-full': { short: 'Too many', line: `Up to ${MAX_FILES} attachments per message.` }, // the pane's tray holds six already (a second page of the same session added them)
 };
 const UPLOAD_507 = {
   'storage-full': { short: 'Storage full', line: "nika's attachment storage is full (256 MB). Older attachments go after a day or two; try again later." },
@@ -85,6 +91,9 @@ const REFUSE = {
   failed: 'Remove the attachments that failed, then send.',
   long: 'This message is too long to go with attachments. Send the text first, then the attachments.',
 };
+const RESTORING = 'nika is bringing back the attachments you added before. Try again in a moment.';
+const RESTORE_FAILED = "nika couldn't bring back the attachments you added before. Leave this session and open it again to try once more.";
+const GONE_LABEL = 'Not restored:';
 const READ_NOTICE = [
   "Claude may ask to read the attached file: it is in nika's attachments folder, outside the project. Answer in the prompt panel.",
   "Claude may ask to read the attached files: they are in nika's attachments folder, outside the project. Answer in the prompt panel.",
@@ -154,6 +163,15 @@ export function sendView(r, { total = 1, nameOf = () => null } = {}) {
   return out(GENERIC_SEND);
 }
 
+/** A name in the "not restored" note: clipped to GONE_NAME_MAX units with an ellipsis (a long unbroken name must not push the note wider than the composer). */
+const clip = (s) => (s.length > GONE_NAME_MAX ? `${s.slice(0, GONE_NAME_MAX - 1)}${DOTS}` : s);
+
+/** The line of the "not restored" note for these names (already through shownName): one name is told, two or more are counted. */
+export function goneLine(names) {
+  if (names.length === 1) return `${clip(names[0])}: nika no longer has its copy (attachments are kept for a few days). Add it again if you still need it.`;
+  return `${names.length} attachments: nika no longer has their copies (attachments are kept for a few days). Add them again if you still need them.`;
+}
+
 /** The base64 of a File, through FileReader (the default `read` of createAttachTray). */
 function readBase64(f) {
   return new Promise((resolve, reject) => {
@@ -176,12 +194,12 @@ const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 /**
  * io: paneId; path(tail) -> the pane's route for 'attachments', 'attachments/<id>', 'attachments/pick', 'attachments/pick/<reqId>' or 'attach-send'
  * (session.js owns every /api/app string);
- * call(path, { method, json }) -> { status, body } (never rejects); appFetch(path, { method, keepalive }) (the pagehide delete);
+ * call(path, { method, json, signal }) -> { status, body } (never rejects; an aborted `signal` answers { status: 0 });
  * ds = the draft sync (screen, send, submitted, beginSend, endSend); enqueueJob(run) -> Promise (the keys chain); say, announce, showProblem(msg, kind, ms),
  * clearProblem, showNotice, setGone; box() -> { value, shell }; cols(); clearBox(value) (clears the message
  * box when it still holds `value`); focusBox(). Optional: read(file) -> base64 (default: FileReader), sleep(ms), waitHold() -> Promise
  * (resolves at once with no redraw hold, else when it ends; the attach-send request goes after it).
- * Returns { wire, enable, pending, sending, send }.
+ * Returns { wire, enable, pending, sending, send, restore }.
  */
 export function createAttachTray(io) {
   const chips = []; // { key, name, state: 'uploading' | 'ready' | 'failed', meta, type, id, file, started, removed, el }
@@ -195,6 +213,8 @@ export function createAttachTray(io) {
   let note = null; // the line beside the tray that says so (made in wire)
   let noticed = false; // the Read notice shows once per page
   let over = 0; // drag enter minus leave: the box is "dropping" while a file is over it or one of its children
+  let restoring = false; // the list of the pane's attachments is out (at most about 8 s): add, pick and send wait for it
+  let goneNote = null; // the "not restored" note beside the tray (made in wire)
 
   const el = (id) => document.getElementById(id);
   const deletePath = (id) => io.path(`attachments/${id}`); // ids reach here only after they matched ID
@@ -263,6 +283,7 @@ export function createAttachTray(io) {
     if (i < 0) return;
     chips.splice(i, 1);
     chip.el.li.remove();
+    showGone([]);
     if (chip.state === 'ready') io.call(deletePath(chip.id), { method: 'DELETE' });
     else if (chip.state === 'uploading') chip.removed = true; // its upload answers later; the file is deleted then
     show();
@@ -326,7 +347,9 @@ export function createAttachTray(io) {
 
   function add(files) {
     if (!io.paneId || files.length === 0) return;
+    if (restoring) return io.showProblem(RESTORING, 'warn', 4000);
     if (lock()) return io.showProblem(LOCKED, 'warn', 4000); // a paste, a drop or a pick while a send is out (or input is off): said, not dropped
+    let added = 0;
     for (const f of files) {
       if (chips.length >= MAX_FILES) {
         io.showProblem(`Up to ${MAX_FILES} attachments per message.`, 'warn', 4000);
@@ -334,12 +357,14 @@ export function createAttachTray(io) {
       }
       const chip = { key: (seq += 1), name: shownName(f.name), state: 'uploading', meta: `Uploading${DOTS}`, type: null, id: null, file: f, started: false, removed: false, el: null };
       chips.push(chip);
+      added += 1;
       el('att-tray').append(build(chip));
       if (f.size > MAX_BYTES) { // never read or posted
         chip.file = null;
         fail(chip, TOO_BIG, null);
       }
     }
+    if (added > 0) showGone([]);
     show();
     pump();
   }
@@ -422,9 +447,12 @@ export function createAttachTray(io) {
 
   /** The paperclip. The page opens no file input; the room left in the tray goes to the server, which asks the shell for its dialog. */
   async function pick() {
-    if (!io.paneId || lock() || picking) return;
+    if (!io.paneId) return;
+    if (restoring) return io.showProblem(RESTORING, 'warn', 4000);
+    if (lock() || picking) return;
     const room = MAX_FILES - chips.length;
     if (room < 1) return io.showProblem(`Up to ${MAX_FILES} attachments per message.`, 'warn', 4000);
+    showGone([]);
     picking = true;
     syncButton();
     chooserLook(true);
@@ -442,6 +470,7 @@ export function createAttachTray(io) {
   // ---- Send (section 6) ---------------------------------------------------------------------------------------------------------------------
 
   async function send(value) {
+    if (restoring) return io.showProblem(RESTORING, 'warn', 4000); // a message never goes without the chips that are about to come back
     if (chips.length === 0) return;
     if (sending) { // the last attachment send is still in flight: say so, send and queue nothing; the text and the chips stay
       io.showProblem(STILL_SENDING, 'warn', STILL_SENDING_MS);
@@ -492,6 +521,7 @@ export function createAttachTray(io) {
       chips.length = 0;
       el('att-tray').replaceChildren();
       show();
+      showGone([]);
       io.clearProblem();
       const n = sent.length;
       io.say(`Sent ${n} attachment${n === 1 ? '' : 's'}${value.trim() === '' ? '' : ' and your message'} to ${io.paneId}`);
@@ -513,6 +543,104 @@ export function createAttachTray(io) {
     refuse(v.line);
   }
 
+  // ---- Restore (0.5.4, AT): the chips of an unsent message come back ---------------------------------------------------------------------
+
+  /** A listed file as the server states it. Nothing is trusted: an id, a type, a size and a name, each checked. */
+  const valid = (f) => f !== null && typeof f === 'object'
+    && typeof f.id === 'string' && ID.test(f.id) && TYPES.has(f.type)
+    && Number.isInteger(f.size) && f.size >= 1 && f.size <= MAX_BYTES
+    && typeof f.name === 'string' && f.name.length <= NAME_MAX;
+
+  /** The answer is a list: 200 with a plain object holding the two arrays. */
+  const listed = (r) => r.status === 200 && r.body !== null && typeof r.body === 'object' && Array.isArray(r.body.files) && Array.isArray(r.body.gone);
+
+  /**
+   * The "not restored" note: its own state (colour, icon and words), never the warn alert. An empty list hides and empties it.
+   * Returns the note's words (`Not restored: ...`), or '' when there is nothing to say, so merge() can announce the same text.
+   */
+  function showGone(list) {
+    const names = (Array.isArray(list) ? list : []).filter((n) => typeof n === 'string').slice(0, MAX_FILES).map(shownName);
+    if (names.length === 0) {
+      if (goneNote) {
+        goneNote.replaceChildren();
+        goneNote.hidden = true;
+      }
+      return '';
+    }
+    if (goneNote) {
+      goneNote.replaceChildren(icon('file-off'), h('p', {}, h('b', { text: GONE_LABEL }), h('span', { text: ` ${goneLine(names)}` })));
+      goneNote.hidden = false;
+    }
+    return `${GONE_LABEL} ${goneLine(names)}`;
+  }
+
+  /** One list request, cut after RESTORE_TIMEOUT_MS (no AbortSignal.timeout: older web views lack it). An abort answers { status: 0 } like any failure. */
+  async function get() {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), RESTORE_TIMEOUT_MS);
+    try {
+      return await io.call(io.path('attachments'), { signal: ctl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * The list made true on the page: ready chips the server no longer lists go (no request, no line: another page of this session sent or removed
+   * them, or the server dropped them), listed files no chip has come as ready chips (the same build as a picked file), and uploading and failed chips
+   * stay as they are. Focus never moves.
+   */
+  function merge(body) {
+    const files = [];
+    for (const f of body.files) {
+      if (files.length >= MAX_FILES) break;
+      if (valid(f) && !files.some((g) => g.id === f.id)) files.push(f);
+    }
+    for (const chip of chips.slice()) {
+      if (chip.state !== 'ready' || files.some((f) => f.id === chip.id)) continue;
+      chips.splice(chips.indexOf(chip), 1);
+      chip.el.li.remove();
+    }
+    let added = 0;
+    for (const f of files) {
+      if (chips.length >= MAX_FILES) break;
+      if (chips.some((c) => c.id === f.id)) continue;
+      const chip = { key: (seq += 1), name: shownName(f.name), state: 'ready', meta: formatSize(f.size), type: f.type, id: f.id, file: null, started: true, removed: false, el: null };
+      chips.push(chip);
+      el('att-tray').append(build(chip));
+      added += 1;
+    }
+    show();
+    const gone = showGone(body.gone);
+    // One call holds everything this restore says (a second call would replace the first in the live region): the restored count, then the note's words.
+    const said = [added > 0 ? `Restored ${added} attachment${added === 1 ? '' : 's'} from before.` : '', gone].filter(Boolean).join(' ');
+    if (said) io.announce(said);
+  }
+
+  /**
+   * Asks the server for the pane's unsent attachments and brings them back (page open, and a page that returns from the back/forward cache).
+   * One retry after RETRY_MS; 404 (the session is gone) is left to the mirror's own flow. While it runs, add, pick and send wait (at most about 8 s).
+   */
+  async function restore() {
+    if (!io.paneId || restoring || sending) return;
+    restoring = true;
+    let r;
+    try {
+      r = await get();
+      if (r.status !== 404 && !listed(r)) {
+        await sleep(RETRY_MS);
+        r = await get();
+      }
+    } catch {
+      r = { status: 0, body: null };
+    } finally {
+      restoring = false;
+    }
+    if (r.status === 404) return;
+    if (!listed(r)) return io.showProblem(RESTORE_FAILED, 'warn', 8000);
+    merge(r.body);
+  }
+
   // ---- the page's side: the ways in --------------------------------------------------------------------------------------------------------
 
   const hasFiles = (e) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
@@ -520,7 +648,8 @@ export function createAttachTray(io) {
   function wire() {
     el('att-btn').addEventListener('click', pick);
     note = h('p', { class: 'att-pick', role: 'status', hidden: true });
-    el('att-tray').after(note);
+    goneNote = h('div', { class: 'att-gone', role: 'status', hidden: true });
+    el('att-tray').after(note, goneNote);
     el('composer').addEventListener('paste', (e) => { // a pasted screenshot or file; text alone is the browser's own paste
       const files = e.clipboardData?.files;
       if (!files || files.length === 0) return;
@@ -567,17 +696,7 @@ export function createAttachTray(io) {
       if (!box.contains(e.target)) e.dataTransfer.dropEffect = 'none';
     });
     document.addEventListener('drop', (e) => { if (hasFiles(e)) e.preventDefault(); });
-    window.addEventListener('pagehide', (e) => { // files attached by mistake should not wait for the expiry
-      if (e?.persisted === true) return; // the page goes into the back/forward cache (a subagent link opens in this window) and may come back with its chips: the expiry covers one that never does
-      for (const chip of chips) {
-        if (chip.state !== 'ready') continue;
-        try {
-          io.appFetch(deletePath(chip.id), { method: 'DELETE', keepalive: true }).catch(() => {});
-        } catch {
-          // the page is leaving; the server's expiry takes the file
-        }
-      }
-    });
+    window.addEventListener('pageshow', (e) => { if (e?.persisted === true) restore(); }); // back from the back/forward cache: the server's list may have changed meanwhile
   }
 
   function enable(on) {
@@ -586,5 +705,5 @@ export function createAttachTray(io) {
     for (const chip of chips) chip.el.x.disabled = !enabled;
   }
 
-  return { wire, enable, pending: () => chips.length > 0, sending: () => sending, send };
+  return { wire, enable, pending: () => chips.length > 0 || restoring, sending: () => sending, send, restore };
 }
