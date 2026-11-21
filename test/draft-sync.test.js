@@ -4162,5 +4162,1007 @@ describe('kept text (0.5.4, LT)', () => {
         assert.equal(q.lastNote(), null);
       });
     });
+
+    // ---- LTF (review-LT re-check 2): F-2 a return refused while a restore runs, F-4 no re-try during a Send, F-1 no pull while a re-try is pending ----
+    describe('LT follow-ups (review-LT re-check 2: F-2, F-4, F-1)', () => {
+      const copyOf = (t, shell = false) => () => okKept({ text: t, shell });
+      const A = `${LONG} kept by the first page`; // the copy the server holds
+      const B = `${LONG} written by the other page`;
+      const X = `${LONG} typed here`;
+
+      /** The GETs answer from `steps`, one each in order. A GET past the end never settles, so a runaway loop of restores ends in a failed count, not in a frozen run. */
+      function gets(r, ...steps) {
+        let i = 0;
+        r.fetchAnswer = () => (i < steps.length ? steps[i++]() : new Promise(() => {}));
+      }
+      /** A GET that waits: `h.release(answer)` answers it. */
+      const waits = (h) => () => new Promise((res) => { h.release = res; });
+      const SCREENS = [['an empty Claude input', () => empty()], ['a Claude input that holds text', () => text('hello')]];
+      const dl = (name, fn) => test(name, { timeout: 5000 }, fn); // a deadline: a GET that never settles fails the test by name instead of freezing the run
+
+      // F-2: the approved text (T-LT4) says a page back from the cache takes the server's copy when it differs; a return that comes while a restore runs waits for that restore
+      describe('F-2: a return refused because a restore is running runs once that restore ends', () => {
+        for (const [name, screen] of SCREENS) {
+          dl(`(+) F-2 (T4): a return while a capture re-try's GET is out, that GET answered before another page wrote B (${name}): B is put back, and nothing is written over it`, async () => {
+            const r = rig();
+            const h = {};
+            gets(r, gone404, waits(h), copyOf(B));
+            await r.ds.restore(); // boot: 404, a capture re-try is pending
+            await r.advance(300);
+            r.ds.capture(screen(), 120);
+            await r.advance(2000);
+            r.ds.capture(screen(), 120); // the re-try goes out and waits
+            await r.flush();
+            assert.equal(r.log.fetches, 2);
+            r.ds.restore(); await r.flush(); // pageshow: refused while the re-try runs
+            assert.equal(r.log.fetches, 2, 'the return asks nothing while the re-try runs');
+            h.release(okKept(null)); // the re-try's GET was answered before the other page wrote B
+            await r.flush();
+            assert.equal(r.log.fetches, 3, 'the return runs once the re-try ended');
+            assert.equal(r.st.box.value, B);
+            assert.deepEqual(r.log.sets, [[B, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+            assert.deepEqual(r.log.problems, []);
+            await r.advance(KEEP_MS + 10);
+            assert.deepEqual(r.log.keeps, [], 'B stays on the server');
+          });
+
+          dl(`(+) F-2 (T4b): a return while the boot GET is out, that GET answered before another page wrote B (${name}): B is put back, and nothing is written over it`, async () => {
+            const r = rig();
+            const h = {};
+            gets(r, waits(h), copyOf(B));
+            const p = r.ds.restore();
+            await r.flush();
+            r.ds.capture(screen(), 120);
+            r.ds.restore(); await r.flush(); // pageshow: refused while the boot restore runs
+            assert.equal(r.log.fetches, 1);
+            h.release(okKept(null));
+            await p;
+            await r.flush();
+            assert.equal(r.log.fetches, 2);
+            assert.equal(r.st.box.value, B);
+            assert.deepEqual(r.log.sets, [[B, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+            assert.deepEqual(r.log.problems, []);
+            await r.advance(KEEP_MS + 10);
+            assert.deepEqual(r.log.keeps, [], 'B stays on the server');
+          });
+        }
+
+        dl('(+) F-2: a restore that ends on 404 runs the pending return as a first try: its answer is put back and the capture re-try that 404 would have left pending is gone', async () => {
+          const r = rig();
+          const h = {};
+          gets(r, waits(h), copyOf(B));
+          const p = r.ds.restore();
+          await r.flush();
+          r.ds.restore(); await r.flush(); // refused
+          h.release(gone404());
+          await p;
+          await r.flush();
+          assert.equal(r.log.fetches, 2);
+          assert.deepEqual(r.log.sets, [[B, false]]);
+          for (let i = 0; i < 6; i += 1) {
+            await r.advance(3000);
+            r.ds.capture(empty(), 120);
+            await r.flush();
+          }
+          assert.equal(r.log.fetches, 2, 'the return ended the chain');
+        });
+
+        dl('(−) F-2: two returns during one restore: exactly one extra GET, and a later return is not swallowed', async () => {
+          const r = rig();
+          const h = {};
+          gets(r, waits(h), copyOf(B), copyOf(B));
+          const p = r.ds.restore();
+          await r.flush();
+          r.ds.restore(); await r.flush();
+          r.ds.restore(); await r.flush();
+          assert.equal(r.log.fetches, 1);
+          h.release(okKept(null));
+          await p;
+          await r.flush();
+          assert.equal(r.log.fetches, 2, 'one pending return, however many came');
+          await r.advance(6000);
+          r.ds.capture(empty(), 120);
+          await r.flush();
+          assert.equal(r.log.fetches, 2, 'the flag is clear: nothing runs again');
+          await r.ds.restore(); // a return now is an ordinary first try
+          assert.equal(r.log.fetches, 3);
+        });
+
+        dl('(−) F-2: a return while stopped is a no-op and asks nothing until reset(): the stopped exit, a pageshow, then reset()', async () => {
+          const r = rig();
+          const h = {};
+          gets(r, waits(h), copyOf(A));
+          const p = r.ds.restore();
+          await r.flush();
+          r.ds.stop();
+          h.release(gone404()); // the answer is never used: the page is stopped
+          await p;
+          await r.ds.restore(); // pageshow while stopped
+          await r.flush();
+          assert.equal(r.log.fetches, 1, 'no GET while stopped');
+          r.ds.reset();
+          await r.flush();
+          assert.equal(r.log.fetches, 2, 'reset() asks again');
+          assert.deepEqual(r.log.sets, [[A, false]]);
+        });
+
+        dl('(−) F-2: a return that comes while the page is stopped and a restore runs is not recorded: stop(), a return, reset(), then the GET answers: that is the only GET', async () => {
+          const r = rig();
+          const h = {};
+          gets(r, waits(h), copyOf(B));
+          const p = r.ds.restore();
+          await r.flush();
+          r.ds.stop();
+          r.ds.restore(); await r.flush(); // stopped: a no-op, nothing recorded
+          r.ds.reset(); // the page is back while the restore still waits
+          h.release(okKept(null));
+          await p;
+          await r.flush();
+          assert.equal(r.log.fetches, 1, 'no extra GET for a return that came while stopped');
+          assert.deepEqual(r.log.sets, []);
+        });
+
+        dl('(−) F-2: a pending return is dropped when the page is stopped at the end of the restore it waited for; reset() then asks once', async () => {
+          const r = rig();
+          const h = {};
+          gets(r, waits(h), copyOf(A));
+          const p = r.ds.restore();
+          await r.flush();
+          r.ds.restore(); await r.flush(); // refused, recorded
+          r.ds.stop();
+          h.release(okKept(null));
+          await p;
+          await r.flush();
+          assert.equal(r.log.fetches, 1, 'stopped: the return cannot run');
+          r.ds.reset();
+          await r.flush();
+          assert.equal(r.log.fetches, 2);
+          assert.deepEqual(r.log.sets, [[A, false]]);
+          r.ds.reset();
+          await r.flush();
+          assert.equal(r.log.fetches, 2, 'the flag was cleared: nothing asks again');
+        });
+
+        dl('(−) F-2: a refused re-try (retry true) is not recorded: it was never a return', async () => {
+          const r = rig();
+          const h = {};
+          gets(r, waits(h), copyOf(B));
+          const p = r.ds.restore();
+          await r.flush();
+          r.ds.restore(true); await r.flush(); // reset() and captures cannot do this; the guard still holds
+          h.release(okKept(null));
+          await p;
+          await r.flush();
+          assert.equal(r.log.fetches, 1);
+          assert.deepEqual(r.log.sets, []);
+        });
+
+        dl('(−) F-2: text typed between the refused return and its run takes the RESTORE_TEXT_SKIPPED path and is kept over the other page\'s copy', async () => {
+          const r = rig();
+          const h = {};
+          gets(r, waits(h), copyOf(B));
+          const p = r.ds.restore();
+          await r.flush();
+          r.ds.capture(empty(), 120);
+          r.ds.restore(); await r.flush(); // refused, recorded with the edit count of now
+          r.type(X); // after the return, before it runs
+          h.release(okKept(null));
+          await p;
+          await r.flush();
+          assert.equal(r.log.fetches, 2);
+          assert.deepEqual(r.log.problems, [RESTORE_TEXT_SKIPPED]);
+          assert.equal(r.st.box.value, X);
+          assert.deepEqual(r.log.sets, []);
+          await r.advance(KEEP_MS + 10);
+          assert.deepEqual(r.log.keeps, [{ text: X, shell: false }]);
+        });
+
+        dl('(−) F-2: a second refused return while one is pending changes nothing: text typed between the two is still typing since the first (one RESTORE_TEXT_SKIPPED, one extra GET)', async () => {
+          const r = rig();
+          const h = {};
+          gets(r, waits(h), copyOf(B));
+          const p = r.ds.restore();
+          await r.flush();
+          r.ds.capture(empty(), 120);
+          r.ds.restore(); await r.flush(); // the first return: recorded with the edit count of now
+          r.type(X);
+          r.ds.restore(); await r.flush(); // the second return: nothing changes (the count stays the first one's)
+          h.release(okKept(null));
+          await p;
+          await r.flush();
+          assert.equal(r.log.fetches, 2);
+          assert.deepEqual(r.log.problems, [RESTORE_TEXT_SKIPPED]);
+          assert.equal(r.st.box.value, X);
+          assert.deepEqual(r.log.sets, []);
+        });
+
+        dl('(−) F-2: text typed before the refused return is not typing since it: no line, and the box that holds text this page never saved is kept', async () => {
+          const r = rig();
+          const h = {};
+          gets(r, waits(h), copyOf(B));
+          const p = r.ds.restore();
+          await r.flush();
+          r.ds.capture(empty(), 120);
+          r.type(X); // before the return
+          r.ds.restore(); await r.flush();
+          h.release(okKept(null));
+          await p;
+          await r.flush();
+          assert.equal(r.log.fetches, 2);
+          assert.deepEqual(r.log.problems, []);
+          assert.equal(r.st.box.value, X);
+          assert.deepEqual(r.log.sets, []);
+          await r.advance(KEEP_MS + 10);
+          assert.deepEqual(r.log.keeps, [{ text: X, shell: false }]);
+        });
+      });
+
+      // F-4: a Send that runs is not interrupted by a capture re-try
+      describe('F-4: no capture re-try while a Send runs', () => {
+        dl('(−) F-4 (SD1): a return chain (the box holds the copy this page saved), the GET says 404; a Send starts; a capture 2 s later starts no re-try and changes nothing; the first capture after the Send runs it', async () => {
+          const r = rig();
+          await r.ds.restore();
+          r.ds.capture(empty(), 120);
+          r.type(X);
+          await r.advance(KEEP_MS + 10); // X is saved
+          assert.deepEqual(r.log.keeps, [{ text: X, shell: false }]);
+          const g0 = r.log.fetches;
+          gets(r, gone404, copyOf(B));
+          await r.ds.restore(); // pageshow: 404, a capture re-try is pending
+          await r.advance(300);
+          r.ds.capture(empty(), 120);
+          assert.equal(r.ds.restoring(), false, 'no GET is out: the page allows the Send');
+          r.ds.beginSend();
+          await r.advance(2000);
+          const sets = r.log.sets.length;
+          r.ds.capture(empty(), 120); // captures go on during a Send
+          await r.flush();
+          assert.equal(r.log.fetches, g0 + 1, 'no GET while the Send runs');
+          assert.equal(r.log.sets.length, sets, 'nothing is put into the box under the Send');
+          assert.equal(r.st.box.value, X);
+          assert.equal(r.ds.restoring(), false);
+          r.st.box = { value: '', shell: false }; // the Send went through and the page cleared the box
+          r.ds.sent();
+          r.ds.endSend();
+          await r.flush();
+          assert.equal(r.log.fetches, g0 + 1, 'the end of the Send starts no GET by itself');
+          r.ds.capture(empty(), 120);
+          await r.flush();
+          assert.equal(r.log.fetches, g0 + 2, 'the first capture after the Send runs the re-try that was due');
+        });
+
+        dl('(−) F-4 (SD2): a boot chain, text typed and held, a Send: no GET during it; the first capture after it runs the re-try, which says RESTORE_TEXT_SKIPPED, and the box stays empty', async () => {
+          const r = rig();
+          gets(r, gone404, copyOf(A));
+          await r.ds.restore();
+          await r.advance(300);
+          r.ds.capture(empty(), 120);
+          r.type(X); // held: the server's copy was never seen
+          r.ds.beginSend();
+          await r.advance(2000);
+          r.ds.capture(empty(), 120);
+          await r.flush();
+          assert.equal(r.log.fetches, 1, 'no GET while the Send runs');
+          assert.equal(r.st.box.value, X);
+          assert.deepEqual(r.log.problems, []);
+          r.st.box = { value: '', shell: false }; // the Send went through
+          r.ds.sent();
+          r.ds.endSend();
+          r.ds.capture(empty(), 120); // the capture this test adds: the re-try waited for the Send
+          await r.flush();
+          assert.equal(r.log.fetches, 2);
+          assert.deepEqual(r.log.problems, [RESTORE_TEXT_SKIPPED]);
+          assert.equal(r.st.box.value, '');
+          assert.deepEqual(r.log.sets, []);
+          await r.advance(KEEP_MS + 10);
+          assert.deepEqual(r.log.keeps, [{ text: '', shell: false }], 'the sent text is not kept: the old copy is cleared');
+        });
+      });
+
+      // F-1: while a capture re-try is pending Claude's input is not pulled into the box (the pull would make the re-try skip the kept copy, and the next keep step would clear it)
+      describe('F-1: no pull of Claude\'s input while a capture re-try is pending', () => {
+        dl('(+) F-1 (N1b): the boot GET says 404, Claude\'s input holds text, the re-try reads A: A is put back and nothing is cleared', async () => {
+          const r = rig();
+          gets(r, gone404, copyOf(A));
+          await r.ds.restore();
+          await r.advance(300);
+          r.ds.capture(text('hello'), 120);
+          assert.equal(r.st.box.value, '', 'not pulled while the re-try is pending');
+          assert.deepEqual(r.log.sets, []);
+          await r.advance(2000);
+          r.ds.capture(text('hello'), 120);
+          await r.flush();
+          for (let i = 0; i < 3; i += 1) {
+            await r.advance(1000);
+            r.ds.capture(text('hello'), 120);
+            await r.flush();
+          }
+          await r.advance(KEEP_MS + 10);
+          assert.deepEqual(r.log.sets, [[A, false]]);
+          assert.equal(r.st.box.value, A);
+          assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+          assert.deepEqual(r.log.problems, []);
+          assert.deepEqual(r.log.keeps, [], 'the kept copy is not cleared');
+        });
+
+        dl('(−) F-1 (N1c, unchanged): the boot GET answers A before the first capture, Claude\'s input holds text: A is put back, Claude\'s text is not pulled over it, nothing is cleared', async () => {
+          const r = rig();
+          r.fetchAnswer = copyOf(A);
+          await r.ds.restore();
+          for (let i = 0; i < 3; i += 1) {
+            await r.advance(1000);
+            r.ds.capture(text('hello'), 120);
+            await r.flush();
+          }
+          await r.advance(KEEP_MS + 10);
+          assert.deepEqual(r.log.sets, [[A, false]]);
+          assert.equal(r.log.announces.length, 1);
+          assert.deepEqual(r.log.keeps, []);
+        });
+
+        dl('(−) F-1: a later change of Claude\'s input is not pulled either while the re-try is pending, and is pulled when the chain ends on { kept: null }', async () => {
+          const r = rig();
+          gets(r, gone404, () => okKept(null));
+          await r.ds.restore();
+          await r.advance(300);
+          r.ds.capture(empty(), 120); // in sync: the screen is matched
+          r.ds.capture(text('hello', { sig: sig(2) }), 120); // Claude's input changed (the user typed in the terminal)
+          await r.advance(KEEP_MS);
+          assert.equal(r.st.box.value, '', 'not pulled while the re-try is pending');
+          await r.advance(2000);
+          r.ds.capture(text('hello', { sig: sig(2) }), 120); // the re-try goes out: { kept: null } ends the chain
+          await r.flush();
+          assert.equal(r.log.fetches, 2);
+          r.ds.capture(text('hello', { sig: sig(2) }), 120);
+          await r.flush();
+          assert.equal(r.st.box.value, 'hello');
+          assert.deepEqual(r.log.sets, [['hello', false]]);
+        });
+
+        dl('(−) F-1: the seen screen stays unset while pending: the chain ends on { kept: null } and the next capture follows the first-capture rule (an empty box takes the screen at once)', async () => {
+          const r = rig();
+          gets(r, gone404, () => okKept(null));
+          await r.ds.restore();
+          await r.advance(300);
+          r.ds.capture(text('hello'), 120);
+          await r.advance(2000);
+          r.ds.capture(text('hello'), 120);
+          await r.flush();
+          assert.equal(r.log.fetches, 2);
+          r.ds.capture(text('hello'), 120);
+          await r.flush();
+          assert.equal(r.st.box.value, 'hello');
+          assert.deepEqual(r.log.sets, [['hello', false]]);
+          assert.deepEqual(r.log.keeps, []);
+        });
+
+        dl('(−) F-1: the chain ends at the bound (RESTORE_TEXT_FAILED): the next capture pulls, and the hold still blocks any clear until the user\'s first edit', async () => {
+          const r = rig();
+          r.fetchAnswer = gone404;
+          await r.ds.restore();
+          for (let i = 0; i < 7; i += 1) {
+            await r.advance(1000);
+            r.ds.capture(text('hello'), 120);
+            await r.flush();
+            if (i < 5) assert.equal(r.st.box.value, '', `capture ${i}: pending, not pulled`);
+          }
+          assert.equal(r.log.fetches, 4, 'the first try and 3 re-tries');
+          assert.deepEqual(r.log.problems, [RESTORE_TEXT_FAILED]);
+          r.ds.capture(text('hello'), 120);
+          await r.flush();
+          assert.equal(r.st.box.value, 'hello', 'the chain is over: the first-capture rule pulls');
+          await r.advance(KEEP_MS + 600);
+          assert.deepEqual(r.log.keeps, [], 'the hold blocks every write, a clear too');
+          r.type(LONG);
+          await r.advance(KEEP_MS);
+          assert.deepEqual(r.log.keeps, [{ text: LONG, shell: false }], 'the first edit lifts the hold');
+        });
+
+        dl('(−) F-1: a put-back that throws leaves no re-try pending (only reset() asks again): Claude\'s input is pulled as before', async () => {
+          const r = rig();
+          r.fetchAnswer = copyOf(A);
+          r.setBoxError = new Error('boom');
+          await r.ds.restore();
+          assert.deepEqual(r.log.problems, [RESTORE_TEXT_FAILED]);
+          r.ds.capture(text('hello'), 120);
+          await r.flush();
+          assert.equal(r.st.box.value, 'hello');
+          assert.deepEqual(r.log.sets, [['hello', false]]);
+          assert.equal(r.log.fetches, 1);
+        });
+
+        dl('(−) F-1: a push still goes while a re-try is pending (short text typed before the first capture)', async () => {
+          const r = rig();
+          r.fetchAnswer = gone404;
+          await r.ds.restore();
+          r.type('ab');
+          await r.advance(300);
+          r.ds.capture(empty(), 120);
+          await r.advance(PUSH_MS);
+          assert.deepEqual(r.log.puts, [{ text: 'ab', base: sig(9) }]);
+        });
+
+        dl('(−) F-1: the notes are unchanged while a re-try is pending: a long text shows its note', async () => {
+          const r = rig();
+          r.fetchAnswer = gone404;
+          await r.ds.restore();
+          r.ds.capture(empty(), 120);
+          r.type(LONG);
+          assert.equal(r.lastNote()?.kind, 'long');
+        });
+      });
+
+      // ---- LTF round 1 (review-LTF): SF-1 a Send during a pending return chain (ec2c), SF-2 Tab while a re-try is pending (ec1b), SF-3 reset() under a Send ----
+      describe('LTF round 1 (review-LTF: SF-1, SF-2, SF-3)', () => {
+        const OK200 = () => ({ status: 200, body: { kept: true } });
+        const SUG = 'run the tests in acme-api';
+
+        /** A page that saved X, then a pageshow whose GET says 404 (a capture re-try is pending), one capture, and a Send that has begun (the box still holds X). Returns the fetch count at the 404. */
+        async function chainThenSend(r) {
+          await r.ds.restore();
+          r.ds.capture(empty(), 120);
+          r.type(X);
+          await r.advance(KEEP_MS + 10); // X is saved
+          assert.deepEqual(r.log.keeps, [{ text: X, shell: false }]);
+          gets(r, gone404, copyOf(B)); // the 404 now; then another page's copy B
+          await r.ds.restore(); // pageshow: 404, a capture re-try is pending
+          const g = r.log.fetches;
+          await r.advance(300);
+          r.ds.capture(empty(), 120);
+          r.ds.beginSend();
+          await r.advance(2000);
+          return g;
+        }
+        const endSend = (r) => { r.st.box = { value: '', shell: false }; r.ds.sent(); r.ds.endSend(); }; // the Send went through, the page cleared the box
+
+        // SF-1: after a Send the copy this page knew the server held is not the box any more; another page's copy still comes back, what was sent never does
+        describe('SF-1 (ec2c): sent() empties what the page knows the server holds, and the old copy joins own', () => {
+          dl('(+) SF-1 (F4a): a return chain (the box holds X, which this page saved), the GET says 404, a Send starts and ends; the re-try finds B (another page wrote it): B is put back, nothing is cleared', async () => {
+            const r = rig();
+            const g = await chainThenSend(r);
+            endSend(r);
+            r.ds.capture(empty(), 120); // the first capture after the Send runs the re-try
+            await r.flush();
+            assert.equal(r.log.fetches, g + 1);
+            assert.equal(r.st.box.value, B);
+            assert.deepEqual(r.log.sets, [[B, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+            assert.deepEqual(r.log.problems, []);
+            await r.advance(KEEP_MS + 10);
+            assert.deepEqual(r.log.keeps, [{ text: X, shell: false }], 'B stays on the server: nothing is cleared');
+          });
+
+          dl('(−) SF-1 (EC3a): A is put back at boot and sent, the clear answers 500; a return reads A: the box stays empty', async () => {
+            const r = rig();
+            r.fetchAnswer = copyOf(A);
+            await r.ds.restore(); // boot: A is put back (saved, never written by this page)
+            assert.deepEqual(r.log.sets, [[A, false]]);
+            r.keepAnswer = E500;
+            r.ds.beginSend();
+            endSend(r);
+            await r.flush();
+            assert.deepEqual(r.log.keeps, [{ text: '', shell: false }], 'the clear went out and failed');
+            await r.ds.restore(); // pageshow: the server still holds A
+            assert.equal(r.log.fetches, 2);
+            assert.equal(r.st.box.value, '');
+            assert.deepEqual(r.log.sets, [[A, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+            assert.deepEqual(r.log.problems, []);
+            r.keepAnswer = OK200;
+            await r.advance(KEEP_MS + 10);
+            assert.equal(r.st.box.value, '', 'and the clear that goes out later does not bring it back either');
+            assert.deepEqual(r.log.keeps.at(-1), { text: '', shell: false });
+          });
+
+          dl('(−) SF-1 (EC3b): A is put back at boot, a pageshow says 404 (every keep write is held), A is sent, the re-try reads A: the box stays empty and the held clear goes out', async () => {
+            const r = rig();
+            r.fetchAnswer = copyOf(A);
+            await r.ds.restore(); // boot: A is put back
+            gets(r, gone404, copyOf(A));
+            await r.ds.restore(); // pageshow: 404, a capture re-try is pending
+            await r.advance(300);
+            r.ds.capture(empty(), 120);
+            r.ds.beginSend();
+            endSend(r);
+            assert.deepEqual(r.log.keeps, [], 'the clear is held: the server\'s copy was not seen');
+            await r.advance(2000);
+            r.ds.capture(empty(), 120); // the re-try
+            await r.flush();
+            assert.equal(r.log.fetches, 3);
+            assert.equal(r.st.box.value, '');
+            assert.deepEqual(r.log.sets, [[A, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+            assert.deepEqual(r.log.problems, []);
+            await r.advance(KEEP_MS + 10);
+            assert.deepEqual(r.log.keeps, [{ text: '', shell: false }], 'the old copy is cleared');
+            assert.equal(r.st.box.value, '');
+          });
+
+          dl('(+) SF-1 (F4a, put-back): the same as EC3b, but the re-try finds B (another page wrote it after A was sent): B is put back, nothing is cleared', async () => {
+            const r = rig();
+            r.fetchAnswer = copyOf(A);
+            await r.ds.restore(); // boot: A is put back (saved, never written by this page)
+            gets(r, gone404, copyOf(B));
+            await r.ds.restore(); // pageshow: 404, a capture re-try is pending
+            await r.advance(300);
+            r.ds.capture(empty(), 120);
+            r.ds.beginSend();
+            endSend(r);
+            await r.advance(2000);
+            r.ds.capture(empty(), 120); // the re-try
+            await r.flush();
+            assert.equal(r.log.fetches, 3);
+            assert.equal(r.st.box.value, B);
+            assert.deepEqual(r.log.sets, [[A, false], [B, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT, RESTORED_TEXT]);
+            assert.deepEqual(r.log.problems, []);
+            await r.advance(KEEP_MS + 10);
+            assert.deepEqual(r.log.keeps, [], 'B stays on the server: nothing is cleared');
+          });
+
+          dl('(−) SF-1 (EC3c): the user deletes a put-back A, the clear answers 500; a return reads A: the box stays empty', async () => {
+            const r = rig();
+            r.fetchAnswer = copyOf(A);
+            await r.ds.restore(); // boot: A is put back
+            r.keepAnswer = E500;
+            r.type('');
+            await r.advance(KEEP_MS + 10);
+            assert.deepEqual(r.log.keeps, [{ text: '', shell: false }], 'the clear went out and failed');
+            await r.ds.restore(); // pageshow: the server still holds A
+            assert.equal(r.log.fetches, 2);
+            assert.equal(r.st.box.value, '');
+            assert.deepEqual(r.log.sets, [[A, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+            assert.deepEqual(r.log.problems, []);
+          });
+
+          dl('(−) SF-1 (EC2a, unchanged): the user empties the box, the clear fails, another page writes B, a return comes: the box stays empty', async () => {
+            const r = rig();
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            r.type(X);
+            await r.advance(KEEP_MS + 10); // X is saved
+            r.keepAnswer = E500;
+            r.type('');
+            await r.advance(KEEP_MS + 10); // the clear fails
+            r.fetchAnswer = copyOf(B);
+            await r.ds.restore();
+            assert.equal(r.st.box.value, '');
+            assert.deepEqual(r.log.sets, []);
+            assert.deepEqual(r.log.announces, []);
+            assert.deepEqual(r.log.keeps, [{ text: X, shell: false }, { text: '', shell: false }]);
+          });
+
+          dl('(−) SF-1 (EC2a, the clear in flight): the user empties the box, the clear is still in flight, another page wrote B, a return comes: the box stays empty', async () => {
+            const r = rig();
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            r.type(X);
+            await r.advance(KEEP_MS + 10); // X is saved
+            let release;
+            r.keepAnswer = () => new Promise((res) => { release = () => res(OK200()); });
+            r.type('');
+            await r.advance(KEEP_MS + 10); // the clear is out and unanswered
+            r.fetchAnswer = copyOf(B);
+            await r.ds.restore();
+            assert.equal(r.st.box.value, '');
+            assert.deepEqual(r.log.sets, []);
+            assert.deepEqual(r.log.announces, []);
+            release();
+            await r.flush();
+            assert.equal(r.st.box.value, '');
+            assert.deepEqual(r.log.keeps, [{ text: X, shell: false }, { text: '', shell: false }]);
+          });
+
+          /** X is typed and its keep write goes out (held); X is sent while it is out; the write answers 200 after sent(), then the clear (asked during the write) goes and answers `clearAnswer`. */
+          async function writeAcrossSend(clearAnswer) {
+            const r = rig();
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            let releaseX;
+            r.keepAnswer = (b) => (b.text === X ? new Promise((res) => { releaseX = () => res(OK200()); }) : clearAnswer());
+            r.type(X);
+            await r.advance(KEEP_MS + 10); // the write of X is out and unanswered
+            assert.deepEqual(r.log.keeps, [{ text: X, shell: false }]);
+            r.ds.beginSend();
+            endSend(r);
+            assert.deepEqual(r.log.keeps, [{ text: X, shell: false }], 'the clear waits for the write on its way');
+            releaseX();
+            await r.flush();
+            assert.deepEqual(r.log.keeps, [{ text: X, shell: false }, { text: '', shell: false }], 'the write answered, then the clear went at once');
+            return r;
+          }
+
+          dl('(−) SF-1 (in flight): a keep write of X answers 200 after sent() and the clear answers 200: saved does not end as X, so a return that finds B puts B back', async () => {
+            const r = await writeAcrossSend(OK200);
+            r.fetchAnswer = copyOf(B);
+            await r.ds.restore();
+            assert.equal(r.st.box.value, B);
+            assert.deepEqual(r.log.sets, [[B, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+          });
+
+          dl('(−) SF-1 (in flight): the same, a later return that finds X (the text that was sent) does not put X back', async () => {
+            const r = await writeAcrossSend(OK200);
+            r.fetchAnswer = copyOf(X);
+            await r.ds.restore();
+            assert.equal(r.st.box.value, '');
+            assert.deepEqual(r.log.sets, []);
+            assert.deepEqual(r.log.announces, []);
+            assert.deepEqual(r.log.problems, []);
+          });
+        });
+
+        // SF-2: a suggestion taken with Tab fills the box without an edit, so while a capture re-try is pending it is refused like during a restore
+        describe('SF-2 (ec1b): accept() refuses while a capture re-try is pending', () => {
+          dl('(+) SF-2 (EC1): the boot GET says 404, Claude shows a suggestion, Tab is refused; the re-try reads A: A is put back, nothing is cleared', async () => {
+            const r = rig();
+            gets(r, gone404, copyOf(A));
+            r.suggestAnswer = () => ({ status: 200, body: { draft: text(SUG, { sig: sig(50) }) } });
+            await r.ds.restore(); // boot: 404, a capture re-try is pending
+            await r.advance(300);
+            r.ds.capture(empty({ suggestion: SUG }), 120);
+            const out = await r.ds.accept(SUG);
+            assert.deepEqual(out, { ok: false, status: null, message: RESTORING_TEXT });
+            assert.deepEqual(r.log.suggests, [], 'no Tab reaches Claude');
+            assert.equal(r.st.box.value, '');
+            await r.advance(2000);
+            r.ds.capture(empty({ suggestion: SUG }), 120); // the re-try
+            await r.flush();
+            assert.equal(r.log.fetches, 2);
+            assert.equal(r.st.box.value, A);
+            assert.deepEqual(r.log.sets, [[A, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+            assert.deepEqual(r.log.problems, []);
+            await r.advance(KEEP_MS + 10);
+            assert.deepEqual(r.log.keeps, [], 'A stays on the server');
+          });
+
+          dl('(+) SF-2 (EC1b): Tab works again once the chain ends (the re-try finds nothing kept)', async () => {
+            const r = rig();
+            gets(r, gone404, () => okKept(null));
+            r.suggestAnswer = () => ({ status: 200, body: { draft: text(SUG, { sig: sig(50) }) } });
+            await r.ds.restore();
+            await r.advance(300);
+            r.ds.capture(empty({ suggestion: SUG }), 120);
+            assert.equal((await r.ds.accept(SUG)).ok, false, 'refused while the re-try is pending');
+            await r.advance(2000);
+            r.ds.capture(empty({ suggestion: SUG }), 120); // the re-try ends the chain
+            await r.flush();
+            assert.equal(r.log.fetches, 2);
+            const out = await r.ds.accept(SUG);
+            assert.deepEqual(out, { ok: true, status: 200, message: '' });
+            assert.deepEqual(r.log.suggests, [{ text: SUG }]);
+            assert.deepEqual(r.log.sets, [[SUG, false]]);
+          });
+
+          dl('(−) SF-2: a chain that ended on a throw has no capture re-try pending, so Tab still works (only reset() asks again there)', async () => {
+            const r = rig();
+            r.fetchAnswer = copyOf(A);
+            r.setBoxError = new Error('dom'); // the put-back throws once
+            r.suggestAnswer = () => ({ status: 200, body: { draft: text(SUG, { sig: sig(50) }) } });
+            await r.ds.restore();
+            assert.deepEqual(r.log.problems, [RESTORE_TEXT_FAILED]);
+            r.ds.capture(empty({ suggestion: SUG }), 120);
+            const out = await r.ds.accept(SUG);
+            assert.deepEqual(out, { ok: true, status: 200, message: '' });
+            assert.deepEqual(r.log.suggests, [{ text: SUG }]);
+            assert.deepEqual(r.log.sets, [[SUG, false]]);
+          });
+        });
+
+        // SF-3: reset() (tmux came back) under a Send starts no re-try; the first capture after the Send runs it
+        describe('SF-3: reset() while a Send runs asks again after the Send, not under it', () => {
+          dl('(−) SF-3 (F4b): a return chain (404), a Send begins, reset(): no GET goes out under the Send, and the box keeps X', async () => {
+            const r = rig();
+            const g = await chainThenSend(r);
+            r.ds.reset();
+            await r.flush();
+            assert.equal(r.log.fetches, g, 'no GET under the Send');
+            assert.equal(r.ds.restoring(), false);
+            assert.equal(r.st.box.value, X);
+            assert.deepEqual(r.log.sets, []);
+            r.ds.capture(empty(), 120); // captures go on during a Send
+            await r.flush();
+            assert.equal(r.log.fetches, g, 'a capture during the Send starts none either');
+            assert.equal(r.st.box.value, X);
+          });
+
+          dl('(+) SF-3: after that Send the first capture runs the re-try, and B (another page\'s copy) is put back', async () => {
+            const r = rig();
+            const g = await chainThenSend(r);
+            r.ds.reset();
+            await r.flush();
+            endSend(r);
+            await r.flush();
+            assert.equal(r.log.fetches, g, 'the end of the Send starts no GET by itself');
+            r.ds.capture(empty(), 120);
+            await r.flush();
+            assert.equal(r.log.fetches, g + 1);
+            assert.equal(r.st.box.value, B);
+            assert.deepEqual(r.log.sets, [[B, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+            assert.deepEqual(r.log.problems, []);
+            await r.advance(KEEP_MS + 10);
+            assert.deepEqual(r.log.keeps, [{ text: X, shell: false }], 'B stays on the server: nothing is cleared');
+          });
+
+          dl('(+) SF-3: a chain that ended on a throw (no capture re-try is pending), a Send begins, reset(): no GET under the Send, and the first capture after it asks again', async () => {
+            const r = rig();
+            r.fetchAnswer = copyOf(A);
+            r.setBoxError = new Error('dom'); // the put-back throws once
+            await r.ds.restore();
+            assert.deepEqual(r.log.problems, [RESTORE_TEXT_FAILED]);
+            const g = r.log.fetches;
+            r.ds.capture(empty(), 120);
+            r.ds.beginSend();
+            r.ds.reset();
+            await r.flush();
+            assert.equal(r.log.fetches, g, 'no GET under the Send');
+            endSend(r);
+            await r.flush();
+            assert.equal(r.log.fetches, g, 'the end of the Send starts no GET by itself');
+            r.ds.capture(empty(), 120);
+            await r.flush();
+            assert.equal(r.log.fetches, g + 1, 'the first capture after the Send asks again');
+            assert.equal(r.st.box.value, A);
+            assert.deepEqual(r.log.sets, [[A, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+          });
+
+          dl('(−) SF-3: reset() with a chain open and no Send asks at once, as before', async () => {
+            const r = rig();
+            gets(r, gone404, copyOf(A));
+            await r.ds.restore(); // boot: 404, a capture re-try is pending
+            r.ds.reset();
+            await r.flush();
+            assert.equal(r.log.fetches, 2, 'no Send runs: reset() asks at once');
+            assert.equal(r.st.box.value, A);
+          });
+        });
+      });
+
+      // ---- LTF round 2 (review-LTF re-check 1): MF-1 a 304 runs a due capture re-try (tick), EC2b pinned ----
+      describe('LTF round 2 (review-LTF re-check 1: MF-1 tick, EC2b)', () => {
+        const OK200 = () => ({ status: 200, body: { kept: true } });
+        const SUG = 'run the tests in acme-api';
+        const tick = (r) => r.ds.tick(); // the page's 304 branch: the screen answered with no change
+
+        /** `steps` steps of 250 ms with no capture; each step is a 304, so a tick. */
+        async function idle(r, steps) {
+          for (let i = 0; i < steps; i += 1) { await r.advance(250); tick(r); await r.flush(); }
+        }
+        const snapshot = (r) => JSON.stringify(r.log);
+
+        // MF-1: a pending capture re-try waits for 2 s, not for a changed screen
+        describe('MF-1: tick() runs a due capture re-try on a screen that does not change', () => {
+          dl('(+) MF-1 (I5a): Claude\'s input holds hello, the boot GET says 404, only 304 ticks arrive: the re-try runs from a tick at 2 s, the box takes hello, and typing gives hellox (not x over hello)', async () => {
+            const r = rig();
+            gets(r, gone404, () => okKept(null));
+            await r.ds.restore(); // boot: 404, a capture re-try is pending
+            r.ds.capture(text('hello'), 120); // the one 200 capture; the screen never changes after it
+            assert.equal(r.st.box.value, '', 'no pull while the re-try is pending (F-1)');
+            await idle(r, 6); // 1.5 s: not due
+            assert.equal(r.log.fetches, 1);
+            await idle(r, 4); // 2.5 s
+            assert.equal(r.log.fetches, 2, 'the re-try ran from a tick');
+            assert.equal(r.st.box.value, 'hello', 'the chain ended: the first readable capture follows the first-capture rule');
+            assert.deepEqual(r.log.sets, [['hello', false]]);
+            r.type('hellox');
+            await r.advance(PUSH_MS + 10);
+            assert.deepEqual(r.log.puts.map((p) => p.text), ['hellox']);
+            assert.deepEqual(r.log.problems, []);
+          });
+
+          dl('(+) MF-1 (I5b): a suggestion screen, the re-try reads A, only ticks: Tab at 1 s is refused, A is put back at about 2 s with one line, and Tab is not taken after it', async () => {
+            const r = rig();
+            gets(r, gone404, copyOf(A));
+            r.suggestAnswer = () => ({ status: 200, body: { draft: text(SUG, { sig: sig(50) }) } });
+            await r.ds.restore();
+            r.ds.capture(empty({ suggestion: SUG }), 120);
+            await idle(r, 4); // 1 s
+            assert.deepEqual(await r.ds.accept(SUG), { ok: false, status: null, message: RESTORING_TEXT });
+            await idle(r, 6); // 2.5 s
+            assert.equal(r.log.fetches, 2);
+            assert.equal(r.st.box.value, A);
+            assert.deepEqual(r.log.sets, [[A, false]]);
+            assert.deepEqual(r.log.announces, [RESTORED_TEXT]);
+            await idle(r, 2); // 3 s
+            assert.equal((await r.ds.accept(SUG)).ok, false, 'the box holds A: the suggestion no longer fits it');
+            assert.deepEqual(r.log.suggests, [], 'no Tab reached Claude');
+            await r.advance(KEEP_MS + 10);
+            assert.deepEqual(r.log.keeps, [], 'A stays on the server');
+          });
+
+          dl('(+) MF-1 (I5b, nothing kept): Tab at 1 s is refused with RESTORING_TEXT, Tab at 3 s is accepted, and at 10 s and 30 s it is not (rv-lt printed [true,false,false] for 3, 10 and 30 s)', async () => {
+            const r = rig();
+            gets(r, gone404, () => okKept(null));
+            r.suggestAnswer = () => ({ status: 200, body: { draft: text(SUG, { sig: sig(50) }) } });
+            await r.ds.restore();
+            r.ds.capture(empty({ suggestion: SUG }), 120);
+            await idle(r, 4); // 1 s
+            assert.deepEqual(await r.ds.accept(SUG), { ok: false, status: null, message: RESTORING_TEXT });
+            await idle(r, 8); // 3 s
+            assert.equal(r.log.fetches, 2);
+            const at3 = await r.ds.accept(SUG);
+            await idle(r, 28); // 10 s
+            const at10 = await r.ds.accept(SUG);
+            await idle(r, 80); // 30 s
+            const at30 = await r.ds.accept(SUG);
+            assert.deepEqual([at3.ok, at10.ok, at30.ok], [true, false, false]);
+            assert.deepEqual(r.log.suggests, [{ text: SUG }]);
+            assert.deepEqual(r.log.sets, [[SUG, false]]);
+          });
+
+          dl('(+) MF-1 (I5e): the GET always says 404 and only ticks arrive for 30 s: exactly 4 GETs (the first and 3 re-tries), RESTORE_TEXT_FAILED once, and no timer left', async () => {
+            const r = rig();
+            r.fetchAnswer = gone404;
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            await idle(r, 120); // 30 s
+            assert.equal(r.log.fetches, 4);
+            assert.equal(r.log.problems.filter((p) => p === RESTORE_TEXT_FAILED).length, 1);
+            assert.equal(r.log.problems.length, 1);
+            assert.equal(r.st.timers.length, 0);
+            assert.deepEqual(r.log.keeps, [], 'nothing is cleared for a restore that never saw the copy');
+          });
+        });
+
+        // tick() asks only when a re-try is due: nothing else
+        describe('tick(): does nothing when nothing is due, while a GET is out, when stopped, or under a Send', () => {
+          dl('(−) MF-1: no chain: a tick changes nothing (no GET, the log is the same)', async () => {
+            const r = rig();
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            const before = snapshot(r);
+            await idle(r, 20);
+            assert.equal(r.log.fetches, 1);
+            assert.equal(snapshot(r), before);
+          });
+
+          dl('(−) MF-1: a chain is pending but not due: ticks before 2 s ask nothing; the first tick at 2 s asks', async () => {
+            const r = rig();
+            gets(r, gone404, copyOf(A));
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            await idle(r, 7); // 1.75 s
+            assert.equal(r.log.fetches, 1);
+            await idle(r, 1); // 2 s
+            assert.equal(r.log.fetches, 2);
+          });
+
+          dl('(−) MF-1: a re-try\'s GET is out: further ticks ask nothing', async () => {
+            const r = rig();
+            const h = {};
+            gets(r, gone404, waits(h), copyOf(A));
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            await idle(r, 8); // 2 s: the re-try goes out and waits
+            assert.equal(r.log.fetches, 2);
+            await idle(r, 12); // 3 s more
+            assert.equal(r.log.fetches, 2, 'one GET at a time');
+          });
+
+          dl('(−) MF-1: the page is stopped: a due re-try is not asked by a tick', async () => {
+            const r = rig();
+            gets(r, gone404, copyOf(A));
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            r.ds.stop();
+            await idle(r, 12); // 3 s
+            assert.equal(r.log.fetches, 1);
+          });
+
+          dl('(−) MF-1 (I5f): a Send runs while a re-try is due: no GET under the Send; the first tick after it runs the re-try', async () => {
+            const r = rig();
+            gets(r, gone404, copyOf(A));
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            await r.advance(2500); // due
+            r.ds.beginSend();
+            await idle(r, 8);
+            assert.equal(r.log.fetches, 1, 'no GET under the Send');
+            r.st.box = { value: '', shell: false }; // the Send went through
+            r.ds.sent();
+            r.ds.endSend();
+            await r.flush();
+            assert.equal(r.log.fetches, 1, 'the end of the Send starts no GET by itself');
+            tick(r);
+            await r.flush();
+            assert.equal(r.log.fetches, 2, 'the first tick after the Send runs it');
+            assert.equal(r.st.box.value, A);
+          });
+        });
+
+        // tick() is not a capture: it never moves what a capture records, and it runs no step
+        describe('tick(): changes no screen, capture time or columns, and runs no step', () => {
+          dl('(−) MF-1: the screen the sync holds is the same object after a tick, with nothing due and with a re-try due', async () => {
+            const r = rig();
+            gets(r, gone404, copyOf(A));
+            await r.ds.restore();
+            const s = text('hello');
+            r.ds.capture(s, 120);
+            tick(r);
+            assert.equal(r.ds.screen(), s, 'nothing due');
+            await r.advance(2500);
+            tick(r); // due: the re-try runs
+            await r.flush();
+            assert.equal(r.log.fetches, 2);
+            assert.equal(r.ds.screen(), s, 'a re-try due');
+          });
+
+          dl('(−) MF-1: no step: the box was edited, the push is due by the clock but its timer has not run; a tick pushes nothing and leaves the timers as they are', async () => {
+            const r = rig();
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            r.type('abc'); // the push is armed for PUSH_MS
+            r.st.t += PUSH_MS + 500; // the clock ran on without the timer
+            const timers = [...r.st.timers];
+            const before = snapshot(r);
+            tick(r);
+            await r.flush();
+            assert.equal(snapshot(r), before, 'a tick pushes nothing');
+            assert.deepEqual(r.st.timers, timers, 'and arms nothing');
+            assert.equal(r.st.timers.every((t, i) => t === timers[i]), true, 'the same timers, not new ones');
+            await r.advance(0);
+            assert.equal(r.log.puts.length, 1, 'the timer still does its push (the control)');
+          });
+
+          dl('(−) MF-1: the capture time is not moved: an edit after the last capture is kept over a refused Send push even when a tick came after the edit', async () => {
+            const r = rig();
+            r.ds.capture(empty({ sig: sig(4) }), 120);
+            await r.advance(10);
+            r.type('abc'); // an edit after the last applied capture
+            await r.advance(20);
+            tick(r); // a 304 after the edit: not a capture
+            r.answer = () => ({ status: 409, body: { error: 'draft-changed', draft: text('typed over there', { sig: sig(7) }) } });
+            r.ds.beginSend();
+            const out = await r.ds.send('abc');
+            assert.equal(out.ok, false);
+            assert.match(out.message, /Nothing was sent\. Your text is kept\.$/);
+            r.ds.endSend();
+            assert.deepEqual(r.log.sets, [], 'nothing is pulled over the edit');
+            assert.equal(r.st.box.value, 'abc');
+          });
+
+          dl('(−) MF-1: the columns are not moved: a short text is not "long" after a tick', async () => {
+            const r = rig();
+            await r.ds.restore();
+            r.ds.capture(empty(), 120);
+            tick(r);
+            r.type('abc');
+            assert.notEqual(r.lastNote()?.kind, 'long');
+            await r.advance(PUSH_MS + 10);
+            assert.deepEqual(r.log.puts.map((p) => p.text), ['abc']);
+          });
+        });
+
+        // EC2b, the exact sequence of the review (re-check 1, item 6 (2))
+        dl('(−) SF-1 (EC2b, exact): X is saved, X is sent with the clear unanswered, a return reads X, then the clear answers 200: the box stays empty and X (already sent) does not come back', async () => {
+          const r = rig();
+          await r.ds.restore(); // boot: kept null
+          r.ds.capture(empty(), 120);
+          r.type(X);
+          await r.advance(KEEP_MS + 10); // X is saved
+          assert.deepEqual(r.log.keeps, [{ text: X, shell: false }]);
+          let release;
+          r.keepAnswer = () => new Promise((res) => { release = () => res(OK200()); }); // the next keep answer is held
+          r.ds.beginSend();
+          r.st.box = { value: '', shell: false };
+          r.ds.sent(); // the clear goes out, unanswered
+          r.ds.endSend();
+          r.fetchAnswer = copyOf(X);
+          await r.ds.restore(); // a return whose GET reads X
+          release();
+          await r.flush();
+          assert.equal(r.st.box.value, '');
+          assert.deepEqual(r.log.sets, []);
+          assert.deepEqual(r.log.announces, []);
+          assert.deepEqual(r.log.keeps, [{ text: X, shell: false }, { text: '', shell: false }]);
+        });
+      });
+    });
   });
 });

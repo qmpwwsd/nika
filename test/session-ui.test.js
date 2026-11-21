@@ -5738,6 +5738,65 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.deepEqual(c.order.filter((x) => x === 'start'), []);
   });
 
+  // 0.5.4 LTF round 2 (MF-1): a screen answer with no change (304) runs a due capture re-try of the kept-text sync, and nothing else of the sync
+  describe('the 304 branch ticks the draft sync (LTF MF-1)', () => {
+    const tickRig = ({ growThrows = false, tickThrows = false, attSending = false } = {}) => {
+      const c = captureRig();
+      c.ctx.recovered = () => c.order.push('recovered');
+      c.ctx.growTick = () => { c.order.push('grow'); if (growThrows) throw new Error('boom'); };
+      c.ctx.DS = { capture: () => c.order.push('capture'), tick: () => { c.order.push('tick'); if (tickThrows) throw new Error('boom'); } };
+      c.ctx.ATT = { sending: () => attSending };
+      return c;
+    };
+
+    test('(+) a 304 calls DS.tick() once, after recovered() and the grow', () => {
+      const c = tickRig();
+      c.run({ status: 304, body: null });
+      assert.deepEqual(c.order, ['recovered', 'grow', 'tick']);
+    });
+
+    test('(+) a 304 ticks while an attachment Send runs too: the sync\'s own Send flag holds the re-try back, the page does not ask ATT', () => {
+      const c = tickRig({ attSending: true });
+      c.run({ status: 304, body: null });
+      assert.deepEqual(c.order, ['recovered', 'grow', 'tick']);
+    });
+
+    test('(−) a DS.tick() that throws leaves the grow run and the mirror working: the next 200 still draws', () => {
+      const c = tickRig({ tickThrows: true });
+      assert.doesNotThrow(() => c.run({ status: 304, body: null }));
+      assert.deepEqual(c.order, ['recovered', 'grow', 'tick']);
+      c.order.length = 0;
+      c.run({ status: 200, body: BODY });
+      assert.ok(c.order.includes('draw'), 'the next capture draws');
+      assert.ok(c.order.includes('capture'), 'and reaches the sync');
+    });
+
+    test('(−) a growTick() that throws leaves the tick run: the two try blocks are separate', () => {
+      const c = tickRig({ growThrows: true });
+      assert.doesNotThrow(() => c.run({ status: 304, body: null }));
+      assert.deepEqual(c.order, ['recovered', 'grow', 'tick']);
+    });
+
+    test('(−) a sync without tick() (nothing to call) leaves a 304 harmless', () => {
+      const c = tickRig();
+      c.ctx.DS = { capture() {} };
+      assert.doesNotThrow(() => c.run({ status: 304, body: null }));
+      assert.deepEqual(c.order, ['recovered', 'grow']);
+    });
+
+    test('(−) a 200 calls DS.capture as before and never DS.tick(); a 500 and a lost request call neither', () => {
+      const c = tickRig();
+      c.run({ status: 200, body: BODY });
+      assert.ok(c.order.includes('capture'));
+      assert.equal(c.order.includes('tick'), false);
+      c.order.length = 0;
+      c.run({ status: 500, body: { message: 'x' } });
+      c.run({ status: 0, body: null });
+      assert.equal(c.order.includes('tick'), false);
+      assert.equal(c.order.includes('capture'), false);
+    });
+  });
+
   test('(+) setGone closes the planner and handleCapture is guarded: the hooks are in the source where the design puts them', () => {
     assert.match(fnOf('function setGone()'), /M\.gone = true;[\s\S]*FIT\.planner\?\.close\(\);/);
     assert.match(fnOf('function handleCapture(r)'), /try \{\s*fitCaptured\(\);\s*\} catch \{[^}]*\}\s*try \{\s*scrollCaptured\(r\.body\);\s*\} catch \{[^}]*\}\s*if \(!M\.frozen\) term\.scrollTop = term\.scrollHeight;/);
@@ -8341,7 +8400,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(fnOf('function fitSized(pane)'), /const cutBefore = GR\.phase === 'stepping' && growWanted\(M\.body\.dialog\);\s*HOLD\.start\(\{ want: \{ cols: pane\.cols, rows: pane\.rows \}, plainBefore, modeBefore, cutBefore \}\);/);
     assert.match(fnOf('function drawFitPop()'), /fitPanelView\(FIT\.view, \{ \.\.\.FIT\.ui, room: FIT\.room, grow: GR\.phase === 'stepping' \|\| GR\.phase === 'held' \}\)/);
     assert.match(fnOf('function fitCaptured()'), /growTick\(\);\s*\}/);
-    assert.match(fnOf('function handleCapture(r)'), /if \(r\.status === 304\) \{\s*recovered\(\);\s*try \{\s*growTick\(\);\s*\} catch \{[^}]*\}\s*return;\s*\}/);
+    assert.match(fnOf('function handleCapture(r)'), /if \(r\.status === 304\) \{\s*recovered\(\);\s*try \{\s*growTick\(\);\s*\} catch \{[^}]*\}\s*try \{\s*DS\.tick\(\);\s*\} catch \{[^}]*\}\s*return;\s*\}/); // LTF MF-1 (requirement change): the 304 branch ends with the sync's tick in its own try block
     assert.match(fnOf('function setGone()'), /M\.gone = true;\s*GR = GROW_IDLE;/);
     assert.match(SRC, /if \(r\.status === 403\) \{\s*M\.fatal = true;\s*clearTimeout\(M\.timer\);\s*SC\.planner\?\.close\(\);\s*GR = GROW_IDLE;/);
     assert.match(fnOf('function renderMode()'), /const g = growing\(\);\s*GROWING_SHOWN = g;\s*DF\?\.render\(\{ pane: W\.pane, dialog: W\.dialog, name: A\.name, attention: A\.attention, growing: g \}\);/); // 0.5.4 QPF F6 (requirement change): what the form is told is kept

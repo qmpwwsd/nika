@@ -399,11 +399,13 @@ export function createDraftSync(io) {
     // keepFails / keepTold / keepRetryAt: failures in a row, the problem line was shown, no write before; keepOff: the route cannot be used (404, 409); keepHold: a restore failed, no
     // write until the first edit (the server's copy stays); restoring: the GET runs; restoreAgain: the last restore ended on 404 or a throw, so the next reset() asks again; restored: the box holds put-back text; edits: edited() calls so far.
     // The copies this page wrote itself (MF-2, owner answer A): own: the keys of its writes, the newest 6 (a write that failed or whose answer is lost may have landed, so it counts as its own);
-    // saved: the last copy the page knows the server held for its box: its own confirmed write, a leave-time write that answered 200, or what a restore found and settled on ('' at the start: an empty box matches it).
+    // saved: the last copy the page knows the server held for its box: its own confirmed write, a leave-time write that answered 200, or what a restore found and settled on ('' at the start: an empty box matches it);
+    // after a Send the copy this page knew the server held joins own, and saved is the empty copy the Send's clear writes (SF-1).
     // A restore that never saw the server's copy (404, stopped, throw) leaves a chain (SF-4): restoreAgain (reset() asks again), againEdits (the edit count of the first try: typing since is "typed before nika could bring
-    // back"), restoreAt (a capture re-try is due from then on; Infinity: none pending; 404 and stopped only), againTries (capture re-tries of this chain, at most RESTORE_AGAIN_MAX).
+    // back"), restoreAt (a capture re-try is due from then on; Infinity: none pending; 404 and stopped only; while one is pending Claude's input is not pulled into the box, F-1), againTries (capture re-tries of this
+    // chain, at most RESTORE_AGAIN_MAX). returnEdits (F-2): null, or the edit count of the back/forward return that came while a restore ran: it runs, as a first try with that count, when that restore ends.
     keeping: false, kept: null, keepTimer: null, keepFor: '', keepFlight: false, keepSoon: false, keepFails: 0, keepTold: false, keepRetryAt: 0, keepOff: false, keepHold: false,
-    restoring: false, restoreAgain: false, restored: false, edits: 0, own: [], saved: '', againEdits: 0, restoreAt: Infinity, againTries: 0,
+    restoring: false, restoreAgain: false, restored: false, edits: 0, own: [], saved: '', againEdits: 0, restoreAt: Infinity, againTries: 0, returnEdits: null,
   };
   const now = () => io.now();
 
@@ -467,10 +469,16 @@ export function createDraftSync(io) {
     else if (D.dirty && D.held !== null) show({ kind: D.held });
     else show(null);
     if (D.flight || D.composing || D.sending || D.stopped) return; // our own write is landing, an IME is open, a Send runs: its end runs step again
+    // A capture re-try is pending (F-1): the server's copy was never seen, and Claude's text pulled into an empty box would make the re-try skip that copy and the next keep step clear it. So
+    // nothing is pulled, the first capture and a later one alike; this branch does not set seenSig, so after a boot or reset() the first readable capture after the chain ends follows the first-capture
+    // rule, and a screen that changed meanwhile is pulled by the rule below.
+    const chain = D.restoreAt !== Infinity;
     if (D.seenSig === null) { // the first readable capture of this connection: an empty box takes the screen; text already there is never wiped
-      D.seenSig = d.sig;
-      if (box.value === '' && !box.shell) { pull(d); return; }
-    } else if (d.sig !== D.seenSig && !D.dirty) { // the terminal changed and nothing unsent is here
+      if (!chain) {
+        D.seenSig = d.sig;
+        if (box.value === '' && !box.shell) { pull(d); return; }
+      }
+    } else if (d.sig !== D.seenSig && !D.dirty && !chain) { // the terminal changed and nothing unsent is here
       const wait = D.editedAt + QUIET_MS - now();
       if (wait <= 0) pull(d);
       else arm(wait);
@@ -694,16 +702,21 @@ export function createDraftSync(io) {
 
   /**
    * Brings back the text the server kept: at boot and on a back/forward return (first tries, each starting a new chain), and again (`retry`) from reset() and, after a 404, from captures. While it runs nothing is pulled,
-   * pushed or written (a Send meanwhile is refused by the page). One retry after 2 s unless the pane is gone (404). The box is never cleared: nothing kept (an evicted or dropped
+   * pushed or written. The page refuses a Send while the GET is out (restoring()); a capture re-try waits for a Send that runs (F-4). A return that comes while a restore runs is not dropped (F-2): it is remembered
+   * (one, with the edit count of that moment) and runs as a first try, `since` being that count, when the running restore ends; a return while the page is stopped is a no-op (reset() asks again only for an open chain). One retry after 2 s unless the pane is gone (404). The box is never cleared: nothing kept (an evicted or dropped
    * tray) leaves it as it is. A copy that differs from a box with text goes in only when another page wrote it and the box still holds what this page saved (MF-2, below). It never
    * rejects. A try that does not end on a known answer (404, a failure, a throw) leaves the server's copy unknown and holds every keep write until the user's first edit: the text on
    * the server is never cleared for a restore that did not see it.
    */
-  async function restore(retry = false) { // retry: a capture re-try or reset() asking again; the boot restore and a back/forward return are first tries and start a new chain
-    if (D.restoring || D.stopped) return;
+  async function restore(retry = false, since = null) { // retry: a capture re-try or reset() asking again; the boot restore and a back/forward return are first tries and start a new chain; since: only for a return that waited (F-2)
+    if (D.stopped) return;
+    if (D.restoring) { // F-2: a return waits for the running restore (one is enough: the first edit count stays); a re-try is never recorded
+      if (!retry && D.returnEdits === null) D.returnEdits = D.edits;
+      return;
+    }
     D.restoring = true;
     if (!retry) D.againTries = 0; // a new chain
-    const edits = retry ? D.againEdits : D.edits; // taken before any wait (an edit made while a write is on its way is seen too); a re-try keeps the first try's count: typing since is "typed before nika could bring back"
+    const edits = retry ? D.againEdits : since ?? D.edits; // taken before any wait (an edit made while a write is on its way is seen too); a re-try keeps the first try's count: typing since is "typed before nika could bring back"
     D.restoreAgain = false;
     D.restoreAt = Infinity; // no capture re-try is pending while this try runs
     cancelTimer();
@@ -768,8 +781,22 @@ export function createDraftSync(io) {
       try { io.problem(RESTORE_TEXT_FAILED, 8000); } catch { /* the page is going away */ }
     } finally {
       D.restoring = false;
+      const since = D.returnEdits;
+      D.returnEdits = null; // cleared before the return runs
+      if (since !== null) restore(false, since); // F-2: before any step can pull or push; it sets restoring at once, so the step below is a no-op then, and its own end runs a step
       step();
     }
+  }
+
+  /**
+   * A restore that never saw the server's copy asks again when the pane answers (one GET per RESTORE_RETRY_MS at most, RESTORE_AGAIN_MAX in all): from a capture (a 200) or a tick (a 304). Not while stopped,
+   * and not under a Send that runs (F-4): the first capture or tick after it does. Returns true when a re-try started.
+   */
+  function runDueRetry() {
+    if (D.restoreAt === Infinity || D.stopped || D.sending || now() < D.restoreAt) return false;
+    D.againTries += 1;
+    restore(true);
+    return true;
   }
 
   return {
@@ -778,12 +805,12 @@ export function createDraftSync(io) {
       D.screen = draft;
       D.capturedAt = now();
       D.cols = Number.isInteger(cols) ? cols : 0;
-      if (D.restoreAt !== Infinity && !D.stopped && now() >= D.restoreAt) { // a restore that never saw the server's copy: the pane answers, ask again (one GET per RESTORE_RETRY_MS at most)
-        D.againTries += 1;
-        restore(true);
-        return;
-      }
+      if (runDueRetry()) return; // a due re-try started (it ends in its own step)
       step();
+    },
+    /** A screen answer with no change (a 304): runs a due capture re-try; nothing else. */
+    tick() {
+      runDueRetry();
     },
     edited,
     composition(on) {
@@ -803,7 +830,8 @@ export function createDraftSync(io) {
       show(null);
       if (D.restoreAgain) { // the last restore never saw the server's text (404, stopped, or a throw): ask again now that the pane answers, with a new count of capture re-tries
         D.againTries = 0;
-        restore(true);
+        if (D.sending) D.restoreAt = Math.min(D.restoreAt, now()); // not under a Send that runs (SF-3): the first capture after it asks again (F-4)
+        else restore(true);
       }
     },
     stop() {
@@ -853,6 +881,8 @@ export function createDraftSync(io) {
       D.seenSig = '';
       D.adopted = false;
       cancelTimer();
+      if (D.saved !== '' && !D.own.includes(D.saved)) { D.own.push(D.saved); if (D.own.length > 6) D.own.shift(); } // the copy this page knew the server held is what was just sent: it never comes back (SF-1)
+      D.saved = ''; // the box is empty now, as the clear below will make the server's copy: another page's copy still comes back into it
       keepStep(true); // the kept copy is cleared at once, not after KEEP_MS
     },
     endSend() {
@@ -866,7 +896,7 @@ export function createDraftSync(io) {
      * its text (nika wins while the user types here). A refusal that carries a draft adopts it, so the terminal's text is pulled by the usual rule.
      */
     async accept(text) {
-      if (D.restoring) return { ok: false, status: null, message: RESTORING_TEXT }; // a suggestion must not land in a box the restore then replaces
+      if (D.restoring || D.restoreAt !== Infinity) return { ok: false, status: null, message: RESTORING_TEXT }; // a suggestion must not land in a box the restore then replaces, nor under a capture re-try that is still due (SF-2)
       if (D.flight) {
         try { await D.flight; } catch { /* write() already took the answer */ }
       }

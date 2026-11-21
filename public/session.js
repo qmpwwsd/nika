@@ -1644,6 +1644,11 @@ function handleCapture(r) {
     } catch {
       // the mirror keeps working without the grow
     }
+    try {
+      DS.tick(); // LTF MF-1: a capture re-try of the kept text is due by the clock, not by a changed screen
+    } catch {
+      // the mirror and the grow keep working without the tick
+    }
     return;
   }
   if (r.status === 200 && Array.isArray(r.body?.rows) && Number.isInteger(r.body.cols)) {
