@@ -163,3 +163,90 @@ shows more.
 of 13 rows, and the review of two long questions as a form with Submit working from the page. (5) The task-list sentence of rule 12 in `rules/project-rules.md` (owner-approved 2026-11-17) and threat T37 in `docs/security.md` name both forms;
 this amendment itself changes no rule text.
 `docs/contracts/claude-tui.md` (§1, F13; §13.1, §13.2, §13.5), `docs/design/spec.md` §9.16 and `docs/contracts/api-app.md` (the capture's `dialog` field) carry the details.
+
+## Amendment 2026-11-19 (0.5.4, QP): question steps with a preview, a note and Chat about this
+
+**Context.** Claude Code 2.1.328 adds a question step with a preview: a bordered box beside the options, a `Notes:` row, a `Chat about this` row
+and a footer that may wrap at 80 and 52 columns. On that step a digit only moves Claude's focus, and `Enter` selects the focused option and moves
+to the next step. The 2.1.328 Review has no `Ready to submit your answers?` row. Before this, nika read such a step as `unreadable` and the page
+showed its banner. The live check of the 0.5.4 build (LC-QPB) found how Chat ends a dialog: Claude's tool result says the questions were declined.
+
+**Decision.** Owner answers QP-Q1 = A (grow the pane for hidden preview lines) and QP-Q2 = A (Chat on preview steps only); rule 12 **Dialog previews**.
+- **Read whole or not at all.** Two to seven numbered options with no description and no text row, exactly one box beside them (its inner text taken
+  by cell width with spaces kept, each row through `cleanBlock`), Claude's `✂ … N lines hidden` divider only directly above the box's bottom
+  border (a one-row divider must be as wide as the box, else `layout`), or Claude's own fallback line instead of the text. Anything else is
+  `unreadable`. The `sig` keeps what it covers on any step plus a preview marker, never the preview text, the hidden count or a note.
+- **The user's view is bound separately.** An answer on a preview step carries `view`, 16 hex of sha256 over the `sig`, the focused option, the
+  preview and the note as read; a fresh capture right before `Enter` must give the same `view` (409 `preview-changed`, nothing more sent).
+- **Keys.** Only `Down` or `Up` (one per fresh capture, never past an end, at most the distance, one `Up` from `Chat about this`) to move Claude's
+  focus to the user's pick, and `Enter` once the focus is there and the notes input is closed; never a digit. A note (1 to 300 characters, the free-text
+  rules) is typed only on a pane known to be plain (409 `note-mode` otherwise, also while vim insert mode shows): `n` as literal text with the focus on
+  the pick, then the note through `send-keys -l` once a fresh capture shows the notes input open and empty on the same option, then `Enter` once the
+  notes row reads back exactly the note. Nika never presses `Escape` inside the notes field (it was never tried live); a request that finds the field
+  open sends nothing (409 `notes-open`, Decline, step moves and End included).
+- **Chat** (QP-Q2 = A) is its own request, `{ sig, chat: true }`, from its own button, on preview steps only (other question steps say "Chat about
+  this: use the terminal"): `Down`, one per fresh capture, to the Chat row, then `Enter` once a fresh capture shows the focus there. It carries no
+  `view` (owner answer QP-R1 = A): Chat selects no option, so a `view` check would only refuse it when a preview redraws; its proof is the focus
+  on the Chat row. `Enter` ends the dialog at once ("Declined to answer").
+- **Wrapped rows that may reach the last column** (owner answer QP-R2 = A): a row of a preview box that ends in the box's right border, a row of the
+  divider, a `Notes:` row that Claude wrapped (another Notes row, indented to the note's column, right below it), and a row of a question footer
+  Claude wrapped (one to three consecutive rows that start at column 0 under a blank row, read together; each row but the last too full to take the
+  next row's first word). The last Notes row is still checked, so a note cut at the edge fails closed.
+- **After a key, the strip alone proves the step moved** (`moved()`: same headers, the step marked answered, the other marks unchanged, the next
+  step current), so it reads on every step. A dialog on screen that nika cannot read is its own code, `dialog-unread`, with `sent`, never
+  `dialog-changed`.
+- **The grow** (rule 12, F16) also asks for more rows when a step's preview shows `N lines hidden` and, with O2, when a plan dialog is cut off at the
+  top; Fit `auto` and `fill` only. In `terminal` and `off` nothing grows and the form says "lines hidden: see the terminal".
+- **End.** End declines a dialog first like a permission prompt, except while a notes field is open (409 `notes-open`). A recognised dialog whose
+  footer nika cannot read, for example a wrapped footer with an agent list, now takes the same one-`Escape` road instead of being refused as
+  `mode-unknown`.
+
+**Alternatives.** A digit to move the focus: rejected, it does nothing else on a preview step, and `Down` and `Up` can be proven one at a time. The
+preview text in the `sig`: rejected, the `sig` would change with every focus move and each would look like a new step. A `view` on Chat (QP-R1 = B):
+rejected, no safety gain. Dropping the wrapped-Notes exemption (QP-R2 = B): a note longer than one row would show the banner and be answered only in
+the terminal. A new ADR: rejected, the decision of this ADR (read from the screen, one step per request) holds unchanged.
+
+**Consequences.** `docs/security.md` T75 to T79 and residual s record the risks (a preview read differently by a later Claude version, keys that land
+elsewhere, a footer read from the wrong rows, a wrong outcome after a key, Chat closing the dialog). The page shows the preview, the note and Chat with
+their own states (`docs/design/spec.md` §9.26). `growStep` counts any plan as a dialog on screen for the 1 s close, so a grown plan that becomes whole does not
+flap, and a question-to-plan swap within 1 s keeps the grown size. A fallback box with an extra blank inner row shows as preview rows (display only).
+
+## Amendment 2026-11-21 (0.5.4, QPF): fixes for the live-check defects of the question form
+
+**Context.** The live check LC-QPB of the QP build (Claude Code 2.1.329 and 2.1.330) found five defects, built in QPF and re-run live (LC-QPF).
+
+**Decision.**
+- **F1a, the partial Review.** 2.1.329 and 2.1.330 draw `⚠ Some questions are unanswered` in the Review, with no Ready row, and leave the unanswered
+  question out. `readReview` reads that row as its warn row; 2.1.328's warn row (`You have not answered all questions`) is still unverified.
+- **F1b, a stale form.** After any 200 (or `already-answered`) an unreadable capture drops the form the page still shows: Reading, then the banner,
+  instead of a form that answers a screen nika no longer reads. The draft (picks and note) is kept in `keep`, except held notes, and the note comes
+  back with the rebuilt form. A form that has an Answer in flight stays until its answer returns.
+- **F2, a note on a narrow pane.** Claude's open notes field is `Notes:` plus 32 cells wide; on a narrow pane it cuts the placeholder and the page
+  could type a note into a field it cannot read back. Before `n` the server checks that the field would fit (`noteRoom`: the `Notes:` column plus 32
+  cells stays under the pane's width, checked on the capture before `n` is sent, and again before the key on the later road): else 409 `note-room`,
+  nothing typed. The page clears its note after a refusal that pressed keys and says so (`NOTE_TAKEN`).
+- **F3, a plan whose prompt wraps.** A wrapped plan prompt reads `wide`, never `cut`, so the grow does not run for it; a plan with both dashed
+  rules on screen and no prompt row reads `layout` (F3c); a plan whose footer wraps reads `wide` at any height (F3b). `cut` for a plan means a plan
+  without its rules, as the F16 amendment above says.
+- **F4, the Chat copy.** The Chat button's title no longer promises that answers stay: "Closes Claude's questions so you can talk them over with
+  Claude instead. Answers you already gave may not reach Claude." (live: in one run none of the four given answers nor the note reached Claude.)
+  Threat T79 and the design texts say the same (owner approved).
+- **F6.** The preview tag leaves `growing` when the grow ends or when Fit leaves Auto or Fill.
+- **Round 3, ruling C.** A first fix gave the focus back to the note field after a dropped form; the review then found two more paths on which that
+  refocus outlived the drop. It was taken out: after a drop the note comes back, and the focus is on the question heading.
+
+**Not built, known limits.**
+- **F5.** A note that wraps on a step whose preview is cut can make Claude hide one more preview line; nika then stops before `Enter`
+  (`preview-changed`) and the note stays in Claude's notes field: finish in the terminal. Whether a wrapped note costs a preview row depends on
+  Claude's spare rows, which nika cannot see before typing.
+- **N8** (owner answer QPF-N8 = A). If Claude's focus moves while you type a note, the form follows it; check the selected option before you press Enter.
+- After a dropped form the note comes back, but typing needs a click into its field again. A pick queued behind a request in flight is dropped with
+  the form. 0 natural drops showed in the live run.
+- A plan is not readable below about 109 columns (the footer's path row; a longer plan path raises it) and not at 85 columns or less (the prompt wraps);
+  the page shows Reading, then the banner. The plan grow threshold depends on the plan path's length (119 columns for an 89-character path in the live
+  run), never "about 110". Fill shares Auto's path; the live run covered Auto and Off. `409 busy-switching` on a pick right after a reload means Fit's
+  switch is still running; the note is kept.
+- Escape in Claude's notes field closes it and keeps the note; nika never sends it (rule 12).
+
+**Consequences.** The note kept on the form after a refusal that pressed keys is cleared with its own sentence (see the NOTE_TAKEN line in
+`docs/design/spec.md` §9.26). `docs/contracts/api-app.md` lists `note-room` beside `notes-open`, `note-mode` and `preview-changed`.

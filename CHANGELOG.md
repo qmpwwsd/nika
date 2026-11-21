@@ -1,5 +1,117 @@
 # Changelog
 
+## 0.5.4 (unreleased)
+
+Agents and panes:
+
+- **New agents never squeeze a pane to nothing.** An agent opens beside its parent (or under the last agent) only while both
+  panes keep at least 80 columns and 15 rows. Otherwise nika puts it in a tmux window named `agents` that holds agents only,
+  re-tiles that window as agents come, and opens another one when it is full. Your current tmux window stays where it is, and
+  nika never splits a window that is zoomed or that a session window fits. The home window is the parent's, so a
+  sub-orchestrator's agents land next to it. `nika spawn` prints where the agent went (`placement:`), `nika status` shows each
+  pane's `window:pane`, and the app's toast and row menu say where it went. A spawn whose `--under` pane is in a tmux session
+  nika cannot target is refused (400 `invalid`). See `docs/adr/0021-agent-placement.md` and `docs/security.md` T65.
+- **Agents of different orchestrators stay in their own windows.** An `agents` window is tiled only when every pane in it is the new
+  agent's parent or a child of that parent, and a window that holds a sub-orchestrator is open only to that sub-orchestrator's own
+  agents; `under-last` follows the last pane only inside the same tree. When tmux's list of the session cannot be trusted (a line
+  that does not parse, a pane id twice), the agent goes to a new `agents` window and the log says so.
+
+Session window (desktop app):
+
+- **Choose how the session window fits Claude's pane.** Settings → Session window: **Auto** (as before), **Always fill the
+  panel**, **Your terminal's size** (nika never resizes a tmux window, zooms Claude's pane when the window has others and scales
+  the text) or **Off** (nika changes nothing in tmux). Open session windows follow a change within 5 seconds. The Fit chip shows a
+  mode other than Auto with its own colour, icon and words (`Fit · always fills`, `Fit · terminal's size (set)`,
+  `Fit · off in Settings`), and the popover points to Settings. In Terminal's size and Off the page never asks for more rows. See
+  `docs/adr/0017-fit-lease.md` and `docs/security.md` T66.
+- **Fit gives a grown size back when the question closes, in every mode.** After a question made nika grow the pane, switching
+  to another Fit mode and back no longer brings the old taller size back. The Fit popover no longer shows a stale "Fitting…",
+  the pin dots of the Fit icons keep a clear gap from the corner, and the Settings card icons line up with their titles.
+- **Remove detected folders and stuck sessions from the lists.** A folder nika found that is not a project, and an ended or
+  stuck session row, can be removed from the lists in the app: one click with **Undo**, and **Show removed** brings them back.
+  Removing only hides the row: nothing is deleted and no process is touched. A removed folder comes back with sessions that
+  start after the removal; an old row shows again only while it runs in a tmux pane; nika forgets a removal after 90 days (500
+  at most). A folder can be removed at any age. Both tiers leave removed rows out and show a count; only the app has the
+  buttons. **Show removed** names a folder older than the recent list with its label and path, says "Removed 3 min ago" or "just
+  now" and keeps counting, and reads the list again after each Show again or Undo. See `docs/adr/0022-remove-from-the-list.md`
+  and `docs/security.md` T67 to T71.
+- **Earlier parts of a long message are marked.** One note above a cut message says "Earlier parts of this message are not
+  shown."; the Transcript keeps at most 32 MiB of image thumbnails beside its count cap of 24, and queued picture reads no longer
+  hold up a page read.
+- **nika types `/compact` in a waiting session that is past its compact point.** With **Auto-compact** on, a live session the
+  app shows that has been idle for 60 s, with no action of yours on its pane for 60 s, gets `/compact` typed once its context
+  passes the setting's point, whether nika started it or not: Claude's own auto-compact does not run while a session waits. nika checks the
+  screen twice first (idle, no prompt, question or survey, an empty box), types the command only through the Compact quick
+  action's path and presses Enter only when the box reads exactly `/compact`. Once per crossing, at most every 10 minutes, and a
+  pane stops after 3 failed tries until the app restarts. The context meter reads the size after a compaction, a session nika
+  did not start shows **typed** with its point (app only; :3335 and `nika status` still say none), and the session line and the
+  row tooltips say when nika typed `/compact`, when it compacted and when it stopped, each with its own colour, icon and words.
+  The Settings text of the setting says what it now does. See `docs/adr/0014-auto-compact-launch-env.md` and `docs/security.md` T72 to T74.
+- **Answer Claude's question steps with a preview, a note and Chat about this.** Claude Code 2.1.328 can draw a preview box
+  beside the options of a question, a Notes field and a "Chat about this" row. nika's form shows the preview as text, moves
+  Claude's focus with Down and Up and presses Enter once the focus is on your pick (a digit only moves the focus there), types
+  a note after `n` only in a pane that is not in vim mode, and offers **Chat about this** as its own button on those steps.
+  What you saw is bound to what is answered: if the screen changes between your click and Enter, nika sends nothing more and
+  says so. While Claude's notes field is open, nika's form and End send nothing. A question footer that Claude wrapped over
+  two or three rows is read, a dialog nika cannot read is called unreadable (never "The question changed"), and the Fit grow
+  also asks for rows when a preview says "N lines hidden" or a plan is cut off at the top. See `docs/adr/0015-dialogs-from-the-screen.md`
+  and `docs/security.md` T75 to T79.
+- **Question forms work on Claude 2.1.329 and 2.1.330.** A review with questions left unanswered (the `⚠ Some questions are
+  unanswered` row) is read and shows as the form. After an answer, a screen nika cannot read drops the answered step into
+  Reading, then the banner, instead of showing it as current; a note you were typing comes back in its field and the focus
+  goes to the question heading, so Enter answers nothing unseen. A note is typed only when Claude's open notes field fits the
+  pane (its `Notes:` column plus 32 cells under the width), else nika says so (409 `note-room`), types nothing and keeps your
+  note. A note whose answer was refused after keys were pressed is taken off the form, so Answer never types `n` again, and the
+  form says the note may already be in Claude's notes field. A plan whose prompt or footer wraps reads as too wide and no longer
+  makes Fit grow the pane. The Chat button no longer promises that answers you gave stay (Claude may report the questions as
+  declined), and its preview tag leaves "Showing more lines" when Fit leaves Auto or Fill.
+- **Unsent attachments stay when you leave a session and come back.** Closing or leaving a session window no longer deletes the
+  files of an unsent message; the chips are back when the window opens again, also after Back. The app keeps a small tray per
+  pane in memory (6 files at most, 64 panes), tied to the pane's project and to the Claude in it, so `/clear` and `/compact` keep
+  it. The files go when you remove or send them, when the session ends or after the **Keep attachments for** setting. A file that
+  is gone shows one "Not restored:" note with its own colour and icon. Add, pick and Send wait while the chips load (8 seconds at
+  most).
+  See `docs/adr/0016-attachments-json-upload-state-dir.md` and `docs/security.md` T80 to T83.
+- **Unsent text stays too.** Text in the message box that nika does not copy into Claude's input (longer than the sync takes,
+  with a control character, or waiting because the sync is paused or a write is held) is kept in the app's memory for the pane,
+  with its Shell flag, 16 KB at most, and put back when the session window opens again, only into an empty box you have not
+  typed in (after Back, also into a box that still holds the copy that page saved). nika never types it into Claude by itself
+  and never pushes it over Claude's own text; it goes to Claude only through Send. The note under the box reads "This text goes
+  to Claude when you send it.", and text over 16 KB gets a "Not kept:" note of its own. A return from Back while another
+  restore runs now runs after it, a restore asked again also runs while Claude's screen stays the same, and while one is pending
+  the page neither pulls Claude's input into the box nor takes a suggestion with Tab. See `docs/security.md` T84 to T87.
+- **A note that left the question form says why, and problem lines tell warnings from errors.** When nika took your note off the
+  form because it had already pressed keys, and the next screen shows Claude's notes field open, the line keeps the sentence that
+  says the note may already be in Claude's notes field. The line under the message box shows **Warning:** with a warning icon
+  or **Error:** with an error icon, so the two differ by more than colour.
+
+Known limits:
+
+- **A question note.** If Claude's focus moves while you type a note, the form follows it; check the selected option before you
+  press Enter.
+- **After a question form is dropped** (Reading, then the banner), the note comes back but the focus is on the question heading:
+  click into the note field again. A pick queued behind a request in flight is dropped with the form. A pick right after a reload
+  can answer `409 busy-switching` while Fit's switch runs; the note is kept.
+- **Chat about this** ends Claude's question dialog; answers you already gave may not reach Claude. Claude replaces a preview
+  of 36 lines or more with its own fallback line at any pane height, so nika's grow for hidden preview lines serves previews up
+  to about 35 lines; for a longer one the form says to read it in the terminal.
+- **Wide plans.** Whether a plan grows the pane depends on the length of the plan file's path (119 columns for an 89-character
+  path), not on a fixed width.
+- **Kept text, two pages of one pane.** A returning page whose box holds text it never saved keeps its box, and its save replaces
+  the other page's copy. A Send whose clear fails while a save is in flight can delete another page's copy of the text. After a
+  restore failed, the first edit replaces the server's copy.
+- **Kept text while a restore is retried** (a few seconds, about 6 s at most). Text you type is kept only after one more edit,
+  and it replaces Claude's input text that the box does not show. A leave keeps nothing in that window, Tab on a suggestion
+  is refused with `RESTORING_TEXT`, and a read that hangs holds Send and Tab for up to 3 s per try.
+- **Kept attachments** are forgotten when the app restarts (the files stay until the keep-days setting removes them), a pane
+  with two live Claude claims that holds a tray answers 409 `no-project` and the page warns, and an upload cut off mid-body
+  leaves no chip and no message.
+- **Typed `/compact`.** It reaches only sessions in tmux panes the app can see; a session in a plain terminal or another tmux
+  server is left to Claude. When the setting's point is below what a fresh session already loads, nika types `/compact` again
+  after each of your turns (10 minutes apart at most); pick a point well above that.
+- **Show removed.** The Undo toast of a removal made from inside the Show removed dialog sits under the dialog; Show again in
+  the dialog does the same.
+
 ## 0.5.3 — 2026-11-19
 
 Session window (desktop app):

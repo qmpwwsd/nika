@@ -28,7 +28,7 @@ prompts under default settings (no prompt under the user's own allow rules); ans
 - **Storage.** `<state>/attachments/<key>/<id>.<ext>`, folders 0700, files 0600, `<key>` the pane's repository key from nika's own
   snapshot (never from the request), `<id>` 16 random hex. Written by `writeAtomic`, deleted by `removeOwnFile`. Per-repo folders keep
   Claude's "allow reading from this folder during this session" to that repo's attachments. Files go when the user removes them
-  before sending, when the window closes with them unsent, after `attachments.keepDays` (1 to 30, default 7, in Settings), and oldest
+  before sending, when the window closes with them unsent *(0.5.4: no longer; they go when their session ends, see the AT amendment at the end)*, after `attachments.keepDays` (1 to 30, default 7, in Settings), and oldest
   first beyond 256 MiB or 500 files (never one younger than 1 h).
 - **Nothing reaches Claude before Send.** Chips live in the page and in the state folder. Send is the draft push (unchanged), then
   `POST /api/app/pane/:id/attach-send { ids, base }`: under the pane lock nika pastes each stored path after the text (one bracketed
@@ -67,7 +67,7 @@ prompts under default settings (no prompt under the user's own allow rules); ans
 - Under default settings Claude asks before it reads a PDF or text file (the folder is outside the project). Option 2 of that
   prompt allows reading that repo's attachments folder for the session. Under the user's own allow rules there may be no prompt.
 - nika keeps copies of the user's files on disk, in its state folder, for up to `keepDays` days; the Settings field says so. A
-  file attached by mistake goes at once when it is removed or the window closes.
+  file attached by mistake goes at once when it is removed or the window closes *(0.5.4: when it is removed, or its session ends; AT amendment)*.
 - The store is capped at 256 MiB and 500 files in all. A full store refuses the next upload (507 `storage-full`); older files go
   after a day or two.
 - A state path with a space or another special character cannot be pasted as one token: attachments refuse with 409
@@ -91,7 +91,62 @@ prompts under default settings (no prompt under the user's own allow rules); ans
 - **Empty folders go.** The prune removes a repository's empty `<key>` folder through `removeOwnDir` in `src/fwrite.js` (`lstat`, never a link, a real folder owned by
   the user, `rmdir`, so a folder that holds anything stays).
 - **A page that goes into the back/forward cache keeps its chips.** `pagehide` with `persisted === true` no longer deletes the files of ready chips; a page that never
-  returns leaves them to the expiry. The attachment send waits for the redraw hold like Send does.
+  returns leaves them to the expiry *(0.5.4: leaving the page of any kind deletes nothing; see the AT amendment)*. The attachment send waits for the redraw hold like Send does.
 - **Not fixed, recorded:** the check that allows one upload at a time per pane runs after the request body is read, so several bodies of up to 12 MiB can sit in memory at
   once (the app secret is needed and admission is limited to 30 a minute); and a picked file on a hung network mount keeps the chooser slot busy until the mount
   answers (`docs/security.md` T38, T55 and residual o).
+
+## Amendment 2026-11-20 (0.5.4, AT): the chips come back when you return to a session
+
+- **Why.** The owner (2026-11-19): pasted files must not disappear when the chat is closed and opened again. The text came back, because it lives in
+  Claude's own input box; the chips did not, because they lived only in the page, and leaving the page deleted their files (design W2's decision 9,
+  made for privacy so that a file attached by mistake would not wait for `keepDays`; no owner answer is cited for it).
+- **The server keeps a tray per pane, in memory** (owner answer Q1 = A, 2026-11-20: memory only; a tray file that survives a restart may come later on
+  top). The ids of the pane's unsent files, in the order stored, with the last part of each file name through `clean()` as the chip's label (`src/attachments.js`).
+  It is bound to the pane's repository key and to the one live Claude that claimed the pane, by its pid or by the session in the pane, so `/clear` and
+  `/compact` keep it. At most 6 per pane (a 7th save is 409 `tray-full`, checked before the rate slot) and 64 trays. Nothing new is written to disk, and
+  the file name still never reaches the disk.
+- **`GET /api/app/pane/:id/attachments`** lists `{ files: [{ id, name, type, size }], gone: [name] }`. The page builds ready chips from it when the
+  session window opens and when it comes back from the back/forward cache. A file whose copy is gone (expired, evicted, removed behind nika's back) is
+  left out, and one note says so ("Not restored:", with its own colour tokens `--att-gone*` and icon `i-file-off`). A pane with no tray lists empty; the
+  page waits at most 8 s for the list. The route takes no upload rate slot and does not stamp the pane for the typed `/compact` (ADR 0014 amendment).
+- **Leaving the page deletes nothing.** Files go when the user removes them, sends them, when the session ends (the pane is gone or dead, or another
+  Claude or project claims it), and after `keepDays`. This replaces "when the window closes with them unsent" and "A file attached by mistake goes at
+  once when it is removed or the window closes" above.
+- **Alternatives.** Browser storage (`localStorage`) for the ids and names: rejected, because the names would reach the webview's disk store and the
+  restore would take ids and names from the page. A tray file on disk that also survives an app restart: not built (Q1 = A).
+- **Consequences.** Unsent files can stay until `keepDays` when the user never comes back to a session whose pane stays open (`docs/security.md` T81).
+  An app restart forgets the tray. A tmux restart that reuses a pane id, with no listing in between and no claim on one side, could show old chips in a
+  new session (T80). The list is a route that serves names, never bytes (T82); the tray is bounded (T83).
+
+## Amendment 2026-11-20 (0.5.4, LT): the unsent text comes back too
+
+- **Why.** The owner (2026-11-20) added LT to 0.5.4: text longer than draft sync mirrors must survive leaving a session and coming back, like the
+  chips. Text that fits survives because it sits in Claude's own input box. Text outside the sync's envelope lived only in the page: leaving lost it, or
+  brought back the last shorter version that Claude's input still held. Owner answer Q1 = A: short text that is still waiting to go into Claude's input
+  (no readable box, a paused sync, a held or failing write) is kept by the same mechanism.
+- **The tray keeps one text per pane, in memory.** While the message box holds text the sync does not mirror, or text that waits, the page writes it with
+  `PUT /api/app/pane/:id/kept-draft { text, shell }`; it clears it when the text goes to Claude (sent or mirrored), the terminal's text wins, or the box is
+  emptied. `GET` of the same route gives it back when the session window opens again. The text shares the tray's binding (project key; the Claude in the
+  pane by pid or session) and its end (the session ends, another Claude or project claims the pane, an app restart). At most 16 KB of UTF-8, Send's paste
+  limit (`KEPT_CAP` 34 KB for the body); a longer text is not kept, and the page says so (the `over` note, `Not kept:`). Nothing is written to disk. The
+  routes stamp nothing for the typed `/compact`.
+- **Put back, never pushed over.** The page puts the text back only into an empty box the user has not typed in, or, on a return from the back/forward
+  cache, into a box that still holds the copy this page saved (owner answer LT-BF = A), and never copies it into Claude's input by itself while Claude's
+  input holds other text. A leave-time write counts as the copy this page saved only when it answered 200. Send works on it as on any text; nika still
+  never clears Claude's input to make room (owner decision 2026-11-14).
+- **A restore that cannot answer is tried again, a bounded number of times.** A restore that ended on 404, or stopped, is re-tried from the next captures
+  (one GET per 2 s, at most 3 re-tries per chain; then `RESTORE_TEXT_FAILED` once and nothing asks again). A boot restore and a back/forward return are
+  first tries, never re-tries; a return that arrives while a restore runs takes the server's copy once that restore ends. No capture re-try starts while a
+  Send runs, and while a re-try is pending the page does not pull Claude's input and refuses Tab on a suggestion (`RESTORING_TEXT`).
+- **Alternatives.** Browser storage: rejected for AT's reasons (the user's prompt would reach the webview's disk store). Typing long text into Claude's
+  input in pieces: the envelope exists because nika cannot read such text back. A file in nika's state folder that survives a restart: not built; the
+  owner chose memory only for AT (Q1 = A).
+- **Consequences.** The user's unsent text lives in nika's memory until it is sent, cleared, its session ends or the app quits (`docs/security.md` T85).
+  The tray's binding to the pane's project and its one live Claude is what keeps the text with its own session (T84), the route is no typing path (T86), and a clear that never arrives can bring a sent text back once (T87). Known limits: with two pages of the same pane, a returning page whose box holds text it
+  never saved keeps its box and its save replaces the other page's copy; while a restore is unanswered, and after it fails until the next edit, typed
+  text is not kept, a `pagehide` there sends nothing, and text typed in the seconds a re-try is pending replaces Claude's input text the box does not
+  show; a GET that hangs holds Send and Tab for up to 3 s per re-try; another page's copy can be lost when a Send's clear fails while a save is in
+  flight.
+
+Details: `docs/design/spec.md` §9.27 and `docs/contracts/api-app.md` (the tray list and the kept-draft routes).
