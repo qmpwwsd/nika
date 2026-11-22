@@ -90,7 +90,8 @@ Session window (desktop app):
 Known limits:
 
 - **A question note.** If Claude's focus moves while you type a note, the form follows it; check the selected option before you
-  press Enter.
+  press Enter. The line that says a note nika took off the form may already be in Claude's notes field goes when the form is
+  dropped for a moment or the question is answered in the terminal; the note itself stays in Claude's notes field.
 - **After a question form is dropped** (Reading, then the banner), the note comes back but the focus is on the question heading:
   click into the note field again. A pick queued behind a request in flight is dropped with the form. A pick right after a reload
   can answer `409 busy-switching` while Fit's switch runs; the note is kept.
