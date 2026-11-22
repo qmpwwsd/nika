@@ -2,7 +2,7 @@
 // test/fake-dom.js and a fake of session.js's io (the route answers are scripted, the clock never runs by itself). Every state has its chip word
 // and icon; the capture's dialog is cleaned to the contract shape or fails closed; every route answer maps to a fixed line and the server's own
 // text never shows. Fixtures are synthetic (builder-1, %12, repeated hex).
-import { test, describe, afterEach } from 'node:test';
+import { test, describe, afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -530,6 +530,7 @@ function rig(opts = {}) {
   root.hidden = true;
   const box = new TEl('textarea');
   const log = { calls: [], announce: [], say: [], problem: [], gone: 0, refresh: 0, boxFocus: 0 };
+  const line = { msg: '', owner: '', ms: undefined };
   const timers = [];
   const clock = { t: 1000 };
   const state = { reply: opts.reply ?? (() => ({ status: 200, body: { done: 'next', sent: 1 } })) };
@@ -541,8 +542,9 @@ function rig(opts = {}) {
     call: async (p, o = {}) => { log.calls.push({ path: p, method: o.method, json: o.json }); return state.reply(p, o); },
     announce: (m) => log.announce.push(m),
     say: (m) => log.say.push(m),
-    showProblem: (m, kind) => log.problem.push([m, kind]),
-    clearProblem: () => log.problem.push(['']),
+    showProblem: (m, kind, ms, owner) => { log.problem.push([m, kind]); line.msg = m; line.owner = m === '' ? '' : owner ?? ''; line.ms = ms; }, // line: the page's one problem line, with the owner session.js stores (0.5.4, S3)
+    clearProblem: () => { log.problem.push(['']); line.msg = ''; line.owner = ''; },
+    clearProblemFrom: (owner) => { if (owner && line.owner === owner) { line.msg = ''; line.owner = ''; } }, // like session.js: only while that owner's line shows; it is not a clearProblem, so log.problem stays as it was
     setGone: () => { log.gone += 1; },
     composer: () => box,
     refresh: () => { log.refresh += 1; },
@@ -556,7 +558,7 @@ function rig(opts = {}) {
     clock.t += ms;
     for (const t of timers) if (t.live && t.at <= clock.t) { t.live = false; t.fn(); }
   };
-  return { df, io, root, box, log, state, render, advance, clock, timers };
+  return { df, io, root, box, log, state, render, advance, clock, timers, line };
 }
 
 const q = (root, cls) => root.all(withClass(cls));
@@ -4754,5 +4756,267 @@ describe('F1b (0.5.4, QPF): a form the last request changed is dropped when the 
     assert.doesNotThrow(() => h.render(ask({ tabs: tabs(2), current: 0, final: false, question: 'Which shape?', other: false })));
     assert.ok(one(h.root, 'dlg-fs'), 'the plain step is drawn');
     assert.equal(one(h.root, 'dlg-note-text'), null);
+  });
+});
+
+// ---- 0.5.4, final fix S3: the problem line has an owner --------------------------------------------------------------------------------------------
+
+describe('the problem line has an owner (0.5.4, final S3): a line about the open dialog goes with it, the outcome of an answer stays', () => {
+  const NOTES_OPEN_LINE = "Claude's notes field is open in the terminal. Close it there, then press Try again.";
+  const NOT_TAKEN_LINE = "Claude didn't take the key. Check the session, then try again.";
+  const failing = (error) => ({ reply: () => ({ status: 409, body: { error } }) });
+  const pickAt = (r, n) => { const i = inputs(r.root, 'radio')[n - 1]; i.checked = true; i.fire('change'); return i; };
+  const lineOf = (r) => [r.line.msg, r.line.owner];
+
+  test('(+) the notes-open line is the open dialog\'s: owner "dialog" and no timeout; when the dialog leaves the line is gone', () => {
+    const r = rig();
+    r.render(askPv({ notes: { text: '', editing: true } }));
+    assert.deepEqual([r.line.msg, r.line.owner, r.line.ms], [NOTES_OPEN_LINE, 'dialog', 0]);
+    r.render(null);
+    assert.equal(r.df.shown(), false);
+    assert.deepEqual(lineOf(r), ['', '']);
+  });
+
+  test('(+) a failed answer and a failed focus move show their line as the answer\'s: owner "dialog-answer", no timeout', async () => {
+    const a = rig(failing('not-taken'));
+    a.render(askPv());
+    byText(a.root, 'Answer').click();
+    await settle();
+    assert.deepEqual([a.line.msg, a.line.owner, a.line.ms], [NOT_TAKEN_LINE, 'dialog-answer', 0]);
+    const f = rig(failing('dialog-focus'));
+    f.render(askPv());
+    pickAt(f, 2);
+    await settle();
+    assert.equal(f.log.calls.at(-1).json.focus, 2, 'the focus request went out');
+    assert.notEqual(f.line.msg, '');
+    assert.deepEqual([f.line.owner, f.line.ms], ['dialog-answer', 0]);
+  });
+
+  test('(+) a dialog drawn after none clears an old "dialog" line and an old "dialog-answer" line', () => {
+    for (const owner of ['dialog', 'dialog-answer']) {
+      const r = rig();
+      r.io.showProblem('A line from the dialog before', 'warn', 0, owner);
+      r.render(ask());
+      assert.deepEqual(lineOf(r), ['', ''], owner);
+    }
+  });
+
+  test('(−) a "dialog-answer" line shown as the dialog leaves stays after leave(): it may say why the dialog went away', async () => {
+    const r = rig(failing('not-taken'));
+    r.render(askPv());
+    byText(r.root, 'Answer').click();
+    await settle();
+    r.render(null);
+    assert.equal(r.df.shown(), false);
+    assert.deepEqual(lineOf(r), [NOT_TAKEN_LINE, 'dialog-answer']);
+  });
+
+  test('(−) a line of another part (Send\'s size line, an un-owned line) shown before the dialog left stays, and stays when a new dialog is drawn', () => {
+    for (const owner of ['send-size', undefined]) {
+      const r = rig();
+      r.render(ask());
+      r.io.showProblem('This is 17 KB. A paste can be at most 16 KB.', 'error', 0, owner);
+      r.render(null);
+      assert.deepEqual(lineOf(r), ['This is 17 KB. A paste can be at most 16 KB.', owner ?? ''], `after leave ${owner}`);
+      r.render(ask());
+      assert.deepEqual(lineOf(r), ['This is 17 KB. A paste can be at most 16 KB.', owner ?? ''], `after a new dialog ${owner}`);
+    }
+  });
+
+  test('(−) a step change inside one dialog still clears through clearProblem (unchanged), and the same step keeps its answer line', async () => {
+    const r = rig(failing('not-taken'));
+    r.render(askPv());
+    byText(r.root, 'Answer').click();
+    await settle();
+    r.render(askPv());
+    assert.deepEqual(lineOf(r), [NOT_TAKEN_LINE, 'dialog-answer'], 'the same step keeps it');
+    r.render(askPv({ sig: SIG2, question: 'Which size?' }));
+    assert.deepEqual(lineOf(r), ['', ''], 'the next step clears it, as before');
+  });
+
+  // ---- round 1 (review-FINAL, R1-1): one lost capture runs leave() or dropStale(), and the same step comes back with no form before it ---------------
+  const withNote = async (r) => { // types a note on the preview step and presses Answer; the route refuses
+    byText(r.root, 'Add a note').click();
+    const t = one(r.root, 'dlg-note-text');
+    t.value = 'round it';
+    t.fire('input');
+    byText(r.root, 'Answer').click();
+    await settle();
+  };
+  const blip = (r) => ({
+    tmux: () => r.df.render({ pane: 'tmux' }), // one failed capture: the page's setPaneState('tmux')
+    none: () => r.render(null), // a capture that shows no dialog for a moment
+    unreadable: () => r.render(unreadable()), // a capture nika cannot read: dropStale() when the last request changed Claude's step
+  });
+
+  test('(−) R1-1: 409 not-taken, one render with pane "tmux", then the same step: the answer\'s line and its owner stay', async () => {
+    const r = rig(failing('not-taken'));
+    r.render(askPv());
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(lineOf(r), [NOT_TAKEN_LINE, 'dialog-answer']);
+    blip(r).tmux();
+    assert.equal(r.df.shown(), false, 'the form went');
+    assert.deepEqual(lineOf(r), [NOT_TAKEN_LINE, 'dialog-answer'], 'the line outlives leave()');
+    r.render(askPv());
+    assert.equal(r.df.shown(), true, 'the same step is back');
+    assert.deepEqual(lineOf(r), [NOT_TAKEN_LINE, 'dialog-answer'], 'and the line is still the answer\'s');
+  });
+
+  test('(−) R1-1: the same with a capture that shows no dialog (a null dialog)', async () => {
+    const r = rig(failing('not-taken'));
+    r.render(askPv());
+    byText(r.root, 'Answer').click();
+    await settle();
+    blip(r).none();
+    assert.equal(r.df.shown(), false);
+    r.render(askPv());
+    assert.deepEqual(lineOf(r), [NOT_TAKEN_LINE, 'dialog-answer']);
+  });
+
+  test('(−) R1-1: the leave path with a note: preview-changed after 2 keys takes the note off, one lost capture, the same step: the NOTE_TAKEN sentence stays', async () => {
+    const r = rig({ reply: () => ({ status: 409, body: { error: 'preview-changed', sent: 2 } }) });
+    r.render(askPv());
+    await withNote(r);
+    const taken = r.line.msg;
+    assert.ok(taken.endsWith(` ${NOTE_TAKEN_TEXT}`), 'the refusal says the note was taken off');
+    blip(r).tmux();
+    r.render(askPv());
+    assert.deepEqual(lineOf(r), [taken, 'dialog-answer']);
+    assert.ok(r.line.msg.endsWith(` ${NOTE_TAKEN_TEXT}`));
+  });
+
+  test('(−) R1-1: the dropStale() path: a note answer meets 409 already-answered after 1 key, an unreadable capture drops the form, the same step comes back: NOTE_TAKEN stays', async () => {
+    const r = rig({ reply: () => ({ status: 409, body: { error: 'already-answered', sent: 1 } }) });
+    r.render(askPv());
+    await withNote(r);
+    const taken = r.line.msg;
+    assert.ok(taken.includes(NOTE_TAKEN_TEXT), 'the refusal says the note was taken off');
+    assert.equal(r.line.owner, 'dialog-answer');
+    blip(r).unreadable();
+    assert.equal(one(r.root, 'dlg-fs'), null, 'dropStale took the form away (Reading is up)');
+    assert.equal(r.line.msg, taken, 'the line outlives dropStale()');
+    r.render(askPv());
+    assert.ok(one(r.root, 'dlg-fs') !== null, 'the same step is drawn again');
+    assert.deepEqual(lineOf(r), [taken, 'dialog-answer'], 'NOTE_TAKEN is still there');
+  });
+
+  test('(+) R1-1: after a blip a step with another sig still clears the answer\'s line', async () => {
+    for (const how of ['tmux', 'none']) {
+      const r = rig(failing('not-taken'));
+      r.render(askPv());
+      byText(r.root, 'Answer').click();
+      await settle();
+      blip(r)[how]();
+      assert.deepEqual(lineOf(r), [NOT_TAKEN_LINE, 'dialog-answer'], `${how}: it stays while nothing is drawn`);
+      r.render(askPv({ sig: SIG2, question: 'Which size?' }));
+      assert.deepEqual(lineOf(r), ['', ''], `${how}: another sig clears it`);
+    }
+  });
+
+  test('(+) R1-1: the dropStale() path with another sig after the blip clears the answer\'s line; a "dialog" line is cleared by a dialog drawn after none whatever the sig', async () => {
+    const r = rig({ reply: () => ({ status: 409, body: { error: 'already-answered', sent: 1 } }) });
+    r.render(askPv());
+    await withNote(r);
+    blip(r).unreadable();
+    r.render(askPv({ sig: SIG2, question: 'Which size?' }));
+    assert.deepEqual(lineOf(r), ['', ''], 'another sig clears the answer\'s line');
+    const s = rig();
+    s.render(ask());
+    s.df.render({ pane: 'tmux' });
+    s.io.showProblem('A line about the dialog', 'warn', 0, 'dialog');
+    s.render(ask()); // the same sig, after a blip
+    assert.deepEqual(lineOf(s), ['', ''], 'a "dialog" line goes with every dialog drawn after none');
+  });
+});
+
+// ---- 0.5.4, final fix S4: the Try again note comes into view when it appears ---------------------------------------------------------------------
+
+describe('Try again in view (0.5.4, final S4): the retry note scrolls into view when it goes from hidden to shown, and the focus stays where it is', () => {
+  const scrolled = [];
+  beforeEach(() => { scrolled.length = 0; TEl.prototype.scrollIntoView = function (o) { scrolled.push([this, o]); }; });
+  afterEach(() => { delete TEl.prototype.scrollIntoView; });
+  const refusing = (error) => ({ reply: () => ({ status: 409, body: { error } }) });
+  const retryNote = (r) => one(r.root, 'dlg-retry');
+
+  test('(+) a lock with Try again that starts after an answer: scrollIntoView({ block: "nearest" }) once, on the retry note', async () => {
+    const r = rig(refusing('notes-open'));
+    r.render(askPv());
+    assert.equal(scrolled.length, 0, 'nothing while the note is hidden');
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), false, 'the note is shown');
+    assert.equal(scrolled.length, 1);
+    assert.equal(scrolled[0][0], retryNote(r));
+    assert.deepEqual(scrolled[0][1], { block: 'nearest' });
+  });
+
+  test('(+) a lock with Try again that starts as the form is drawn (the notes field is open): once; and once more when it starts again after Try again', () => {
+    const r = rig();
+    r.render(askPv({ notes: { text: '', editing: true } }));
+    assert.equal(scrolled.length, 1);
+    assert.equal(scrolled[0][0], retryNote(r));
+    r.render(askPv({ notes: { text: null, editing: false } }));
+    byText(r.root, 'Try again').click();
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), true, 'Try again hid the note');
+    assert.equal(scrolled.length, 1);
+    r.render(askPv({ notes: { text: '', editing: true } }));
+    assert.equal(scrolled.length, 2, 'a new lock is a new appearance');
+  });
+
+  test('(\u2212) a repaint while the note is already shown does not scroll again (a capture of the same step, a pick, a render of the same locked form)', async () => {
+    const r = rig(refusing('notes-open'));
+    r.render(askPv());
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(scrolled.length, 1);
+    r.render(askPv());
+    r.render(askPv());
+    inputs(r.root, 'radio')[1].fire('change');
+    r.render(askPv({ notes: { text: '', editing: true } }));
+    assert.equal(scrolled.length, 1, 'still the one call');
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), false);
+  });
+
+  test('(\u2212) a lock without Try again (a note that does not match) and a request in flight do not scroll', async () => {
+    const r = rig(refusing('note-mismatch'));
+    r.render(askPv());
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(off(byText(r.root, 'Answer')), true, 'locked');
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), true, 'no retry');
+    assert.equal(scrolled.length, 0);
+    let release;
+    const slow = rig({ reply: () => new Promise((resolve) => { release = resolve; }) });
+    slow.render(askPv());
+    byText(slow.root, 'Answer').click();
+    assert.equal(scrolled.length, 0, 'a request in flight shows no retry note');
+    release({ status: 200, body: { done: 'next', sent: 1 } });
+    await settle();
+    assert.equal(scrolled.length, 0);
+  });
+
+  test('(\u2212) the focus does not move and the message box is not focused when the note scrolls into view', async () => {
+    const r = rig(refusing('notes-open'));
+    r.render(askPv());
+    const before = focus.el;
+    byText(r.root, 'Answer').click();
+    await settle();
+    assert.equal(scrolled.length, 1);
+    assert.equal(focus.el, before, 'the focus is where it was');
+    assert.equal(r.log.boxFocus, 0);
+    scrolled.length = 0;
+    const guarded = rig();
+    guarded.render(askPv({ notes: { text: '', editing: true } }));
+    assert.equal(scrolled.length, 1);
+    assert.equal(focus.el, null);
+    assert.equal(guarded.log.boxFocus, 0);
+  });
+
+  test('(\u2212) a test DOM without scrollIntoView does not break the form (the call is guarded)', () => {
+    delete TEl.prototype.scrollIntoView;
+    const r = rig();
+    assert.doesNotThrow(() => r.render(askPv({ notes: { text: '', editing: true } })));
+    assert.equal(hiddenUp(byText(r.root, 'Try again')), false);
   });
 });

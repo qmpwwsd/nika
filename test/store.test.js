@@ -1101,7 +1101,7 @@ describe('attachments (0.5, W2: how long the session window keeps uploaded files
   });
 });
 
-describe('fit (0.5.3, P2: the Fit mode setting)', () => {
+describe('fit (0.5.4, P2: the Fit mode setting)', () => {
   const fileOf = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
   const MODES = ['auto', 'fill', 'terminal', 'off'];
 

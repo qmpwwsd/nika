@@ -349,7 +349,7 @@ async function doSpawn(v, project, config, ctx) {
 
 /**
  * @param {object} req  POST /api/app/spawn body (contract §3); optional `rc`: "off" or an RC_PREFIX overriding the setting
- * @param {object} ctx  { env, exec, tmuxBin, claudeBin, nikaArgv, started, fit? } (`fit`: the app tier's fit controller, src/fit.js; the CLI has none)
+ * @param {object} ctx  { env, exec, tmuxBin, claudeBin, nikaArgv, started }
  * @returns {Promise<{ status: number, body: object }>} `sessionId` is null: only _run-agent knows it
  */
 export async function spawnAgent(req, ctx) {

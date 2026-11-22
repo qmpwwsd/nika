@@ -139,7 +139,9 @@ function say(msg) {
 }
 
 let problemTimer = 0;
-function showProblem(msg, kind = 'warn', ms = 0) {
+let problemOwner = ''; // 0.5.4 (final, S3): who put the line up ('' = nobody in particular); an un-owned line, a clear and the timeout each reset it
+/** `owner` (optional): a part that wants to take its own line down later (clearProblemFrom) and no one else's. */
+function showProblem(msg, kind = 'warn', ms = 0, owner = '') {
   const el = $('problem');
   const line = $('problem-line'); // 0.5.4 (PL): the line has its own icon and word per kind, so a warning and an error differ by more than colour
   const k = kind === 'error' ? 'error' : 'warn';
@@ -149,10 +151,15 @@ function showProblem(msg, kind = 'warn', ms = 0) {
   line.setAttribute('data-kind', k);
   $('problem-use').setAttribute('href', k === 'error' ? '#i-error' : '#i-warn');
   $('problem-label').textContent = k === 'error' ? 'Error:' : 'Warning:';
+  problemOwner = msg === '' ? '' : owner;
   clearTimeout(problemTimer);
-  if (ms) problemTimer = setTimeout(() => { el.textContent = ''; line.hidden = true; }, ms);
+  if (ms) problemTimer = setTimeout(() => { el.textContent = ''; line.hidden = true; problemOwner = ''; }, ms);
 }
 const clearProblem = () => showProblem('');
+/** Takes the line down only while `owner`'s own line shows: another part's line, an un-owned one or an empty line is left alone. */
+function clearProblemFrom(owner) {
+  if (owner !== '' && problemOwner === owner) clearProblem();
+}
 
 /**
  * The notes row (#notes) holds four visible parts (the argument hint, the shell hint, the draft note, the problem line) and, screen-reader-only, the echo
@@ -2616,6 +2623,11 @@ function updateChip() {
   if (multi) $('paste-n').textContent = `${lines} ${lines === 1 ? 'line' : 'lines'}${MID}sends as one paste`;
 }
 
+/** 0.5.4 (final, S2): Send's "This is N KB" line goes as soon as the text in the box fits again (the same rule as Send's: planSend), and only while that line is the one showing. */
+function sizeLineGone() {
+  if (problemOwner === 'send-size' && planSend(composer().value).ok) clearProblemFrom('send-size');
+}
+
 let sending = false;
 async function sendComposer() {
   const ta = composer();
@@ -2651,7 +2663,7 @@ async function sendComposer() {
   const plan = route.act !== 'legacy' ? route : S.on ? planShell(value) : planSend(value);
   if (plan.empty) return; // Shell on and nothing to run: no lone "!"
   if (!plan.ok) {
-    showProblem(plan.message, 'error');
+    showProblem(plan.message, 'error', 0, plan.size === true ? 'send-size' : ''); // only the over-16-KB refusal is Send's size line (sizeLineGone); Shell's and every other refusal here stay un-owned
     return;
   }
   sending = true;
@@ -2692,14 +2704,14 @@ async function pushThenSubmit(route) {
     showProblem(p.message, 'error');
     return p;
   }
-  return submitEnter(p.sig);
+  return submitEnter(p.sig, true); // the text is in Claude's input now: a 409 screen-unclear says so (0.5.4 final, S5)
 }
 
 /** A Send without a readable box: the text goes through the keys route (Shell: Ctrl-U and "!" + the command; no Enter), then the guarded Enter with no base. */
 async function typeThenSubmit(payloads) {
   if (HOLD.active) await HOLD.wait(); // F10: no key is typed on the strength of a held frame
   const r = await deliverAll(payloads);
-  return r.ok ? submitEnter() : r;
+  return r.ok ? submitEnter(undefined, payloads.length > 0) : r; // typed something: a 409 screen-unclear says the text is in Claude's input (0.5.4 final, S5)
 }
 
 /**
@@ -2707,12 +2719,12 @@ async function typeThenSubmit(payloads) {
  * screen with no prompt or dialog and, with `base` (the draft sig the page last saw), only while Claude's input still reads so. Claude queues
  * it while it works. Returns { ok, taken, message }: not ok keeps the text in the box. The fixed copy is draft-sync.js (submitResult).
  */
-async function submitEnter(base) {
+async function submitEnter(base, pasted = false) {
   if (HOLD.active) await HOLD.wait(); // F10: the server decides on its own fresh capture; the page only waits for nika's own redraw
   if (M.gone || !paneId) return { ok: false, message: 'The pane is gone.' };
   const r = await postRetry('submit', base ? { base } : {});
   DS.submitted(r); // the answer's draft is the screen after the Enter
-  const out = submitResult(r);
+  const out = submitResult(r, { pasted });
   if (out.ok) {
     clearProblem();
     return out;
@@ -3141,7 +3153,7 @@ function wireTyping() {
 
 function wireComposer() {
   const ta = composer();
-  ta.addEventListener('input', () => { grow(); updateChip(); DS.edited(); });
+  ta.addEventListener('input', () => { grow(); updateChip(); DS.edited(); sizeLineGone(); });
   ta.addEventListener('compositionstart', () => DS.composition(true));
   ta.addEventListener('compositionend', () => DS.composition(false));
   ta.addEventListener('keydown', (e) => {
@@ -3195,6 +3207,7 @@ function wireTerminal() {
     M.etag = null;
     W.got = false;
     DS.reset();
+    ATT.retryRestore(); // 0.5.4 (final, S1): the unsent attachments of a pane that was not there at open are listed again
     setPaneState('connecting');
     setInputEnabled(true);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');
@@ -3430,7 +3443,7 @@ function boot() {
     wireSwitcher();
     wireQuick();
     wireFit();
-    DF = createDialogForm({ root: $('dialog-form'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, showProblem, clearProblem, setGone, composer, refresh: renderAttn });
+    DF = createDialogForm({ root: $('dialog-form'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, showProblem, clearProblem, clearProblemFrom, setGone, composer, refresh: renderAttn });
     SV = createSurveyPanel({ root: $('survey-panel'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, clearProblem, setGone, composer });
     watchPanels();
     DS.restore(); // 0.5.4 LT: the unsent text kept for this pane comes back; the hold is up before the first capture below is handled

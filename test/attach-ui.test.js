@@ -1294,7 +1294,7 @@ describe('removing a chip', () => {
     assert.deepEqual(r.chips().map((li) => view(li).s), ['ready', 'ready']);
   });
 
-  test('(−) no pagehide flavour (persisted false, no flag, \'true\', 1, undefined) sends a DELETE (0.5.4, AT)', async () => {
+  test('(−) no pagehide flavour (persisted false, no flag, \'true\', 1, undefined) sends nothing (0.5.4, AT)', async () => {
     for (const ev of [{ persisted: false }, {}, { persisted: 'true' }, { persisted: 1 }, { persisted: undefined }]) {
       const r = rig();
       await r.add(file('a.md'));
@@ -1514,6 +1514,100 @@ describe('restore (0.5.4, AT): the chips come back from the server', () => {
     assert.equal(lists(r).length, 0, 'no list while the send is out');
     finishSend();
     await bounded(sending);
+  });
+
+  // Final fix round, S1 (OQ5): the pane was briefly ineligible at open (404), then the user presses Check again and the mirror comes back: the chips must come back with it.
+  const NO_PANE = { status: 404, body: { error: 'no-pane' } };
+
+  test('(+) S1: a 404 at open, then retryRestore (Check again): a second list GET, and the chips show', async () => {
+    const r = rig({ list: sequence([NO_PANE, listOf([entry(1), entry(2)])]) });
+    await bounded(r.att.restore());
+    assert.equal(lists(r).length, 1);
+    assert.equal(r.chips().length, 0);
+    assert.equal(r.tray.hidden, true);
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 2, 'one more GET');
+    assert.deepEqual(names(r), ['note-1.md', 'note-2.md']);
+    assert.equal(r.tray.hidden, false);
+    assert.deepEqual(r.log.announce, ['Restored 2 attachments from before.']);
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 2, 'once it listed, a second Check again asks nothing');
+  });
+
+  test('(+) S1: a pane that is still not there on Check again stays missed: the next Check again asks again', async () => {
+    const r = rig({ list: sequence([NO_PANE, NO_PANE, GOOD()]) });
+    await bounded(r.att.restore());
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 2);
+    assert.equal(r.chips().length, 0);
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 3);
+    assert.deepEqual(names(r), ['note-1.md']);
+  });
+
+  test('(\u2212) S1: after a good list, Check again makes no GET (also an empty list, and a list that came after one retry of its own)', async () => {
+    const good = rig({ list: GOOD() });
+    await bounded(good.att.restore());
+    await bounded(good.att.retryRestore());
+    assert.equal(lists(good).length, 1);
+    const empty = rig({ list: listOf([]) });
+    await bounded(empty.att.restore());
+    await bounded(empty.att.retryRestore());
+    assert.equal(lists(empty).length, 1);
+    const mended = rig({ list: sequence([{ status: 500, body: { error: 'internal' } }, GOOD()]) });
+    await bounded(mended.att.restore());
+    assert.equal(lists(mended).length, 2, 'the attach\'s own retry');
+    await bounded(mended.att.retryRestore());
+    assert.equal(lists(mended).length, 2);
+  });
+
+  test('(\u2212) S1: only a 404 is remembered: two failed answers (RESTORE_FAILED), or a pane that never had a restore, ask nothing on Check again', async () => {
+    for (const bad of FAILS) {
+      const r = rig({ list: sequence([bad, bad]) });
+      await bounded(r.att.restore());
+      assert.equal(lists(r).length, 2, String(bad.status));
+      await bounded(r.att.retryRestore());
+      assert.equal(lists(r).length, 2, `${bad.status}: the failure was said once; Check again does not repeat it`);
+    }
+    const fresh = rig({ list: GOOD() });
+    await bounded(fresh.att.retryRestore());
+    assert.equal(lists(fresh).length, 0, 'nothing was missed');
+    const nopane = rig({ paneId: null, list: NO_PANE });
+    await bounded(nopane.att.restore());
+    await bounded(nopane.att.retryRestore());
+    assert.equal(lists(nopane).length, 0);
+  });
+
+  test('(\u2212) S1: no GET while a send is out (the 404 stays remembered for after it), and none while a list is running', async () => {
+    let finishSend;
+    const answers = [NO_PANE, listOf([])];
+    const r = rig({
+      reply: (p, o) => {
+        if (isList(p, o)) return answers.length > 1 ? answers.shift() : answers[0];
+        if (isUpload(p, o)) return { status: 200, body: { id: uploadId(1), type: 'text', size: 123 } };
+        if (isSend(p, o)) return new Promise((resolve) => { finishSend = () => resolve({ status: 200, body: { sent: 1, images: 0 } }); });
+        return { status: 200, body: {} };
+      },
+    });
+    await bounded(r.att.restore());
+    assert.equal(lists(r).length, 1);
+    await r.add(file('a.md'));
+    const sending = r.att.send('hi');
+    await settle();
+    assert.equal(r.att.sending(), true);
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 1, 'no list while the send is out');
+    finishSend();
+    await bounded(sending);
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 2, 'after the send the 404 is still remembered');
+    const slow = rig({ list: sequence([NO_PANE, listOf([])]) });
+    await bounded(slow.att.restore());
+    const first = slow.att.retryRestore();
+    const second = slow.att.retryRestore(); // the first is still out
+    await bounded(first);
+    await bounded(second);
+    assert.equal(lists(slow).length, 2, 'two Check again in a row make one more GET');
   });
 });
 

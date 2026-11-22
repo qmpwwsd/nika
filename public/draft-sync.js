@@ -318,14 +318,17 @@ export const STILL_SENDING_MS = 3000;
 
 const NOT_TAKEN = "nika pressed Enter, but Claude's input still shows your text (a menu may have taken the Enter). Check the terminal. Your text is kept.";
 
-/** The line for a Send whose Enter did not go (the submit route, W13). Fixed copy: only the status and the server's `error` code pick it. */
-export function submitMessage({ status, code } = {}) {
+// 0.5.4 (final, S5): nika's own paste is in Claude's input, so a screen nika cannot read for Enter (Claude's `paste again to expand` hint shows for a few seconds) must not read as "your text is kept in the box" alone.
+const PASTED_SCREEN_UNCLEAR = "Your text is in Claude's input. Press Enter in the terminal to send it.";
+
+/** The line for a Send whose Enter did not go (the submit route, W13). Fixed copy: only the status and the server's `error` code pick it. `pasted`: this Send put its text into Claude's input before the Enter. */
+export function submitMessage({ status, code, pasted = false } = {}) {
   if (status === 409) {
     if (code === 'prompt-open') return 'A prompt opened in Claude, so nika did not press Enter. Answer it, then send again. Your text is kept.';
     if (code === 'bypass-prompt') return 'Answer this prompt in the terminal.';
     if (code === 'not-idle') return 'Stop is running, so nika did not press Enter. Send again in a moment. Your text is kept.';
     if (code === 'draft-changed') return "Claude's input changed before Enter. nika shows what it holds now. Nothing was sent.";
-    if (code === 'screen-unclear') return "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept.";
+    if (code === 'screen-unclear') return pasted === true ? PASTED_SCREEN_UNCLEAR : "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept.";
     if (code === 'suggestion-shown') return "Claude's input is empty and shows a suggestion, so nika did not press Enter. Nothing was sent.";
     if (code === 'input-unreadable' || code === 'mode-unknown') return CANT_READ;
     if (code === 'busy-switching') return BUSY_SWITCHING;
@@ -339,11 +342,12 @@ export function submitMessage({ status, code } = {}) {
 /**
  * The submit route's answer as Send uses it: { ok: true, taken } (200: `taken` true, or null when the box could not be compared; Claude
  * queues the message while it works) or { ok: false, message } (any refusal, and a 200 whose `taken` is false: the Enter did not take, the text stays).
+ * `pasted` (true only when this Send typed or pushed its text into Claude's input first) picks the line for 409 `screen-unclear` and nothing else.
  */
-export function submitResult({ status, body } = {}) {
+export function submitResult({ status, body } = {}, { pasted = false } = {}) {
   const b = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
   if (status === 200) return b.taken === false ? { ok: false, message: NOT_TAKEN } : { ok: true, taken: b.taken === true ? true : null };
-  return { ok: false, message: submitMessage({ status, code: status === 409 && typeof b.error === 'string' ? b.error : '' }) };
+  return { ok: false, message: submitMessage({ status, code: status === 409 && typeof b.error === 'string' ? b.error : '', pasted }) };
 }
 
 /** The line for an accept that did not take. Fixed copy: only the status and the server's `error` code pick it. */

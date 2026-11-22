@@ -420,6 +420,7 @@ export function createDialogForm(io) {
   const after = io.after ?? ((fn, ms) => setTimeout(fn, ms));
   const cancel = io.cancel ?? ((t) => clearTimeout(t));
   let F = null; // the form on screen: { dialog, sig, phase, word, busy, busyEl, locked, retry, noteTaken, kept, terminal, chipSig, reason, notes, parts }
+  let goneSig = null; // the sig of the last form that went (leave, dropStale): its answer's line stays while that same step comes back (0.5.4, final R1-1)
   let last = null; // the arguments of the last render: the replay after a request and the timer use them
   let reading = null; // { since, timer, expired, drawn }: a dialog nika cannot read yet, with no form shown before it
   let visible = false;
@@ -458,7 +459,10 @@ export function createDialogForm(io) {
     root.setAttribute('data-inert', String(!live)); // the option rows dim whenever the form cannot take an answer, not only while one is on its way
     f.terminalNote.hidden = !f.terminal;
     f.keptNote.hidden = !f.kept;
-    f.retryNote.hidden = !(f.retry && f.locked && !f.busy);
+    const retryShown = f.retry && f.locked && !f.busy;
+    const retryAppears = retryShown && f.retryNote.hidden;
+    f.retryNote.hidden = !retryShown;
+    if (retryAppears) f.retryNote.scrollIntoView?.({ block: 'nearest' }); // 0.5.4 (final, S4): Try again may sit below the fold of a tall form; the focus does not move
     const p = f.parts;
     for (const el of p.inputs) {
       el.disabled = f.terminal; // read-only: the options are shown, not offered
@@ -507,7 +511,7 @@ export function createDialogForm(io) {
       if (out.announce) io.announce(out.announce); // a move says nothing; the step it lands on is announced when it is drawn
       if (body.tab === undefined && f.dialog.at === 'question') keep.delete(keyOf(f.dialog)); // sent: Claude holds it now, an older draft would only be stale
     } else if (out.message) {
-      io.showProblem(out.message, out.kind);
+      io.showProblem(out.message, out.kind, 0, 'dialog-answer'); // 0.5.4 (final, S3): the outcome of an answer may explain why the dialog went away, so leave() keeps it; only a new dialog after none clears it
     }
     if (F === f) { // else the dialog closed or moved on while the request ran
       f.phase = out.phase;
@@ -529,7 +533,7 @@ export function createDialogForm(io) {
     f.locked = true;
     f.retry = true;
     f.phase = 'failed';
-    io.showProblem(f.noteTaken && (f.parts.noteDraft?.() ?? '') === '' ? `${L409['notes-open'][0]} ${NOTE_TAKEN}` : L409['notes-open'][0], problemKind(409)); // 0.5.4 (NT): a refusal took the note off this form, and Claude's field now shows open: the user still learns why the note left; with a newer note on the form (S1) it would be false
+    io.showProblem(f.noteTaken && (f.parts.noteDraft?.() ?? '') === '' ? `${L409['notes-open'][0]} ${NOTE_TAKEN}` : L409['notes-open'][0], problemKind(409), 0, 'dialog'); // 0.5.4 (NT): a refusal took the note off this form, and Claude's field now shows open: the user still learns why the note left; with a newer note on the form (S1) it would be false
     paint();
   }
 
@@ -821,7 +825,7 @@ export function createDialogForm(io) {
         fr.want = null;
         fr.assumed = null;
         if (F === f) f.pick = f.dialog.focus === 'chat' ? null : f.dialog.focus; // back to where Claude is
-        if (out.message) io.showProblem(out.message, out.kind);
+        if (out.message) io.showProblem(out.message, out.kind, 0, 'dialog-answer');
         if (F === f && out.lock) {
           f.phase = out.phase;
           f.locked = true;
@@ -999,6 +1003,10 @@ export function createDialogForm(io) {
     f.retryNote = h('p', { class: 'dlg-note dlg-retry', hidden: true }, icon('info'), h('span', { text: RETRY_NOTE }), h('button', { type: 'button', class: 'btn', onclick: () => retry(f) }, 'Try again'));
     f.parts = dialog.kind === 'plan' ? planBody(f) : dialog.at === 'review' ? reviewBody(f) : dialog.preview !== undefined ? previewBody(f) : questionBody(f);
     if (prev !== null && prev.sig !== dialog.sig) io.clearProblem(); // another step: a line the step before left is stale
+    else if (prev === null) { // 0.5.4 (final, S3): a dialog after none: a line of the dialog before (about it, or the outcome of its last answer) is stale
+      io.clearProblemFrom('dialog');
+      if (dialog.sig !== goneSig) io.clearProblemFrom('dialog-answer'); // the same step back after a lost capture keeps why its answer failed
+    }
     F = f;
     root.replaceChildren(h('div', { class: 'ask-h' }, f.chipHolder, kindTag(dialog.kind), f.reason), f.terminalNote, f.keptNote, f.retryNote, ...f.parts.nodes);
     root.setAttribute('aria-labelledby', dialog.kind === 'plan' ? 'dlg-kind' : 'dlg-q');
@@ -1025,11 +1033,13 @@ export function createDialogForm(io) {
   }
 
   function leave() {
+    io.clearProblemFrom('dialog'); // 0.5.4 (final, S3): a line about the open dialog goes with it; the outcome of an answer ('dialog-answer') stays, it may say why the dialog went away
     stopReading();
     keep.clear(); // the dialog is closed: its drafts go with it
     keepFor = null;
     if (F === null && !visible) return;
     if (visible && root.contains(document.activeElement)) io.composer().focus({ preventScroll: true }); // the control that had focus is gone
+    if (F !== null) goneSig = F.sig;
     F = null;
     root.replaceChildren();
     show(false);
@@ -1046,6 +1056,7 @@ export function createDialogForm(io) {
       if (n !== '') keep.set(keyOf(f.dialog), { note: n });
     }
     if (root.contains(document.activeElement)) root.focus({ preventScroll: true }); // the root has tabindex -1 and stays shown with Reading in it
+    goneSig = f.sig;
     F = null;
     root.replaceChildren();
   }

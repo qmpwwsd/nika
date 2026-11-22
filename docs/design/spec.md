@@ -2153,6 +2153,7 @@ message reads "Sent 23 characters + Enter to %12" ("Sent a shell command (23 cha
 | 409 `not-idle` | "Stop is running, so nika did not press Enter. Send again in a moment. Your text is kept." |
 | 409 `draft-changed` | "Claude's input changed before Enter. nika shows what it holds now. Nothing was sent." |
 | 409 `screen-unclear` | "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept." |
+| 409 `screen-unclear`, after this Send put its text into Claude's input (the synced push, or the keys typed) (0.5.4) | "Your text is in Claude's input. Press Enter in the terminal to send it." A Send that typed nothing (only the Enter) keeps the line above. |
 | 409 `suggestion-shown` | "Claude's input is empty and shows a suggestion, so nika did not press Enter. Nothing was sent." |
 | 409 `input-unreadable`, `mode-unknown` | "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept." |
 | 409 `busy-switching` | "Another action is running on this session. Try again in a moment. Your text is kept." |

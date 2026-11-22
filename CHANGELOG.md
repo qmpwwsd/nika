@@ -83,7 +83,9 @@ Session window (desktop app):
 - **A note that left the question form says why, and problem lines tell warnings from errors.** When nika took your note off the
   form because it had already pressed keys, and the next screen shows Claude's notes field open, the line keeps the sentence that
   says the note may already be in Claude's notes field. The line under the message box shows **Warning:** with a warning icon
-  or **Error:** with an error icon, so the two differ by more than colour.
+  or **Error:** with an error icon, so the two differ by more than colour. After nika copied your text into Claude's input and
+  then cannot read the screen well enough to press Enter, the line says "Your text is in Claude's input. Press Enter in the
+  terminal to send it." instead of "Use the terminal. Your text is kept."
 
 Known limits:
 
@@ -108,7 +110,9 @@ Known limits:
   leaves no chip and no message.
 - **Typed `/compact`.** It reaches only sessions in tmux panes the app can see; a session in a plain terminal or another tmux
   server is left to Claude. When the setting's point is below what a fresh session already loads, nika types `/compact` again
-  after each of your turns (10 minutes apart at most); pick a point well above that.
+  after each of your turns (10 minutes apart at most); pick a point well above that. nika may type `/compact` while the page
+  holds unsent text or attachments that are not in Claude's input (it checks Claude's box, not the page's); they stay in the
+  page, and Send works after the compaction.
 - **Show removed.** The Undo toast of a removal made from inside the Show removed dialog sits under the dialog; Show again in
   the dialog does the same.
 

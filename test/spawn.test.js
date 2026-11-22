@@ -1945,6 +1945,43 @@ describe('spawnAgent: placement (0.5.4, P1)', () => {
     assert.deepEqual([r.status, r.body.placement, r.body.moved, exec.of('split-window').length, exec.of('new-window').length], [200, 'window', 'under', 0, 1]);
   });
 
+  // 0.5.4 final (S7, T65 residual g): the collector's -a read repeats %1's line under another session, and a later row of a pane id wins there, so the parent looks to be in that session.
+  // Whatever the answer, the spawn never splits; the clauses of docs/security.md T65 (g) are these three shapes.
+  const repeatParentIn = (session) => (out) => {
+    const line = out.split('\n').find((l) => l.startsWith('%1\t'));
+    assert.ok(line, 'the read has the parent');
+    const fields = line.split('\t');
+    fields[1] = session;
+    return `${out}${fields.join('\t')}\n`;
+  };
+
+  test('S-28 (\u2212) d: a repeated pane id puts the parent in another session in the -a read, and it is alone in its own session there: nothing is split, nothing is started (502 tmux_failed: the session exists, so the new session fails)', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [main(w)] });
+    const r = await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec, { exec: changeCollectorRead(exec, repeatParentIn('Aaa')) }));
+    assert.deepEqual([r.status, r.body.error, exec.of('split-window').length, exec.of('new-window').length, exec.of('new-session').length], [502, 'tmux_failed', 0, 0, 1]);
+    assert.equal(exec.panes.length, 1, 'no pane was made');
+    assert.equal(at(exec, '%1').w, 200, 'the orchestrator is untouched');
+  });
+
+  test('S-28 (\u2212) e: the same with a user pane in the parent\'s session: nothing is split, a new agents window opens in that session', async () => {
+    const w = await world();
+    const user = { id: '%9', session: 'My-App', window: 1, windowName: 'zsh', command: 'vim', win: '@2', w: 100, h: 20, winW: 100, winH: 20 };
+    const exec = fakeTmux({ nextId: 60, panes: [main(w), user] });
+    const r = await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec, { exec: changeCollectorRead(exec, repeatParentIn('Aaa')) }));
+    assert.deepEqual([r.status, r.body.placement, r.body.session, exec.of('split-window').length, exec.of('new-window').length, exec.of('new-session').length], [200, 'window', 'My-App', 0, 1, 0]);
+    assert.deepEqual(exec.of('new-window')[0].slice(1, 6), ['-d', '-t', '=My-App:', '-n', 'agents']);
+    assert.equal(at(exec, '%1').w, 200, 'the orchestrator is untouched');
+  });
+
+  test('S-28 (\u2212) f: the same for a parent in a session nika did not name (an adopted orchestrator), with no other pane of it in the read: 404 not_found, nothing is split or started', async () => {
+    const w = await world();
+    const exec = fakeTmux({ panes: [main(w, { session: 'Mine' })] });
+    const r = await spawnAgent(req(w, { parent: '%1' }), w.ctx(exec, { exec: changeCollectorRead(exec, repeatParentIn('Aaa')) }));
+    assert.deepEqual([r.status, r.body.error, exec.of('split-window').length, exec.of('new-window').length, exec.of('new-session').length], [404, 'not_found', 0, 0, 0]);
+    assert.equal(exec.panes.length, 1, 'no pane was made');
+  });
+
   test('S-28 (+) c: the view only guards splits: a short line in the -a read does not stop the project session from being created when only another session exists', async () => {
     const w = await world();
     const exec = fakeTmux({ panes: [{ id: '%7', session: 'elsewhere', window: 0, windowName: 'zsh', command: 'zsh', w: 200, h: 50 }] });

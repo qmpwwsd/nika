@@ -1916,6 +1916,29 @@ describe('W13: submitResult and submitMessage (the submit route\'s answers, fixe
     assert.equal(submitResult({ status: 200, body: { taken: true } }).message, undefined);
     assert.doesNotMatch(JSON.stringify(lines.map(([, m]) => m)), /Evil/);
   });
+
+  // 0.5.4 (final, S5): nika's own paste is in Claude's input when the Enter is refused as screen-unclear
+  const PASTED = "Your text is in Claude's input. Press Enter in the terminal to send it.";
+  const PLAIN = "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept.";
+  const unclear = { status: 409, body: { error: 'screen-unclear', message: 'Evil <b>server</b> text' } };
+
+  test('(+) S5: pasted: true turns the 409 screen-unclear line into the one that says the text is in Claude\'s input; the server\'s text never shows', () => {
+    assert.deepEqual(submitResult(unclear, { pasted: true }), { ok: false, message: PASTED });
+    assert.doesNotMatch(PASTED, /Evil/);
+  });
+
+  test('(−) S5: no flag, pasted: false, or anything but true gives the old line; a flag changes no other answer', () => {
+    assert.equal(submitResult(unclear).message, PLAIN);
+    assert.equal(submitResult(unclear, {}).message, PLAIN);
+    for (const pasted of [false, undefined, null, 'true', 1, {}, []]) assert.equal(submitResult(unclear, { pasted }).message, PLAIN, String(pasted));
+    const other = [
+      [{ status: 409, body: { error: 'prompt-open' } }], [{ status: 409, body: { error: 'not-idle' } }], [{ status: 409, body: { error: 'draft-changed' } }],
+      [{ status: 409, body: { error: 'busy-switching' } }], [{ status: 409, body: { error: 'Screen-Unclear' } }], [{ status: 409, body: null }],
+      [{ status: 500, body: { error: 'screen-unclear' } }], [{ status: 404, body: { error: 'screen-unclear' } }], [{ status: 429, body: { error: 'screen-unclear' } }],
+      [{ status: 0, body: { error: 'screen-unclear' } }], [{ status: 200, body: { taken: false } }], [{ status: 200, body: { taken: true } }],
+    ];
+    for (const [r] of other) assert.deepEqual(submitResult(r, { pasted: true }), submitResult(r), JSON.stringify(r));
+  });
 });
 
 // ---- LT (0.5.4): the unsent text that the sync does not mirror is kept, and comes back --------------------------------------------
@@ -4954,6 +4977,28 @@ describe('kept text (0.5.4, LT)', () => {
             await r.advance(PUSH_MS + 10);
             assert.deepEqual(r.log.puts.map((p) => p.text), ['hellox']);
             assert.deepEqual(r.log.problems, []);
+          });
+
+          // S6 (final fix, LTF F-6): a 200 capture that has no readable box (draft: null) must not stop the re-try that ticks run
+          dl('(+) S6: the boot GET says 404, then one 200 capture with no readable box (draft: null), then only 304 ticks: the second kept-text GET runs from tick() at 2 s', async () => {
+            const r = rig();
+            gets(r, gone404, () => okKept(null));
+            await r.ds.restore(); // boot: 404, a capture re-try is pending (restoreAt = 2 s)
+            r.ds.capture(null, 120); // Claude's input cannot be read: no draft
+            await idle(r, 10); // 2.5 s of 304s
+            assert.equal(r.log.fetches, 2, 'the re-try ran from a tick, with no readable box');
+            assert.deepEqual(r.log.problems, []);
+          });
+
+          dl('(−) S6: the same with ticks that stop before restoreAt (1.75 s): no second GET', async () => {
+            const r = rig();
+            gets(r, gone404, () => okKept(null));
+            await r.ds.restore();
+            r.ds.capture(null, 120);
+            await idle(r, 7); // 1.75 s: not due
+            assert.equal(r.log.fetches, 1, 'a tick before restoreAt asks nothing');
+            await idle(r, 1); // 2 s: due
+            assert.equal(r.log.fetches, 2);
           });
 
           dl('(+) MF-1 (I5b): a suggestion screen, the re-try reads A, only ticks: Tab at 1 s is refused, A is put back at about 2 s with one line, and Tab is not taken after it', async () => {

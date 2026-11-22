@@ -199,7 +199,7 @@ const wait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
  * clearProblem, showNotice, setGone; box() -> { value, shell }; cols(); clearBox(value) (clears the message
  * box when it still holds `value`); focusBox(). Optional: read(file) -> base64 (default: FileReader), sleep(ms), waitHold() -> Promise
  * (resolves at once with no redraw hold, else when it ends; the attach-send request goes after it).
- * Returns { wire, enable, pending, sending, send, restore }.
+ * Returns { wire, enable, pending, sending, send, restore, retryRestore }.
  */
 export function createAttachTray(io) {
   const chips = []; // { key, name, state: 'uploading' | 'ready' | 'failed', meta, type, id, file, started, removed, el }
@@ -214,6 +214,7 @@ export function createAttachTray(io) {
   let noticed = false; // the Read notice shows once per page
   let over = 0; // drag enter minus leave: the box is "dropping" while a file is over it or one of its children
   let restoring = false; // the list of the pane's attachments is out (at most about 8 s): add, pick and send wait for it
+  let missed = false; // the last list answered 404 (the pane was not there for a moment): Check again asks once more (retryRestore, 0.5.4 final S1)
   let goneNote = null; // the "not restored" note beside the tray (made in wire)
 
   const el = (id) => document.getElementById(id);
@@ -624,6 +625,7 @@ export function createAttachTray(io) {
   async function restore() {
     if (!io.paneId || restoring || sending) return;
     restoring = true;
+    missed = false;
     let r;
     try {
       r = await get();
@@ -636,9 +638,17 @@ export function createAttachTray(io) {
     } finally {
       restoring = false;
     }
-    if (r.status === 404) return;
+    if (r.status === 404) {
+      missed = true;
+      return;
+    }
     if (!listed(r)) return io.showProblem(RESTORE_FAILED, 'warn', 8000);
     merge(r.body);
+  }
+
+  /** Check again (the mirror came back after a lost connection): when the list at open answered 404 it is asked once more, else nothing is asked (0.5.4 final, S1). */
+  function retryRestore() {
+    return missed ? restore() : Promise.resolve();
   }
 
   // ---- the page's side: the ways in --------------------------------------------------------------------------------------------------------
@@ -705,5 +715,5 @@ export function createAttachTray(io) {
     for (const chip of chips) chip.el.x.disabled = !enabled;
   }
 
-  return { wire, enable, pending: () => chips.length > 0 || restoring, sending: () => sending, send, restore };
+  return { wire, enable, pending: () => chips.length > 0 || restoring, sending: () => sending, send, restore, retryRestore };
 }

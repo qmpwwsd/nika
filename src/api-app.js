@@ -264,7 +264,7 @@ export function createAppApi({ secret, ctx, deps }) {
   });
 
   // One fit controller for the whole server (0.5, W7, ADR 0017): every tmux change it makes runs in the controller's per-pane lock.
-  // spawnAgent reads it from ctx (a window is released before a split lands in it) and appio.js recovers and releases through it.
+  // appio.js recovers and releases through it.
   const fit = (deps.createFit ?? createFit)({ exec: ctx.exec, tmuxBin: ctx.tmuxBin, now: () => ctx.now(), stateDir: stateDir(ctx.env), lock: control.withPaneLock });
   ctx.fit = fit;
   // The scroll controller (0.5, W3, ADR 0018): one lock with every other control action, and no key while a Stop/End interrupt runs (keyGap).

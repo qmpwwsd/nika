@@ -14,6 +14,7 @@ import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as 
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
 import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal, submitMessage as submitMessageReal, STILL_SENDING as STILL_SENDING_REAL, STILL_SENDING_MS as STILL_SENDING_MS_REAL } from '../public/draft-sync.js';
 import { createDraftSync as createDraftSyncReal, RESTORING_TEXT as RESTORING_TEXT_REAL } from '../public/draft-sync.js';
+import { KEEP_FAILED as KEEP_FAILED_REAL } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META, modeKey as modeKeyReal } from '../public/modes.js';
 import {
   createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal,
@@ -76,7 +77,7 @@ const findSinks = (src) => SINKS.filter(([, re]) => re.test(code(src))).map(([na
 
 // ---- the Send chain (W13): sendComposer and the functions it ends in, run for real against a fake keys route and a fake submit route ----
 const SEND_FUNCS = [
-  'async function sendComposer()', 'async function pushThenSubmit(route)', 'async function typeThenSubmit(payloads)', 'async function submitEnter(base)',
+  'async function sendComposer()', 'async function pushThenSubmit(route)', 'async function typeThenSubmit(payloads)', 'async function submitEnter(base, pasted = false)',
   'async function deliverAll(payloads)', 'function clearBox(value)',
 ];
 const TAKEN = { status: 200, body: { taken: true, draft: null } };
@@ -1521,7 +1522,7 @@ describe('Task 14b: wiring of the page rules', () => {
       showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem: () => { log.cleared += 1; }, setGone: () => { log.gone += 1; },
       sleep: async (ms) => { log.sleeps.push(ms); }, RATE_MSG: 'Too fast.', submitResult: submitResultReal, DS: { submitted: (r) => log.submitted.push(jsonClone(r)) },
     };
-    return { log, submitEnter: mk(['async function postRetry(tail, payload)', 'async function submitEnter(base)'], ctx).submitEnter };
+    return { log, submitEnter: mk(['async function postRetry(tail, payload)', 'async function submitEnter(base, pasted = false)'], ctx).submitEnter };
   };
 
   test('(+) W13: the Enter goes to the submit route of this pane, with `base` only when there is one, and the answer is told to the sync', async () => {
@@ -3366,7 +3367,7 @@ describe('0.5: the note, the pull and the edits (wiring)', () => {
 
   test('(+) every user edit of the box tells the sync: typing, composing, Clear, the Commands button, the palette insert and the Shell toggle', () => {
     const wire = fnOf('function wireComposer()');
-    assert.match(wire, /addEventListener\('input', \(\) => \{ grow\(\); updateChip\(\); DS\.edited\(\); \}\)/);
+    assert.match(wire, /addEventListener\('input', \(\) => \{ grow\(\); updateChip\(\); DS\.edited\(\); sizeLineGone\(\); \}\)/); // 0.5.4 (final, S2): the size line goes with the same edit
     assert.match(wire, /addEventListener\('compositionstart', \(\) => DS\.composition\(true\)\)/);
     assert.match(wire, /addEventListener\('compositionend', \(\) => DS\.composition\(false\)\)/);
     assert.match(wire, /\$\('paste-clear'\)\.addEventListener\('click', \(\) => \{[^}]*DS\.edited\(\);/);
@@ -3381,7 +3382,7 @@ describe('0.5: the note, the pull and the edits (wiring)', () => {
     const el = (id) => ({ addEventListener(type, f) { listeners[`${id}:${type}`] = f; }, focus() {} });
     const ta = { ...el('composer'), value: '', selectionStart: 0, selectionEnd: 0 };
     const ctx = {
-      composer: () => ta, $: el, grow: () => calls.push('grow'), updateChip: () => calls.push('chip'), wirePalette() {}, endArrows() {}, sendComposer() {}, setShell: (on) => calls.push(`shell ${on}`), S: { on: false },
+      composer: () => ta, $: el, grow: () => calls.push('grow'), updateChip: () => calls.push('chip'), sizeLineGone: () => calls.push('size'), wirePalette() {}, endArrows() {}, sendComposer() {}, setShell: (on) => calls.push(`shell ${on}`), S: { on: false },
       DS: { edited: () => calls.push('edited'), composition: (on) => calls.push(`composition ${on}`) },
     };
     vm.runInNewContext(`${fnOf('function wireComposer()')}; wireComposer`, ctx)();
@@ -3390,7 +3391,7 @@ describe('0.5: the note, the pull and the edits (wiring)', () => {
     listeners['composer:compositionend']();
     listeners['shell-toggle:click']();
     listeners['paste-clear:click']();
-    assert.deepEqual(calls, ['grow', 'chip', 'edited', 'composition true', 'composition false', 'shell true', 'edited', 'grow', 'chip', 'edited']);
+    assert.deepEqual(calls, ['grow', 'chip', 'edited', 'size', 'composition true', 'composition false', 'shell true', 'edited', 'grow', 'chip', 'edited']);
   });
 
   test('(+) a lost connection ends with a retry that follows the first-capture rule; a gone pane stops the sync', () => {
@@ -4018,9 +4019,9 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     assert.match(src, /enqueueJob\(route\.act === 'push' \? \(\) => pushThenSubmit\(route\) : route\.act === 'enter' \? \(\) => submitEnter\(route\.submit\.base\) : \(\) => typeThenSubmit\(plan\.payloads\)\)/);
     assert.match(fnOf('function enqueueJob(run)'), /chain\.then\(run\)/);
     assert.match(fnOf('function enqueueSeq(payloads)'), /enqueueJob\(\(\) => deliverAll\(payloads\)\)/);
-    assert.match(fnOf('async function pushThenSubmit(route)'), /await DS\.send\(route\.text\)[\s\S]*submitEnter\(p\.sig\)/);
-    assert.match(fnOf('async function typeThenSubmit(payloads)'), /await deliverAll\(payloads\)[\s\S]*submitEnter\(\)/);
-    const submit = fnOf('async function submitEnter(base)');
+    assert.match(fnOf('async function pushThenSubmit(route)'), /await DS\.send\(route\.text\)[\s\S]*submitEnter\(p\.sig, true\)/); // 0.5.4 (final, S5): the text is in Claude's input
+    assert.match(fnOf('async function typeThenSubmit(payloads)'), /await deliverAll\(payloads\)[\s\S]*submitEnter\(undefined, payloads\.length > 0\)/);
+    const submit = fnOf('async function submitEnter(base, pasted = false)');
     assert.match(submit, /postRetry\('submit'/);
     assert.doesNotMatch(submit, /deliver\(|\/keys|keys:/);
     for (const f of [src, fnOf('async function pushThenSubmit(route)'), fnOf('async function typeThenSubmit(payloads)'), submit]) assert.doesNotMatch(f, /'Enter'|"Enter"|keys:/);
@@ -7191,7 +7192,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   });
 
   test('(+) F10: the waits are the Send chain\'s own (typeThenSubmit, submitEnter, putDraft), the scroll call and the mode and command calls, in the source', () => {
-    for (const head of ['async function submitEnter(base)', 'async function typeThenSubmit(payloads)', 'async function switchTo(target)', 'async function sendCommand(text)', 'async function putDraft(body)', 'async function suggestDraft(body)', 'async function waitHold()']) {
+    for (const head of ['async function submitEnter(base, pasted = false)', 'async function typeThenSubmit(payloads)', 'async function switchTo(target)', 'async function sendCommand(text)', 'async function putDraft(body)', 'async function suggestDraft(body)', 'async function waitHold()']) {
       assert.match(fnOf(head), /if \(HOLD\.active\) await HOLD\.wait\(\);/, head);
     }
     assert.match(fnOf('function scrollCall(body)'), /if \(HOLD\.active\) return HOLD\.wait\(\)\.then\(\(\) => scrollCall\(body\)\);/);
@@ -9143,7 +9144,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     Object.assign(r.ctx, { A: { kind, name: 'builder-1', attention: 'Claude has a question' }, attnNote: attnNoteReal, passKeyLabel, MAC: false });
     r.ctx.W.prompt = null;
     vm.runInNewContext(`${fnOf('function renderAttn()')}; ({ renderAttn })`, r.ctx);
-    r.ctx.DF = createDialogFormReal({ root, paneId: '%1', path: (t) => `/x/${t}`, call: async () => ({ status: 200, body: {} }), announce() {}, say() {}, showProblem() {}, clearProblem() {}, setGone() {}, composer: () => ({ focus() {} }), refresh: () => r.ctx.renderAttn(), now: () => r.clk.now, after: r.ctx.setTimeout, cancel: r.ctx.clearTimeout });
+    r.ctx.DF = createDialogFormReal({ root, paneId: '%1', path: (t) => `/x/${t}`, call: async () => ({ status: 200, body: {} }), announce() {}, say() {}, showProblem() {}, clearProblem() {}, clearProblemFrom() {}, setGone() {}, composer: () => ({ focus() {} }), refresh: () => r.ctx.renderAttn(), now: () => r.clk.now, after: r.ctx.setTimeout, cancel: r.ctx.clearTimeout });
     r.ctx.renderMode = () => { const g = r.growing(); r.ctx.GROWING_SHOWN = g; r.ctx.DF.render({ pane: r.ctx.W.pane, dialog: r.ctx.W.dialog, name: r.ctx.A.name, attention: r.ctx.A.attention, growing: g }); };
     return { r, root, note, text };
   };
@@ -11262,7 +11263,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
 
   test('(+) P6: boot builds the form right after the switcher, the quick actions and the fit are wired, with the io the module asks for and the one route tail built here', () => {
     const boot = fnOf('function boot()');
-    assert.match(boot, /wireSwitcher\(\);\s*wireQuick\(\);\s*wireFit\(\);\s*DF = createDialogForm\(\{ root: \$\('dialog-form'\), paneId, call, path: \(tail\) => `\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/\$\{tail\}`, announce, say, showProblem, clearProblem, setGone, composer, refresh: renderAttn \}\);/);
+    assert.match(boot, /wireSwitcher\(\);\s*wireQuick\(\);\s*wireFit\(\);\s*DF = createDialogForm\(\{ root: \$\('dialog-form'\), paneId, call, path: \(tail\) => `\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/\$\{tail\}`, announce, say, showProblem, clearProblem, clearProblemFrom, setGone, composer, refresh: renderAttn \}\);/);
     assert.ok(boot.indexOf('DF = createDialogForm') > boot.indexOf('if (paneId) {'), 'only with a pane');
   });
 
@@ -11539,7 +11540,7 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
       DS: { restore: spy('DS.restore'), flushKeep: spy('DS.flushKeep') }, window: { addEventListener: (type, fn) => log.win.push([type, fn]) }, // 0.5.4 LT
       isApp: () => app, $: p.$, SUB: sub, BAD_AGENT: bad, agentId: sub ? AG : null, sessionId: session, paneId: pane, projectKey: project, location: { search }, URLSearchParams,
       MAC: false, P: { on: false }, windowCommand() {}, notices: [], MID: ' \u00b7 ', ATT: { wire: spy('ATT.wire'), restore: spy('ATT.restore') }, FIT: { planner: null }, DF: null, SV: null, A: { name: 'the agent' },
-      composer: () => ({ focus() {} }), onPageKey() {}, openKbd() {}, announce() {}, setGone() {}, call() {}, say() {}, showProblem() {}, clearProblem() {}, renderAttn() {}, showOverlay() {}, DOTS: '...',
+      composer: () => ({ focus() {} }), onPageKey() {}, openKbd() {}, announce() {}, setGone() {}, call() {}, say() {}, showProblem() {}, clearProblem() {}, clearProblemFrom() {}, renderAttn() {}, showOverlay() {}, DOTS: '...',
       document: { body: node('body'), title: '', querySelector: (sel) => (sel === '.skip-2' ? p.$('skip-2') : null), addEventListener: (type) => log.doc.push(type) },
       ...Object.fromEntries(BOOT_SPIES.map((n) => [n, spy(n)])),
     };
@@ -14258,4 +14259,272 @@ describe('PL (0.5.4): the problem line tells a warning from an error by icon and
       for (const colour of ['--idle', '--danger']) assert.ok(ratio(v[colour], v['--surface']) >= 4.5, `${colour} on ${v['--surface']}: ${ratio(v[colour], v['--surface']).toFixed(2)}`);
     });
   }
+});
+
+// ---- 0.5.4, final fix round: the problem line's owner (S3), Send's size line (S2) and the line after nika's own paste (S5) -----------------------------------
+
+describe('0.5.4 final: the problem line keeps its owner (S3) and Send\'s size line goes once the text fits (S2)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const NAMES = [...SEND_FUNCS, 'function showProblem(', 'function clearProblemFrom(', 'function sizeLineGone(', 'function wireComposer()'];
+  const nameOf = (head) => head.replace(/^(async )?function /, '').replace(/\(.*$/, '');
+  afterEach(() => mock.timers.reset());
+
+  /** sendComposer, showProblem, clearProblemFrom and the composer's `input` handler for real in one context, over fake page nodes, the real plans and a fake sync and routes. */
+  const rig = ({ value = '', shell = false, submit, screen = null, kind = 'idle', pushAnswer = { ok: true, sig: '00000000000000aa' } } = {}) => {
+    mock.timers.reset();
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const log = Object.assign(sendLog(), { said: [], told: [], pushed: [] });
+    const fake = () => { const attrs = {}; return { textContent: '', className: '', hidden: false, attrs, setAttribute(k, v) { attrs[k] = String(v); }, removeAttribute(k) { delete attrs[k]; }, getAttribute(k) { return attrs[k] ?? null; }, addEventListener() {}, focus() {} }; };
+    const nodes = {};
+    const $ = (id) => (nodes[id] ??= fake());
+    const listeners = {};
+    const ta = { value, disabled: false, selectionStart: 0, selectionEnd: 0, addEventListener(type, f) { listeners[type] = f; } };
+    const ctx = {
+      sending: false, composer: () => ta, DF: null, SV: null, S: { on: shell }, W: { promptOpen: false, prompt: null, pane: 'ok', mode: 'default', confirmed: true }, A: { kind }, M: { cols: 120, gone: false },
+      sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
+      $, say: (m) => log.said.push(m), paneId: '%12', setShell() {}, grow() {}, updateChip() {}, wirePalette() {}, document: { querySelectorAll: () => [] },
+      DS: {
+        screen: () => screen, restoring: () => false, beginSend() {}, endSend() {}, sent() {}, edited() {}, composition() {},
+        submitted: (r) => { log.told.push(jsonClone(r)); },
+        send: async (text) => { log.order.push('push'); log.pushed.push(text); return pushAnswer; },
+      },
+      ATT: { pending: () => false },
+      setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t),
+      ...sendIo(log, submit),
+    };
+    delete ctx.clearProblem; // the page's own is evaluated below, over the real showProblem
+    const api = vm.runInNewContext(`let problemTimer = 0; let problemOwner = '';\n${NAMES.map(fnOf).join('\n')}\nconst clearProblem = () => showProblem('');\n({ ${NAMES.map(nameOf).join(', ')}, clearProblem, owner: () => problemOwner })`, ctx);
+    api.wireComposer();
+    return { api, nodes, ta, log, listeners, line: () => nodes.problem?.textContent ?? '', shown: () => nodes['problem-line']?.hidden === false };
+  };
+
+  test('(+) S3: a line shown with an owner is taken down by clearProblemFrom(owner) at once (empty, hidden, no owner left)', () => {
+    const r = rig();
+    r.api.showProblem('Claude\'s notes field is open.', 'warn', 0, 'dialog');
+    assert.equal(r.api.owner(), 'dialog');
+    assert.equal(r.line(), 'Claude\'s notes field is open.');
+    r.api.clearProblemFrom('dialog');
+    assert.equal(r.line(), '');
+    assert.equal(r.shown(), false);
+    assert.equal(r.api.owner(), '');
+  });
+
+  test('(−) S3: clearProblemFrom leaves another owner\'s line, an un-owned line and an empty line alone; the empty owner never matches an un-owned line', () => {
+    const r = rig();
+    r.api.showProblem('mine', 'warn', 0, 'dialog-answer');
+    r.api.clearProblemFrom('dialog');
+    r.api.clearProblemFrom('');
+    r.api.clearProblemFrom(undefined);
+    assert.equal(r.line(), 'mine');
+    assert.equal(r.api.owner(), 'dialog-answer');
+    r.api.showProblem('nobody\'s', 'warn');
+    for (const owner of ['dialog', 'dialog-answer', '', undefined]) r.api.clearProblemFrom(owner);
+    assert.equal(r.line(), 'nobody\'s');
+    r.api.clearProblem();
+    r.api.clearProblemFrom('dialog');
+    assert.equal(r.line(), '');
+    assert.equal(r.shown(), false);
+  });
+
+  test('(+) S3: an un-owned showProblem, clearProblem() and the ms timeout each reset the owner, so the old owner can no longer take down a line that is not its own', () => {
+    const r = rig();
+    r.api.showProblem('A', 'warn', 0, 'dialog');
+    r.api.showProblem('B', 'error'); // another part's line takes the place
+    assert.equal(r.api.owner(), '');
+    r.api.clearProblemFrom('dialog');
+    assert.equal(r.line(), 'B', 'B is not the dialog\'s');
+    r.api.showProblem('C', 'warn', 0, 'dialog');
+    r.api.clearProblem();
+    assert.equal(r.api.owner(), '');
+    r.api.showProblem('D', 'warn', 3000, 'dialog');
+    mock.timers.tick(3000);
+    assert.equal(r.line(), '');
+    assert.equal(r.api.owner(), '', 'the timeout ended the owned line');
+    r.api.showProblem('E', 'warn');
+    r.api.clearProblemFrom('dialog');
+    assert.equal(r.line(), 'E', 'a line shown after the timeout is nobody\'s dialog line');
+  });
+
+  /** The Check again button's handler for real (wireTerminal), over stubs: the order of what it calls. */
+  const checkAgain = () => {
+    const calls = [];
+    const listeners = {};
+    const el = (id) => ({ addEventListener(type, f) { listeners[`${id}:${type}`] = f; }, dataset: {}, scrollHeight: 0, scrollTop: 0, clientHeight: 0, setAttribute() {} });
+    const M = { gone: true, fatal: true, inputOff: true, etag: 'x' };
+    const W = { got: true };
+    const ctx = {
+      $: el, M, W, setFrozen() {}, jumpToLive() {}, wireScroll() {}, wirePassthrough() {}, document: { querySelectorAll: () => [] }, storeGet: () => null, storeSet() {}, paneId: '%1', DOTS: '...',
+      DS: { reset: () => calls.push('DS.reset') }, ATT: { retryRestore: () => calls.push('ATT.retryRestore') },
+      setPaneState: (s) => calls.push(`state ${s}`), setInputEnabled: (on) => calls.push(`input ${on}`), showOverlay: () => calls.push('overlay'), kickMirror: (ms) => calls.push(`kick ${ms}`),
+    };
+    vm.runInNewContext(`${fnOf('function wireTerminal()')}; wireTerminal`, ctx)();
+    listeners['over-retry:click']();
+    return { calls, M, W };
+  };
+
+  test('(+) S1: Check again lists the unsent attachments again: ATT.retryRestore() runs once, after the draft sync is reset and before the mirror is asked for', () => {
+    const { calls, M, W } = checkAgain();
+    assert.deepEqual(calls, ['DS.reset', 'ATT.retryRestore', 'state connecting', 'input true', 'overlay', 'kick 0']);
+    assert.deepEqual([M.gone, M.fatal, M.inputOff, M.etag, W.got], [false, false, false, null, false], 'the rest of the handler is as before');
+  });
+
+  test('(\u2212) S1: Check again never calls restore() itself (that would list after a good list too): ATT.restore() stays boot\'s one call, retryRestore() has one caller', () => {
+    assert.equal((SRC.match(/ATT\.retryRestore\(/g) ?? []).length, 1);
+    assert.equal((SRC.match(/ATT\.restore\(/g) ?? []).length, 1);
+    assert.doesNotMatch(fnOf('function wireTerminal()'), /ATT\.restore\(/);
+  });
+
+  test('(+) S2: Send over 16 KB shows the size line as "send-size"; shortened to exactly 16 KB the line is gone on that input, counted in UTF-8 bytes', async () => {
+    for (const [over, fits] of [['y'.repeat(16 * 1024 + 1), 'y'.repeat(16 * 1024)], ['\u00e9'.repeat(8 * 1024 + 1), '\u00e9'.repeat(8 * 1024)]]) {
+      const r = rig({ value: over });
+      await r.api.sendComposer();
+      assert.equal(r.line(), planSendReal(over).message);
+      assert.match(r.line(), /KB\. A paste can be at most 16 KB/);
+      assert.equal(r.api.owner(), 'send-size');
+      assert.deepEqual(r.log.sent, [], 'nothing was sent');
+      r.ta.value = fits;
+      r.listeners.input();
+      assert.equal(r.line(), '');
+      assert.equal(r.shown(), false);
+      assert.equal(r.api.owner(), '');
+      assert.deepEqual(r.log.sent, []);
+    }
+  });
+
+  test('(+) S2: planSend marks only its over-16 KB refusal `size: true` (the page owns that line); (\u2212) no other plan, and no Shell refusal, is marked', () => {
+    for (const v of ['y'.repeat(16 * 1024 + 1), '\u00e9'.repeat(8 * 1024 + 1)]) assert.equal(planSendReal(v).size, true);
+    for (const v of ['', 'hello', 'a\nb', 'x'.repeat(2000), 'a\tb', 'y'.repeat(16 * 1024), '\u00e9'.repeat(8 * 1024)]) assert.equal('size' in planSendReal(v), false, v.slice(0, 8));
+    for (const v of ['a\nb', 'x'.repeat(1030), 'a\u0007b']) assert.equal('size' in planShellReal(v), false, v.slice(0, 8));
+  });
+
+  test('(\u2212) S2: still over 16 KB after an edit: the size line stays; the box emptied clears it', async () => {
+    const over = 'y'.repeat(16 * 1024 + 1);
+    const r = rig({ value: over });
+    await r.api.sendComposer();
+    r.ta.value = `${over}z`;
+    r.listeners.input();
+    assert.equal(r.line(), planSendReal(over).message, 'the line is the first one: nothing re-computed on the page');
+    assert.equal(r.api.owner(), 'send-size');
+    r.ta.value = 'y'.repeat(16 * 1024 + 1);
+    r.listeners.input();
+    assert.notEqual(r.line(), '');
+    r.ta.value = '';
+    r.listeners.input();
+    assert.equal(r.line(), '');
+    // round 1 (R1-2): bytes, not characters. 8,194 two-byte characters are 16,388 bytes and fewer than 16,384 characters.
+    const e = '\u00e9';
+    const multi = e.repeat(8 * 1024 + 1); // 16,386 bytes
+    const m = rig({ value: multi });
+    await m.api.sendComposer();
+    assert.equal(m.api.owner(), 'send-size');
+    const first = m.line();
+    assert.equal(first, planSendReal(multi).message);
+    m.ta.value = `${multi}${e}`;
+    assert.ok(m.ta.value.length < 16 * 1024, 'fewer than 16,384 characters');
+    assert.equal(Buffer.byteLength(m.ta.value, 'utf8'), 16388);
+    m.listeners.input();
+    assert.equal(m.line(), first, 'still over in bytes: the line stays');
+    assert.equal(m.api.owner(), 'send-size');
+    assert.equal(m.shown(), true);
+    m.ta.value = e.repeat(8 * 1024); // exactly 16,384 bytes
+    m.listeners.input();
+    assert.equal(m.line(), '', 'exactly 16 KB in bytes fits');
+    assert.equal(m.api.owner(), '');
+  });
+
+  test('(\u2212) S2: a non-size Send refusal stays on the same input (Shell: a command over 1023 characters is 2 KB, not over 16 KB)', async () => {
+    const r = rig({ value: 'z'.repeat(2000), shell: true });
+    await r.api.sendComposer();
+    const line = r.line();
+    assert.match(line, /A shell command can be at most 1023 characters/);
+    assert.equal(r.api.owner(), '', 'only the 16 KB refusal is Send\'s size line');
+    r.listeners.input();
+    assert.equal(r.line(), line);
+    r.ta.value = 'z'.repeat(10);
+    r.listeners.input();
+    assert.equal(r.line(), line, 'even a short text leaves a line that is not the size line');
+    const g = rig({ value: 'hello' });
+    g.api.showProblem('A refusal of the route', 'error');
+    g.listeners.input();
+    assert.equal(g.line(), 'A refusal of the route');
+  });
+
+  test('(\u2212) S2: another part\'s line (the kept-text failure, a dialog line) stays on the same input', () => {
+    const r = rig({ value: 'short' });
+    r.api.showProblem(KEEP_FAILED_REAL, 'warn', 8000);
+    r.listeners.input();
+    assert.equal(r.line(), KEEP_FAILED_REAL);
+    r.api.showProblem('A line about the open dialog.', 'warn', 0, 'dialog');
+    r.listeners.input();
+    assert.equal(r.line(), 'A line about the open dialog.');
+    r.api.showProblem('The outcome of an answer.', 'warn', 0, 'dialog-answer');
+    r.listeners.input();
+    assert.equal(r.line(), 'The outcome of an answer.');
+  });
+
+  // ---- S5: the line after nika's own paste meets 409 screen-unclear ----------------------------------------------------------------------------------------
+  const PASTED_LINE = "Your text is in Claude's input. Press Enter in the terminal to send it.";
+  const OLD_LINE = "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept.";
+  const UNCLEAR = () => ({ status: 409, body: { error: 'screen-unclear' } });
+  const D = (state, text = '', over = {}) => ({ state, mode: 'prompt', text, sig: '0000000000000001', box: { top: 30, bottom: 32 }, cursorAtEnd: true, suggestion: null, queued: false, ...over });
+
+  test('(+) S5: the push road (the text was copied into Claude\'s input), then 409 screen-unclear: the new line, as an error; the text stays in the box', async () => {
+    const r = rig({ value: 'fix the typo', screen: D('empty'), submit: UNCLEAR });
+    await r.api.sendComposer();
+    assert.deepEqual(r.log.pushed, ['fix the typo']);
+    assert.deepEqual(r.log.posts.map(([tail]) => tail), ['submit']);
+    assert.equal(r.line(), PASTED_LINE);
+    assert.equal(r.nodes.problem.className, 'problem error');
+    assert.equal(r.ta.value, 'fix the typo', 'the text is kept');
+    assert.deepEqual(r.log.said, []);
+  });
+
+  test('(+) S5: the legacy road with a typed payload (a line, a paste, a Shell command), then 409 screen-unclear: the new line', async () => {
+    for (const [value, shell] of [['fix the typo', false], ['line one\nline two', false], ['ls -la', true]]) {
+      const r = rig({ value, shell, screen: null, submit: UNCLEAR });
+      await r.api.sendComposer();
+      assert.ok(r.log.keys.length > 0, `${value}: nika typed the text`);
+      assert.equal(r.line(), PASTED_LINE, value);
+      assert.equal(r.ta.value, value);
+    }
+  });
+
+  test('(\u2212) S5: the enter road (nika typed nothing: the screen already holds the text, or the box is empty), then 409 screen-unclear: the old line', async () => {
+    const same = rig({ value: 'fix the typo', screen: D('text', 'fix the typo'), submit: UNCLEAR });
+    await same.api.sendComposer();
+    assert.deepEqual(same.log.pushed, []);
+    assert.deepEqual(same.log.keys, []);
+    assert.equal(same.line(), OLD_LINE);
+    const empty = rig({ value: '', screen: D('text', 'typed in the terminal'), submit: UNCLEAR });
+    await empty.api.sendComposer();
+    assert.deepEqual(empty.log.keys, []);
+    assert.equal(empty.line(), OLD_LINE);
+    const nothing = rig({ value: 'x', screen: null, submit: UNCLEAR });
+    await nothing.api.typeThenSubmit([]); // a legacy Send with no payload typed nothing either
+    assert.equal(nothing.line(), OLD_LINE);
+  });
+
+  test('(\u2212) S5: the push road, then a 409 with another code: that code\'s line, never the new one; a push that did not land sends no Enter', async () => {
+    for (const code of ['prompt-open', 'bypass-prompt', 'not-idle', 'draft-changed', 'suggestion-shown', 'input-unreadable', 'mode-unknown', 'busy-switching', 'screen-unclear-x', 'Screen-Unclear', '']) {
+      const r = rig({ value: 'fix the typo', screen: D('empty'), submit: () => ({ status: 409, body: { error: code } }) });
+      await r.api.sendComposer();
+      assert.equal(r.line(), submitMessageReal({ status: 409, code }), code);
+      assert.notEqual(r.line(), PASTED_LINE, code);
+    }
+    for (const status of [500, 404, 429, 0]) {
+      const r = rig({ value: 'fix the typo', screen: D('empty'), submit: () => ({ status, body: { error: 'screen-unclear' } }) });
+      await r.api.sendComposer();
+      assert.equal(r.line(), submitMessageReal({ status, code: '' }), String(status));
+      assert.notEqual(r.line(), PASTED_LINE, String(status));
+    }
+    const lost = rig({ value: 'fix the typo', screen: D('empty'), pushAnswer: { ok: false, message: 'Claude\'s input changed while nika was copying your text.' }, submit: UNCLEAR });
+    await lost.api.sendComposer();
+    assert.deepEqual(lost.log.posts, [], 'no Enter without the push');
+    assert.equal(lost.line(), 'Claude\'s input changed while nika was copying your text.');
+  });
 });
