@@ -380,11 +380,44 @@ describe('keyForEvent (passthrough)', () => {
   });
 
   test('(−) keys off the allow-list are skipped with a reason, never sent', () => {
-    for (const e of [ev('x', { altKey: true }), ev('x', { ctrlKey: true }), ev('F5'), ev('Insert'), ev('Enter', { ctrlKey: true }), ev('CapsLock'), ev('Shift')]) {
+    for (const e of [ev('x', { altKey: true }), ev('x', { ctrlKey: true }), ev('F5'), ev('Insert'), ev('Enter', { ctrlKey: true })]) { // 0.6.0 (FU-2, C1): CapsLock and Shift moved out of this list; a lone modifier is ignored, see the next tests
       const r = keyForEvent(e);
       assert.equal(r.kind, 'skip', JSON.stringify(e));
       assert.match(r.reason, /Not sent: .* is not on the allow-list/);
     }
+  });
+
+  test('(+) FU-2 (C1, 0.6.0): a lone modifier keydown (Shift, Control, Alt, AltGraph, Meta, CapsLock) is ignored: no "Not sent" line, the event goes on', () => {
+    const flag = { Shift: 'shiftKey', Control: 'ctrlKey', Alt: 'altKey', Meta: 'metaKey' }; // the browser sets the flag of the key that went down
+    for (const key of ['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'CapsLock']) {
+      assert.deepEqual(keyForEvent(ev(key)), { kind: 'ignore' }, key);
+      for (const opts of [{ mac: false }, { mac: true }]) assert.deepEqual(keyForEvent(ev(key), opts), { kind: 'ignore' }, `${key} ${JSON.stringify(opts)}`);
+      if (flag[key]) assert.deepEqual(keyForEvent(ev(key, { [flag[key]]: true })), { kind: 'ignore' }, `${key} with its own flag`);
+    }
+    assert.deepEqual(keyForEvent(ev('Shift', { ctrlKey: true })), { kind: 'ignore' }, 'Shift pressed while Ctrl is held');
+    assert.deepEqual(keyForEvent(ev('Control', { shiftKey: true })), { kind: 'ignore' }, 'Ctrl pressed while Shift is held');
+    assert.deepEqual(keyForEvent(ev('Alt', { ctrlKey: true, shiftKey: true })), { kind: 'ignore' }, 'Alt pressed while Ctrl and Shift are held');
+  });
+
+  test('(\u2212) FU-2 (C1, 0.6.0): F5, F12 and an unlisted key still give the "Not sent" line; a near-miss of a modifier name is not a modifier', () => {
+    for (const key of ['F5', 'F12', 'ContextMenu', 'Insert']) {
+      const r = keyForEvent(ev(key));
+      assert.equal(r.kind, 'skip', key);
+      assert.equal(r.reason, `Not sent: ${key} is not on the allow-list`, key);
+    }
+    for (const key of ['ShiftLeft', 'Shifted', 'shift', 'ControlRight', 'Control ', 'Alternate', 'AltGr', 'MetaLeft', 'Capslock', 'CapsLock2', '']) {
+      assert.equal(keyForEvent(ev(key)).kind, 'skip', JSON.stringify(key));
+    }
+  });
+
+  test('(\u2212) FU-2 (C1, 0.6.0): a modifier held with a real key behaves as before (Ctrl+c, Alt+x, Shift+Tab, Shift+A, Ctrl+Shift+C, Cmd+x)', () => {
+    assert.deepEqual(keyForEvent(ev('c', { ctrlKey: true })), { kind: 'key', name: 'C-c' });
+    assert.deepEqual(keyForEvent(ev('x', { altKey: true })), { kind: 'skip', reason: 'Not sent: Alt-x is not on the allow-list' });
+    assert.deepEqual(keyForEvent(ev('Tab', { shiftKey: true })), { kind: 'key', name: 'BTab' });
+    assert.deepEqual(keyForEvent(ev('A', { shiftKey: true })), { kind: 'text', text: 'A' });
+    assert.deepEqual(keyForEvent(ev('C', { ctrlKey: true, shiftKey: true })), { kind: 'copy' });
+    assert.deepEqual(keyForEvent(ev('x', { metaKey: true })), { kind: 'ignore' });
+    assert.deepEqual(keyForEvent(ev('x', { ctrlKey: true })), { kind: 'skip', reason: 'Not sent: Ctrl-x is not on the allow-list' });
   });
 
   test('(+) F2: Ctrl+Shift+C is a copy of the mirror\'s selection on both platforms; Ctrl+C alone still sends C-c', () => {

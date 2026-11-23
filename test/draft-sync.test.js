@@ -1945,7 +1945,7 @@ describe('W13: submitResult and submitMessage (the submit route\'s answers, fixe
 
 describe('kept text (0.5.4, LT)', () => {
   const LONG = 'x'.repeat(1100); // past the envelope (1024 characters): Send pastes it, the sync never mirrors it
-  const OVER_NOTE = { kind: 'over', icon: 'warn', label: 'Not kept:', text: "Over 16 KB: Send can't send it, and nika can't keep it if you leave. Shorten it or send it in parts." }; // the note of a text over 16 KB (round 1, SF-1)
+  const OVER_NOTE = { kind: 'over', icon: 'error', label: 'Not kept:', text: "Over 16 KB: Send can't send it, and nika can't keep it if you leave. Shorten it or send it in parts." }; // the note of a text over 16 KB (round 1, SF-1)
   const okKept = (kept) => ({ status: 200, body: { kept } });
   const seq = (list, last) => () => (list.length ? list.shift() : last);
 
@@ -3369,7 +3369,7 @@ describe('kept text (0.5.4, LT)', () => {
     });
 
     // SF-1: the over-size state has its own note
-    test('(+) SF-1: over 16 KB shows its own note (kind over, warn icon, "Not kept:", the words) and raises no problem line; 16 384 bytes does not', async () => {
+    test('(+) SF-1: over 16 KB shows its own note (kind over, error icon, "Not kept:", the words) and raises no problem line; 16 384 bytes does not', async () => {
       const r = await booted();
       r.type('x'.repeat(16385));
       assert.deepEqual(r.lastNote(), OVER_NOTE);
@@ -3445,6 +3445,19 @@ describe('kept text (0.5.4, LT)', () => {
       const all = [{ kind: 'paused', reason: 'tall' }, { kind: 'long' }, { kind: 'hold' }, { kind: 'cursor' }, { kind: 'queued' }, { kind: 'suggest' }, { kind: 'over' }].map(noteView);
       for (const key of ['kind', 'icon', 'label']) assert.equal(new Set(all.map((v) => v[key])).size, 7, key);
       assert.match(OVER_NOTE.text, /^[\x20-\x7e]+$/);
+    });
+
+    test('(+) FU-2 (F3, 0.6.0): the over note has the error icon (a circle with a cross) with its words unchanged; the colour stays the danger one (session.css, pinned in session-ui.test.js)', () => {
+      const v = noteView({ kind: 'over' });
+      assert.equal(v.icon, 'error');
+      assert.notEqual(v.icon, 'warn');
+      assert.deepEqual([v.kind, v.label], ['over', 'Not kept:']);
+    });
+
+    test('(\u2212) FU-2 (F3, 0.6.0): every other note kind keeps its own icon', () => {
+      const icons = { paused: 'pause', long: 'info', hold: 'dialog', cursor: 'window', queued: 'send', suggest: 'kbd' };
+      for (const [kind, icon] of Object.entries(icons)) assert.equal(noteView({ kind, reason: 'tall' }).icon, icon, kind);
+      assert.equal(noteView(null), null);
     });
 
     // MF-2 (owner answer A): on a back/forward return the page keeps its box unless the server's copy came from another page and the box still holds what this page saved

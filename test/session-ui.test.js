@@ -159,7 +159,7 @@ describe('session.html under the strict CSP', () => {
     assert.match(term, /tabindex="0"/);
     assert.doesNotMatch(term, /aria-live|role="log"|role="status"|role="alert"/);
     assert.match(HTML, /id="echo" aria-live="polite"/);
-    assert.match(HTML, /id="problem" role="alert"/);
+    assert.match(HTML, /id="problem-alert" role="alert"/); // 0.6.0 (FU-2, C2): the alert is the wrapper of the word and the message; #problem is the message only
     assert.match(HTML, /<label for="composer"/);
   });
 
@@ -2368,8 +2368,8 @@ describe('0.3.3: the hint line, the mode row and the message box name (markup, s
   });
 
   test('(+) F7: the notes row keeps the problem line as an alert, the shell hint and the argument hint', () => {
-    for (const id of ['problem', 'shell-hint', 'arg-hint']) assert.match(HTML, new RegExp(`id="${id}"`), id);
-    assert.match(HTML, /id="problem" role="alert"/);
+    for (const id of ['problem', 'problem-alert', 'shell-hint', 'arg-hint']) assert.match(HTML, new RegExp(`id="${id}"`), id);
+    assert.match(HTML, /id="problem-alert" role="alert"/); // 0.6.0 (FU-2, C2): was id="problem" role="alert"
     assert.match(css, /\.notes \{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/);
   });
 
@@ -2456,7 +2456,7 @@ describe('0.3.3: the hint line, the mode row and the message box name (markup, s
 
   test('(+) W11: boot wires the watcher, and the problem line keeps its alert role and the echo its live region inside the quiet row', () => {
     assert.match(code(JS['session.js']), /\bwatchNotes\(\);/);
-    assert.match(HTML, /id="problem" role="alert"/);
+    assert.match(HTML, /id="problem-alert" role="alert"/); // 0.6.0 (FU-2, C2): was id="problem" role="alert"
     assert.match(/<[a-z]+\b[^>]*\bid="echo"[^>]*>/.exec(HTML)?.[0] ?? '', /\baria-live="polite"/);
     assert.ok(HTML.indexOf('id="notes"') < HTML.indexOf('id="echo"') && HTML.indexOf('id="echo"') < HTML.indexOf('id="att-help"'));
   });
@@ -2990,16 +2990,16 @@ describe('0.5: the cut and the draft note (markup and stylesheet)', () => {
     assert.match(css, /\.dnote b\s*\{[^}]*font-weight:\s*(600|700)/);
   });
 
-  test('(+) SF-1: the over note has its own rule: --danger on --danger-soft, a colour no other note kind uses, and its icon i-warn is drawn by the page', () => {
+  test('(+) SF-1: the over note has its own rule: --danger on --danger-soft, a colour no other note kind uses, and its icon i-error is drawn by the page', () => {
     const KINDS = ['paused', 'long', 'hold', 'cursor', 'queued', 'suggest'];
     assert.match(css, /\.dnote\[data-k="over"\]\s*\{[^}]*color:\s*var\(--danger\)[^}]*background:\s*var\(--danger-soft\)/);
     for (const k of KINDS) {
       const rule = new RegExp(`\\.dnote\\[data-k="${k}"\\]\\s*\\{([^}]*)\\}`).exec(css)[1];
       assert.doesNotMatch(rule, /--danger/, `${k} does not use the over note's colours`);
     }
-    assert.match(HTML, /<symbol id="i-warn"/);
-    assert.equal(noteViewReal({ kind: 'over' }).icon, 'warn');
-    for (const k of KINDS) assert.notEqual(noteViewReal({ kind: k, reason: 'tall' }).icon, 'warn', `${k} has another icon`);
+    assert.match(HTML, /<symbol id="i-error"/);
+    assert.equal(noteViewReal({ kind: 'over' }).icon, 'error');
+    for (const k of KINDS) assert.notEqual(noteViewReal({ kind: k, reason: 'tall' }).icon, 'error', `${k} has another icon`);
     assert.doesNotMatch(css, /\.dnote\[data-k="over"\][^{]*\{[^}]*(?:#|rgb\()/, 'tokens only, no literal colour');
   });
 
@@ -14144,16 +14144,35 @@ describe('PL (0.5.4): the problem line tells a warning from an error by icon and
   // -- the markup and the sprite
 
   test('(+) the page wraps the line: icon, word, then the alert with the message, in the notes row between the draft note and the echo; it starts hidden as a warning', () => {
-    assert.match(HTML, /<span class="problem-line" id="problem-line" data-kind="warn" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn" id="problem-use"\/><\/svg><span class="problem-label" id="problem-label">Warning:<\/span> <span class="problem" id="problem" role="alert"><\/span><\/span>/);
-    const order = ['id="arg-hint"', 'id="shell-hint"', 'id="draft-note"', 'id="problem-line"', 'id="problem"', 'id="echo"'].map((n) => HTML.indexOf(n));
+    assert.match(HTML, /<span class="problem-line" id="problem-line" data-kind="warn" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn" id="problem-use"\/><\/svg><span class="problem-alert" id="problem-alert" role="alert"><span class="problem-label" id="problem-label">Warning:<\/span> <span class="problem" id="problem"><\/span><\/span><\/span>/); // 0.6.0 (FU-2, C2): the alert wraps the word and the message
+    const order = ['id="arg-hint"', 'id="shell-hint"', 'id="draft-note"', 'id="problem-line"', 'id="problem-alert"', 'id="problem-label"', 'id="problem"', 'id="echo"'].map((n) => HTML.indexOf(n));
     assert.ok(order.every((n) => n > 0) && order.every((n, i) => i === 0 || n > order[i - 1]), order.join(','));
   });
 
   test('(\u2212) the line brings no inline style, no event handler and no second alert region', () => {
-    const block = /<span class="problem-line"[\s\S]*?<\/span><\/span>/.exec(HTML)?.[0] ?? '';
+    const block = /<span class="problem-line"[\s\S]*?<\/span><\/span><\/span>/.exec(HTML)?.[0] ?? '';
     assert.ok(block.length > 0, 'the block is there');
     assert.doesNotMatch(block, /\sstyle=|\son[a-z]+=/);
-    assert.equal(block.split('role="alert"').length - 1, 1, 'only the message is the alert');
+    assert.equal(block.split('role="alert"').length - 1, 1, 'exactly one alert in the line'); // 0.6.0 (FU-2, C2): was 'only the message is the alert'; now the wrapper is that one alert
+    assert.match(block, /<span class="problem-alert" id="problem-alert" role="alert">/, 'and it is the wrapper');
+  });
+
+  test('(+) FU-2 (C2, 0.6.0): the alert wrapper holds both the word and the message, in that order; #problem is the message span alone and has no role', () => {
+    const wrapper = /<span class="problem-alert" id="problem-alert" role="alert">([\s\S]*?<\/span>)<\/span><\/span>/.exec(HTML)?.[1] ?? ''; // up to the message span's end, then the wrapper's and the line's
+    assert.equal(wrapper, '<span class="problem-label" id="problem-label">Warning:</span> <span class="problem" id="problem"></span>', 'the label span, one space, the message span');
+    assert.ok(wrapper.indexOf('id="problem-label"') < wrapper.indexOf('id="problem"'), 'the word comes first');
+    const tag = (id) => new RegExp(`<[a-z]+\\b[^>]*\\bid="${id}"[^>]*>`).exec(HTML)?.[0] ?? '';
+    assert.doesNotMatch(tag('problem'), /\brole=|\baria-live=/, 'the message span has no role');
+    assert.doesNotMatch(tag('problem-label'), /\brole=|\baria-live=/, 'the word span has no role');
+    assert.match(tag('problem-alert'), /\brole="alert"/);
+  });
+
+  test('(\u2212) FU-2 (C2, 0.6.0): no other element of the line is a live region; the page still has its other alerts (the End alert) and the echo stays polite', () => {
+    const line = /<span class="problem-line"[\s\S]*?<\/span><\/span><\/span>/.exec(HTML)?.[0] ?? '';
+    assert.equal((line.match(/role="alert"|role="status"|aria-live=/g) ?? []).length, 1, 'one live region in the line');
+    assert.match(HTML, /id="end-alert"/);
+    assert.match(HTML, /id="echo" aria-live="polite"/);
+    assert.doesNotMatch(HTML, /id="problem" role=/, 'the old shape is gone');
   });
 
   test('(+) the sprite draws i-error once in the 16 x 16 stroke style like i-info: a circle of r 6.2 with an x, and no fill, stroke or style', () => {
@@ -14244,6 +14263,15 @@ describe('PL (0.5.4): the problem line tells a warning from an error by icon and
     assert.match(rule('.problem-line[data-kind="error"]'), /(^|[\s;])color:\s*var\(--danger\)/);
     assert.match(rule('.problem-line .ic'), /margin-top:\s*3px/);
     assert.doesNotMatch([line, rule('.problem-line[data-kind="error"]'), rule('.problem-line .ic')].join(' '), /#[0-9a-f]{3,8}\b|rgb|hsl/i);
+  });
+
+  test('(+) FU-2 (C2, 0.6.0): the alert wrapper keeps the row as it was: a flex box that aligns to the top with the same 6px gap, so the word and the message stay two columns; tokens only, no colour of its own', () => {
+    const wrap = rule('.problem-alert');
+    assert.match(wrap, /display:\s*flex/);
+    assert.match(wrap, /align-items:\s*flex-start/);
+    assert.match(wrap, /gap:\s*6px/);
+    assert.match(wrap, /min-width:\s*0/);
+    assert.doesNotMatch(wrap, /(^|[\s;])color:|#[0-9a-f]{3,8}\b|rgb|hsl/i, 'the colour is the line\'s, one source');
   });
 
   test('(\u2212) the message element has no colour of its own (one source for the colour), and the page\'s global [hidden] rule is what hides the line', () => {

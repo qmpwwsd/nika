@@ -5284,6 +5284,27 @@ describe('FU-1 (0.6.0, F5): the note-taken sentence follows the step: it survive
       }
     });
 
+    test('(+) FU-2 (nit 1): A\'s note request in flight, B comes, A again as a fresh form, then the refusal: the step on screen is the refused one, so it is marked', async () => {
+      for (const [how, go] of Object.entries({
+        'B on screen when A comes back': (r) => { r.render(null); r.render(size()); r.render(askPv()); }, // A is built over B: build() over a form does not write the gone sig, which stays A's
+        'B gone before A comes back': (r) => { r.render(null); r.render(size()); r.render(null); r.render(askPv()); }, // the gone sig is B's while A shows: only the form on screen can match
+      })) {
+        const [r, g] = heldRig();
+        r.render(askPv());
+        await takeNote(r);
+        go(r);
+        assert.equal(sentBodies(r).length, 1, `${how}: the first request is still the only one`);
+        g.release(refuse);
+        await settle();
+        assert.ok(r.line.msg.endsWith(` ${NOTE_TAKEN_TEXT}`), `${how}: the refusal says the note was taken off`);
+        r.render(opened());
+        assert.deepEqual(lineOf(r), [BOTH, 'dialog'], `${how}: marked, with Claude's field open`);
+        r.render(null);
+        r.render(opened());
+        assert.deepEqual(lineOf(r), [BOTH, 'dialog'], `${how}: and it survives one more lost capture`);
+      }
+    });
+
     test('(\u2212) a refusal that pressed no key does not mark the step, after leave() or after a rebuild', async () => {
       for (const [how, go] of Object.entries({ left: (r) => r.render(null), rebuilt: (r) => { r.render(null); r.render(askPv()); } })) {
         const [r, g] = heldRig();

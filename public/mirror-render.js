@@ -241,6 +241,7 @@ const NAMED = {
   Enter: 'Enter', Escape: 'Escape', Tab: 'Tab', Backspace: 'BSpace', Delete: 'DC', ArrowUp: 'Up', ArrowDown: 'Down',
   ArrowLeft: 'Left', ArrowRight: 'Right', Home: 'Home', End: 'End', PageUp: 'PPage', PageDown: 'NPage',
 };
+const LONE_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'CapsLock']); // the `key` of a keydown for a modifier alone (0.6.0, FU-2, C1); an exact match
 const CTRL = { c: 'C-c', u: 'C-u', k: 'C-k', a: 'C-a', e: 'C-e', l: 'C-l', r: 'C-r', w: 'C-w' };
 
 /** Human label of a key name for the echo line. */
@@ -262,7 +263,8 @@ export function arrowEcho(keys, pane) {
 }
 
 /**
- * Passthrough: a keyboard event -> what to do. { kind: 'leave' } for Ctrl+], 'ignore' for meta shortcuts, IME composition and
+ * Passthrough: a keyboard event -> what to do. { kind: 'leave' } for Ctrl+], 'ignore' for a lone modifier key (Shift, Control, Alt,
+ * AltGraph, Meta, CapsLock; 0.6.0), meta shortcuts, IME composition and
  * the keys the browser or the window keeps (the app and the OS keep them; the event goes on, nothing is sent), 'copy' for
  * Ctrl+Shift+C, 'key' with an allow-list name, 'text' with one printable character, or 'skip' with the reason for keys that are not
  * on the allow-list. Ignored besides Meta (F2): Ctrl+Q and the zoom keys off macOS (the window handler on the document runs them),
@@ -272,6 +274,7 @@ export function arrowEcho(keys, pane) {
  */
 export function keyForEvent(e, { mac = false } = {}) {
   if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === ']') return { kind: 'leave' };
+  if (LONE_MODIFIERS.has(e.key)) return { kind: 'ignore' }; // 0.6.0 (FU-2, C1): a modifier going down by itself is the start of a chord, not a key: nothing is sent and no "Not sent" line shows
   if (e.metaKey || e.isComposing || e.key === 'Process' || e.key === 'Dead' || windowAction(e, { mac, passthrough: true })) return { kind: 'ignore' };
   const label = `${e.ctrlKey ? 'Ctrl-' : ''}${e.altKey ? 'Alt-' : ''}${e.shiftKey && e.key.length > 1 ? 'Shift-' : ''}${e.key}`;
   if (e.altKey) return { kind: 'skip', reason: `Not sent: ${label} is not on the allow-list` };

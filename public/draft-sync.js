@@ -220,7 +220,7 @@ export function noteView(note) {
   }
   if (note.kind === 'long') return { kind: 'long', icon: 'info', label: 'Not mirrored:', text: 'This text goes to Claude when you send it.' };
   if (note.kind === 'over') {
-    return { kind: 'over', icon: 'warn', label: 'Not kept:', text: "Over 16 KB: Send can't send it, and nika can't keep it if you leave. Shorten it or send it in parts." };
+    return { kind: 'over', icon: 'error', label: 'Not kept:', text: "Over 16 KB: Send can't send it, and nika can't keep it if you leave. Shorten it or send it in parts." };
   }
   if (note.kind === 'hold') {
     return { kind: 'hold', icon: 'dialog', label: 'On hold:', text: "A prompt is open or Stop is running. Your text goes into Claude's input when that is over." };
