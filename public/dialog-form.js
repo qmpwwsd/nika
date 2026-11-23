@@ -510,9 +510,9 @@ export function createDialogForm(io) {
       f.parts.clearNote?.();
       keep.delete(keyOf(f.dialog));
       noteTakenSig = f.sig; // 0.5.4 (NT): the guard below must not hide why the note left the form
-    }
+    } else if (out.dropNote && (F === null ? goneSig : F.sig) === f.sig) noteTakenSig = f.sig; // 0.6.0 (FU-1b, S1): the refusal came after this form left (F is null; the gone step is this one) or after the same step was rebuilt (F has this sig): the step is marked all the same; another step, shown or gone, is not
     if (out.ok) {
-      noteTakenSig = null;
+      if (noteTakenSig === f.sig) noteTakenSig = null; // 0.6.0 (FU-1b, N2): a late ok answer from a form that already left ends only its own step's sentence, never a newer step's
       clearProblemOfForm();
       if (out.sent > 0) io.say(`Sent ${out.sent} ${out.sent === 1 ? 'key' : 'keys'} to ${io.paneId}`);
       if (out.announce) io.announce(out.announce); // a move says nothing; the step it lands on is announced when it is drawn

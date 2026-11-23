@@ -765,6 +765,8 @@ describe('the six states (design W1 section 6.2): each has its own chip word and
       const radio = inputs(r.root, 'radio')[0];
       radio.checked = true;
       radio.fire('change');
+      r.io.showProblem('The last answer was not taken.', 'warn', 0, 'dialog-answer'); // 0.6.0 (FU-1b, N1): a line is up before the answer, so the assertion below proves the ok answer took it down
+      assert.deepEqual([r.line.msg, r.line.owner], ['The last answer was not taken.', 'dialog-answer'], 'the line is up before the answer');
       click(r).click();
       await settle();
       assert.equal(chip(r.root).textContent, word);
@@ -5027,7 +5029,7 @@ describe('FU-1 (0.6.0, F1): the form clears only its own lines (owner "dialog" a
   const refusing = (error, extra = {}) => ({ reply: () => ({ status: 409, body: { error, ...extra } }) });
   const lineOf = (r) => [r.line.msg, r.line.owner];
   const OWN = ['dialog', 'dialog-answer'];
-  const OTHERS = [['send-size', 'This is 17 KB. A paste can be at most 16 KB.'], ['keep-failed', 'Kept text could not be saved.'], ['', 'An un-owned line (Send, a rate limit).']]; // [owner, message]
+  const OTHERS = [['send-size', 'This is 17 KB. A paste can be at most 16 KB.'], ['keep-failed', 'Kept text could not be saved.'], ['', 'An un-owned line (Send, a rate limit).']]; // [owner, message]; 'keep-failed' is a synthetic other owner that exists only in this test, it stands for any part that owns a line
   const put = (r, owner, msg = 'A line') => r.io.showProblem(msg, 'warn', 0, owner);
 
   test('(+) an ok answer takes down the dialog\'s line and the answer\'s line', async () => {
@@ -5068,7 +5070,7 @@ describe('FU-1 (0.6.0, F1): the form clears only its own lines (owner "dialog" a
     }
   });
 
-  test('(\u2212) an ok answer leaves another part\'s line alone (Send\'s size line, a kept-text line, an un-owned line)', async () => {
+  test('(\u2212) an ok answer leaves another part\'s line alone (Send\'s size line, a synthetic other owner\'s line, an un-owned line)', async () => {
     for (const [owner, msg] of OTHERS) {
       const r = rig();
       r.render(askPv());
@@ -5204,5 +5206,115 @@ describe('FU-1 (0.6.0, F5): the note-taken sentence follows the step: it survive
     kept.render(null);
     kept.render(opened());
     assert.deepEqual(lineOf(kept), [NOTES_OPEN, 'dialog']);
+  });
+
+  // ---- 0.6.0, FU-1b (S1, N2): the sentence follows the step also when the refusal or the ok answer arrives after its form left ----
+
+  describe('FU-1b (0.6.0, S1 and N2): a refusal that comes after the form left, or after the same step was rebuilt, still marks the step; a late ok answer ends only its own step\'s sentence', () => {
+    const gate = () => { const g = {}; g.promise = new Promise((resolve) => { g.release = resolve; }); return g; }; // a request held until the test lets it go
+    const refuse = { status: 409, body: { error: 'preview-changed', sent: 2 } }; // keys were pressed: the note leaves the form
+    const heldRig = () => { const g = gate(); return [rig({ reply: () => g.promise }), g]; };
+    const size = (over = {}) => askPv({ sig: SIG2, question: 'Which size?', ...over }); // another step
+
+    test('(+) RV-A: the refusal arrives after leave(): the answer\'s line says the note was taken off, and the same step back with the field open shows both sentences', async () => {
+      const [r, g] = heldRig();
+      r.render(askPv());
+      await takeNote(r); // the request is in flight
+      assert.equal(sentBodies(r).length, 1);
+      r.render(null); // leave(): the form is gone while the request runs
+      assert.equal(r.df.shown(), false);
+      g.release(refuse);
+      await settle();
+      assert.equal(r.line.owner, 'dialog-answer');
+      assert.ok(r.line.msg.endsWith(` ${NOTE_TAKEN_TEXT}`), 'the refusal itself says the note was taken off');
+      r.render(opened());
+      assert.deepEqual(lineOf(r), [BOTH, 'dialog']);
+      assert.equal(off(byText(r.root, 'Answer')), true, 'locked');
+      assert.equal(hiddenUp(byText(r.root, 'Try again')), false, 'with Try again');
+      assert.equal(sentBodies(r).length, 1, 'nothing else was sent');
+    });
+
+    test('(+) RV-B: the same step is rebuilt while the request runs, the refusal comes, one more lost capture, and the step is back with the field open: both sentences', async () => {
+      const [r, g] = heldRig();
+      r.render(askPv());
+      await takeNote(r);
+      r.render(null);
+      r.render(askPv()); // the same step again: a new form, the old request still runs
+      assert.equal(off(byText(r.root, 'Answer')), false, 'a fresh form');
+      g.release(refuse);
+      await settle();
+      assert.ok(r.line.msg.endsWith(` ${NOTE_TAKEN_TEXT}`), 'the refusal itself says the note was taken off');
+      r.render(null);
+      r.render(opened());
+      assert.deepEqual(lineOf(r), [BOTH, 'dialog']);
+      assert.equal(sentBodies(r).length, 1, 'nothing else was sent');
+    });
+
+    test('(\u2212) a note typed on the rebuilt form after the refusal keeps the notes-open sentence alone (the sentence is never shown beside a newer note)', async () => {
+      const [r, g] = heldRig();
+      r.render(askPv());
+      await takeNote(r);
+      r.render(null);
+      r.render(askPv());
+      byText(r.root, 'Add a note').click();
+      const t = one(r.root, 'dlg-note-text');
+      t.value = 'newer note';
+      t.fire('input');
+      g.release(refuse);
+      await settle();
+      r.render(opened());
+      assert.deepEqual(lineOf(r), [NOTES_OPEN, 'dialog']);
+    });
+
+    test('(\u2212) another step in between: the refusal of the first step arriving while another step is gone or on screen does not mark the first step', async () => {
+      for (const [how, between] of Object.entries({
+        gone: (r) => { r.render(size()); r.render(null); }, // another step came and went: the gone sig is its own
+        shown: (r) => { r.render(size()); }, // another step is on screen
+      })) {
+        const [r, g] = heldRig();
+        r.render(askPv());
+        await takeNote(r);
+        r.render(null);
+        between(r);
+        g.release(refuse);
+        await settle();
+        r.render(null);
+        r.render(opened());
+        assert.deepEqual(lineOf(r), [NOTES_OPEN, 'dialog'], how);
+      }
+    });
+
+    test('(\u2212) a refusal that pressed no key does not mark the step, after leave() or after a rebuild', async () => {
+      for (const [how, go] of Object.entries({ left: (r) => r.render(null), rebuilt: (r) => { r.render(null); r.render(askPv()); } })) {
+        const [r, g] = heldRig();
+        r.render(askPv());
+        await takeNote(r);
+        go(r);
+        g.release({ status: 409, body: { error: 'note-mode' } }); // no `sent`: nothing was pressed, the note was never taken off
+        await settle();
+        assert.equal(r.line.msg.endsWith(NOTE_TAKEN_TEXT), false, `${how}: the line does not say the note was taken off`);
+        r.render(null);
+        r.render(opened());
+        assert.deepEqual(lineOf(r), [NOTES_OPEN, 'dialog'], how);
+      }
+    });
+
+    test('(\u2212) N2: a late ok answer from a form that already left keeps the newer step\'s sentence', async () => {
+      const g = gate();
+      let n = 0;
+      const r = rig({ reply: () => { n += 1; return n === 1 ? g.promise : { status: 0, body: null }; } }); // the first request is held; the second one cannot reach tmux
+      r.render(askPv());
+      await takeNote(r); // request 1, step A, held
+      r.render(null);
+      r.render(size()); // step B: a new form
+      await takeNote(r); // request 2 (B): status 0, the note leaves the form
+      assert.equal(sentBodies(r).length, 2);
+      assert.ok(r.line.msg.endsWith(` ${NOTE_TAKEN_TEXT}`), 'B\'s refusal says the note was taken off');
+      g.release({ status: 200, body: { done: 'next', sent: 1 } }); // the late ok answer of step A's form
+      await settle();
+      r.render(null);
+      r.render(size({ notes: { text: '', editing: true } }));
+      assert.deepEqual(lineOf(r), [BOTH, 'dialog'], 'B keeps its sentence');
+    });
   });
 });
