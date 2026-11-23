@@ -419,8 +419,9 @@ export function createDialogForm(io) {
   const now = io.now ?? (() => Date.now());
   const after = io.after ?? ((fn, ms) => setTimeout(fn, ms));
   const cancel = io.cancel ?? ((t) => clearTimeout(t));
-  let F = null; // the form on screen: { dialog, sig, phase, word, busy, busyEl, locked, retry, noteTaken, kept, terminal, chipSig, reason, notes, parts }
+  let F = null; // the form on screen: { dialog, sig, phase, word, busy, busyEl, locked, retry, kept, terminal, chipSig, reason, notes, parts }
   let goneSig = null; // the sig of the last form that went (leave, dropStale): its answer's line stays while that same step comes back (0.5.4, final R1-1)
+  let noteTakenSig = null; // 0.6.0 (FU-1, F5): the sig of the step whose refusal took the user's note off the form (NOTE_TAKEN is still true of it); it lives here, not on the form, so a lost capture and the same step coming back keep it. build() ends it for any other step; an ok answer and Try again end it too
   let last = null; // the arguments of the last render: the replay after a request and the timer use them
   let reading = null; // { since, timer, expired, drawn }: a dialog nika cannot read yet, with no form shown before it
   let visible = false;
@@ -487,6 +488,12 @@ export function createDialogForm(io) {
   /** The one call the form makes: a body built by answerBody to the dialog route of this pane. */
   const post = (body) => io.call(io.path('dialog'), { method: 'POST', json: body });
 
+  /** 0.6.0 (FU-1, F1): takes down the form's own two lines (about the dialog, the outcome of an answer), never another part's (Send's size line, a kept-text line, an un-owned one). */
+  const clearProblemOfForm = () => {
+    io.clearProblemFrom('dialog-answer');
+    io.clearProblemFrom('dialog');
+  };
+
   /** One request, one step. The form is off while it runs; the result is a fixed line, never the response's text. */
   async function act(f, body, el) {
     if (!body || !interactive(f, body)) return;
@@ -502,11 +509,11 @@ export function createDialogForm(io) {
     if (out.dropNote && F === f) { // 0.5.4 (QPF, F2): keys were (or may have been) pressed, so Claude's notes field may already hold the note; Answer must never type `n` and it again
       f.parts.clearNote?.();
       keep.delete(keyOf(f.dialog));
-      f.noteTaken = true; // 0.5.4 (NT): the guard below must not hide why the note left the form
+      noteTakenSig = f.sig; // 0.5.4 (NT): the guard below must not hide why the note left the form
     }
     if (out.ok) {
-      f.noteTaken = false;
-      io.clearProblem();
+      noteTakenSig = null;
+      clearProblemOfForm();
       if (out.sent > 0) io.say(`Sent ${out.sent} ${out.sent === 1 ? 'key' : 'keys'} to ${io.paneId}`);
       if (out.announce) io.announce(out.announce); // a move says nothing; the step it lands on is announced when it is drawn
       if (body.tab === undefined && f.dialog.at === 'question') keep.delete(keyOf(f.dialog)); // sent: Claude holds it now, an older draft would only be stale
@@ -533,7 +540,7 @@ export function createDialogForm(io) {
     f.locked = true;
     f.retry = true;
     f.phase = 'failed';
-    io.showProblem(f.noteTaken && (f.parts.noteDraft?.() ?? '') === '' ? `${L409['notes-open'][0]} ${NOTE_TAKEN}` : L409['notes-open'][0], problemKind(409), 0, 'dialog'); // 0.5.4 (NT): a refusal took the note off this form, and Claude's field now shows open: the user still learns why the note left; with a newer note on the form (S1) it would be false
+    io.showProblem(noteTakenSig === f.sig && (f.parts.noteDraft?.() ?? '') === '' ? `${L409['notes-open'][0]} ${NOTE_TAKEN}` : L409['notes-open'][0], problemKind(409), 0, 'dialog'); // 0.5.4 (NT): a refusal took the note off this form, and Claude's field now shows open: the user still learns why the note left; with a newer note on the form (S1) it would be false
     paint();
   }
 
@@ -541,11 +548,11 @@ export function createDialogForm(io) {
   function retry(f) {
     if (F !== f || f.busy || !f.retry) return;
     f.retry = false;
-    f.noteTaken = false;
+    noteTakenSig = null;
     f.locked = false;
     f.phase = 'live';
     f.word = '';
-    io.clearProblem();
+    clearProblemOfForm();
     paint();
     f.parts.heading?.focus({ preventScroll: true });
     io.announce('The form takes answers again.');
@@ -995,14 +1002,15 @@ export function createDialogForm(io) {
       keep.clear();
       keepFor = headers;
     }
-    const f = { dialog, sig: dialog.sig, phase: 'live', word: '', busy: false, busyEl: null, moving: false, locked: false, retry: false, noteTaken: false, kept: false, terminal: dialog.bypass, chipSig: '' };
+    const f = { dialog, sig: dialog.sig, phase: 'live', word: '', busy: false, busyEl: null, moving: false, locked: false, retry: false, kept: false, terminal: dialog.bypass, chipSig: '' };
     f.chipHolder = h('span', { class: 'dlg-chiph' });
     f.reason = h('span', { class: 'ask-reason' });
     f.terminalNote = h('p', { class: 'dlg-note', hidden: true }, icon('info'), h('span', { text: TERMINAL_NOTE }));
     f.keptNote = h('p', { class: 'dlg-note', hidden: true }, icon('info'), h('span', { text: KEPT_NOTE }));
     f.retryNote = h('p', { class: 'dlg-note dlg-retry', hidden: true }, icon('info'), h('span', { text: RETRY_NOTE }), h('button', { type: 'button', class: 'btn', onclick: () => retry(f) }, 'Try again'));
     f.parts = dialog.kind === 'plan' ? planBody(f) : dialog.at === 'review' ? reviewBody(f) : dialog.preview !== undefined ? previewBody(f) : questionBody(f);
-    if (prev !== null && prev.sig !== dialog.sig) io.clearProblem(); // another step: a line the step before left is stale
+    if (noteTakenSig !== dialog.sig) noteTakenSig = null; // 0.6.0 (FU-1, F5): only the step whose note was taken keeps the sentence (the same step back after a lost capture); every other step ends it
+    if (prev !== null && prev.sig !== dialog.sig) clearProblemOfForm(); // another step: a line the step before left is stale
     else if (prev === null) { // 0.5.4 (final, S3): a dialog after none: a line of the dialog before (about it, or the outcome of its last answer) is stale
       io.clearProblemFrom('dialog');
       if (dialog.sig !== goneSig) io.clearProblemFrom('dialog-answer'); // the same step back after a lost capture keeps why its answer failed

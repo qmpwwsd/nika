@@ -775,7 +775,7 @@ describe('the six states (design W1 section 6.2): each has its own chip word and
       await settle();
       assert.equal(r.log.calls.length, 1, 'locked');
       assert.deepEqual(r.log.say, ['Sent 2 keys to %12']);
-      assert.equal(r.log.problem.at(-1)[0], '', 'the problem line is cleared');
+      assert.deepEqual([r.line.msg, r.line.owner], ['', ''], 'the problem line is cleared'); // 0.6.0 (FU-1): the form clears its own lines with clearProblemFrom, which the rig does not log; the line itself is what shows
       return r;
     };
     await run('submitted', 'Submitted', (r) => byText(r.root, 'Send answer'));
@@ -2979,7 +2979,7 @@ describe('Try again: the form takes answers again after nika refused one because
       assert.equal(off(stepBtn(r.root, 1)), false, 'a step is live (the current one never is)');
       assert.equal(off(stepBtn(r.root, 0)), true);
       assert.equal(off(byText(r.root, 'Decline')), false);
-      assert.equal(r.log.problem.at(-1)[0], '', 'the problem line is cleared');
+      assert.deepEqual([r.line.msg, r.line.owner], ['', ''], 'the problem line is cleared'); // 0.6.0 (FU-1): the form clears its own lines with clearProblemFrom, which the rig does not log; the line itself is what shows
       assert.equal(chip(r.root).textContent, 'Needs you');
       assert.equal(r.root.attrs['data-s'], 'ready');
       assert.equal(focus.el, heading(r.root));
@@ -3758,7 +3758,7 @@ describe('a question step with a preview: notes, Chat about this and the stale l
     r.render(askPv());
     assert.equal(r.log.problem.at(-1)[0], "Claude didn't take the key. Check the session, then try again.", 'the same step keeps it');
     r.render(askPv({ sig: SIG2, question: 'Which size?' }));
-    assert.deepEqual(r.log.problem.at(-1), [''], 'the next step clears it');
+    assert.deepEqual([r.line.msg, r.line.owner], ['', ''], 'the next step clears it'); // 0.6.0 (FU-1): the line itself (clearProblemFrom is not logged by the rig)
   });
 });
 
@@ -4823,7 +4823,7 @@ describe('the problem line has an owner (0.5.4, final S3): a line about the open
     }
   });
 
-  test('(−) a step change inside one dialog still clears through clearProblem (unchanged), and the same step keeps its answer line', async () => {
+  test('(\u2212) a step change inside one dialog still clears the answer\'s line (0.6.0, FU-1: through the owner-scoped clear, not clearProblem), and the same step keeps its answer line', async () => {
     const r = rig(failing('not-taken'));
     r.render(askPv());
     byText(r.root, 'Answer').click();
@@ -5018,5 +5018,191 @@ describe('Try again in view (0.5.4, final S4): the retry note scrolls into view 
     const r = rig();
     assert.doesNotThrow(() => r.render(askPv({ notes: { text: '', editing: true } })));
     assert.equal(hiddenUp(byText(r.root, 'Try again')), false);
+  });
+});
+
+// ---- 0.6.0, FU-1 (follow-ups F1 and F5): the form takes down only its own lines; NOTE_TAKEN follows the step ------------------------------------
+
+describe('FU-1 (0.6.0, F1): the form clears only its own lines (owner "dialog" and "dialog-answer"), never another part\'s, at an ok answer, at Try again and at a step change', () => {
+  const refusing = (error, extra = {}) => ({ reply: () => ({ status: 409, body: { error, ...extra } }) });
+  const lineOf = (r) => [r.line.msg, r.line.owner];
+  const OWN = ['dialog', 'dialog-answer'];
+  const OTHERS = [['send-size', 'This is 17 KB. A paste can be at most 16 KB.'], ['keep-failed', 'Kept text could not be saved.'], ['', 'An un-owned line (Send, a rate limit).']]; // [owner, message]
+  const put = (r, owner, msg = 'A line') => r.io.showProblem(msg, 'warn', 0, owner);
+
+  test('(+) an ok answer takes down the dialog\'s line and the answer\'s line', async () => {
+    for (const owner of OWN) {
+      const r = rig();
+      r.render(askPv());
+      put(r, owner);
+      byText(r.root, 'Answer').click();
+      await settle();
+      assert.equal(sentBodies(r).length, 1, `${owner}: the answer went out`);
+      assert.deepEqual(lineOf(r), ['', ''], owner);
+    }
+  });
+
+  test('(+) Try again takes down the dialog\'s line (the notes field was open) and the answer\'s line (a refusal that locks)', async () => {
+    const a = rig(refusing('notes-open'));
+    a.render(askPv());
+    byText(a.root, 'Answer').click();
+    await settle();
+    assert.deepEqual(lineOf(a), ["Claude's notes field is open in the terminal. Close it there, then press Try again.", 'dialog-answer']);
+    byText(a.root, 'Try again').click();
+    assert.deepEqual(lineOf(a), ['', ''], 'the answer\'s line goes');
+    const d = rig();
+    d.render(askPv({ notes: { text: '', editing: true } }));
+    assert.equal(d.line.owner, 'dialog', 'the guard\'s own line');
+    d.render(askPv()); // the user closed the field in the terminal
+    byText(d.root, 'Try again').click();
+    assert.deepEqual(lineOf(d), ['', ''], 'the dialog\'s line goes');
+  });
+
+  test('(+) a step with another sig takes down the dialog\'s line and the answer\'s line', () => {
+    for (const owner of OWN) {
+      const r = rig();
+      r.render(askPv());
+      put(r, owner);
+      r.render(askPv({ sig: SIG2, question: 'Which size?' }));
+      assert.deepEqual(lineOf(r), ['', ''], owner);
+    }
+  });
+
+  test('(\u2212) an ok answer leaves another part\'s line alone (Send\'s size line, a kept-text line, an un-owned line)', async () => {
+    for (const [owner, msg] of OTHERS) {
+      const r = rig();
+      r.render(askPv());
+      put(r, owner, msg);
+      byText(r.root, 'Answer').click();
+      await settle();
+      assert.equal(sentBodies(r).length, 1, `${owner || 'un-owned'}: the answer went out`);
+      assert.deepEqual(lineOf(r), [msg, owner], `${owner || 'un-owned'}`);
+    }
+  });
+
+  test('(\u2212) Try again leaves another part\'s line alone', async () => {
+    for (const [owner, msg] of OTHERS) {
+      const r = rig(refusing('notes-open'));
+      r.render(askPv());
+      byText(r.root, 'Answer').click();
+      await settle();
+      put(r, owner, msg); // another part's line replaces the answer's line while the form waits for Try again
+      byText(r.root, 'Try again').click();
+      assert.equal(off(byText(r.root, 'Answer')), false, 'the form is live again');
+      assert.deepEqual(lineOf(r), [msg, owner], `${owner || 'un-owned'}`);
+    }
+  });
+
+  test('(\u2212) a step with another sig leaves another part\'s line alone', () => {
+    for (const [owner, msg] of OTHERS) {
+      const r = rig();
+      r.render(askPv());
+      put(r, owner, msg);
+      r.render(askPv({ sig: SIG2, question: 'Which size?' }));
+      assert.equal(r.root.attrs['aria-labelledby'], 'dlg-q');
+      assert.deepEqual(lineOf(r), [msg, owner], `${owner || 'un-owned'}`);
+    }
+  });
+});
+
+describe('FU-1 (0.6.0, F5): the note-taken sentence follows the step: it survives a lost capture and the same step coming back, and ends with the step, Try again or an ok answer', () => {
+  const NOTES_OPEN = "Claude's notes field is open in the terminal. Close it there, then press Try again.";
+  const BOTH = `${NOTES_OPEN} ${NOTE_TAKEN_TEXT}`;
+  const lineOf = (r) => [r.line.msg, r.line.owner];
+  const opened = (over = {}) => askPv({ notes: { text: '', editing: true }, ...over }); // Claude's notes field shows open
+  const takeNote = async (r) => { // types a note and presses Answer; the refusal pressed keys, so the note leaves the form
+    byText(r.root, 'Add a note').click();
+    const t = one(r.root, 'dlg-note-text');
+    t.value = 'round it';
+    t.fire('input');
+    byText(r.root, 'Answer').click();
+    await settle();
+  };
+  const preview = (sent = 2) => ({ reply: () => ({ status: 409, body: { error: 'preview-changed', sent } }) });
+  const lost = {
+    leave: (r) => r.render(null), // a capture that shows no dialog
+    tmux: (r) => r.df.render({ pane: 'tmux' }), // one failed capture
+    leaveTwice: (r) => { r.render(null); r.render(null); }, // the page leaves twice before the step comes back
+  };
+
+  test('(+) the live shape: preview-changed after 2 keys takes the note off, the capture is lost, the same step comes back with Claude\'s notes field open: both sentences, locked with Try again', async () => {
+    for (const [how, go] of Object.entries(lost)) {
+      const r = rig(preview());
+      r.render(askPv());
+      await takeNote(r);
+      assert.ok(r.line.msg.endsWith(` ${NOTE_TAKEN_TEXT}`), `${how}: the refusal says the note was taken off`);
+      go(r);
+      assert.equal(r.df.shown(), false, `${how}: the form went`);
+      r.render(opened());
+      assert.deepEqual(lineOf(r), [BOTH, 'dialog'], how);
+      assert.equal(off(byText(r.root, 'Answer')), true, `${how}: locked`);
+      assert.equal(hiddenUp(byText(r.root, 'Try again')), false, `${how}: with Try again`);
+      assert.equal(sentBodies(r).length, 1, `${how}: nothing else was sent`);
+    }
+  });
+
+  test('(+) the dropStale path: already-answered after 1 key takes the note off, an unreadable capture drops the form, the same step comes back with the field open: both sentences', async () => {
+    const r = rig({ reply: () => ({ status: 409, body: { error: 'already-answered', sent: 1 } }) });
+    r.render(askPv());
+    await takeNote(r);
+    r.render(unreadable());
+    assert.equal(one(r.root, 'dlg-fs'), null, 'dropStale took the form away');
+    r.render(opened());
+    assert.deepEqual(lineOf(r), [BOTH, 'dialog']);
+  });
+
+  test('(\u2212) Try again ends the sentence: after it the same step, lost and back with the field open, shows the notes-open sentence alone', async () => {
+    const r = rig(preview());
+    r.render(askPv());
+    await takeNote(r);
+    r.render(opened());
+    assert.deepEqual(lineOf(r), [BOTH, 'dialog']);
+    r.render(askPv()); // the user closed the field in the terminal
+    byText(r.root, 'Try again').click();
+    assert.equal(off(byText(r.root, 'Answer')), false, 'live again');
+    r.render(null);
+    r.render(opened());
+    assert.deepEqual(lineOf(r), [NOTES_OPEN, 'dialog']);
+  });
+
+  test('(\u2212) an ok answer ends the sentence', async () => {
+    const r = rig(preview());
+    r.render(askPv());
+    await takeNote(r);
+    r.state.reply = () => ({ status: 200, body: { done: 'next', sent: 1 } });
+    byText(r.root, 'Answer').click(); // the answer without the note
+    await settle();
+    assert.equal(sentBodies(r).length, 2);
+    assert.deepEqual(lineOf(r), ['', ''], 'the ok answer cleared the line');
+    r.render(null);
+    r.render(opened());
+    assert.deepEqual(lineOf(r), [NOTES_OPEN, 'dialog']);
+  });
+
+  test('(\u2212) another step ends the sentence: a step with another sig, and the first step coming back after it, show the notes-open sentence alone', async () => {
+    const r = rig(preview());
+    r.render(askPv());
+    await takeNote(r);
+    r.render(null);
+    r.render(askPv({ sig: SIG2, question: 'Which size?', notes: { text: '', editing: true } }));
+    assert.deepEqual(lineOf(r), [NOTES_OPEN, 'dialog'], 'the other step');
+    r.render(null);
+    r.render(opened());
+    assert.deepEqual(lineOf(r), [NOTES_OPEN, 'dialog'], 'the first step back');
+  });
+
+  test('(\u2212) no note was taken: the same step back with the field open shows the notes-open sentence alone (a plain leave; a refusal that pressed no key)', async () => {
+    const plain = rig();
+    plain.render(askPv());
+    plain.render(null);
+    plain.render(opened());
+    assert.deepEqual(lineOf(plain), [NOTES_OPEN, 'dialog']);
+    const kept = rig({ reply: () => ({ status: 409, body: { error: 'note-mode' } }) });
+    kept.render(askPv());
+    await takeNote(kept);
+    assert.equal(one(kept.root, 'dlg-note-text').value, 'round it', 'no key pressed: the note stayed');
+    kept.render(null);
+    kept.render(opened());
+    assert.deepEqual(lineOf(kept), [NOTES_OPEN, 'dialog']);
   });
 });
