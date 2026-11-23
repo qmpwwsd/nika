@@ -87,6 +87,11 @@ Session window (desktop app):
   then cannot read the screen well enough to press Enter, the line says "Your text is in Claude's input. Press Enter in the
   terminal to send it." instead of "Use the terminal. Your text is kept."
 
+Desktop app build:
+
+- **`url` 2.5.9.** The desktop app's lockfile takes `url` 2.5.9 (and `form_urlencoded` 1.2.3), which fixes a stack overflow in
+  `Url::origin()` on nested `blob:` URLs (RUSTSEC-2026-0592). No new crate.
+
 Known limits:
 
 - **A question note.** If Claude's focus moves while you type a note, the form follows it; check the selected option before you
