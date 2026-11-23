@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MODE_META, MODE_TARGETS, modeKey, modeEl, settingModeEl, bypassTag, switcherState, modeNote, switchFailure } from '../public/modes.js';
+import { MODE_META, MODE_TARGETS, modeKey, modeEl, settingModeEl, bypassTag, switcherState, modeNote, switchFailure, parseCompacted } from '../public/modes.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf8');
@@ -587,9 +587,64 @@ describe('serving', () => {
     assert.match(read('src', 'server.js'), /\['\/modes\.js', \['modes\.js', 'text\/javascript; charset=utf-8'\]\]/);
   });
 
-  test('(−) modes.js imports only dom.js, and does no network, storage or timer work', () => {
+  test('(\u2212) modes.js imports only dom.js and ctx.js (0.5.4 AC: the note rule is shared with the meter), and does no network, storage or timer work', () => {
     const src = read('public', 'modes.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
-    assert.deepEqual([...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]), ['./dom.js']);
+    assert.deepEqual([...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]), ['./dom.js', './ctx.js']);
     assert.doesNotMatch(src, /\bfetch\s*\(|XMLHttpRequest|localStorage|sessionStorage|setTimeout|setInterval|document\.cookie/);
+  });
+});
+
+// ---- 0.5.4 AC, test 34: the notes of a typed /compact in the modes answer ---------------------------------------------------------------------
+
+describe('parseCompacted (0.5.4 AC, test 34)', () => {
+  const NOTE = (state = 'typed') => ({ state, at: 1760000000000, tokens: 331000 });
+
+  test('(+) a valid map is kept, one copy of { state, at, tokens } per pane, in that key order', () => {
+    const body = { modes: {}, compacted: { '%3': NOTE('typed'), '%14': NOTE('compacted'), '%15': { state: 'stopped', at: 1, tokens: 0 } } };
+    const map = parseCompacted(body);
+    assert.deepEqual(map, { '%3': NOTE('typed'), '%14': NOTE('compacted'), '%15': { state: 'stopped', at: 1, tokens: 0 } });
+    assert.deepEqual(Object.keys(map['%3']), ['state', 'at', 'tokens']);
+    assert.notEqual(map['%3'], body.compacted['%3'], 'a copy');
+    assert.equal(Object.getPrototypeOf(map), Object.prototype);
+  });
+
+  test('(+) no notes is an empty map: an empty object, or an older server that sends no compacted field', () => {
+    assert.deepEqual(parseCompacted({ modes: {}, compacted: {} }), {});
+    assert.deepEqual(parseCompacted({ modes: {} }), {});
+  });
+
+  test('(\u2212) a key that is not a pane id is dropped: no percent sign, no digits, junk, too long, the prototype name', () => {
+    const body = JSON.parse('{"compacted":{"__proto__":{"state":"typed","at":1,"tokens":1},"3":{"state":"typed","at":1,"tokens":1},"%":{"state":"typed","at":1,"tokens":1},"%x":{"state":"typed","at":1,"tokens":1},"%1234567":{"state":"typed","at":1,"tokens":1},"% 3":{"state":"typed","at":1,"tokens":1},"%7":{"state":"typed","at":1,"tokens":1}}}');
+    const map = parseCompacted(body);
+    assert.deepEqual(Object.keys(map), ['%7']);
+    assert.equal(Object.getPrototypeOf(map), Object.prototype, 'no prototype pollution through a hostile key');
+  });
+
+  test('(\u2212) an entry with an extra field, a missing one, a string time, an unknown state or a bad size is dropped whole; the good ones stay', () => {
+    const bad = [
+      { ...NOTE(), session: 'abc' }, { ...NOTE(), text: 'x' }, { state: 'typed', at: 1 }, { at: 1, tokens: 1 }, { state: 'typed', tokens: 1 },
+      { ...NOTE(), at: '1760000000000' }, { ...NOTE(), at: 1.5 }, { ...NOTE(), at: -1 }, { ...NOTE(), at: 9e15 },
+      { ...NOTE(), state: 'done' }, { ...NOTE(), state: 'TYPED' }, { ...NOTE(), state: null },
+      { ...NOTE(), tokens: -1 }, { ...NOTE(), tokens: 10000001 }, { ...NOTE(), tokens: 2.5 }, { ...NOTE(), tokens: '5' },
+      null, 'typed', 7, [NOTE()], [],
+    ];
+    const compacted = { '%1': NOTE('compacted') };
+    bad.forEach((b, i) => { compacted[`%${100 + i}`] = b; });
+    const map = parseCompacted({ compacted });
+    assert.deepEqual(Object.keys(map), ['%1']);
+  });
+
+  test('(\u2212) only the compacted field is read: note-shaped values under modes (or any other field) are not notes', () => {
+    assert.deepEqual(parseCompacted({ modes: { '%3': NOTE() } }), {});
+    assert.deepEqual(parseCompacted({ modes: { '%3': NOTE() }, other: { '%3': NOTE() } }), {});
+    assert.deepEqual(parseCompacted({ modes: { '%3': NOTE() }, compacted: null }), {});
+    assert.deepEqual(parseCompacted({ modes: { '%3': NOTE() }, compacted: { '%4': NOTE('stopped') } }), { '%4': NOTE('stopped') });
+  });
+
+  test('(\u2212) a body that is not an object, or a compacted that is not a plain object, gives an empty map and never throws', () => {
+    for (const bad of [null, undefined, 'x', 42, [], { compacted: null }, { compacted: [] }, { compacted: 'typed' }, { compacted: 7 }, { compacted: [NOTE()] }]) {
+      assert.doesNotThrow(() => parseCompacted(bad), JSON.stringify(bad));
+      assert.deepEqual(parseCompacted(bad), {}, JSON.stringify(bad));
+    }
   });
 });

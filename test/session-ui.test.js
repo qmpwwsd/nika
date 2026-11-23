@@ -13,12 +13,14 @@ import { wantsHelp, wantsBack, wantsHistToggle, isTextEntry, backHint, helpHint,
 import { quickState as quickStateReal, sendGate as sendGateReal, keysRefusal as keysRefusalReal, stopOutcome as stopOutcomeReal, commandSaid as commandSaidReal, commandFailure as commandFailureReal, problemKind as problemKindReal, followSession as followSessionReal, planShell as planShellReal, cleanPrompt as cleanPromptReal, hasAnswerButtons as hasAnswerButtonsReal, attnNote as attnNoteReal, answerOutcome as answerOutcomeReal, promptOff as promptOffReal, composerKey as composerKeyReal } from '../public/quick-actions.js';
 import { planSend as planSendReal, arrowEcho as arrowEchoReal, keyForEvent as keyForEventReal, planPaste as planPasteReal, toRenderModel as toRenderModelReal, cutCursor as cutCursorReal } from '../public/mirror-render.js';
 import { draftSendPlan as draftSendPlanReal, cleanDraft as cleanDraftReal, cutAt as cutAtReal, caretAfter as caretAfterReal, noteView as noteViewReal, suggestionFor as suggestionForReal, submitResult as submitResultReal, submitMessage as submitMessageReal, STILL_SENDING as STILL_SENDING_REAL, STILL_SENDING_MS as STILL_SENDING_MS_REAL } from '../public/draft-sync.js';
+import { createDraftSync as createDraftSyncReal, RESTORING_TEXT as RESTORING_TEXT_REAL } from '../public/draft-sync.js';
+import { KEEP_FAILED as KEEP_FAILED_REAL } from '../public/draft-sync.js';
 import { switchFailure as switchFailureReal, MODE_TARGETS, MODE_META, modeKey as modeKeyReal } from '../public/modes.js';
 import {
   createFitPlanner as createFitPlannerReal, panelSize as panelSizeReal, scaleFor as scaleForReal, chipView as chipViewReal, fitPanelView as fitPanelViewReal, stillOffSay as stillOffSayReal,
   createRedrawHold as createRedrawHoldReal, remeasure as remeasureReal, askSize as askSizeReal, roomStep as roomStepReal, refitFrom as refitFromReal, HOLD_MS as HOLD_MS_REAL, REFIT_MS as REFIT_MS_REAL, FOCUS_SETTLE_MS as FOCUS_SETTLE_REAL, BLUR_SETTLE_MS as BLUR_SETTLE_REAL,
   hiddenRows as hiddenRowsReal, fillSize as fillSizeReal, drawnScale as drawnScaleReal, // F11
-  GROW_IDLE as GROW_IDLE_REAL, growStep as growStepReal, growRebase as growRebaseReal, growAsk as growAskReal, scaleRows as scaleRowsReal, cutQuestion as cutQuestionReal, // F16
+  GROW_IDLE as GROW_IDLE_REAL, growStep as growStepReal, growRebase as growRebaseReal, growAsk as growAskReal, scaleRows as scaleRowsReal, cutQuestion as cutQuestionReal, growWanted as growWantedReal, // F16; growWanted: 0.5.4 QP + O2
   panelFrame as panelFrameReal, // 0.5.2 R2
 } from '../public/fit-ui.js';
 import { createScrollPlanner as createScrollPlannerReal, routeFor as routeForReal, wheelRows as wheelRowsReal, scrollGate as scrollGateReal, viewRowsOf as viewRowsOfReal, pageRowsOf as pageRowsOfReal, refusalLine as refusalLineReal, noteView as scrollNoteViewReal, scrolledSay as scrolledSayReal, NOTE_MS as NOTE_MS_REAL } from '../public/scroll.js';
@@ -32,7 +34,8 @@ import { installDom, El, withClass, focus as focusState } from './fake-dom.js';
 import { panelOf as panelOfReal, cropOf as cropOfReal, layoutOf as layoutOfReal, INPUT_TEXT as INPUT_TEXT_REAL, CROP_TEXT as CROP_TEXT_REAL } from '../public/crop.js';
 import { subagentGroups as subagentGroupsReal } from '../public/dash-model.js';
 import { timeEl as timeElReal } from '../public/dom.js';
-import { dataUrlOf as dataUrlOfReal, sizeLabel as sizeLabelReal, MAX_THUMBS as MAX_THUMBS_REAL, IMAGE_MIME as IMAGE_MIME_REAL } from '../public/image-viewer.js';
+import { acView, cleanNote } from '../public/ctx.js';
+import { dataUrlOf as dataUrlOfReal, sizeLabel as sizeLabelReal, MAX_THUMBS as MAX_THUMBS_REAL, MAX_THUMB_BYTES as MAX_THUMB_BYTES_REAL, IMAGE_MIME as IMAGE_MIME_REAL } from '../public/image-viewer.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -74,7 +77,7 @@ const findSinks = (src) => SINKS.filter(([, re]) => re.test(code(src))).map(([na
 
 // ---- the Send chain (W13): sendComposer and the functions it ends in, run for real against a fake keys route and a fake submit route ----
 const SEND_FUNCS = [
-  'async function sendComposer()', 'async function pushThenSubmit(route)', 'async function typeThenSubmit(payloads)', 'async function submitEnter(base)',
+  'async function sendComposer()', 'async function pushThenSubmit(route)', 'async function typeThenSubmit(payloads)', 'async function submitEnter(base, pasted = false)',
   'async function deliverAll(payloads)', 'function clearBox(value)',
 ];
 const TAKEN = { status: 200, body: { taken: true, draft: null } };
@@ -181,7 +184,7 @@ describe('session.html under the strict CSP', () => {
 describe('contracts with the other UI modules', () => {
   test('(+) session.js imports only names the shared modules export, from sibling files', () => {
     const imports = [...JS['session.js'].matchAll(/import \{([^}]+)\} from '([^']+)'/g)];
-    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './glide.js', './crop.js', './attach.js', './image-viewer.js', './dialog-form.js', './survey-panel.js']);
+    assert.deepEqual(imports.map((m) => m[2]), ['./dom.js', './ctx.js', './api.js', './dash-model.js', './mirror-render.js', './draft-sync.js', './modes.js', './quick-actions.js', './models-ui.js', './end-dialog.js', './palette.js', './shortcuts.js', './fit-ui.js', './scroll.js', './glide.js', './crop.js', './attach.js', './image-viewer.js', './dialog-form.js', './survey-panel.js']);
     for (const [, names, from] of imports) {
       const exported = read(from.slice(2));
       for (const n of names.split(',').map((x) => x.trim())) assert.match(exported, new RegExp(`export (async )?(function|const|let) ${n}\\b`), `${from} exports ${n}`);
@@ -1352,7 +1355,7 @@ describe('Task 14b: wiring of the page rules', () => {
       sending: false, composer: () => ta, DF: null, SV: null, S: { on: shell }, W: { promptOpen, prompt, pane, mode: 'default', confirmed: true }, A: { kind }, sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => el(), say: (m) => log.said.push(m),
       paneId: '%12', setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
-      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, draftSendPlan: draftSendPlanReal, M: { cols: 120, gone: false }, ATT: { pending: () => false },
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {}, restoring: () => false }, draftSendPlan: draftSendPlanReal, M: { cols: 120, gone: false }, ATT: { pending: () => false },
       ...sendIo(log),
     };
     return { log, ta, ctx, send: mk(SEND_FUNCS, ctx).sendComposer };
@@ -1519,7 +1522,7 @@ describe('Task 14b: wiring of the page rules', () => {
       showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem: () => { log.cleared += 1; }, setGone: () => { log.gone += 1; },
       sleep: async (ms) => { log.sleeps.push(ms); }, RATE_MSG: 'Too fast.', submitResult: submitResultReal, DS: { submitted: (r) => log.submitted.push(jsonClone(r)) },
     };
-    return { log, submitEnter: mk(['async function postRetry(tail, payload)', 'async function submitEnter(base)'], ctx).submitEnter };
+    return { log, submitEnter: mk(['async function postRetry(tail, payload)', 'async function submitEnter(base, pasted = false)'], ctx).submitEnter };
   };
 
   test('(+) W13: the Enter goes to the submit route of this pane, with `base` only when there is one, and the answer is told to the sync', async () => {
@@ -2987,6 +2990,25 @@ describe('0.5: the cut and the draft note (markup and stylesheet)', () => {
     assert.match(css, /\.dnote b\s*\{[^}]*font-weight:\s*(600|700)/);
   });
 
+  test('(+) SF-1: the over note has its own rule: --danger on --danger-soft, a colour no other note kind uses, and its icon i-warn is drawn by the page', () => {
+    const KINDS = ['paused', 'long', 'hold', 'cursor', 'queued', 'suggest'];
+    assert.match(css, /\.dnote\[data-k="over"\]\s*\{[^}]*color:\s*var\(--danger\)[^}]*background:\s*var\(--danger-soft\)/);
+    for (const k of KINDS) {
+      const rule = new RegExp(`\\.dnote\\[data-k="${k}"\\]\\s*\\{([^}]*)\\}`).exec(css)[1];
+      assert.doesNotMatch(rule, /--danger/, `${k} does not use the over note's colours`);
+    }
+    assert.match(HTML, /<symbol id="i-warn"/);
+    assert.equal(noteViewReal({ kind: 'over' }).icon, 'warn');
+    for (const k of KINDS) assert.notEqual(noteViewReal({ kind: k, reason: 'tall' }).icon, 'warn', `${k} has another icon`);
+    assert.doesNotMatch(css, /\.dnote\[data-k="over"\][^{]*\{[^}]*(?:#|rgb\()/, 'tokens only, no literal colour');
+  });
+
+  test('(+) SF-5 (N-b): the comment above the note rules names every kind with its colour, the over note included', () => {
+    const note = /\/\*\s*the draft sync note[^*]*\*\//.exec(CSS)?.[0] ?? '';
+    assert.ok(note.length > 0, 'the comment is there');
+    for (const word of ['paused (amber)', 'not mirrored (ink)', 'on hold (attention pink)', 'cursor (blue)', 'queued (green)', 'suggestion (accent)', 'over 16 KB (danger)']) assert.ok(note.includes(word), word);
+  });
+
   test('(−) no inline style anywhere for the new parts, and the new files stay out of the sinks', () => {
     assert.doesNotMatch(HTML, /\sstyle\s*=/i);
     assert.deepEqual(findSinks(JS['draft-sync.js']), []);
@@ -3235,6 +3257,64 @@ describe('0.5: the note, the pull and the edits (wiring)', () => {
     assert.deepEqual(r.el.kids, []);
   });
 
+  // -- 0.5.4 (LT, round 2, SF-5): the sync shows the `over` note while a permission prompt, a question dialog or a survey is on screen, and while the screen is
+  // unreadable. That only helps if the page keeps the notes row (#notes) and the draft note (#draft-note) visible then. These four tests are the proof.
+  test('(+) SF-5: #notes is a direct child of the composer, next to the permission prompt, the question dialog and the survey panel, never inside one', () => {
+    const at = HTML.indexOf('id="composer-box"');
+    assert.ok(at > 0);
+    const open = HTML.lastIndexOf('<div', at);
+    for (const id of ['prompt-btns', 'dialog-form', 'survey-panel', 'notes']) {
+      const to = HTML.indexOf(`id="${id}"`, at);
+      assert.ok(to > at, id);
+      const slice = HTML.slice(open, HTML.lastIndexOf('<div', to)); // from the composer's open tag up to the div that carries the id
+      const depth = (slice.match(/<div\b/g) ?? []).length - (slice.match(/<\/div>/g) ?? []).length;
+      assert.equal(depth, 1, `${id}: only the composer is open around it`);
+    }
+    assert.doesNotMatch(HTML, /id="notes"[^>]*\bhidden\b/);
+    assert.match(HTML, /<span class="dnote" id="draft-note" role="status" hidden><\/span>/, 'the draft note is hidden only until the sync gives it a note');
+  });
+
+  test('(−) SF-5: no stylesheet rule hides the notes row or the draft note, and none ties them to a prompt, a dialog, a survey or the layout of a panel', () => {
+    const css = strip(CSS);
+    let seen = 0;
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const sel = m[1].trim();
+      if (!/\.notes\b|#notes\b|\.dnote\b|#draft-note\b/.test(sel)) continue;
+      seen += 1;
+      assert.doesNotMatch(sel, /\.ask\b|#prompt-btns|#dialog-form|#survey-panel|\.dlg\b|\.svy\b|\.attn-note|#attn-note|data-lay|:has\(|:not\(\[hidden\]\) ~/, `${sel}: no panel in the selector`);
+      if (/\.notes\.quiet/.test(sel)) continue; // the one collapse, driven by syncNotes from the four parts (W11)
+      assert.doesNotMatch(m[2], /display:\s*none|visibility:\s*hidden|opacity:\s*0|clip|(?:max-)?height:\s*0/, `${sel}: does not hide`);
+    }
+    assert.ok(seen >= 8, 'the notes row and the draft note rules were found');
+    assert.doesNotMatch(css, /\.ask[^{}]*~[^{}]*(?:\.notes|#notes|\.dnote|#draft-note)|\.composer\s*>\s*\.ask[^{}]*\+/, 'no sibling rule from a panel to the notes row');
+  });
+
+  test('(+) SF-5: only syncNotes, watchNotes and renderDraftNote touch the notes row and the draft note, and none of them reads a panel', () => {
+    const where = (id) => [...SRC.matchAll(new RegExp(`\\$\\('${id}'\\)`, 'g'))].map((m) => /^\s*function (\w+)/.exec(SRC.slice(SRC.lastIndexOf('\nfunction ', m.index)))?.[1] ?? '?');
+    assert.deepEqual([...new Set(where('notes'))].sort(), ['syncNotes', 'watchNotes']);
+    assert.deepEqual([...new Set(where('draft-note'))].sort(), ['renderDraftNote', 'syncNotes']);
+    assert.doesNotMatch(SRC, /getElementById\('(?:notes|draft-note)'\)|querySelector\('(?:#notes|\.notes|#draft-note|\.dnote)'\)/, 'no second way to reach them');
+    for (const head of ['function syncNotes()', 'function watchNotes()', 'function renderDraftNote(view)']) {
+      assert.doesNotMatch(fnOf(head), /prompt-btns|dialog-form|survey-panel|attn-note|promptShown|PANEL_IDS|\bDF\b|data-lay|LAY\b/, `${head} reads no panel state`);
+    }
+  });
+
+  test('(+) SF-5: with a permission prompt or a question dialog up, the over note is drawn and the notes row opens (no panel node is even given to syncNotes)', () => {
+    const r = noteRig();
+    const nodes = { 'arg-hint': { hidden: true }, 'shell-hint': { hidden: true }, 'draft-note': r.el, problem: { textContent: '' }, notes: { quiet: null, classList: { toggle(name, on) { assert.equal(name, 'quiet'); nodes.notes.quiet = on; } } } };
+    const { syncNotes } = mk(['function syncNotes()'], { $: (id) => { assert.ok(Object.hasOwn(nodes, id), `syncNotes asked for ${id}`); return nodes[id]; } });
+    syncNotes();
+    assert.equal(nodes.notes.quiet, true, 'nothing shows: the row is quiet');
+    r.renderDraftNote(noteViewReal({ kind: 'over' })); // what the sync hands the page in the prompt state and in the dialog state alike
+    syncNotes();
+    assert.equal(r.el.hidden, false);
+    assert.equal(r.el.attrs['data-k'], 'over');
+    assert.equal(nodes.notes.quiet, false, 'the row is open, so the note is on screen');
+    r.renderDraftNote(null);
+    syncNotes();
+    assert.equal(nodes.notes.quiet, true, 'and it closes again once the note goes');
+  });
+
   test('(+) the page hands the sync its box, a PUT to the draft route, the clock, the note and the gone state', () => {
     const src = fnOf('const DS = createDraftSync({').length ? SRC.slice(SRC.indexOf('const DS = createDraftSync({'), SRC.indexOf('});', SRC.indexOf('const DS = createDraftSync({')) + 3) : '';
     assert.match(src, /box: \(\) => \(\{ value: composer\(\)\.value, shell: S\.on \}\)/);
@@ -3287,7 +3367,7 @@ describe('0.5: the note, the pull and the edits (wiring)', () => {
 
   test('(+) every user edit of the box tells the sync: typing, composing, Clear, the Commands button, the palette insert and the Shell toggle', () => {
     const wire = fnOf('function wireComposer()');
-    assert.match(wire, /addEventListener\('input', \(\) => \{ grow\(\); updateChip\(\); DS\.edited\(\); \}\)/);
+    assert.match(wire, /addEventListener\('input', \(\) => \{ grow\(\); updateChip\(\); DS\.edited\(\); sizeLineGone\(\); \}\)/); // 0.5.4 (final, S2): the size line goes with the same edit
     assert.match(wire, /addEventListener\('compositionstart', \(\) => DS\.composition\(true\)\)/);
     assert.match(wire, /addEventListener\('compositionend', \(\) => DS\.composition\(false\)\)/);
     assert.match(wire, /\$\('paste-clear'\)\.addEventListener\('click', \(\) => \{[^}]*DS\.edited\(\);/);
@@ -3302,7 +3382,7 @@ describe('0.5: the note, the pull and the edits (wiring)', () => {
     const el = (id) => ({ addEventListener(type, f) { listeners[`${id}:${type}`] = f; }, focus() {} });
     const ta = { ...el('composer'), value: '', selectionStart: 0, selectionEnd: 0 };
     const ctx = {
-      composer: () => ta, $: el, grow: () => calls.push('grow'), updateChip: () => calls.push('chip'), wirePalette() {}, endArrows() {}, sendComposer() {}, setShell: (on) => calls.push(`shell ${on}`), S: { on: false },
+      composer: () => ta, $: el, grow: () => calls.push('grow'), updateChip: () => calls.push('chip'), sizeLineGone: () => calls.push('size'), wirePalette() {}, endArrows() {}, sendComposer() {}, setShell: (on) => calls.push(`shell ${on}`), S: { on: false },
       DS: { edited: () => calls.push('edited'), composition: (on) => calls.push(`composition ${on}`) },
     };
     vm.runInNewContext(`${fnOf('function wireComposer()')}; wireComposer`, ctx)();
@@ -3311,7 +3391,7 @@ describe('0.5: the note, the pull and the edits (wiring)', () => {
     listeners['composer:compositionend']();
     listeners['shell-toggle:click']();
     listeners['paste-clear:click']();
-    assert.deepEqual(calls, ['grow', 'chip', 'edited', 'composition true', 'composition false', 'shell true', 'edited', 'grow', 'chip', 'edited']);
+    assert.deepEqual(calls, ['grow', 'chip', 'edited', 'size', 'composition true', 'composition false', 'shell true', 'edited', 'grow', 'chip', 'edited']);
   });
 
   test('(+) a lost connection ends with a retry that follows the first-capture rule; a gone pane stops the sync', () => {
@@ -3357,6 +3437,7 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
       setShell: () => { log.shellOff += 1; }, grow() {}, updateChip() {},
       DS: {
         screen: () => screen,
+        restoring: () => false,
         beginSend: () => log.order.push('begin'), endSend: () => log.order.push('end'), sent: () => log.order.push('sent'),
         submitted: (r) => { log.order.push('submitted'); log.told.push(jsonClone(r)); },
         send: async (text) => { log.order.push('push'); log.pushed.push(text); return pushAnswer; },
@@ -3471,7 +3552,9 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
       const lineRig = (opts) => {
         mock.timers.enable({ apis: ['setTimeout'] });
         const el = { textContent: '', className: '' };
-        const real = vm.runInNewContext(`${fnOf('function showProblem(')}; showProblem`, { $: () => el, problemTimer: 0, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) });
+        const part = () => ({ textContent: '', hidden: false, setAttribute() {} }); // 0.5.4 (PL): the line's wrapper, icon and word are their own elements; #problem is still `el`
+        const parts = { 'problem-line': part(), 'problem-use': part(), 'problem-label': part() };
+        const real = vm.runInNewContext(`${fnOf('function showProblem(')}; showProblem`, { $: (id) => (id === 'problem' ? el : parts[id]), problemTimer: 0, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) });
         const r = rig({ value: 'fix the typo', screen: D('text', 'fix the typo'), ...opts });
         Object.assign(r.ctx, { STILL_SENDING: STILL_SENDING_REAL, STILL_SENDING_MS: STILL_SENDING_MS_REAL, showProblem: real, clearProblem: () => real('') });
         return { r, el };
@@ -3936,9 +4019,9 @@ describe('0.5: Send with the synced box (design W5, section 4)', () => {
     assert.match(src, /enqueueJob\(route\.act === 'push' \? \(\) => pushThenSubmit\(route\) : route\.act === 'enter' \? \(\) => submitEnter\(route\.submit\.base\) : \(\) => typeThenSubmit\(plan\.payloads\)\)/);
     assert.match(fnOf('function enqueueJob(run)'), /chain\.then\(run\)/);
     assert.match(fnOf('function enqueueSeq(payloads)'), /enqueueJob\(\(\) => deliverAll\(payloads\)\)/);
-    assert.match(fnOf('async function pushThenSubmit(route)'), /await DS\.send\(route\.text\)[\s\S]*submitEnter\(p\.sig\)/);
-    assert.match(fnOf('async function typeThenSubmit(payloads)'), /await deliverAll\(payloads\)[\s\S]*submitEnter\(\)/);
-    const submit = fnOf('async function submitEnter(base)');
+    assert.match(fnOf('async function pushThenSubmit(route)'), /await DS\.send\(route\.text\)[\s\S]*submitEnter\(p\.sig, true\)/); // 0.5.4 (final, S5): the text is in Claude's input
+    assert.match(fnOf('async function typeThenSubmit(payloads)'), /await deliverAll\(payloads\)[\s\S]*submitEnter\(undefined, payloads\.length > 0\)/);
+    const submit = fnOf('async function submitEnter(base, pasted = false)');
     assert.match(submit, /postRetry\('submit'/);
     assert.doesNotMatch(submit, /deliver\(|\/keys|keys:/);
     for (const f of [src, fnOf('async function pushThenSubmit(route)'), fnOf('async function typeThenSubmit(payloads)'), submit]) assert.doesNotMatch(f, /'Enter'|"Enter"|keys:/);
@@ -4134,7 +4217,7 @@ describe('W4: Claude\'s prompt suggestion in the message box (wiring)', () => {
     const api = mk(['async function acceptSuggestion(text)'], {
       enqueueJob: async (run) => { log.push('job'); return run(); }, DS: { accept: async (t) => { log.push(`accept ${t}`); return answer; } },
       renderSuggestion: () => log.push('render'), clearProblem: () => log.push('clear'), say: (m) => log.push(`say ${m}`),
-      showProblem: (m, kind, ms) => log.push(`problem ${m} | ${kind} | ${ms}`), problemKind: problemKindReal,
+      showProblem: (m, kind, ms) => log.push(`problem ${m} | ${kind} | ${ms}`), problemKind: problemKindReal, RESTORING_TEXT: RESTORING_TEXT_REAL,
     });
     return { ...api, log };
   };
@@ -4155,6 +4238,20 @@ describe('W4: Claude\'s prompt suggestion in the message box (wiring)', () => {
     const local = acc({ ok: false, status: null, message: 'x' });
     await local.acceptSuggestion(SUG);
     assert.match(local.log.at(-1), /\| warn \|/, 'nothing was sent: a warning, not an error');
+  });
+
+  test('(+) N1: Tab while the kept text is being brought back shows the fixed line as a warn for 4000 ms, like Send (not the 6000 ms of the other refusals)', async () => {
+    const r = acc({ ok: false, status: null, message: RESTORING_TEXT_REAL });
+    await r.acceptSuggestion(SUG);
+    assert.deepEqual(r.log, ['job', `accept ${SUG}`, 'render', `problem ${RESTORING_TEXT_REAL} | warn | 4000`]);
+  });
+
+  test('(−) N1: any other refusal keeps its 6000 ms, even one with status null; a 409 that happens to carry other words too', async () => {
+    for (const answer of [{ ok: false, status: null, message: 'x' }, { ok: false, status: 409, message: RESTORING_TEXT_REAL.slice(0, 20) }, { ok: false, status: 404, message: 'The session is gone.' }]) {
+      const r = acc(answer);
+      await r.acceptSuggestion(SUG);
+      assert.match(r.log.at(-1), /\| 6000$/);
+    }
   });
 
   test('(−) the accept path sends no key itself: it goes only through DS.accept (the guarded route), never deliver, sendKey or the keys route', () => {
@@ -4484,12 +4581,12 @@ describe('W7-T3 fix round 1: the "other" chip has its own hue (tokens.css --fit-
     assert.match(rule('zoomed'), /(^|[\s;])color:\s*var\(--idle\)/);
   });
 
-  test('(−) the new tokens are used by the other chip and the Cursor note (W13) only, and tokens.css stays ASCII with no color-mix() or :has()', () => {
+  test('(\u2212) the new tokens are used by the other chip, the Cursor note (W13) and the typed /compact line (0.5.4 AC) only, and tokens.css stays ASCII with no color-mix() or :has()', () => {
     const users = ['session.css', 'app.css', 'tokens.css'].flatMap((f) => (read(f).match(/var\(--fit-other[a-z-]*\)/g) ?? []).map((u) => `${f} ${u}`));
     assert.deepEqual(users.filter((u) => !u.startsWith('session.css')), []);
-    assert.equal(users.length, 5);
+    assert.equal(users.length, 6); // 0.5.4 AC: and the typed /compact line of the header
     const rules = read('session.css').split('\n').filter((l) => /var\(--fit-other/.test(l)).map((l) => l.slice(0, l.indexOf(' {')));
-    assert.deepEqual(rules, ['.fit[data-k="other"]', '.dnote[data-k="cursor"]']);
+    assert.deepEqual(rules, ['.sess-ac[data-st="typed"]', '.fit[data-k="other"]', '.dnote[data-k="cursor"]']);
     const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
     assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
     assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
@@ -4578,6 +4675,215 @@ describe('F4-T2: the terminal chip has its own plum hue (tokens.css --fit-term*)
   });
 });
 
+// ---- 0.5.4 LT fix round 1 (review-LT, SF-1): the over-size note reuses --danger and --danger-soft, so only contrast is asserted ------------------------------
+describe('LT round 1: the "Not kept" (over 16 KB) note meets contrast with the existing danger tokens', () => {
+  const { THEME, ratio } = colourKit();
+  for (const name of Object.keys(THEME)) {
+    test(`(+) contrast (${name}): --danger text is 4.5:1 on --danger-soft and on the surfaces the note can sit on`, () => {
+      const v = THEME[name];
+      for (const ground of ['--danger-soft', '--surface', '--bg', '--surface-2', '--surface-3', '--attn-row']) {
+        assert.ok(ratio(v['--danger'], v[ground]) >= 4.5, `${ground} ${v[ground]}: ${ratio(v['--danger'], v[ground]).toFixed(2)}`);
+      }
+    });
+  }
+
+  test('(−) no new token for it: tokens.css still has exactly the three --danger lines (light and the two dark blocks)', () => {
+    assert.equal([...TOKENS.matchAll(/--danger-soft:/g)].length, 3);
+    assert.equal([...TOKENS.matchAll(/--danger:/g)].length, 3);
+    assert.doesNotMatch(TOKENS, /--over[a-z-]*:|--not-kept[a-z-]*:/);
+  });
+});
+
+// ---- 0.5.4 AT (design-054-at 4): the "Not restored" note of the attachment tray: its own violet hue, its own icon, its own words ----------------------------
+describe('AT: the "Not restored" note has its own violet hue (tokens.css --att-gone*) and its own icon (session.html i-file-off)', () => {
+  const css = strip(CSS);
+  const { THEME, ratio, dE, MIN_DE } = colourKit();
+  const NAMES = ['--att-gone', '--att-gone-soft', '--att-gone-line'];
+  const symbol = (n) => new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(HTML)?.[1] ?? null;
+  const rule = (sel) => new RegExp(`(?:^|[\\s}])${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+
+  test('(+) the three tokens are plain 6-digit hex in the light block and in both dark blocks, the dark blocks agree, and each is tuned per theme', () => {
+    for (const [name, v] of Object.entries(THEME)) for (const n of NAMES) assert.match(v[n] ?? '', /^#[0-9a-f]{6}$/i, `${n} in ${name}`);
+    for (const n of NAMES) assert.equal(THEME.dark[n], THEME.darkPinned[n], n);
+    for (const n of NAMES) assert.notEqual(THEME.light[n], THEME.dark[n], `${n} is tuned per theme`);
+  });
+
+  for (const name of Object.keys(THEME)) {
+    test(`(+) contrast (${name}): the label and icon are 4.5:1 on the fill and on the surfaces the note can sit on; the edge is 3:1; the body text is 4.5:1 on the fill`, () => {
+      const v = THEME[name];
+      for (const ground of [v['--att-gone-soft'], v['--surface'], v['--bg'], v['--surface-2'], v['--surface-3'], v['--attn-row']]) {
+        assert.ok(ratio(v['--att-gone'], ground) >= 4.5, `text on ${ground}: ${ratio(v['--att-gone'], ground).toFixed(2)}`);
+      }
+      for (const ground of [v['--bg'], v['--surface'], v['--surface-2']]) {
+        assert.ok(ratio(v['--att-gone-line'], ground) >= 3, `edge on ${ground}: ${ratio(v['--att-gone-line'], ground).toFixed(2)}`);
+      }
+      assert.ok(ratio(v['--text'], v['--att-gone-soft']) >= 4.5, `--text on the fill: ${ratio(v['--text'], v['--att-gone-soft']).toFixed(2)}`);
+    });
+
+    test(`(+) distinct (${name}): the colour is at least ${MIN_DE} OKLab away from accent, busy, idle, attention, danger, ended, the muted grey, the Fit chips, every --m-* mode colour and --rm`, () => {
+      const v = THEME[name];
+      const peers = ['--accent', '--busy', '--idle', '--attn', '--danger', '--ended', '--text-muted', '--fit-other', '--fit-term', '--fit-fill', '--fit-set', '--fit-off', ...Object.keys(v).filter((k) => /^--m-[a-z]+$/.test(k)), ...(v['--rm'] ? ['--rm'] : [])];
+      assert.ok(peers.length >= 12 + 8, `the mode colours were found: ${peers.length}`);
+      for (const p of peers) assert.ok(dE(v['--att-gone'], v[p]) >= MIN_DE, `${p} ${v[p]}: ${dE(v['--att-gone'], v[p]).toFixed(3)}`);
+    });
+  }
+
+  test('(+) the sprite draws i-file-off once, in the 16 x 16 stroke style: the i-file page plus a diagonal, a different drawing from i-file, i-warn and i-off', () => {
+    assert.equal(HTML.split('<symbol id="i-file-off"').length - 1, 1);
+    const off = symbol('file-off');
+    assert.ok(off, 'i-file-off is in the sprite');
+    assert.doesNotMatch(off, /\b(fill|stroke|style)=/);
+    const d = (body) => /<path d="([^"]*)"\/>/.exec(body)?.[1];
+    assert.equal(d(off), `${d(symbol('file'))}M1.8 1.8l12.4 12.4`);
+    assert.equal(new Set([off, symbol('file'), symbol('warn'), symbol('off')]).size, 4);
+  });
+
+  test('(+) .att-gone reads --att-gone-soft for its fill and --att-gone-line for its edge, its icon and bold label read --att-gone, and its text keeps --text', () => {
+    const note = rule('.att-gone');
+    assert.match(note, /background:\s*var\(--att-gone-soft\)/);
+    assert.match(note, /border:\s*1px solid var\(--att-gone-line\)/);
+    assert.match(note, /(^|[\s;])color:\s*var\(--text\)/);
+    assert.match(note, /display:\s*flex/);
+    assert.match(rule('.att-gone .ic, .att-gone b'), /(^|[\s;])color:\s*var\(--att-gone\)/);
+    assert.match(rule('.att-gone .ic'), /flex:\s*none/);
+    const p = rule('.att-gone p');
+    assert.match(p, /margin:\s*0/);
+    assert.match(p, /overflow-wrap:\s*anywhere/);
+  });
+
+  test('(−) .att-gone takes no status colour: no --idle, --danger, --busy or --attn in its rules; the warn alert still reads --idle (it is not changed)', () => {
+    const rules = css.split('\n').filter((l) => /\.att-gone/.test(l)).join('\n');
+    assert.ok(rules.length > 0);
+    assert.doesNotMatch(rules, /--idle|--danger|--busy|--attn|--accent/);
+    assert.match(TOKENS, /\.alert\[data-kind="warn"\]\s*\{\s*background:\s*var\(--idle-soft\);\s*border-color:\s*var\(--idle-line\);\s*\}/);
+    assert.match(TOKENS, /\.alert\[data-kind="warn"\] \.ic\s*\{\s*color:\s*var\(--idle\);\s*\}/);
+  });
+
+  test('(−) the new tokens are used by the .att-gone rules only, defined once per theme block, and tokens.css stays ASCII with no color-mix() or :has()', () => {
+    const users = ['session.css', 'app.css', 'tokens.css'].flatMap((f) => (read(f).match(/var\(--att-gone[a-z-]*\)/g) ?? []).map((u) => `${f} ${u}`));
+    assert.deepEqual(users.filter((u) => !u.startsWith('session.css')), []);
+    assert.equal(users.length, 3, users.join(', ')); // fill, edge, and the colour of the label and the icon
+    const lines = read('session.css').split('\n').filter((l) => /var\(--att-gone/.test(l)).map((l) => l.slice(0, l.indexOf(' {')));
+    assert.deepEqual(lines, ['.att-gone', '.att-gone .ic, .att-gone b']);
+    for (const n of NAMES) assert.equal([...TOKENS.matchAll(new RegExp(`${n}:`, 'g'))].length, 3, `${n}: the light block and the two dark blocks`);
+    const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
+    assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
+    assert.doesNotMatch(HTML.slice(HTML.indexOf('<symbol id="i-file-off"'), HTML.indexOf('</symbol>', HTML.indexOf('<symbol id="i-file-off"'))), /[^\x00-\x7f]/);
+  });
+});
+
+// ---- 0.5.4 P2 (design-052d 2.4): the three looks that name the Fit mode: fill, term-set and off-set (tokens.css --fit-fill*, --fit-set*, --fit-off*; session.html i-fit-pin, i-term-pin, i-fit-off) ----
+describe('0.5.4 P2: the chip looks fill, term-set and off-set have their own tokens, icons and rules (M-21)', () => {
+  const css = strip(CSS);
+  const { THEME, ratio } = colourKit();
+  const TRIPLES = { fill: ['--fit-fill', '--fit-fill-soft', '--fit-fill-line'], 'term-set': ['--fit-set', '--fit-set-soft', '--fit-set-line'], 'off-set': ['--fit-off', '--fit-off-soft', '--fit-off-line'] };
+  const NAMES = Object.values(TRIPLES).flat();
+  const rule = (k) => new RegExp(`(?:^|[\\s}])\\.fit\\[data-k="${k}"\\]\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+  const symbol = (n) => new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(HTML)?.[1] ?? null;
+
+  test('(+) the sprite draws i-fit-pin, i-term-pin and i-fit-off once each, in the 16 x 16 stroke style (the .ic class draws the stroke), each different from the other chip icons', () => {
+    const own = ['fit-pin', 'term-pin', 'fit-off'].map((n) => {
+      assert.equal(HTML.split(`<symbol id="i-${n}"`).length - 1, 1, n);
+      const body = symbol(n);
+      assert.ok(body, `i-${n}`);
+      assert.match(body, /<(path|circle|rect)\b/);
+      assert.doesNotMatch(body, /\b(fill|stroke|style)=/, `${n}: the dot is drawn by the stroke alone`);
+      return body;
+    });
+    const older = ['fit', 'zoom', 'off', 'window', 'term', 'hist-off', 'hist-on'].map(symbol);
+    assert.ok(older.every(Boolean));
+    assert.equal(new Set([...own, ...older]).size, 10, 'ten different drawings');
+  });
+
+  test('(+) each new icon is its base icon plus a mark: the pins keep i-fit / i-term and add a dot at the top right, the off icon keeps i-fit and adds the diagonal from (2,14) to (14,2)', () => {
+    const [fit, term] = [symbol('fit'), symbol('term')];
+    const [pin, tpin, off] = [symbol('fit-pin'), symbol('term-pin'), symbol('fit-off')];
+    for (const part of fit.match(/<(path|circle|rect)\b[^>]*>/g)) assert.ok(pin.includes(part) && off.includes(part), `i-fit's ${part}`);
+    for (const part of term.match(/<(path|circle|rect)\b[^>]*>/g)) assert.ok(tpin.includes(part), `i-term's ${part}`);
+    for (const dotted of [pin, tpin]) {
+      const dot = /<circle\b[^>]*\bcx="(\d+(?:\.\d+)?)"[^>]*\bcy="(\d+(?:\.\d+)?)"[^>]*\br="(\d*\.?\d+)"/.exec(dotted);
+      assert.ok(dot, 'a dot');
+      assert.ok(Number(dot[1]) >= 10 && Number(dot[2]) <= 6 && Number(dot[3]) <= 1.5, `top right and small: ${dot.slice(1)}`);
+    }
+    assert.match(off, /M2 14L14 2|M2 14 14 2|M2 14l12-12/, 'the diagonal');
+    assert.doesNotMatch(fit + term, /M2 14L14 2|M2 14 14 2/, 'the older icons have none');
+  });
+
+  test('(+) every icon chipView can name, in every state and mode, is in the sprite', () => {
+    const icons = new Set();
+    for (const state of ['fitted', 'zoomed', 'blocked', 'other', 'terminal', 'off']) {
+      for (const mode of ['auto', 'fill', 'terminal', 'off']) icons.add(chipViewReal({ fit: { state, reason: state === 'zoomed' ? 'panel-smaller' : null, panes: 3, userZoom: false, mode } }).icon);
+    }
+    assert.deepEqual([...icons].sort(), ['fit', 'fit-off', 'fit-pin', 'off', 'term', 'term-pin', 'window', 'zoom'].sort());
+    for (const icon of icons) assert.match(HTML, new RegExp(`<symbol id="i-${icon}" viewBox="0 0 16 16">`), icon);
+  });
+
+  test('(+) the nine tokens are plain 6-digit hex in the light block and in both dark blocks, the dark blocks agree, and each is tuned per theme', () => {
+    for (const [name, v] of Object.entries(THEME)) for (const n of NAMES) assert.match(v[n] ?? '', /^#[0-9a-f]{6}$/i, `${n} in ${name}`);
+    for (const n of NAMES) assert.equal(THEME.dark[n], THEME.darkPinned[n], n);
+    for (const n of NAMES) assert.notEqual(THEME.light[n], THEME.dark[n], `${n} is tuned per theme`);
+    assert.equal(new Set(NAMES.map((n) => THEME.light[n])).size, 9, 'nine different light values');
+  });
+
+  for (const name of Object.keys(THEME)) {
+    for (const [look, [text, soft, line]] of Object.entries(TRIPLES)) {
+      test(`(+) M-21 contrast (${name}, ${look}): the chip text is 4.5:1 on its soft fill and on the surfaces it can sit on; the edge is 3:1`, () => {
+        const v = THEME[name];
+        for (const ground of [v[soft], v['--surface'], v['--bg'], v['--surface-2'], v['--surface-3'], v['--attn-row']]) {
+          assert.ok(ratio(v[text], ground) >= 4.5, `${text} on ${ground}: ${ratio(v[text], ground).toFixed(2)}`);
+        }
+        for (const ground of [v['--bg'], v['--surface'], v['--surface-2'], v['--surface-3'], v['--attn-row']]) { // round 4 (N-2): the same grounds as the text loop above, minus the chip's own fill
+          assert.ok(ratio(v[line], ground) >= 3, `${line} on ${ground}: ${ratio(v[line], ground).toFixed(2)}`);
+        }
+      });
+    }
+  }
+
+  test('(+) M-21 the contrast check can fail: a text colour that is too pale on its fill is caught (the helper is not a rubber stamp)', () => {
+    assert.ok(ratio('#cfe9e3', '#dcf3ee') < 4.5);
+    assert.ok(ratio('#0b6b5c', '#dcf3ee') >= 4.5);
+  });
+
+  test('(+) each look reads its three tokens for text, fill and edge; off-set has a solid edge on a grey fill while blocked stays dashed and transparent', () => {
+    for (const [look, [text, soft, line]] of Object.entries(TRIPLES)) {
+      const r = rule(look);
+      assert.match(r, new RegExp(`(^|[\\s;])color:\\s*var\\(${text}\\)`), look);
+      assert.match(r, new RegExp(`background:\\s*var\\(${soft}\\)`), look);
+      assert.match(r, new RegExp(`border-color:\\s*var\\(${line}\\)`), look);
+      assert.doesNotMatch(r, /dashed/, `${look} is solid`);
+    }
+    assert.match(rule('blocked'), /dashed/);
+    assert.doesNotMatch(rule('blocked'), /background:/, 'blocked has no ground of its own');
+  });
+
+  test('(+) the eight looks have eight different text colours (every look its own colour, never colour alone: icon and words differ too)', () => {
+    const colours = ['fitted', 'zoomed', 'blocked', 'other', 'terminal', 'fill', 'term-set', 'off-set'].map((k) => /(?:^|[\s;])color:\s*(var\(--[a-z-]+\))/.exec(rule(k))?.[1]);
+    assert.ok(colours.every(Boolean), `${colours}`);
+    assert.equal(new Set(colours).size, 8, colours.join(' '));
+  });
+
+  test('(\u2212) the earlier five looks keep their colours', () => {
+    assert.match(rule('fitted'), /(^|[\s;])color:\s*var\(--accent\)/);
+    assert.match(rule('zoomed'), /(^|[\s;])color:\s*var\(--idle\)/);
+    assert.match(rule('blocked'), /(^|[\s;])color:\s*var\(--text-muted\)/);
+    assert.match(rule('other'), /(^|[\s;])color:\s*var\(--fit-other\)/);
+    assert.match(rule('terminal'), /(^|[\s;])color:\s*var\(--fit-term\)/);
+  });
+
+  test('(\u2212) the new tokens are used by their chip rule only, defined once per theme block in tokens.css, which stays ASCII with no color-mix() or :has()', () => {
+    const users = ['session.css', 'app.css', 'tokens.css'].flatMap((f) => (read(f).match(/var\(--fit-(?:fill|set|off)[a-z-]*\)/g) ?? []).map((u) => `${f} ${u}`));
+    assert.deepEqual(users, NAMES.map((n) => `session.css var(${n})`), 'only session.css, in the order of the rules');
+    const rules = read('session.css').split('\n').filter((l) => /var\(--fit-(?:fill|set|off)/.test(l)).map((l) => l.slice(0, l.indexOf(' {')));
+    assert.deepEqual(rules, ['.fit[data-k="fill"]', '.fit[data-k="term-set"]', '.fit[data-k="off-set"]']);
+    for (const n of NAMES) assert.equal([...TOKENS.matchAll(new RegExp(`${n}:`, 'g'))].length, 3, `${n}: the light block and the two dark blocks`);
+    const tokens = TOKENS.replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.doesNotMatch(tokens, /color-mix\(|:has\(/);
+    assert.equal([...TOKENS].every((ch) => ch.codePointAt(0) < 128), true);
+  });
+});
+
+
 describe('W7-T3: the fit in the session window (wiring)', () => {
   const SRC = code(JS['session.js']);
   const fnOf = (head) => {
@@ -4639,6 +4945,10 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     'function renderLayout()',
     // FX3 (LC18 R4b): the size back is counted from a base that is looked at when the grow asks for it
     'function fitBaseFresh()',
+    // 0.5.4 P2: whether nika resizes the window now (the gates of the room, the grow, FX2 and FX3)
+    'function fitResizes()',
+    // 0.5.4 QPF F6: the form is told `growing` again whenever it changed, also outside a tick
+    'function growSync()',
   ];
   /** An element that also answers contains() (the fake El has no tree search): the panel's focus and dismissal rules ask it. */
   class Box extends El {
@@ -4693,11 +5003,12 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     focusState.el = null;
     const ctx = {
       paneId: pane, M: { cols: 0, rows: 0, gone: false, timer: 0, errors: 0, inputOff: false, frozen: false, body: null, draft: null, etag: null, cut: null, crop: null, stripKind: null, waiters: [], sent: 0 },
-      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false }, SC: { planner: null, scrolled: false },
+      FIT: { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false, mode: 'auto' }, SC: { planner: null, scrolled: false },
       LAY: { v: null }, PANEL_IDS: ['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note'], layoutOf: layoutOfReal, panelFrame: panelFrameReal, // 0.5.2 R2
       // F16: the grow's state, the pure rules, what the form is told, the page's dialog and a clock the test sets (growTick reads Date.now())
-      GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal,
-      W: { dialog: null, pane: 'ok' }, renderMode: () => log.df.push(fns.growing()), Date: { now: () => clk.now },
+      GR: GROW_IDLE_REAL, GROW_IDLE: GROW_IDLE_REAL, growStep: growStepReal, growRebase: growRebaseReal, growAsk: growAskReal, scaleRows: scaleRowsReal, cutQuestion: cutQuestionReal, growWanted: growWantedReal,
+      // 0.5.4 QPF F6: the page's renderMode records what the form was told (GROWING_SHOWN); the stub does the same and logs it
+      W: { dialog: null, pane: 'ok' }, GROWING_SHOWN: false, renderMode: () => { const g = fns.growing(); ctx.GROWING_SHOWN = g; log.df.push(g); }, Date: { now: () => clk.now },
       GL: { arm: null, timer: 0 }, // F17: no arm here (a spy goes in where a test needs one)
       P: { on: false }, // F11: Type into pane, read by the real drawMirror
       panelNow: () => null, cropOf: cropOfReal, INPUT_TEXT: INPUT_TEXT_REAL, CROP_TEXT: CROP_TEXT_REAL, // 0.5.1 E: no panel up in the fit rig (the crop has its own tests)
@@ -4731,7 +5042,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     let fns = null;
     ctx.HOLD = createRedrawHoldReal({ after: clk.setTimeout, cancel: clk.clearTimeout, timeout: (pending, c) => fns.holdTimeout(pending, c), ended: () => fns.holdEnded() });
     // F11: `realDraw` runs the page's own drawMirror (it sets M.cut and shows the strip) instead of the spy
-    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()', 'function cropFor(body, cut)', 'function paintStrip(kind)'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed, fitBaseFresh, renderLayout${realDraw ? ', drawMirror' : ''} })`, ctx);
+    fns = vm.runInNewContext(`${NAMES.concat(realDraw ? ['function drawMirror()', 'function cropFor(body, cut)', 'function paintStrip(kind)'] : []).map(fnOf).join('\n')}; ({ fitCall, fitMeasure, fitScale, fitResize, fitCaptured, drawFitPop, openFitPop, closeFitPop, fitAgainEvent, renderFit, wireFitPop, wireFit, setGone, handleCapture, fitFocused, fitProbe, fitCommit, fitChip, flushChip, fitSized, handleHeld, applyHeld, refit, endRefit, holdTimeout, holdEnded, fitStrip, nextCapture, captureHandled, growing, growTick, boxShortened, fitPanelClosed, fitBaseFresh, fitResizes, renderLayout${realDraw ? ', drawMirror' : ''} })`, ctx);
     const pointerdown = (target) => { for (const fn of [...(docOn.get('pointerdown') ?? [])]) fn({ type: 'pointerdown', target }); };
     return {
       ...fns, ctx, log, clk, page, term, rows, cutEl, col, chip, wrap, pop, popH, popWhy, popHint, popNote, close, again, histToggle, outside, pointerdown,
@@ -5078,8 +5389,9 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   // -- no new colour, icon or CSS rule
   test('(−) F9: no new token, colour, sprite symbol or CSS rule: the new chip keys are the earlier states, with their icons, and the five state rules are the only ones', () => {
     const css = strip(CSS);
-    const rules = [...css.matchAll(/(?:^|[\s}])\.fit\[data-k="([a-z]+)"\]\s*\{/g)].map((m) => m[1]);
-    assert.deepEqual(rules, ['fitted', 'zoomed', 'blocked', 'other', 'terminal'], 'the chip rules: five states, none added');
+    // 0.5.4 P2 (requirement change, design-052d 2.4): the three looks that name the Fit mode (fill, term-set, off-set) have rules of their own, after the five of F9 (the pattern takes a hyphen now)
+    const rules = [...css.matchAll(/(?:^|[\s}])\.fit\[data-k="([a-z-]+)"\]\s*\{/g)].map((m) => m[1]);
+    assert.deepEqual(rules, ['fitted', 'zoomed', 'blocked', 'other', 'terminal', 'fill', 'term-set', 'off-set'], 'the chip rules: the five states of F9, then the three looks of 0.5.4 P2');
     for (const b of [{ state: 'fitted', reason: 'terminal' }, { state: 'terminal', reason: 'switching', panes: 1 }, { state: 'terminal', reason: null, panes: 3 }]) {
       const v = chipViewReal({ fit: b });
       assert.ok(rules.includes(v.state), `${v.key}: its state has a rule`);
@@ -5429,6 +5741,65 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.deepEqual(c.order.filter((x) => x === 'start'), []);
   });
 
+  // 0.5.4 LTF round 2 (MF-1): a screen answer with no change (304) runs a due capture re-try of the kept-text sync, and nothing else of the sync
+  describe('the 304 branch ticks the draft sync (LTF MF-1)', () => {
+    const tickRig = ({ growThrows = false, tickThrows = false, attSending = false } = {}) => {
+      const c = captureRig();
+      c.ctx.recovered = () => c.order.push('recovered');
+      c.ctx.growTick = () => { c.order.push('grow'); if (growThrows) throw new Error('boom'); };
+      c.ctx.DS = { capture: () => c.order.push('capture'), tick: () => { c.order.push('tick'); if (tickThrows) throw new Error('boom'); } };
+      c.ctx.ATT = { sending: () => attSending };
+      return c;
+    };
+
+    test('(+) a 304 calls DS.tick() once, after recovered() and the grow', () => {
+      const c = tickRig();
+      c.run({ status: 304, body: null });
+      assert.deepEqual(c.order, ['recovered', 'grow', 'tick']);
+    });
+
+    test('(+) a 304 ticks while an attachment Send runs too: the sync\'s own Send flag holds the re-try back, the page does not ask ATT', () => {
+      const c = tickRig({ attSending: true });
+      c.run({ status: 304, body: null });
+      assert.deepEqual(c.order, ['recovered', 'grow', 'tick']);
+    });
+
+    test('(−) a DS.tick() that throws leaves the grow run and the mirror working: the next 200 still draws', () => {
+      const c = tickRig({ tickThrows: true });
+      assert.doesNotThrow(() => c.run({ status: 304, body: null }));
+      assert.deepEqual(c.order, ['recovered', 'grow', 'tick']);
+      c.order.length = 0;
+      c.run({ status: 200, body: BODY });
+      assert.ok(c.order.includes('draw'), 'the next capture draws');
+      assert.ok(c.order.includes('capture'), 'and reaches the sync');
+    });
+
+    test('(−) a growTick() that throws leaves the tick run: the two try blocks are separate', () => {
+      const c = tickRig({ growThrows: true });
+      assert.doesNotThrow(() => c.run({ status: 304, body: null }));
+      assert.deepEqual(c.order, ['recovered', 'grow', 'tick']);
+    });
+
+    test('(−) a sync without tick() (nothing to call) leaves a 304 harmless', () => {
+      const c = tickRig();
+      c.ctx.DS = { capture() {} };
+      assert.doesNotThrow(() => c.run({ status: 304, body: null }));
+      assert.deepEqual(c.order, ['recovered', 'grow']);
+    });
+
+    test('(−) a 200 calls DS.capture as before and never DS.tick(); a 500 and a lost request call neither', () => {
+      const c = tickRig();
+      c.run({ status: 200, body: BODY });
+      assert.ok(c.order.includes('capture'));
+      assert.equal(c.order.includes('tick'), false);
+      c.order.length = 0;
+      c.run({ status: 500, body: { message: 'x' } });
+      c.run({ status: 0, body: null });
+      assert.equal(c.order.includes('tick'), false);
+      assert.equal(c.order.includes('capture'), false);
+    });
+  });
+
   test('(+) setGone closes the planner and handleCapture is guarded: the hooks are in the source where the design puts them', () => {
     assert.match(fnOf('function setGone()'), /M\.gone = true;[\s\S]*FIT\.planner\?\.close\(\);/);
     assert.match(fnOf('function handleCapture(r)'), /try \{\s*fitCaptured\(\);\s*\} catch \{[^}]*\}\s*try \{\s*scrollCaptured\(r\.body\);\s*\} catch \{[^}]*\}\s*if \(!M\.frozen\) term\.scrollTop = term\.scrollHeight;/);
@@ -5727,7 +6098,60 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.chip.getAttribute('data-k'), 'fitted');
     assert.equal(r.log.said.length, 2);
     assert.equal(r.log.said[1], chipViewReal(FITTED.body).say);
-    assert.equal(r.again.textContent, 'Fitting…', 'the next draw resets it; a shut panel is not drawn');
+    assert.equal(r.again.textContent, '', '0.5.4 SF (LC-P2): the shut panel is drawn too, so it holds no stale "Fitting..." (was: \'Fitting\u2026\', "the next draw resets it; a shut panel is not drawn")');
+    assert.equal(r.again.getAttribute('aria-disabled'), null);
+  });
+
+  // ---- 0.5.4 SF item 3 (live check LC-P2): the panel keeps no stale "Fitting..." while it is shut; opening it shows the current state ----
+  const headingOf = (body) => chipViewReal(body).label;
+
+  test('(\u2212) SF item 3: a state change while the panel was never opened is in the shut panel at once (heading, reason, action), not only after the next open', async () => {
+    const r = await chipped([BLOCKED, answer('blocked', 'changed')]);
+    assert.equal(isClosed(r), true);
+    await r.clk.advance(5000); // the heartbeat brings the second answer
+    assert.equal(r.chip.getAttribute('data-k'), 'blocked');
+    assert.equal(r.popH.textContent, headingOf(answer('blocked', 'changed').body));
+    assert.equal(r.popWhy.textContent, chipViewReal(answer('blocked', 'changed').body).title);
+    assert.equal(r.again.textContent, 'Fit again');
+  });
+
+  test('(+) SF item 3: Fit again pending, the panel shut with Esc, then the answer: no "Fitting..." stays, and opening the panel later shows the current state', async () => {
+    const r = await opened([BLOCKED, answer('blocked', 'changed')]);
+    r.again.click();
+    assert.equal(r.again.textContent, 'Fitting\u2026');
+    r.log.events.resize(); // shut it while the ask is on its way (the page's resize closes the panel)
+    assert.equal(isClosed(r), true);
+    await r.clk.advance(0); // the answer: blocked / changed, the state it had been in
+    assert.equal(r.again.textContent, 'Fit again', 'drawn while shut');
+    assert.equal(r.again.getAttribute('aria-disabled'), null);
+    r.chip.click();
+    assert.deepEqual([r.pop.hidden, r.popH.textContent, r.again.textContent], [false, headingOf(answer('blocked', 'changed').body), 'Fit again']);
+  });
+
+  test('(+) SF item 3: a state change while shut, then open: the current label (fitted has no action: the button is hidden and empty; blocked / user-change has Fit again)', async () => {
+    const r = await chipped([answer('blocked', 'user-change'), FITTED]);
+    await r.clk.advance(5000);
+    assert.equal(r.chip.getAttribute('data-k'), 'fitted');
+    r.chip.click();
+    assert.deepEqual([r.pop.hidden, r.again.hidden, r.popH.textContent], [false, true, headingOf(FITTED.body)]);
+  });
+
+  test('(\u2212) SF item 3: drawing the shut panel opens nothing: it stays hidden, nothing listens on the document, nothing is placed, focus does not move', async () => {
+    const r = await chipped([BLOCKED, answer('blocked', 'changed'), FITTED]);
+    focusState.el = r.outside;
+    await r.clk.advance(5000);
+    await r.clk.advance(5000);
+    assert.equal(isClosed(r), true);
+    assert.deepEqual(r.log.placed, []);
+    assert.equal(focusState.el, r.outside);
+    assert.equal(r.chip.getAttribute('aria-expanded'), 'false');
+  });
+
+  test('(+) SF item 3 the code: renderFit and fitAgainEvent draw the panel without asking whether it is open; drawFitPop empties the button when there is no action', () => {
+    assert.doesNotMatch(fnOf('function renderFit(view, opts)'), /if \(FIT\.pop\) drawFitPop\(\)/);
+    assert.match(fnOf('function renderFit(view, opts)'), /\n  drawFitPop\(\);/);
+    assert.doesNotMatch(fnOf('function fitAgainEvent(e)'), /if \(FIT\.pop\) drawFitPop\(\)/);
+    assert.match(fnOf('function drawFitPop()'), /if \(v\.action === null\) \{[^}]*again\.textContent = '';/);
   });
 
   test('(+) F1: an answer zoomed closes the panel like fitted', async () => {
@@ -6037,8 +6461,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
    * The page with a mirror drawn at 171 x 45 (the terminal's size), the fit started and its first answer given: `pane` is the pane size nika's
    * resize made, so a redraw hold runs (`plain`: the drawn frame showed a readable input box). The replies after it are `more`.
    */
-  const heldRig = async ({ box = PANEL_145X22, pane = { cols: 145, rows: 21 }, plain = true, state = 'fitted', more = [], focus = false, before = {} } = {}) => {
-    const r = rig({ box, replies: [answerAt(state, pane), ...more] });
+  const heldRig = async ({ box = PANEL_145X22, pane = { cols: 145, rows: 21 }, plain = true, state = 'fitted', more = [], focus = false, before = {}, first = answerAt(state, pane) } = {}) => {
+    const r = rig({ box, replies: [first, ...more] });
     r.page.focus = focus;
     r.wireFit();
     r.ctx.M.cols = 171;
@@ -6768,7 +7192,7 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   });
 
   test('(+) F10: the waits are the Send chain\'s own (typeThenSubmit, submitEnter, putDraft), the scroll call and the mode and command calls, in the source', () => {
-    for (const head of ['async function submitEnter(base)', 'async function typeThenSubmit(payloads)', 'async function switchTo(target)', 'async function sendCommand(text)', 'async function putDraft(body)', 'async function suggestDraft(body)', 'async function waitHold()']) {
+    for (const head of ['async function submitEnter(base, pasted = false)', 'async function typeThenSubmit(payloads)', 'async function switchTo(target)', 'async function sendCommand(text)', 'async function putDraft(body)', 'async function suggestDraft(body)', 'async function waitHold()']) {
       assert.match(fnOf(head), /if \(HOLD\.active\) await HOLD\.wait\(\);/, head);
     }
     assert.match(fnOf('function scrollCall(body)'), /if \(HOLD\.active\) return HOLD\.wait\(\)\.then\(\(\) => scrollCall\(body\)\);/);
@@ -6926,6 +7350,300 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(tick, /if \(applied\) captureHandled\(sent\);/);
     assert.match(fnOf('function holdTimeout(pending, ctx)'), /applyHeld\(pending\.r\);\s*if \(Number\.isInteger\(pending\.n\)\) captureHandled\(pending\.n\);/);
   });
+
+  // ---- 0.5.4 AC: typed /compact on the session page (tests 11b, 12, 37, 38) ------------------------------------------------------------------
+  /** tickMirror with a recording `call`, wireTyping on a fake box, and a clock the test moves. Each edit event moves the clock 10 ms. */
+  const typingRig = () => {
+    const r = tickRig();
+    const calls = [];
+    const listeners = {};
+    const box = { addEventListener(type, f) { (listeners[type] ??= []).push(f); } };
+    let clock = 5000;
+    Object.assign(r.ctx, { composer: () => box, Date: { now: () => clock }, call: async (p, o) => { calls.push([p, o]); return r.answers.shift(); } });
+    Object.assign(r.ctx.M, { typedAt: 0, typingSent: 0 }); // as session.js declares them
+    runFns(['function wireTyping()'], ['wireTyping'], r.ctx).wireTyping();
+    const edit = (type) => { clock += 10; for (const f of listeners[type]) f({ type }); };
+    const capture = async (over) => { r.answers.push(shot(120, 30, over)); await r.tickMirror(); await flushAll(); clock += 250; return calls.at(-1); };
+    return { ...r, calls, listeners, edit, capture, M: r.ctx.M };
+  };
+  const typingHeader = (call) => call[1].headers['X-Nika-Typing'];
+
+  test('(+) 12: an input and a compositionstart each add X-Nika-Typing: 1 to the NEXT capture only (as do compositionupdate and compositionend)', async () => {
+    for (const type of ['input', 'compositionstart', 'compositionupdate', 'compositionend']) {
+      const t = typingRig();
+      assert.equal(typingHeader(await t.capture()), undefined, `${type}: nobody typed yet`);
+      t.edit(type);
+      assert.equal(typingHeader(await t.capture()), '1', `${type}: the capture after the edit`);
+      assert.equal(typingHeader(await t.capture()), undefined, `${type}: the one after that`);
+      assert.equal(t.calls.length, 3);
+    }
+  });
+
+  test('(+) 12: two edits before one capture send one header; an edit after a capture left rides the next one', async () => {
+    const t = typingRig();
+    t.edit('input');
+    t.edit('input');
+    assert.equal(typingHeader(await t.capture()), '1');
+    t.answers.push(shot(120, 30));
+    const pending = t.tickMirror(); // the request is out
+    t.edit('compositionupdate'); // typed while it was on its way
+    await pending;
+    await flushAll();
+    assert.equal(typingHeader(t.calls.at(-1)), undefined, 'that capture left before the edit');
+    assert.equal(typingHeader(await t.capture()), '1', 'the next one carries it');
+    assert.equal(typingHeader(await t.capture()), undefined);
+  });
+
+  test('(\u2212) 12: no edit, no header: ten captures in a row carry none; the box listens for exactly the four edit events and nothing else', async () => {
+    const t = typingRig();
+    for (let i = 0; i < 10; i += 1) assert.equal(typingHeader(await t.capture()), undefined, String(i));
+    assert.deepEqual(Object.keys(t.listeners).sort(), ['compositionend', 'compositionstart', 'compositionupdate', 'input']);
+  });
+
+  test('(\u2212) 12: the header is only the string 1, sits beside If-None-Match without replacing it, and the plain capture sends neither when there is no etag', async () => {
+    const t = typingRig();
+    t.M.etag = 'ab12';
+    t.edit('input');
+    const both = await t.capture();
+    assert.deepEqual(Object.keys(both[1].headers).sort(), ['If-None-Match', 'X-Nika-Typing']);
+    assert.equal(both[1].headers['If-None-Match'], '"ab12"');
+    assert.equal(both[1].headers['X-Nika-Typing'], '1');
+    const quiet = await t.capture();
+    assert.deepEqual(Object.keys(quiet[1].headers), ['If-None-Match']);
+    t.M.etag = null;
+    assert.deepEqual(Object.keys((await t.capture())[1].headers), []);
+    assert.match(t.calls[0][0], /^\/api\/app\/pane\/%2512\/capture$/);
+  });
+
+  test('(+) 12: session.js declares typedAt and typingSent on M, wires the box in boot next to the composer, and sends nothing of its own for an edit', () => {
+    assert.match(SRC, /const M = \{[^}]*\btypedAt: 0, typingSent: 0\b/);
+    assert.match(fnOf('function boot()'), /wireComposer\(\);\s*ATT\.wire\(\);\s*wireTyping\(\);/);
+    const wire = fnOf('function wireTyping()');
+    assert.doesNotMatch(wire, /\bcall\(|fetch\(|appFetch|kickMirror/);
+    assert.match(wire, /M\.typedAt = Date\.now\(\)/);
+    const tick = fnOf('async function tickMirror()');
+    assert.match(tick, /M\.typedAt > M\.typingSent/);
+    assert.match(tick, /M\.typingSent = M\.typedAt/);
+  });
+
+  test('(\u2212) 12: wireComposer is untouched by the typing stamp (its own rigs run it with no knowledge of it)', () => {
+    assert.doesNotMatch(fnOf('function wireComposer()'), /typedAt|wireTyping|X-Nika-Typing/);
+  });
+
+  test('(\u2212) 11b: ten seconds of captures with nobody at the keyboard call the capture route only, with no typing header', async () => {
+    const t = typingRig();
+    for (let i = 0; i < 40; i += 1) await t.capture(i % 3 === 0 ? { etag: `e${i}` } : {}); // 40 x 250 ms
+    assert.equal(t.calls.length, 40);
+    for (const [p, o] of t.calls) {
+      assert.match(p, /\/capture$/);
+      assert.equal(o.headers['X-Nika-Typing'], undefined);
+      assert.equal(o.method, undefined, 'a GET');
+    }
+  });
+
+  test('(\u2212) 11b: only the nine user-driven functions name a route the server counts as the user acting; none of them is reached from a timer, the polls or boot', () => {
+    const named = new Map();
+    let current = null;
+    for (const line of SRC.split('\n')) {
+      const m = /^(?:export )?(?:async )?function (\w+)\(/.exec(line);
+      if (m) current = m[1];
+      if (/\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/(mode|command|stop|answer|scroll|draft|suggestion)`|postRetry\('(keys|submit)'/.test(line)) named.set(current, true);
+    }
+    const NINE = ['answer', 'deliver', 'putDraft', 'scrollCall', 'sendCommand', 'stop', 'submitEnter', 'suggestDraft', 'switchTo'];
+    assert.deepEqual([...named.keys()].sort(), NINE, 'a new caller of a stamped route must be looked at: does it run only because the user did something?');
+    for (const head of ['async function tickMirror()', 'function startAgentPoll()', 'function startHistoryPoll()', 'async function refreshAgent()', 'async function refreshHistory()',
+      'async function loadNewest()', 'async function loadSettings()', 'async function loadCommands()', 'function boot()', 'function jumpToLive()']) {
+      const body = fnOf(head);
+      for (const name of NINE) assert.doesNotMatch(body, new RegExp(`\\b${name}\\(`), `${head} calls ${name}`);
+    }
+    // the draft sync and the suggestion ask only after an edit or a Tab: their callers hand the calls over as functions, not at boot
+    assert.doesNotMatch(fnOf('function boot()'), /putDraft|suggestDraft|scrollCall|submitEnter/);
+  });
+
+  // 37: acView and the line
+  const AC_AT = new Date(2026, 10, 20, 14, 2, 10).getTime(); // 14:02 local
+  const acNote = (state, over = {}) => ({ state, at: AC_AT, tokens: 331000, ...over });
+
+  test('(+) 37: acView gives each state its own icon, long and short text (and data-st)', () => {
+    assert.deepEqual(acView(acNote('typed')), { state: 'typed', icon: 'clock', long: 'nika typed /compact at 14:02, at 331k', short: '/compact 14:02' });
+    assert.deepEqual(acView(acNote('compacted')), { state: 'compacted', icon: 'compact', long: 'nika compacted this session at 14:02, at 331k', short: 'Compacted 14:02' });
+    assert.deepEqual(acView(acNote('stopped')), {
+      state: 'stopped', icon: 'warn', long: 'nika stopped typing /compact here after 3 failed tries; it tries again after nika restarts', short: '/compact stopped',
+    });
+    const views = ['typed', 'compacted', 'stopped'].map((s) => acView(acNote(s)));
+    for (const k of ['icon', 'long', 'short']) assert.equal(new Set(views.map((v) => v[k])).size, 3, `${k} differs per state`);
+  });
+
+  test('(\u2212) 37: acView of nothing or of a malformed note is null (the line stays hidden)', () => {
+    for (const bad of [null, undefined, 'typed', 7, [], {}, acNote('done'), acNote('typed', { at: '1' }), acNote('typed', { tokens: -1 }), { ...acNote('typed'), extra: 1 }, acNote('typed', { at: 9e15 })]) {
+      assert.equal(acView(bad), null, JSON.stringify(bad));
+    }
+  });
+
+  /** renderAc and noteCompacted on a fake line shaped as session.html has it: an icon, .ac-long and .ac-short. */
+  const lineRig = () => {
+    const line = new El('span');
+    line.className = 'sess-ac';
+    line.hidden = true;
+    const svg = new El('svg');
+    const use = new El('use');
+    use.setAttribute('href', '#i-clock');
+    svg.append(use);
+    const long = new El('span');
+    long.className = 'ac-long';
+    const short = new El('span');
+    short.className = 'ac-short';
+    short.setAttribute('aria-hidden', 'true');
+    line.append(svg, long, short);
+    const said = [];
+    const W = { compacted: null };
+    const ctx = { $: (id) => (id === 'sess-ac' ? line : null), W, announce: (m) => said.push(m), acView, cleanNote };
+    const fns = runFns(['function renderAc(note)', 'function noteCompacted(raw)'], ['renderAc', 'noteCompacted'], ctx);
+    return { line, use, long, short, said, W, ...fns };
+  };
+
+  test('(+) 37: a typed note shows the line: data-st, the icon, the long and the short text, as text only; the polite region says the long sentence once', () => {
+    const r = lineRig();
+    r.noteCompacted(acNote('typed'));
+    assert.equal(r.line.hidden, false);
+    assert.equal(r.line.attrs['data-st'], 'typed');
+    assert.equal(r.use.attrs.href, '#i-clock');
+    assert.equal(r.long.textContent, 'nika typed /compact at 14:02, at 331k');
+    assert.equal(r.short.textContent, '/compact 14:02');
+    assert.equal(r.short.attrs['aria-hidden'], 'true');
+    assert.equal(r.line.accName, 'nika typed /compact at 14:02, at 331k', 'a screen reader hears the long sentence once, the short text and the icon are hidden');
+    assert.deepEqual(r.said, ['nika typed /compact at 14:02, at 331k']);
+    assert.deepEqual(JSON.parse(JSON.stringify(r.W.compacted)), acNote('typed'));
+    r.noteCompacted(acNote('typed')); // the next capture brings the same note
+    r.noteCompacted(acNote('typed', { tokens: 332000 }));
+    assert.equal(r.said.length, 1, 'said once, not at every capture');
+  });
+
+  test('(+) 37: the same note again (about 4 captures a second) draws nothing; a changed field redraws', () => {
+    const r = lineRig();
+    r.noteCompacted(acNote('typed'));
+    r.long.textContent = 'marker';
+    r.short.textContent = 'marker';
+    r.noteCompacted(acNote('typed')); // a fresh object with the same three fields
+    assert.equal(r.long.textContent, 'marker', 'not redrawn');
+    assert.equal(r.short.textContent, 'marker', 'not redrawn');
+    r.noteCompacted(acNote('typed', { tokens: 332000 }));
+    assert.equal(r.long.textContent, 'nika typed /compact at 14:02, at 332k', 'a changed size redraws');
+    r.long.textContent = 'marker';
+    r.noteCompacted(acNote('typed', { tokens: 332000, at: AC_AT + 60000 }));
+    assert.equal(r.long.textContent, 'nika typed /compact at 14:03, at 332k', 'a changed time redraws');
+  });
+
+  test('(+) 37: stopped is announced; typed to stopped and null to stopped both count as a change', () => {
+    const r = lineRig();
+    r.noteCompacted(acNote('stopped'));
+    assert.equal(r.line.attrs['data-st'], 'stopped');
+    assert.equal(r.use.attrs.href, '#i-warn');
+    assert.deepEqual(r.said, ['nika stopped typing /compact here after 3 failed tries; it tries again after nika restarts']);
+    const q = lineRig();
+    q.noteCompacted(acNote('typed'));
+    q.noteCompacted(acNote('stopped'));
+    assert.equal(q.said.length, 2);
+    q.noteCompacted(null);
+    q.noteCompacted(acNote('stopped'));
+    assert.equal(q.said.length, 3, 'gone and back is a change');
+  });
+
+  test('(\u2212) 37: compacted is shown but never announced (it follows from typed); a null note hides the line and says nothing', () => {
+    const r = lineRig();
+    r.noteCompacted(acNote('typed'));
+    r.noteCompacted(acNote('compacted'));
+    assert.equal(r.line.attrs['data-st'], 'compacted');
+    assert.equal(r.use.attrs.href, '#i-compact');
+    assert.equal(r.long.textContent, 'nika compacted this session at 14:02, at 331k');
+    assert.equal(r.short.textContent, 'Compacted 14:02');
+    assert.equal(r.said.length, 1, 'only the typed one');
+    const c = lineRig();
+    c.noteCompacted(acNote('compacted'));
+    assert.deepEqual(c.said, [], 'first seen as compacted: still silent');
+    r.noteCompacted(null);
+    assert.equal(r.line.hidden, true);
+    assert.equal(r.W.compacted, null);
+    assert.equal(r.said.length, 1);
+  });
+
+  test('(\u2212) 37: a malformed note, or none at all (an older server), leaves the line hidden, silent and the stored note null', () => {
+    for (const bad of [undefined, null, 'typed', 7, [], {}, acNote('done'), acNote('typed', { at: 'x' }), { ...acNote('stopped'), extra: 1 }]) {
+      const r = lineRig();
+      r.noteCompacted(bad);
+      assert.equal(r.line.hidden, true, JSON.stringify(bad));
+      assert.deepEqual(r.said, [], JSON.stringify(bad));
+      assert.equal(r.W.compacted, null);
+    }
+  });
+
+  test('(\u2212) 37: markup in the note cannot reach the line: the numbers and words are the page\'s own, set as text', () => {
+    const r = lineRig();
+    r.noteCompacted({ state: '<img src=x>', at: 1, tokens: 1 });
+    assert.equal(r.line.hidden, true);
+    assert.equal(r.long.textContent.includes('<'), false);
+    const body = fnOf('function renderAc(note)') + fnOf('function noteCompacted(raw)');
+    assert.doesNotMatch(body, /innerHTML|insertAdjacentHTML|outerHTML|\.style\b|setAttribute\('style'/);
+    assert.match(body, /\.textContent = /);
+  });
+
+  test('(+) 37: a capture hands its note to the line inside a guard, so a failure there never stops the mirror; the stylesheet and markup carry the line', () => {
+    assert.match(fnOf('function handleCapture(r)'), /noteScreen\(r\.body\);\s*try \{\s*noteCompacted\(r\.body\.compacted\);\s*\} catch \{[^}]*\}/);
+    assert.match(fnOf('function renderContext(agent)'), /ctxEl\(agent\.context, \{ header: true, el, note: W\.compacted \}\)/);
+    assert.match(HTML, /<span class="ctx" id="sess-ctx" hidden><\/span>\s*<span class="sess-ac" id="sess-ac" hidden><svg class="ic" aria-hidden="true"><use href="#i-clock"\/><\/svg><span class="ac-long"><\/span><span class="ac-short" aria-hidden="true"><\/span><\/span>/);
+    for (const sym of ['i-clock', 'i-compact', 'i-warn']) assert.equal(HTML.split(`<symbol id="${sym}"`).length - 1, 1, sym);
+    const ids = [...HTML.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
+    assert.equal(ids.filter((x) => x === 'sess-ac').length, 1);
+  });
+
+  test('(+) 37: the line is not focusable and takes no action; no new token, no inline style', () => {
+    const tag = /<span class="sess-ac"[^>]*>/.exec(HTML)?.[0] ?? '';
+    assert.doesNotMatch(tag, /tabindex|role=|onclick| style=/);
+    const css = strip(CSS);
+    const before = new Set([...strip(read('tokens.css')).matchAll(/--[a-z0-9-]+\s*:/g)].map((m) => m[0]));
+    for (const m of css.matchAll(/(--[a-z0-9-]+)\s*:/g)) if (/sess-ac|ac-long|ac-short/.test(css.slice(Math.max(0, m.index - 200), m.index))) assert.ok(before.has(`${m[1]}:`) || before.has(`${m[1]} :`), `new token ${m[1]}`);
+    assert.doesNotMatch(css.slice(css.indexOf('.sess-ac')), /--(ac|sess-ac)-[a-z]+\s*:/);
+  });
+
+  test('(+) 37: CSS: each state has its own colour from existing tokens; long text above the narrow breakpoint, short text below it, the long one stays readable by assistive tech', () => {
+    const css = strip(CSS);
+    assert.match(css, /\.sess-ac\[data-st="typed"\]\s*\{\s*color:\s*var\(--fit-other\);\s*\}/);
+    assert.match(css, /\.sess-ac\[data-st="compacted"\]\s*\{\s*color:\s*var\(--text-muted\);\s*\}/);
+    assert.match(css, /\.sess-ac\[data-st="stopped"\]\s*\{\s*color:\s*var\(--idle\);\s*\}/);
+    assert.match(css, /\.sess-ac\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;/);
+    assert.match(css, /\.sess-ac \.ac-short\s*\{\s*display:\s*none;\s*\}/, 'wide: only the long text is drawn');
+    const narrow = /@media \(max-width: 1000px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
+    assert.match(narrow, /\.sess-ac \.ac-short\s*\{\s*display:\s*inline;\s*\}/, 'narrow: the short text is drawn');
+    const longRule = /\.sess-meta \.sess-ac \.ac-long\s*\{([^}]*)\}/.exec(narrow)?.[1] ?? '';
+    assert.match(longRule, /position:\s*absolute/);
+    assert.match(longRule, /clip:\s*rect\(0 0 0 0\)/);
+    assert.doesNotMatch(longRule, /display:\s*none|visibility:\s*hidden/, 'display none would take the only text a screen reader hears out of the tree');
+  });
+
+  // 38: contrast (the mode-chip pattern: tokens of each theme, WCAG 2.x, 4.5:1 for --fs-small text on the header's --surface)
+  {
+    const { THEME, ratio } = colourKit();
+    const STATE_TOKEN = { typed: '--fit-other', compacted: '--text-muted', stopped: '--idle' };
+    for (const name of Object.keys(THEME)) {
+      test(`(+) 38 contrast (${name}): typed, compacted and stopped are each 4.5:1 or more on the header's --surface`, () => {
+        const v = THEME[name];
+        for (const [state, token] of Object.entries(STATE_TOKEN)) {
+          assert.match(v[token] ?? '', /^#[0-9a-f]{6}$/i, `${token} in ${name}`);
+          assert.ok(ratio(v[token], v['--surface']) >= 4.5, `${state} (${token}) on --surface: ${ratio(v[token], v['--surface']).toFixed(2)}`);
+        }
+      });
+    }
+
+    test('(\u2212) 38: the header sits on --surface, and the colour used per state is the one the stylesheet names (so the numbers above are the real ones)', () => {
+      const css = strip(CSS);
+      assert.match(css, /\.bar\s*\{[^}]*background:\s*var\(--surface\)/);
+      for (const [state, token] of Object.entries(STATE_TOKEN)) assert.match(css, new RegExp(`\\.sess-ac\\[data-st="${state}"\\]\\s*\\{\\s*color:\\s*var\\(${token}\\)`));
+    });
+
+    test('(\u2212) 38: the check can fail: a pale grey on --surface is caught', () => {
+      assert.ok(ratio('#cccccc', THEME.light['--surface']) < 4.5);
+    });
+  }
 
   // ---- F10: the stylesheet (design F10 6.2) ------------------------------------------------------------------------------------------------
   test('(+) F10: session.css has the nika-refit keyframes (fade and zoom from --refit-from), the 120 ms class anchored bottom-left, and no animation under reduced motion', () => {
@@ -7298,8 +8016,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
   /** What the drawn capture says about the dialog: the page's own W.dialog and the raw body the hold judges. */
   const showDialog = (r, dialog) => { r.ctx.W.dialog = dialog; r.ctx.M.body = { ...r.ctx.M.body, dialog }; };
   /** The page with a 100 x 30 panel and pane, the fit started and its first answer given (`state`); `more` are the answers to the next requests. */
-  const growRig = async ({ state = 'fitted', more = [] } = {}) => {
-    const r = rig({ replies: [answerAt(state, { cols: 100, rows: 30 }), ...more] });
+  const growRig = async ({ state = 'fitted', more = [], first = answerAt(state, { cols: 100, rows: 30 }) } = {}) => {
+    const r = rig({ replies: [first, ...more] });
     r.wireFit();
     r.ctx.M.cols = 100;
     r.ctx.M.rows = 30;
@@ -7332,6 +8050,71 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.ctx.GR.rows, 60);
   });
 
+  // ---- 0.5.4 QP (owner answer Q1 = A) and O2: a preview with hidden lines and a plan cut at the top also get rows ----
+  const PVHID = { state: 'ready', kind: 'ask', at: 'question', sig: '0123456789abcdef', preview: { rows: ['a'], hidden: 4, fallback: false, view: '0123456789abcdef' } };
+  const PVFALL = { ...PVHID, preview: { rows: [], hidden: 4, fallback: true, view: '0123456789abcdef' } };
+  const PLANCUT = { state: 'unreadable', kind: 'plan', reason: 'cut' };
+  /** One dialog seen on a capture, and again on a 304 250 ms later: has the page asked for more rows. */
+  const lookTwice = async (r, dialog) => {
+    showDialog(r, dialog);
+    r.fitCaptured();
+    await r.clk.advance(250);
+    r.handleCapture({ status: 304, body: null });
+  };
+
+  test('(+) QP Q1 = A: a preview with hidden lines, seen twice 250 ms apart in Auto, asks for the grown rows and the form is told it is growing', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    await lookTwice(r, PVHID);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 60, false)]);
+    assert.equal(r.ctx.GR.phase, 'stepping');
+    assert.equal(r.growing(), true, 'previewState turns this into the growing tag');
+  });
+
+  test('(\u2212) QP Q1 = A: the fallback and a preview with nothing hidden ask nothing; the chip in terminal (a terminal has the size) asks nothing for hidden lines either', async () => {
+    for (const dialog of [PVFALL, { ...PVHID, preview: { rows: ['a'], hidden: 0, fallback: false } }]) {
+      const r = await growRig();
+      await lookTwice(r, dialog);
+      assert.deepEqual(rowsOfPuts(r), [30], JSON.stringify(dialog.preview));
+      assert.equal(r.ctx.GR.phase, 'idle');
+    }
+    const t = await growRig({ state: 'terminal' });
+    for (let i = 0; i < 6; i += 1) await lookTwice(t, PVHID);
+    assert.deepEqual(rowsOfPuts(t), [30]);
+    assert.equal(t.ctx.GR.phase, 'idle');
+    assert.equal(t.growing(), false, 'the hidden state, not the growing one');
+  });
+
+  test('(+) O2: a plan cut at the top, seen twice 250 ms apart in Auto, asks for the grown rows', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    await lookTwice(r, PLANCUT);
+    assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 60, false)]);
+    assert.equal(r.ctx.GR.phase, 'stepping');
+  });
+
+  test('(\u2212) O2: a plan in the terminal chip state asks nothing; and a grown pane whose plan closes goes back to the base size after a second', async () => {
+    const t = await growRig({ state: 'terminal' });
+    for (let i = 0; i < 6; i += 1) await lookTwice(t, PLANCUT);
+    assert.deepEqual(rowsOfPuts(t), [30]);
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 30 })] });
+    await lookTwice(r, PLANCUT);
+    assert.equal(r.ctx.GR.phase, 'stepping');
+    paneAt(r, 60);
+    showDialog(r, { state: 'ready', kind: 'plan', at: 'plan', sig: '0123456789abcdef' });
+    for (let i = 0; i < 8; i += 1) {
+      await r.clk.advance(250);
+      r.handleCapture({ status: 304, body: null });
+    }
+    assert.equal(r.ctx.GR.phase, 'held', 'a plan that is whole is held, not closed and grown again');
+    assert.deepEqual(rowsOfPuts(r), [30, 60]);
+    showDialog(r, null);
+    for (let i = 0; i < 6; i += 1) {
+      await r.clk.advance(250);
+      r.handleCapture({ status: 304, body: null });
+    }
+    assert.equal(r.ctx.GR.phase, 'idle');
+    assert.deepEqual(rowsOfPuts(r), [30, 60, 30], 'closed: the base size is asked back');
+  });
+
   test('(−) F16: a cut seen once and gone before it was confirmed asks nothing, and a question that is whole asks nothing', async () => {
     const r = await growRig();
     showDialog(r, CUTD);
@@ -7358,8 +8141,9 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.equal(r.ctx.GR.phase, 'idle');
   });
 
-  test('(−) F16: the same cut question for a plan, for a shortened text (clipped) and with no planner or base asks nothing; a gone or lost pane neither', async () => {
-    for (const dialog of [{ state: 'unreadable', kind: 'plan', reason: 'cut' }, { state: 'unreadable', kind: 'ask', reason: 'clipped' }]) {
+  // 0.5.4 O2 (requirement change, not a weakened test): a plan cut at the top grows like a question, so it left this list; the O2 test below asks for the grow and keeps the other plan reasons out
+  test('(\u2212) F16: the same cut question for a shortened text (clipped) or a plan that is unreadable for another reason, and with no planner or base, asks nothing; a gone or lost pane neither', async () => {
+    for (const dialog of [{ state: 'unreadable', kind: 'plan', reason: 'clipped' }, { state: 'unreadable', kind: 'plan', reason: 'layout' }, { state: 'unreadable', kind: 'ask', reason: 'clipped' }]) {
       const r = await growRig();
       showDialog(r, dialog);
       r.fitCaptured();
@@ -7616,16 +8400,16 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.match(fnOf('function holdTimeout(pending, ctx)'), /FIT\.planner\?\.size\(want\.cols, want\.rows, \{ now: true \}\);/);
     assert.match(fnOf('function fitScale()'), /scaleRows\(\{ paneRows: M\.rows, G: GR, fitted: FIT\.state === 'fitted', baseRows: FIT\.base\?\.rows, d: FIT\.d, hide: FIT\.hide \}\)/);
     assert.match(fnOf('function fitScale()'), /FIT\.scaledAt = \{ cols: M\.cols, rows: M\.rows \};/, 'the record keeps the real pane size');
-    assert.match(fnOf('function fitSized(pane)'), /const cutBefore = GR\.phase === 'stepping' && cutQuestion\(M\.body\.dialog\);\s*HOLD\.start\(\{ want: \{ cols: pane\.cols, rows: pane\.rows \}, plainBefore, modeBefore, cutBefore \}\);/);
+    assert.match(fnOf('function fitSized(pane)'), /const cutBefore = GR\.phase === 'stepping' && growWanted\(M\.body\.dialog\);\s*HOLD\.start\(\{ want: \{ cols: pane\.cols, rows: pane\.rows \}, plainBefore, modeBefore, cutBefore \}\);/);
     assert.match(fnOf('function drawFitPop()'), /fitPanelView\(FIT\.view, \{ \.\.\.FIT\.ui, room: FIT\.room, grow: GR\.phase === 'stepping' \|\| GR\.phase === 'held' \}\)/);
     assert.match(fnOf('function fitCaptured()'), /growTick\(\);\s*\}/);
-    assert.match(fnOf('function handleCapture(r)'), /if \(r\.status === 304\) \{\s*recovered\(\);\s*try \{\s*growTick\(\);\s*\} catch \{[^}]*\}\s*return;\s*\}/);
+    assert.match(fnOf('function handleCapture(r)'), /if \(r\.status === 304\) \{\s*recovered\(\);\s*try \{\s*growTick\(\);\s*\} catch \{[^}]*\}\s*try \{\s*DS\.tick\(\);\s*\} catch \{[^}]*\}\s*return;\s*\}/); // LTF MF-1 (requirement change): the 304 branch ends with the sync's tick in its own try block
     assert.match(fnOf('function setGone()'), /M\.gone = true;\s*GR = GROW_IDLE;/);
     assert.match(SRC, /if \(r\.status === 403\) \{\s*M\.fatal = true;\s*clearTimeout\(M\.timer\);\s*SC\.planner\?\.close\(\);\s*GR = GROW_IDLE;/);
-    assert.match(fnOf('function renderMode()'), /DF\?\.render\(\{ pane: W\.pane, dialog: W\.dialog, name: A\.name, attention: A\.attention, growing: growing\(\) \}\);/);
-    assert.match(fnOf('function growing()'), /return GR\.phase === 'stepping' && FIT\.state === 'fitted';/);
+    assert.match(fnOf('function renderMode()'), /const g = growing\(\);\s*GROWING_SHOWN = g;\s*DF\?\.render\(\{ pane: W\.pane, dialog: W\.dialog, name: A\.name, attention: A\.attention, growing: g \}\);/); // 0.5.4 QPF F6 (requirement change): what the form is told is kept
+    assert.match(fnOf('function growing()'), /return GR\.phase === 'stepping' && FIT\.state === 'fitted' && fitResizes\(\);/); // 0.5.4 QPF F6 (requirement change): also false while the mode is Terminal or Off
     assert.match(SRC, /^let GR = GROW_IDLE;/m);
-    assert.match(JS['session.js'], /import \{[^}]*\bGROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion\b[^}]*\} from '\.\/fit-ui\.js';/);
+    assert.match(JS['session.js'], /import \{[^}]*\bGROW_IDLE, growStep, growRebase, growAsk, scaleRows, growWanted\b[^}]*\} from '\.\/fit-ui\.js';/);
   });
 
   test('(−) F16: the new page code keeps constraint 6: no markup sink, no style attribute, no inline script, no new request of its own', () => {
@@ -7869,7 +8653,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     assert.deepEqual([...src.matchAll(/\bfitPanelClosed\(/g)].length, 2, 'the declaration and the one call');
     assert.match(fnOf('function growTick()'), /if \(!FIT\.planner \|\| !FIT\.base \|\| M\.gone \|\| M\.fatal\) return;\s*fitPanelClosed\(\);\s*const was = /);
     assert.match(fnOf('function fitCommit()'), /if \(!frame\) return;\s*FIT\.short = held \|\| boxShortened\(\);/); // 0.5.2 R2: a commit taken under a panel's layout is short too, whatever the panels say now
-    assert.match(fnOf('function fitPanelClosed()'), /if \(!FIT\.short \|\| boxShortened\(\)\) return;\s*FIT\.short = false;\s*if \(!FIT\.planner \|\| FIT\.state === null \|\| FIT\.state === 'blocked' \|\| !fitFocused\(\)\) return;\s*fitCommit\(\);/);
+    // 0.5.4 P2 (requirement change, design-052d 2.3 step 5): the guard also stops when nika does not resize the window (fitResizes: the mode terminal or off, or the state off)
+    assert.match(fnOf('function fitPanelClosed()'), /if \(!FIT\.short \|\| boxShortened\(\)\) return;\s*FIT\.short = false;\s*if \(!FIT\.planner \|\| FIT\.state === null \|\| FIT\.state === 'blocked' \|\| !fitResizes\(\) \|\| !fitFocused\(\)\) return;\s*fitCommit\(\);/);
     const body = code(fnOf('function fitPanelClosed()') + fnOf('function boxShortened()'));
     assert.doesNotMatch(body, /setTimeout|addEventListener|ResizeObserver|call\(|fetch\(|document\.|innerHTML/);
     assert.deepEqual(findSinks(body), []);
@@ -8359,8 +9144,8 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     Object.assign(r.ctx, { A: { kind, name: 'builder-1', attention: 'Claude has a question' }, attnNote: attnNoteReal, passKeyLabel, MAC: false });
     r.ctx.W.prompt = null;
     vm.runInNewContext(`${fnOf('function renderAttn()')}; ({ renderAttn })`, r.ctx);
-    r.ctx.DF = createDialogFormReal({ root, paneId: '%1', path: (t) => `/x/${t}`, call: async () => ({ status: 200, body: {} }), announce() {}, say() {}, showProblem() {}, clearProblem() {}, setGone() {}, composer: () => ({ focus() {} }), refresh: () => r.ctx.renderAttn(), now: () => r.clk.now, after: r.ctx.setTimeout, cancel: r.ctx.clearTimeout });
-    r.ctx.renderMode = () => r.ctx.DF.render({ pane: r.ctx.W.pane, dialog: r.ctx.W.dialog, name: r.ctx.A.name, attention: r.ctx.A.attention, growing: r.growing() });
+    r.ctx.DF = createDialogFormReal({ root, paneId: '%1', path: (t) => `/x/${t}`, call: async () => ({ status: 200, body: {} }), announce() {}, say() {}, showProblem() {}, clearProblem() {}, clearProblemFrom() {}, setGone() {}, composer: () => ({ focus() {} }), refresh: () => r.ctx.renderAttn(), now: () => r.clk.now, after: r.ctx.setTimeout, cancel: r.ctx.clearTimeout });
+    r.ctx.renderMode = () => { const g = r.growing(); r.ctx.GROWING_SHOWN = g; r.ctx.DF.render({ pane: r.ctx.W.pane, dialog: r.ctx.W.dialog, name: r.ctx.A.name, attention: r.ctx.A.attention, growing: g }); };
     return { r, root, note, text };
   };
   /** A drawn capture, in the page's order: the mode/form render (noteScreen) first, then the fit's look (fitCaptured). */
@@ -8426,6 +9211,551 @@ describe('W7-T3: the fit in the session window (wiring)', () => {
     seen(busy.r, { state: 'unreadable', kind: 'ask', reason: 'wide' });
     assert.equal(busy.root.hidden, true, 'no form');
     assert.equal(busy.note.hidden, true, 'the note is the registry\'s word `attn` (LC18 kept it at busy by hand)');
+  });
+
+  // ---- 0.5.4 P2 (design-052d 2.3, 2.4): the Fit mode in the session window: the chip's looks (M-20) and the gates of the room and the grow (M-22) ----
+  const DOT_ = '\u00b7';
+  /** An answer of the server with a mode (the test's own, so the mode is explicit); `off` has no pane. */
+  const answerM = (state, mode, pane = { cols: 100, rows: 30 }, reason = null, panes = 1) => ({ status: 200, body: { fit: { state, reason, pane, panes, userZoom: false, mode } } });
+  const OFF_ANSWER = { status: 200, body: { fit: { state: 'off', reason: null, mode: 'off' } } };
+  const chipNow = (r) => ({ k: r.chip.getAttribute('data-k'), mode: r.ctx.FIT.mode, state: r.ctx.FIT.state, text: r.chip.kids[1]?.textContent, href: r.chip.kids[0]?.kids[0]?.getAttribute('href') });
+
+  test('(+) M-20 renderFit draws each new look: data-k is the view\'s look, the icon is its sprite symbol, the words, the label and the title are the view\'s, and it is announced once', () => {
+    const cases = [
+      [answerM('fitted', 'fill'), 'fill', '#i-fit-pin', `Fit ${DOT_} always fills`, 'Fit: always fills the panel'],
+      [answerM('fitted', 'fill', undefined, 'terminal'), 'fill', '#i-fit-pin', `Fit ${DOT_} always fills`, 'Fit: always fills the panel'],
+      [answerM('zoomed', 'fill', undefined, 'panel-smaller'), 'zoomed', '#i-zoom', `Fit ${DOT_} zoomed, text scaled`, 'Fit: zoomed, text scaled'],
+      [answerM('terminal', 'terminal', undefined, null, 1), 'term-set', '#i-term-pin', `Fit ${DOT_} terminal's size (set)`, "Fit: your terminal's size, from Settings"],
+      [answerM('terminal', 'terminal', undefined, null, 3), 'term-set', '#i-term-pin', `Fit ${DOT_} terminal's size (set)`, "Fit: your terminal's size, from Settings"],
+      [OFF_ANSWER, 'off-set', '#i-fit-off', `Fit ${DOT_} off in Settings`, 'Fit: off in Settings'],
+    ];
+    for (const [reply, look, href, text, label] of cases) {
+      const r = rig();
+      const view = chipViewReal(reply.body);
+      r.renderFit(view);
+      assert.equal(r.chip.getAttribute('data-k'), look, label);
+      assert.equal(r.chip.kids[0].kids[0].getAttribute('href'), href, label);
+      assert.equal(r.chip.kids[1].textContent, text, label);
+      assert.equal(r.chip.getAttribute('aria-label'), label);
+      assert.equal(r.chip.getAttribute('title'), view.title);
+      assert.equal(r.wrap.hidden, false);
+      assert.deepEqual(r.log.said, [view.say]);
+    }
+  });
+
+  test('(+) M-20 the Auto looks keep data-k = their state (the older chips look as before)', () => {
+    for (const state of ['fitted', 'zoomed', 'blocked', 'other', 'terminal']) {
+      const r = rig();
+      r.renderFit(chipViewReal(answerM(state, 'auto', undefined, state === 'zoomed' ? 'panel-smaller' : null).body));
+      assert.equal(r.chip.getAttribute('data-k'), state);
+    }
+  });
+
+  test('(+) M-20 the panel of a new look draws the Settings hint with no action, and the panel of zoomed under fill draws Fit again; a redraw in place follows the chip', () => {
+    const r = rig();
+    r.renderFit(chipViewReal(answerM('fitted', 'fill').body));
+    r.openFitPop();
+    assert.equal(r.popH.textContent, 'Fit: always fills the panel');
+    assert.equal(r.popHint.hidden, false);
+    assert.equal(r.popHint.textContent, "Change it in nika's Settings, under Session window.");
+    assert.equal(r.again.hidden, true);
+    r.renderFit(chipViewReal(answerM('zoomed', 'fill', undefined, 'panel-smaller').body));
+    assert.equal(r.popHint.textContent, 'Fit again tries once more.');
+    assert.equal(r.again.hidden, false);
+    assert.equal(r.again.textContent, 'Fit again');
+    r.renderFit(chipViewReal(OFF_ANSWER.body));
+    assert.equal(r.popH.textContent, 'Fit: off in Settings');
+    assert.equal(r.popHint.textContent, "Change it in nika's Settings, under Session window.");
+    assert.equal(r.again.hidden, true);
+  });
+
+  test('(+) M-20 through the planner: the chip and FIT.mode follow the answers of fill, terminal, off and back to auto, one heartbeat each', async () => {
+    const r = await chipped([answerM('fitted', 'fill'), answerM('terminal', 'terminal', undefined, null, 3), OFF_ANSWER, answerM('fitted', 'auto')]);
+    assert.deepEqual(chipNow(r), { k: 'fill', mode: 'fill', state: 'fitted', text: `Fit ${DOT_} always fills`, href: '#i-fit-pin' });
+    await r.clk.advance(5000);
+    assert.deepEqual(chipNow(r), { k: 'term-set', mode: 'terminal', state: 'terminal', text: `Fit ${DOT_} terminal's size (set)`, href: '#i-term-pin' });
+    await r.clk.advance(5000);
+    assert.deepEqual(chipNow(r), { k: 'off-set', mode: 'off', state: 'off', text: `Fit ${DOT_} off in Settings`, href: '#i-fit-off' });
+    await r.clk.advance(5000);
+    assert.deepEqual(chipNow(r), { k: 'fitted', mode: 'auto', state: 'fitted', text: `Fit ${DOT_} fills the panel`, href: '#i-fit' });
+    assert.equal(r.log.calls.length, 4, 'the page keeps asking in every mode, Off included: one request per beat');
+  });
+
+  test('(+) M-20 FIT.mode follows an answer whose chip key did not change (fitted:terminal in Auto, then the same with mode terminal for one request): the gates see the new mode at once', async () => {
+    const r = await chipped([answerM('fitted', 'auto', undefined, 'terminal'), answerM('fitted', 'terminal', undefined, 'terminal')]);
+    assert.equal(r.ctx.FIT.mode, 'auto');
+    await r.clk.advance(5000);
+    assert.deepEqual([r.ctx.FIT.mode, r.ctx.FIT.state, r.chip.getAttribute('data-k')], ['terminal', 'fitted', 'fitted'], 'the chip looks as Auto (ruling 1); the mode is the answer\'s');
+  });
+
+  test('(\u2212) M-20 a 403 hides the chip and puts FIT.mode back to auto with the state null', async () => {
+    const r = await chipped([answerM('fitted', 'fill'), { status: 403, body: { error: 'forbidden' } }]);
+    assert.equal(r.ctx.FIT.mode, 'fill');
+    await r.clk.advance(5000);
+    assert.deepEqual([r.ctx.FIT.mode, r.ctx.FIT.state, r.wrap.hidden], ['auto', null, true]);
+  });
+
+  test('(\u2212) M-20 a refusal, and a 200 that is not a fit answer, leave FIT.mode and the chip as they were', async () => {
+    const r = await chipped([answerM('fitted', 'fill'), { status: 502, body: { error: 'tmux_failed' } }, { status: 200, body: null }]);
+    await r.clk.advance(5000);
+    await r.clk.advance(5000);
+    assert.ok(r.log.calls.length >= 3, 'the two bad answers were asked for: ' + r.log.calls.length);
+    assert.deepEqual(chipNow(r), { k: 'fill', mode: 'fill', state: 'fitted', text: `Fit ${DOT_} always fills`, href: '#i-fit-pin' });
+  });
+
+  test('(+) M-20 the code: FIT starts with mode auto, the planner is given a mode sink, fitChip puts the mode back to auto with the chip, and the chip\'s data-k is the view\'s look', () => {
+    assert.match(SRC, /const FIT = \{[^\n]*\bmode: 'auto'[^\n]*\};/);
+    assert.match(fnOf('function wireFit()'), /mode: \(m\) => \{ FIT\.mode = m; growSync\(\); \},/); // 0.5.4 QPF F6 (requirement change): the form hears of a mode change at once
+    assert.match(fnOf('function fitChip(view, opts)'), /FIT\.state = view \? view\.state : null;\s*if \(!view\) FIT\.mode = 'auto';/);
+    assert.match(fnOf('function renderFit(view, opts)'), /el\.setAttribute\('data-k', view\.look\);/);
+    assert.doesNotMatch(fnOf('function renderFit(view, opts)'), /view\.state/);
+    assert.match(fnOf('function fitResizes()'), /return FIT\.state !== 'off' && FIT\.mode !== 'terminal' && FIT\.mode !== 'off';/);
+  });
+
+  test('(+) M-22 the code: the four places that ask for a size ask fitResizes first (the room entry, the grow input, FX2, FX3), and nothing else calls it', () => {
+    assert.match(fnOf('function holdTimeout(pending, ctx)'), /if \(pending && frame && fitResizes\(\) && roomStep\(\{/);
+    assert.match(fnOf('function growTick()'), /const resizes = fitResizes\(\);/);
+    assert.match(fnOf('function growTick()'), /fitted: FIT\.state === 'fitted' && resizes,/); // round 4: one call, used for the input and for the guard below
+    assert.match(fnOf('function fitBaseFresh()'), /FIT\.state === 'blocked' \|\| !fitResizes\(\) \|\| !fitFocused\(\) \|\| boxShortened\(\)\) return;/);
+    assert.match(fnOf('function fitPanelClosed()'), /FIT\.state === 'blocked' \|\| !fitResizes\(\) \|\| !fitFocused\(\)\) return;/);
+    assert.equal([...SRC.matchAll(/\bfitResizes\(\)/g)].length, 6, 'the declaration, growing() (0.5.4 QPF F6) and the four places');
+    assert.doesNotMatch(fnOf('function fitResizes()'), /setTimeout|addEventListener|call\(|fetch\(|document\.|innerHTML/);
+  });
+
+  // -- fitResizes: the one place that says whether nika resizes the window right now
+  test('(+) M-22 fitResizes is true for Auto and Fill whatever the state, and for no state yet', () => {
+    const r = rig();
+    for (const [state, mode] of [['fitted', 'auto'], ['fitted', 'fill'], ['zoomed', 'fill'], ['terminal', 'auto'], ['blocked', 'auto'], ['other', 'auto'], [null, 'auto']]) {
+      r.ctx.FIT.state = state;
+      r.ctx.FIT.mode = mode;
+      assert.equal(r.fitResizes(), true, `${state} + ${mode}`);
+    }
+  });
+
+  test('(\u2212) M-22 fitResizes is false for the mode terminal or off, whatever the state (the one answer that still says fitted, ruling 1), and for the state off', () => {
+    const r = rig();
+    for (const [state, mode] of [['fitted', 'terminal'], ['fitted', 'off'], ['terminal', 'terminal'], ['off', 'off'], ['off', 'auto'], ['off', 'fill'], ['zoomed', 'terminal'], [null, 'terminal']]) {
+      r.ctx.FIT.state = state;
+      r.ctx.FIT.mode = mode;
+      assert.equal(r.fitResizes(), false, `${state} + ${mode}`);
+    }
+  });
+
+  // -- M-22: the room and the grow resize the window, so they run only while the server resizes it: Auto and Fill
+  test('(\u2212) M-22 grow: a cut question asks for no rows while the mode is terminal or off, also for the one answer that still says fitted (ruling 1), and for the states terminal and off', async () => {
+    const cases = [
+      ['fitted + terminal', answerM('fitted', 'terminal')],
+      ['fitted + off', answerM('fitted', 'off')],
+      ['terminal + terminal', answerM('terminal', 'terminal')],
+      ['off', OFF_ANSWER],
+    ];
+    for (const [name, first] of cases) {
+      const r = await growRig({ first });
+      await firstStep(r);
+      await r.clk.advance(2000);
+      r.handleCapture({ status: 304, body: null });
+      assert.deepEqual(rowsOfPuts(r), [30], `${name}: only the first request, no grow step`);
+      assert.equal(r.ctx.GR.phase, 'idle', name);
+    }
+  });
+
+  test('(+) M-22 grow: the same cut question asks the first step in Auto and in Fill (the room and the grow run as in Auto under fill)', async () => {
+    for (const mode of ['auto', 'fill']) {
+      const r = await growRig({ first: answerM('fitted', mode), more: [answerM('fitted', mode, { cols: 100, rows: 60 })] });
+      await firstStep(r);
+      assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 60, false)], mode);
+      assert.equal(r.ctx.GR.phase, 'stepping', mode);
+    }
+  });
+
+  // 0.5.4 QP round 1 (review S3, design 10.3 growWanted row): the two reasons QP added (a preview with hidden lines, a plan cut at the top) go through the same fitResizes gate
+  const NEW_GROW_REASONS = [['a preview with hidden lines', PVHID], ['a plan cut at the top', PLANCUT]];
+
+  test('(\u2212) M-22 grow (QP): a preview with hidden lines and a plan cut at the top ask no rows while the mode is terminal or off, also for the one answer that still says fitted, and for the states terminal and off', async () => {
+    const cases = [
+      ['fitted + terminal', answerM('fitted', 'terminal')],
+      ['fitted + off', answerM('fitted', 'off')],
+      ['terminal + terminal', answerM('terminal', 'terminal')],
+      ['off', OFF_ANSWER],
+    ];
+    for (const [reason, dialog] of NEW_GROW_REASONS) {
+      for (const [name, first] of cases) {
+        const r = await growRig({ first });
+        await lookTwice(r, dialog);
+        await r.clk.advance(2000);
+        r.handleCapture({ status: 304, body: null });
+        assert.deepEqual(rowsOfPuts(r), [30], `${reason}, ${name}: only the first request, no grow step`);
+        assert.equal(r.ctx.GR.phase, 'idle', `${reason}, ${name}`);
+      }
+    }
+  });
+
+  test('(+) M-22 grow (QP): the same two ask the first step in Auto and in Fill', async () => {
+    for (const [reason, dialog] of NEW_GROW_REASONS) {
+      for (const mode of ['auto', 'fill']) {
+        const r = await growRig({ first: answerM('fitted', mode), more: [answerM('fitted', mode, { cols: 100, rows: 60 })] });
+        await lookTwice(r, dialog);
+        assert.deepEqual(calls(r), [PUT(100, 30, true), PUT(100, 60, false)], `${reason}, ${mode}`);
+        assert.equal(r.ctx.GR.phase, 'stepping', `${reason}, ${mode}`);
+      }
+    }
+  });
+
+  // -- SF-1 (review-P2b, round 4): a grow that already runs when the mode becomes Terminal or Off ends at once and asks nothing, not even the way back
+  /** Auto grew the panel to 100 x 60 and the question is whole (the grow is `held`); `next` answers the next beat. */
+  const grownRig = async (next) => {
+    const r = await growRig({ first: answerM('fitted', 'auto'), more: [answerM('fitted', 'auto', { cols: 100, rows: 60 }), next] });
+    await firstStep(r);
+    await r.clk.advance(0); // the answer to the step
+    assert.deepEqual(rowsOfPuts(r), [30, 60], 'Auto asked the grown rows');
+    paneAt(r, 60);
+    showDialog(r, WHOLE);
+    r.fitCaptured();
+    assert.equal(r.ctx.GR.phase, 'held');
+    return r;
+  };
+  // closeQuestion (above, FX3): the question closes and a second of quiet passes (1.3 s: less than a beat)
+
+  test('(\u2212) SF-1: a grow that runs (held at 100 x 60) when the next beat answers mode terminal or off sends no request when the question closes, not even the way back', async () => {
+    const cases = [
+      ['terminal', answerM('terminal', 'terminal'), 'terminal'],
+      ['fitted + terminal (the one answer of ruling 1)', answerM('fitted', 'terminal', { cols: 100, rows: 60 }), 'terminal'],
+      ['fitted + off (the one answer of ruling 1)', answerM('fitted', 'off', { cols: 100, rows: 60 }), 'off'],
+      ['off', OFF_ANSWER, 'off'],
+    ];
+    for (const [name, next, mode] of cases) {
+      const r = await grownRig(next);
+      await r.clk.advance(5000); // the beat that carries the switch
+      assert.equal(r.ctx.FIT.mode, mode, `${name}: the switch has arrived`);
+      const sent = r.log.calls.length;
+      await closeQuestion(r);
+      assert.equal(r.log.calls.length, sent, `${name}: no request after the switch`);
+      assert.deepEqual([r.ctx.GR.phase, r.ctx.FIT.room], ['idle', false], name);
+    }
+  });
+
+  test('(+) SF-1: the same scenario with a beat that keeps Auto or Fill sends the way back once, as before (the grow still gives the window back where the server sizes it)', async () => {
+    for (const mode of ['auto', 'fill']) {
+      const r = await grownRig(answerM('fitted', mode, { cols: 100, rows: 60 }));
+      await r.clk.advance(5000);
+      assert.equal(r.ctx.FIT.mode, mode, mode);
+      const sent = r.log.calls.length;
+      await closeQuestion(r);
+      assert.deepEqual(calls(r).slice(sent).map((c) => [c.method, c.json.rows]), [['PUT', 30]], `${mode}: the base rows, once`);
+      assert.equal(r.ctx.GR.phase, 'idle', mode);
+    }
+  });
+
+  test('(+) SF-1: once nothing resizes, the first look ends a grow in any phase (stepping, held, spent): GR is idle, FIT.room is off, nothing is sent; (\u2212) an idle grow keeps FIT.room', async () => {
+    const make = {
+      stepping: async () => { const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] }); await firstStep(r); await r.clk.advance(0); return r; },
+      held: async () => { const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] }); await firstStep(r); await r.clk.advance(0); paneAt(r, 60); showDialog(r, WHOLE); r.fitCaptured(); return r; },
+      spent: async () => {
+        const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 30 })] }); // the ask is answered, but the pane stays 30 rows
+        await firstStep(r);
+        await r.clk.advance(0);
+        for (let i = 0; i < 24; i += 1) { await r.clk.advance(250); r.handleCapture({ status: 304, body: null }); }
+        return r;
+      },
+    };
+    for (const [phase, build] of Object.entries(make)) {
+      for (const mode of ['terminal', 'off']) {
+        const r = await build();
+        assert.equal(r.ctx.GR.phase, phase, `${phase}: the grow is in that phase first`);
+        r.ctx.FIT.room = true;
+        r.ctx.FIT.mode = mode; // the latest answer's mode, as fitChip leaves it
+        const sent = r.log.calls.length;
+        r.growTick();
+        assert.deepEqual([r.ctx.GR.phase, r.ctx.FIT.room, r.log.calls.length], ['idle', false, sent], `${phase} + ${mode}`);
+      }
+    }
+    const idle = await growRig();
+    idle.ctx.FIT.room = true;
+    idle.ctx.FIT.mode = 'terminal';
+    idle.growTick();
+    assert.deepEqual([idle.ctx.GR.phase, idle.ctx.FIT.room], ['idle', true], 'an idle grow: the room flag is not this guard\'s');
+  });
+
+  test('(+) SF-1: the guard that ends a grow also redraws what shows it: the open panel drops its grow line and the form is told the step is over', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    r.openFitPop();
+    await firstStep(r);
+    assert.equal(r.popHint.hidden, false, 'the grow line is up');
+    assert.equal(r.growing(), true);
+    const drawn = r.log.df.length;
+    r.ctx.FIT.mode = 'terminal';
+    r.growTick();
+    assert.equal(r.popHint.hidden, true, 'the grow line is gone');
+    assert.deepEqual(r.log.df.slice(drawn), [false], 'the form is told the step is over');
+    assert.equal(r.growing(), false);
+  });
+
+  test('(+) SF-1 the code: growTick asks fitResizes once, ends a grow that is not idle when nothing resizes (GR = GROW_IDLE, FIT.room = false) and then does not ask growStep', () => {
+    const body = fnOf('function growTick()');
+    assert.match(body, /if \(!resizes && GR\.phase !== 'idle'\) \{[^}]*GR = GROW_IDLE;[^}]*FIT\.room = false;[^}]*\} else \{[^}]*growStep\(GR,/);
+    assert.equal([...body.matchAll(/\bfitResizes\(\)/g)].length, 1);
+    assert.equal([...body.matchAll(/\bgrowStep\(/g)].length, 1);
+  });
+
+  // -- 0.5.4 SF item 1 (F-1, live check LC-P2): Auto -> Terminal -> Auto must not bring the window back at the grown size
+  /** The beat after the one that carried the switch: the rows its PUT asks. */
+  const nextBeatRows = async (r) => {
+    const sent = r.log.calls.length;
+    await r.clk.advance(5000);
+    return r.log.calls.slice(sent).filter((c) => c.method === 'PUT').map((c) => c.json.rows);
+  };
+
+  test('(\u2212) SF F-1: Auto grew to 60 rows, the beat answers Terminal or Off, the question closes: the beats after it ask the base 30 rows, not the grown 60 (the stale ask)', async () => {
+    for (const [name, next] of [['terminal', answerM('terminal', 'terminal')], ['off', OFF_ANSWER], ['fitted + terminal', answerM('fitted', 'terminal', { cols: 100, rows: 60 })]]) {
+      const r = await grownRig(next);
+      await r.clk.advance(5000); // the beat that carries the switch (asks the grown 60, as before)
+      await closeQuestion(r);
+      assert.deepEqual(await nextBeatRows(r), [30], `${name}: the beat that would bring Auto back asks the base rows`);
+      assert.deepEqual(await nextBeatRows(r), [30], `${name}: and the one after it`);
+    }
+  });
+
+  // review N1: the grow ends the same way in the `stepping` phase (a step is asked and answered, the pane is not at the grown size yet), and the base must be dropped there too
+  /** Like grownRig, but the pane has not reached the grown size: the grow is still `stepping`. */
+  const steppingRig = async (next) => {
+    const r = await growRig({ first: answerM('fitted', 'auto'), more: [answerM('fitted', 'auto', { cols: 100, rows: 60 }), next] });
+    await firstStep(r);
+    await r.clk.advance(0); // the answer to the step
+    assert.deepEqual(rowsOfPuts(r), [30, 60], 'Auto asked the grown rows');
+    assert.equal(r.ctx.GR.phase, 'stepping');
+    return r;
+  };
+
+  test('(\u2212) SF F-1 (review N1): the same in the stepping phase: the beat answers Terminal or Off, the first look after it ends the grow, and the beats after ask the base 30 rows, not the grown 60', async () => {
+    for (const [name, next] of [['terminal', answerM('terminal', 'terminal')], ['off', OFF_ANSWER], ['fitted + terminal', answerM('fitted', 'terminal', { cols: 100, rows: 60 })]]) {
+      const r = await steppingRig(next);
+      await r.clk.advance(5000); // the beat that carries the switch (asks the grown 60, as before)
+      r.handleCapture({ status: 304, body: null }); // the first look after the answer that said Terminal or Off: the grow ends here
+      assert.equal(r.ctx.GR.phase, 'idle', `${name}: the switch ended the grow`);
+      assert.deepEqual(await nextBeatRows(r), [30], `${name}: the beat that would bring Auto back asks the base rows`);
+      assert.deepEqual(await nextBeatRows(r), [30], `${name}: and the one after it`);
+    }
+  });
+
+  test('(+) SF F-1: the same scenario with the question still open when Auto comes back: the grow starts again from the base (cut question, 200 ms, growNext)', async () => {
+    const r = await grownRig(answerM('terminal', 'terminal'));
+    await r.clk.advance(5000);
+    r.handleCapture({ status: 304, body: null }); // the first look after the answer that said Terminal
+    assert.equal(r.ctx.GR.phase, 'idle', 'the switch ended the grow');
+    r.ctx.FIT.mode = 'auto'; // the mode is Auto again (the page learns it from an answer)
+    r.ctx.FIT.state = 'fitted';
+    showDialog(r, CUTD);
+    r.fitCaptured();
+    await r.clk.advance(250);
+    r.handleCapture({ status: 304, body: null });
+    assert.equal(r.ctx.GR.phase, 'stepping', 'a new step');
+    assert.equal(rowsOfPuts(r).at(-1), 60, 'asks growNext(30)');
+  });
+
+  test('(\u2212) SF F-1: a grow that keeps running in Auto asks the grown rows on its beats (the base is dropped only when the grow ends because nothing resizes)', async () => {
+    const r = await grownRig(answerM('fitted', 'auto', { cols: 100, rows: 60 }));
+    await r.clk.advance(5000);
+    assert.deepEqual(await nextBeatRows(r), [60]);
+  });
+
+  test('(\u2212) SF F-1: ending the grow in Terminal sends nothing by itself (the base waits for the next beat)', async () => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 })] });
+    await firstStep(r);
+    await r.clk.advance(0);
+    const sent = r.log.calls.length;
+    r.ctx.FIT.mode = 'terminal';
+    r.growTick();
+    await r.clk.advance(1000); // more than the 250 ms debounce, less than a beat
+    assert.equal(r.log.calls.length, sent);
+  });
+
+  test('(+) SF F-1 the code: growTick drops the grown ask at the planner when it ends a grow because nothing resizes, with no request of its own', () => {
+    const body = fnOf('function growTick()');
+    assert.match(body, /if \(!resizes && GR\.phase !== 'idle'\) \{[^}]*GR = GROW_IDLE;[^}]*FIT\.room = false;[^}]*FIT\.planner\.retarget\(FIT\.base\.cols, FIT\.base\.rows\);[^}]*\} else \{/);
+  });
+
+  test('(\u2212) M-22 room: the hold that ran out takes no room step while the mode is terminal or off (the one answer that still says fitted), and (+) takes it in Auto and in Fill', async () => {
+    for (const mode of ['terminal', 'off']) {
+      const r = await heldRig({ first: answerM('fitted', mode, { cols: 145, rows: 21 }), more: [answerM('fitted', mode, { cols: 210, rows: 32 })] });
+      r.handleHeld(shot(145, 21)); // Claude's frame is cut: no input box
+      await r.clk.advance(HOLD_MS * 2);
+      assert.deepEqual([r.log.calls.length, r.ctx.FIT.room], [1, false], mode);
+      assert.equal(r.log.noted.length, 1, `${mode}: the latest capture is drawn as it is`);
+    }
+    for (const mode of ['auto', 'fill']) {
+      const r = await heldRig({ first: answerM('fitted', mode, { cols: 145, rows: 21 }), more: [answerM('fitted', mode, { cols: 210, rows: 32 })] });
+      r.handleHeld(shot(145, 21));
+      await r.clk.advance(HOLD_MS);
+      assert.deepEqual(calls(r), [PUT(145, 22, true), PUT(210, 33, false)], mode);
+      assert.equal(r.ctx.FIT.room, true, mode);
+    }
+  });
+
+  // -- FX2 and FX3 (design 2.3 step 5): the fresh commit after a panel closes and the fresh base are skipped when nothing resizes
+  /** A focused page, the first answer given, the question form shown while a window focus is taken, then closed and one capture looked at: how many commits there were. */
+  const commitsAfterPanel = async (first) => {
+    const r = await growRig({ first, more: [first, first, first, first] });
+    r.page.focus = true;
+    openPanel(r, 'dialog-form');
+    const w = watchCommits(r);
+    r.log.events.focus({ target: r.ctx.window });
+    await r.clk.advance(300);
+    closePanel(r, 'dialog-form');
+    r.growTick();
+    return w.n;
+  };
+
+  test('(+) FX2 + M-22: in Auto and in Fill the panel that closes gets its one fresh commit (2 commits: the focus and the close)', async () => {
+    assert.equal(await commitsAfterPanel(answerM('fitted', 'auto')), 2);
+    assert.equal(await commitsAfterPanel(answerM('fitted', 'fill')), 2);
+  });
+
+  test('(\u2212) FX2 + M-22: with the mode terminal or off, or the state off, the panel that closes gets no fresh commit (only the focus commit)', async () => {
+    assert.equal(await commitsAfterPanel(answerM('terminal', 'terminal')), 1, 'terminal');
+    assert.equal(await commitsAfterPanel(answerM('fitted', 'terminal')), 1, 'fitted + terminal (one answer)');
+    assert.equal(await commitsAfterPanel(answerM('fitted', 'off')), 1, 'fitted + off (one answer)');
+    assert.equal(await commitsAfterPanel(OFF_ANSWER), 1, 'off');
+  });
+
+  test('(+) FX3 + M-22: fitBaseFresh replaces a base that is smaller than the box in Auto and in Fill, and (\u2212) leaves it alone with the mode terminal or off and for the state off', async () => {
+    const cases = [['auto', answerM('fitted', 'auto'), true], ['fill', answerM('fitted', 'fill'), true], ['terminal', answerM('terminal', 'terminal'), false], ['fitted + terminal', answerM('fitted', 'terminal'), false], ['fitted + off', answerM('fitted', 'off'), false], ['off', OFF_ANSWER, false]];
+    for (const [name, first, fresh] of cases) {
+      const r = await growRig({ first });
+      r.page.focus = true;
+      r.ctx.FIT.base = { cols: 100, rows: 16 }; // a base that a commit measured under a layout that has gone
+      r.fitBaseFresh();
+      assert.deepEqual(norm(r.ctx.FIT.base), { cols: 100, rows: fresh ? 30 : 16 }, name);
+    }
+  });
+
+  // ---- 0.5.4 QPF F6: the `growing` tag after Fit leaves Auto or Fill -------------------------------------------------------------------------------
+  // The form reads `growing` only when the page draws it. The grow tick drew the page again only when `growing()` changed inside the tick; the chip and the mode sink changed
+  // FIT.state / FIT.mode outside it, so with no new capture (304s) the preview tag kept "Showing more lines". growSync draws the page again whenever it differs from what the form was told.
+  const f6Rig = async (more) => {
+    const r = await growRig({ more: [answerAt('fitted', { cols: 100, rows: 60 }), ...more] });
+    await firstStep(r);
+    await r.clk.advance(0); // the step's own answer is taken in
+    assert.deepEqual(r.log.df, [true], 'premise: the step started and the form was told');
+    return r;
+  };
+  const answerNext = async (r) => { r.ctx.FIT.planner.beat(); await r.clk.advance(0); }; // a fit answer with no capture
+
+  test('(+) F6: the mode sink hears Terminal while a grow steps and the fit says fitted: the form is told `growing` is false once, with no capture', async () => {
+    const r = await f6Rig([answerM('fitted', 'terminal', { cols: 100, rows: 60 })]);
+    await answerNext(r);
+    assert.equal(r.ctx.FIT.mode, 'terminal');
+    assert.equal(r.ctx.FIT.state, 'fitted', 'the same chip: the sink alone told the page');
+    assert.deepEqual(r.log.df, [true, false]);
+  });
+
+  test('(+) F6: the chip goes to off (state and mode): one render, false', async () => {
+    const r = await f6Rig([OFF_ANSWER]);
+    await answerNext(r);
+    assert.equal(r.ctx.FIT.state, 'off');
+    assert.deepEqual(r.log.df, [true, false]);
+  });
+
+  test('(+) F6: the chip changes state while the mode stays Auto (the fit is terminal now): one render, false; the sink had nothing to tell', async () => {
+    const r = await f6Rig([answerAt('terminal', { cols: 100, rows: 60 })]);
+    await answerNext(r);
+    assert.deepEqual([r.ctx.FIT.state, r.ctx.FIT.mode], ['terminal', 'auto']);
+    assert.deepEqual(r.log.df, [true, false]);
+  });
+
+  test('(+) F6: the grow ends in growTick (the question is whole): one render, false', async () => {
+    const r = await f6Rig([]);
+    paneAt(r, 60);
+    showDialog(r, WHOLE);
+    r.fitCaptured();
+    assert.deepEqual(r.log.df, [true, false]);
+    r.growTick();
+    r.growTick();
+    assert.deepEqual(r.log.df, [true, false], 'told once');
+  });
+
+  test('(+) F6: a chip answer that comes during a redraw hold still tells the form at once; the chip itself waits for the frame', async () => {
+    const r = await f6Rig([answerAt('terminal', { cols: 100, rows: 60 })]);
+    assert.equal(r.ctx.HOLD.active, true, 'premise: the grown size started a hold');
+    await answerNext(r);
+    assert.deepEqual(r.log.df, [true, false]);
+    assert.notEqual(r.ctx.FIT.held, null, 'the chip is held');
+    assert.equal(r.ctx.HOLD.active, true, 'and so is the frame');
+  });
+
+  test('(\u2212) F6: answers that keep Auto (or Fill) and `fitted` while the grow steps render nothing more, however many come', async () => {
+    const r = await f6Rig([answerAt('fitted', { cols: 100, rows: 60 }), answerM('fitted', 'fill', { cols: 100, rows: 60 }), answerM('fitted', 'fill', { cols: 100, rows: 60 }), answerAt('fitted', { cols: 100, rows: 60 })]);
+    for (let i = 0; i < 4; i += 1) await answerNext(r);
+    assert.equal(r.ctx.FIT.mode, 'auto', 'the last answer is Auto again');
+    assert.deepEqual(r.log.df, [true]);
+    for (let i = 0; i < 3; i += 1) { await r.clk.advance(250); r.handleCapture({ status: 304, body: null }); }
+    assert.deepEqual(r.log.df, [true]);
+  });
+
+  test('(\u2212) F6: growing() needs the mode too: false for Terminal and Off with a step running and the state fitted; true for Auto and Fill', async () => {
+    const r = await growRig();
+    r.ctx.GR = { ...GROW_IDLE_REAL, phase: 'stepping', rows: 60 };
+    r.ctx.FIT.state = 'fitted';
+    for (const [mode, expected] of [['auto', true], ['fill', true], ['terminal', false], ['off', false]]) {
+      r.ctx.FIT.mode = mode;
+      assert.equal(r.growing(), expected, mode);
+    }
+    r.ctx.FIT.mode = 'auto';
+    for (const phase of ['idle', 'held', 'spent']) {
+      r.ctx.GR = { ...GROW_IDLE_REAL, phase };
+      assert.equal(r.growing(), false, phase);
+    }
+  });
+
+  /** The page's own renderMode with its panels stubbed: what the form is told, and whether the page remembers it. */
+  const modeRig = () => {
+    const log = { told: [] };
+    const none = () => {};
+    const ctx = {
+      paneId: '%12', SW: { busy: null, pressed: null, parts: [1] }, W: { pane: 'ok', dialog: null, survey: null, promptOpen: false, mode: 'default', confirmed: true, msg: null }, A: { kind: 'idle', name: 'builder-1', attention: '' },
+      switcherState: () => ({ reason: null }), renderTag: none, renderSegments: none, renderWhy: none, renderQuick: none, renderAttn: none, renderPrompt: none, panelsChanged: none,
+      DF: { render: (a) => log.told.push(a.growing) }, SV: { render: none },
+      GR: { ...GROW_IDLE_REAL, phase: 'stepping', rows: 60 }, FIT: { state: 'fitted', mode: 'auto' }, GROWING_SHOWN: false,
+    };
+    const fns = vm.runInNewContext(`${['function renderMode()', 'function growing()', 'function growSync()', 'function fitResizes()'].map(fnOf).join('\n')}; ({ renderMode, growing, growSync })`, ctx);
+    return { ctx, log, ...fns };
+  };
+
+  test('(+) F6: the page\'s renderMode records what the form was told, so growSync renders again only for a change (M-F6-4)', () => {
+    const m = modeRig();
+    m.growSync();
+    assert.deepEqual(m.log.told, [true]);
+    assert.equal(m.ctx.GROWING_SHOWN, true);
+    m.growSync();
+    m.growSync();
+    assert.deepEqual(m.log.told, [true], 'the same state: no second render');
+    m.ctx.FIT.mode = 'terminal';
+    m.growSync();
+    assert.deepEqual(m.log.told, [true, false]);
+    assert.equal(m.ctx.GROWING_SHOWN, false);
+    m.growSync();
+    assert.deepEqual(m.log.told, [true, false]);
+    m.ctx.FIT.mode = 'auto';
+    m.growSync();
+    assert.deepEqual(m.log.told, [true, false, true], 'and back');
+  });
+
+  test('(\u2212) F6: before the page is built (no pane, no switcher parts) growSync asks renderMode, which draws nothing and remembers nothing', () => {
+    const m = modeRig();
+    m.ctx.SW.parts = [];
+    m.growSync();
+    m.growSync();
+    assert.deepEqual(m.log.told, []);
+    assert.equal(m.ctx.GROWING_SHOWN, false);
+  });
+
+  test('(+) F6 the code: growSync is called where Fit changes (the mode sink, fitChip before its hold check) and ends growTick; the tick keeps no `before` of its own', () => {
+    assert.match(fnOf('function growSync()'), /if \(growing\(\) !== GROWING_SHOWN\) renderMode\(\);/);
+    assert.match(fnOf('function fitChip(view, opts)'), /FIT\.state = view \? view\.state : null;\s*if \(!view\) FIT\.mode = 'auto';\s*growSync\(\);\s*if \(view && HOLD\.active\) \{/);
+    assert.match(fnOf('function growTick()'), /growSync\(\);\s*\}\s*$/);
+    assert.doesNotMatch(fnOf('function growTick()'), /const before = growing\(\)|growing\(\) !== before/);
+    assert.equal([...SRC.matchAll(/\bgrowSync\(\)/g)].length, 4, 'the declaration and the three calls');
+    assert.match(SRC, /^let GROWING_SHOWN = false;/m);
+    assert.deepEqual(findSinks(['function growing()', 'function growSync()'].map(fnOf).join('\n')), []);
   });
 });
 
@@ -9831,12 +11161,14 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     ctx.growing = () => true;
     mk(['function renderMode()'], ctx).renderMode();
     assert.equal(args.growing, true, 'what growing() says goes to the form as it is');
+    assert.equal(ctx.GROWING_SHOWN, true, '0.5.4 QPF F6: and the page remembers what the form was told');
   });
 
   test('(−) P3: before the form exists (no pane, or boot not done) renderMode draws no form and does not fail', () => {
     const ctx = {
       paneId: '%12', SW: { parts: [{}], busy: null }, W: { pane: 'ok', mode: 'default', confirmed: true, msg: null }, A: { kind: 'idle', name: 'x', attention: '' }, switcherState: () => ({ reason: '' }),
       renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, panelsChanged() {}, DF: null, SV: null,
+      growing: () => false, // 0.5.4 QPF F6 (requirement change): renderMode reads growing() before it asks whether there is a form, to remember what the form was told
     };
     assert.doesNotThrow(() => mk(['function renderMode()'], ctx).renderMode());
   });
@@ -9875,7 +11207,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
       sending: false, composer: () => ta, DF: form, SV: null, S: { on: false }, W: { promptOpen: true, prompt, pane: 'ok' }, A: { kind: 'attn' }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem: (m, k) => log.problems.push([m, k]), $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
-      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} },
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {}, restoring: () => false },
       ATT: { pending: att.pending, send: (v) => { log.atts.push(v); } },
       ...sendIo(log),
     };
@@ -9913,7 +11245,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
       sending: false, composer: () => ta, DF: null, SV: null, S: { on: false }, W: { promptOpen: false, prompt: null, pane: 'ok', mode: 'default', confirmed: true }, A: { kind: 'idle' }, M: { cols: 120, gone: false },
       sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
       showProblem() {}, $: () => el(), say() {}, paneId: '%12', setShell() {}, grow() {}, updateChip() {},
-      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {} }, ATT: { pending: () => false },
+      DS: { screen: () => null, beginSend() {}, endSend() {}, sent() {}, submitted() {}, restoring: () => false }, ATT: { pending: () => false },
       ...sendIo(log),
     };
     await mk(SEND_FUNCS, ctx).sendComposer();
@@ -9931,7 +11263,7 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
 
   test('(+) P6: boot builds the form right after the switcher, the quick actions and the fit are wired, with the io the module asks for and the one route tail built here', () => {
     const boot = fnOf('function boot()');
-    assert.match(boot, /wireSwitcher\(\);\s*wireQuick\(\);\s*wireFit\(\);\s*DF = createDialogForm\(\{ root: \$\('dialog-form'\), paneId, call, path: \(tail\) => `\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/\$\{tail\}`, announce, say, showProblem, clearProblem, setGone, composer, refresh: renderAttn \}\);/);
+    assert.match(boot, /wireSwitcher\(\);\s*wireQuick\(\);\s*wireFit\(\);\s*DF = createDialogForm\(\{ root: \$\('dialog-form'\), paneId, call, path: \(tail\) => `\/api\/app\/pane\/\$\{encodeURIComponent\(paneId\)\}\/\$\{tail\}`, announce, say, showProblem, clearProblem, clearProblemFrom, setGone, composer, refresh: renderAttn \}\);/);
     assert.ok(boot.indexOf('DF = createDialogForm') > boot.indexOf('if (paneId) {'), 'only with a pane');
   });
 
@@ -9992,10 +11324,10 @@ describe('W1-T3: question dialogs and plan approvals in the session window (hook
     assert.match(BLOCK, /\.dlg-kind\[data-k="plan"\]\s*\{[^}]*color:\s*var\(--m-plan\)/);
   });
 
-  test('(+) a ticked row has the accent fill and edge; the step strip stays at every width and the step text stays hidden (0.5.1, D)', () => {
+  test('(+) a ticked row has the accent fill and edge; the step strip stays at every width and there is no step text rule (0.5.1, D; 0.5.4 SF RV051 M4)', () => {
     assert.match(BLOCK, /\.ch\[data-on="true"\]\s*\{[^}]*background:\s*var\(--accent-soft\)[^}]*border-color:\s*var\(--accent\)/);
     assert.doesNotMatch(BLOCK, /\.dlg-tabs\s*\{[^}]*display:\s*none/, 'no rule hides the strip');
-    assert.match(BLOCK, /\.dlg-step\s*\{[^}]*display:\s*none/, 'the step text stays hidden at every width');
+    assert.doesNotMatch(BLOCK, /\.dlg-step\b/, 'the step text rule is gone with its element (0.5.4 SF RV051 M4)');
   });
 
   test('(+) the option rows share the permission buttons\' metrics (32 px, line-strong edge, surface fill) and a description is clamped to 3 lines', () => {
@@ -10199,22 +11531,23 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
 
   // -- boot (4.4: 2 to 6)
 
-  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg'];
+  const BOOT_SPIES = ['setBackHref', 'setBack', 'syncKbdHint', 'syncHistHint', 'syncPassKeys', 'watchNotes', 'showUrlNotice', 'wireTabs', 'wireHistory', 'wireHist', 'wireTerminal', 'wireComposer', 'wireTyping', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'loadSettings', 'startAgentPoll', 'startHistoryPoll', 'kickMirror', 'refreshHistory', 'refreshAgent', 'wireWindowKeys', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg'];
   const bootRig = ({ sub = false, bad = false, session = S, pane = null, project = KEY, app = true, search = '' } = {}) => {
     const p = page();
-    const log = { calls: [], doc: [] };
+    const log = { calls: [], doc: [], win: [] };
     const spy = (name) => (...args) => { log.calls.push(name); return args; };
     const ctx = {
+      DS: { restore: spy('DS.restore'), flushKeep: spy('DS.flushKeep') }, window: { addEventListener: (type, fn) => log.win.push([type, fn]) }, // 0.5.4 LT
       isApp: () => app, $: p.$, SUB: sub, BAD_AGENT: bad, agentId: sub ? AG : null, sessionId: session, paneId: pane, projectKey: project, location: { search }, URLSearchParams,
-      MAC: false, P: { on: false }, windowCommand() {}, notices: [], MID: ' \u00b7 ', ATT: { wire: spy('ATT.wire') }, FIT: { planner: null }, DF: null, SV: null, A: { name: 'the agent' },
-      composer: () => ({ focus() {} }), onPageKey() {}, openKbd() {}, announce() {}, setGone() {}, call() {}, say() {}, showProblem() {}, clearProblem() {}, renderAttn() {}, showOverlay() {}, DOTS: '...',
+      MAC: false, P: { on: false }, windowCommand() {}, notices: [], MID: ' \u00b7 ', ATT: { wire: spy('ATT.wire'), restore: spy('ATT.restore') }, FIT: { planner: null }, DF: null, SV: null, A: { name: 'the agent' },
+      composer: () => ({ focus() {} }), onPageKey() {}, openKbd() {}, announce() {}, setGone() {}, call() {}, say() {}, showProblem() {}, clearProblem() {}, clearProblemFrom() {}, renderAttn() {}, showOverlay() {}, DOTS: '...',
       document: { body: node('body'), title: '', querySelector: (sel) => (sel === '.skip-2' ? p.$('skip-2') : null), addEventListener: (type) => log.doc.push(type) },
       ...Object.fromEntries(BOOT_SPIES.map((n) => [n, spy(n)])),
     };
     const { boot } = mk(['function showEmpty(text)', 'function showNotice(msg)', 'function readOnlyView()', 'function boot()'], ctx);
     return { boot, p, log, ctx };
   };
-  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'ATT.wire', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg', 'kickMirror'];
+  const MIRROR = ['wireTabs', 'wireHist', 'wireTerminal', 'wireComposer', 'wireTyping', 'ATT.wire', 'ATT.restore', 'wireSubs', 'wireSwitcher', 'wireQuick', 'wireFit', 'createDialogForm', 'createSurveyPanel', 'watchPanels', 'wireSubsDlg', 'kickMirror'];
 
   test('(+) 4.4: boot in subagent mode: no terminal column, the Transcript alone, no tabs, no "Skip to message input", the read-only notice, the body class', () => {
     const r = bootRig({ sub: true, search: `?session=${S}&agent=${AG}&project=${KEY}` });
@@ -10288,6 +11621,8 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     for (const name of MIRROR.filter((n) => n !== 'kickMirror')) assert.ok(withPane.log.calls.includes(name), name);
     assert.ok(withPane.log.calls.includes('watchNotes'), 'the notes row is watched in a session window too');
     assert.ok(withPane.log.calls.includes('kickMirror'));
+    assert.deepEqual(withPane.log.calls.filter((n) => n === 'ATT.restore'), ['ATT.restore'], '0.5.4 AT: the unsent attachments of the pane are asked for once, at boot');
+    assert.ok(withPane.log.calls.indexOf('ATT.restore') > withPane.log.calls.indexOf('ATT.wire'), 'after the tray is wired');
     assert.equal(withPane.ctx.document.body.classList.contains('sub-view'), false);
     assert.equal(withPane.p.$('sess-st').hidden, false, 'the status slot is the session window\'s');
     const paneless = bootRig({ search: `?session=${S}` });
@@ -10296,6 +11631,105 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
     assert.equal(paneless.p.$('split').classList.contains('no-term'), true);
     assert.ok(paneless.log.calls.includes('wireSubs'), 'the list is part of every window that has a transcript');
     assert.ok(!paneless.log.calls.includes('kickMirror'));
+    assert.ok(!paneless.log.calls.includes('ATT.restore'), '0.5.4 AT: a window with no pane has no attachments to ask for');
+  });
+
+  test('(+) 0.5.4 AT: boot asks for the pane\'s attachments in the pane branch only (after wireFit, before the pane-less branch), once', () => {
+    const boot = fnOf('function boot()');
+    assert.equal([...boot.matchAll(/ATT\.restore\(\)/g)].length, 1);
+    const pane = boot.slice(boot.indexOf('if (paneId) {'), boot.indexOf("split.classList.add('no-term')"));
+    assert.ok(pane.includes('ATT.restore();'), 'inside if (paneId)');
+    assert.ok(pane.indexOf('wireFit();') >= 0 && pane.indexOf('wireFit();') < pane.indexOf('ATT.restore();'), 'after wireFit()');
+    assert.doesNotMatch(boot.slice(0, boot.indexOf('if (paneId) {')), /ATT\.restore/);
+  });
+
+  test('(−) 0.5.4 AT: a bad session id with a pane still restores (the tray is the pane\'s); the browser tier and a bad agent id never do', () => {
+    const bad = bootRig({ session: null, pane: '%12', search: '?session=nope&pane=%2512' });
+    bad.boot();
+    assert.ok(bad.log.calls.includes('ATT.restore'));
+    const browser = bootRig({ app: false, pane: '%12', search: `?session=${S}&pane=%2512` });
+    browser.boot();
+    assert.ok(!browser.log.calls.includes('ATT.restore'));
+    const badAgent = bootRig({ bad: true, pane: '%12', search: `?session=${S}&agent=..%2Fx&pane=%2512` });
+    badAgent.boot();
+    assert.ok(!badAgent.log.calls.includes('ATT.restore'));
+  });
+
+  // -- 0.5.4 LT: the unsent text kept for the pane comes back at boot (the sync: draft-sync.js restore)
+
+  const winCount = (r, type) => r.log.win.filter(([t]) => t === type).length;
+  const pageshowOf = (r) => r.log.win.find(([t]) => t === 'pageshow')[1];
+  const pagehideOf = (r) => r.log.win.find(([t]) => t === 'pagehide')[1];
+
+  test('(+) 0.5.4 LT: a pane window asks for its kept text once, after the fit and the panels are wired and before the first capture is asked for, and listens to pageshow and pagehide once each', () => {
+    const r = bootRig({ pane: '%12', search: `?session=${S}&pane=%2512` });
+    r.boot();
+    assert.deepEqual(r.log.calls.filter((n) => n === 'DS.restore'), ['DS.restore']);
+    assert.ok(r.log.calls.indexOf('DS.restore') > r.log.calls.indexOf('wireFit'), 'after wireFit');
+    assert.ok(r.log.calls.indexOf('DS.restore') > r.log.calls.indexOf('watchPanels'), 'after the panels are watched');
+    assert.ok(r.log.calls.indexOf('DS.restore') < r.log.calls.indexOf('kickMirror'), 'the hold is up before the first capture is asked for');
+    assert.deepEqual([winCount(r, 'pageshow'), winCount(r, 'pagehide')], [1, 1]);
+    assert.deepEqual(r.log.calls.filter((n) => n === 'DS.flushKeep'), [], 'nothing is flushed by the boot itself');
+  });
+
+  test('(−) 0.5.4 LT: a subagent window, a window with no pane, the browser tier and a bad agent id ask for nothing and listen to nothing', () => {
+    for (const opts of [
+      { sub: true, search: `?session=${S}&agent=${AG}&pane=%2512` }, { search: `?session=${S}` }, { app: false, pane: '%12', search: `?session=${S}&pane=%2512` },
+      { bad: true, pane: '%12', search: `?session=${S}&agent=..%2Fx&pane=%2512` }, { sub: true, session: null, search: `?agent=${AG}&pane=%2512` },
+    ]) {
+      const r = bootRig(opts);
+      r.boot();
+      assert.deepEqual(r.log.calls.filter((n) => n.startsWith('DS.')), [], JSON.stringify(opts));
+      assert.deepEqual(r.log.win, [], JSON.stringify(opts));
+    }
+  });
+
+  test('(+) 0.5.4 LT: a bad session id with a pane still restores (the kept text is the pane\'s)', () => {
+    const r = bootRig({ session: null, pane: '%12', search: '?session=nope&pane=%2512' });
+    r.boot();
+    assert.deepEqual(r.log.calls.filter((n) => n === 'DS.restore'), ['DS.restore']);
+  });
+
+  test('(+) 0.5.4 LT: pageshow from the back/forward cache restores again, and only when persisted is the boolean true', () => {
+    const r = bootRig({ pane: '%12', search: `?session=${S}&pane=%2512` });
+    r.boot();
+    const show = pageshowOf(r);
+    const restores = () => r.log.calls.filter((n) => n === 'DS.restore').length;
+    assert.equal(restores(), 1);
+    show({ persisted: true });
+    assert.equal(restores(), 2);
+    show({ persisted: true });
+    assert.equal(restores(), 3);
+  });
+
+  test('(−) 0.5.4 LT: pageshow of a first load, with no event or with a persisted that is not true, asks for nothing', () => {
+    const r = bootRig({ pane: '%12', search: `?session=${S}&pane=%2512` });
+    r.boot();
+    const show = pageshowOf(r);
+    for (const e of [{ persisted: false }, {}, undefined, null, { persisted: 'true' }, { persisted: 1 }, { persisted: [] }, { persisted: {} }]) show(e);
+    assert.equal(r.log.calls.filter((n) => n === 'DS.restore').length, 1, 'only the boot asked');
+  });
+
+  test('(+) 0.5.4 LT: pagehide flushes what is pending, once per event, and never asks for a restore', () => {
+    const r = bootRig({ pane: '%12', search: `?session=${S}&pane=%2512` });
+    r.boot();
+    const hide = pagehideOf(r);
+    hide({ persisted: true });
+    hide({ persisted: false });
+    assert.deepEqual(r.log.calls.filter((n) => n === 'DS.flushKeep'), ['DS.flushKeep', 'DS.flushKeep']);
+    assert.equal(r.log.calls.filter((n) => n === 'DS.restore').length, 1);
+  });
+
+  test('(+) 0.5.4 LT: boot source: DS.restore() only inside the pane branch, before kickMirror(0), once outside the pageshow handler', () => {
+    const boot = fnOf('function boot()');
+    const pane = boot.slice(boot.indexOf('if (paneId) {'), boot.indexOf("split.classList.add('no-term')"));
+    assert.ok(pane.includes('DS.restore();'));
+    assert.ok(pane.indexOf('DS.restore();') < pane.indexOf('kickMirror(0);'));
+    assert.equal([...boot.matchAll(/DS\.restore\(/g)].length, 2, 'the boot call and the pageshow one');
+    assert.equal([...boot.matchAll(/DS\.flushKeep\(/g)].length, 1);
+    assert.doesNotMatch(boot.slice(0, boot.indexOf('if (paneId) {')), /DS\.(restore|flushKeep)/);
+    assert.match(pane, /addEventListener\('pageshow', \(e\) => \{ if \(e\?\.persisted === true\) DS\.restore\(\); \}\)/);
+    assert.match(pane, /addEventListener\('pagehide', \(\) => DS\.flushKeep\(\)\)/);
   });
 
   test('(−) a window with a bad session id says so as before', () => {
@@ -10682,11 +12116,59 @@ describe('W8-T3: the subagent list and the read-only subagent view (design W8, 4
       SUB: sub, sessionId: S, projectKey: project, A: { subs }, h: hReal, subagentHref: subagentHrefReal, SUBAGENT_ID: SUBAGENT_ID_REAL, H: { items: [], ids: new Set() },
       Date, ENTRY_ID: vm.runInNewContext(constOf('ENTRY_ID') + '; ENTRY_ID'), KINDS: vm.runInNewContext(constOf('KINDS') + '; KINDS'),
     };
-    const api = mk(['function cleanImages(e)', 'function cleanEntries(list)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function linkLate(entries)'], ctx, `${constOf('DOTS')}\n${constOf('clip')}`);
+    const api = mk(['function cleanImages(e)', 'function cleanEntries(list, cut = false)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function linkLate(entries)'], ctx, `${constOf('DOTS')}\n${constOf('clip')}`);
     return { ...api, ctx };
   };
   const RAW = (over = {}) => ({ id: '100:0', at: '2026-11-15T10:00:00.000Z', role: 'assistant', kind: 'tool_use', tool: 'Agent', text: '{"description":"List project files"}', truncated: false, ...over });
   const linkOf = (li) => li.all(withClass('hx-sub'))[0] ?? null;
+
+  // -- 0.5.4 SF (RV051 N1): a history page with `cut: true` says that earlier parts of the message are not shown, once, above the first entry of that page
+  const CUT_NOTE_TEXT = 'Earlier parts of this message are not shown.';
+  const cutRig = () => {
+    const ctx = {
+      SUB: false, sessionId: S, projectKey: KEY, A: { subs: [] }, h: hReal, subagentHref: subagentHrefReal, SUBAGENT_ID: SUBAGENT_ID_REAL, H: { items: [], ids: new Set() },
+      Date, ENTRY_ID: vm.runInNewContext(constOf('ENTRY_ID') + '; ENTRY_ID'), KINDS: vm.runInNewContext(constOf('KINDS') + '; KINDS'),
+    };
+    return mk(['function cleanImages(e)', 'function cleanEntries(list, cut = false)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)'], ctx, `${constOf('DOTS')}\n${constOf('clip')}\n${constOf('CUT_NOTE')}`);
+  };
+  const PAGE = (cut, n = 3) => ({ entries: Array.from({ length: n }, (_, i) => RAW({ id: `100:${i}`, kind: 'text', role: 'assistant', text: `part ${i}` })), nextBefore: 40, cut });
+  const notesIn = (li) => li.all(withClass('hx-trunc'));
+
+  test('(+) N1: a cut page shows the note once, as the first line of its first entry, in the existing note style; the other entries of the page have none', () => {
+    const r = cutRig();
+    const entries = r.cleanEntries(PAGE(true).entries, true);
+    assert.equal(entries.length, 3);
+    const lis = entries.map((e) => r.entryEl(e));
+    assert.equal(lis.reduce((n, li) => n + notesIn(li).length, 0), 1, 'once');
+    const [note] = notesIn(lis[0]);
+    assert.equal(note.tag, 'p');
+    assert.equal(note.textContent, CUT_NOTE_TEXT);
+    assert.equal(lis[0].kids[0], note, 'above the first entry\'s own header');
+    assert.equal(notesIn(lis[1]).length + notesIn(lis[2]).length, 0);
+  });
+
+  test('(\u2212) N1: no note without `cut: true` (absent, false, and values that only look true), and none for a cut page with no entries', () => {
+    const r = cutRig();
+    for (const cut of [undefined, false, null, 'true', 1, 0, {}, []]) {
+      const entries = r.cleanEntries(PAGE(false).entries, cut);
+      assert.equal(entries.length, 3);
+      assert.equal(entries.map((e) => r.entryEl(e)).reduce((n, li) => n + notesIn(li).length, 0), 0, String(cut));
+    }
+    for (const list of [[], null, undefined]) assert.equal(r.cleanEntries(list, true).length, 0, String(list)); // length: an array from the page's own context is not reference-equal to []
+  });
+
+  test('(\u2212) N1: the note is not part of the entry data the server sends: an entry that claims `cut` itself gets no note from cleanEntries (only the page does)', () => {
+    const r = cutRig();
+    const entries = r.cleanEntries([{ ...PAGE(false).entries[0], cut: true }]);
+    assert.equal(notesIn(r.entryEl(entries[0])).length, 0);
+  });
+
+  test('(+) N1 the code: the four places that take a history page (newest, poll, older, jump to latest) pass the page\'s `cut` to cleanEntries; the note is text, not markup', () => {
+    for (const head of ['async function loadNewest()', 'async function refreshHistory()', 'async function loadOlder()']) assert.match(fnOf(head), /cleanEntries\(r\.body\?\.entries, r\.body\?\.cut\)/, head);
+    assert.match(SRC, /function wireHistory\(\) \{[\s\S]*?resetHistory\(cleanEntries\(r\.body\?\.entries, r\.body\?\.cut\)/);
+    assert.doesNotMatch(SRC, /cleanEntries\(r\.body\?\.entries\)/, 'no call site leaves the page\'s cut out');
+    assert.match(fnOf('function entryEl(e)'), /e\.cut === true \? h\('p', \{ class: 'hx-trunc', text: CUT_NOTE \}\) : null/);
+  });
 
   test('(+) 4.5: a tool call with a subagent id gets "Open subagent transcript" after its fold: an a.hx-sub whose href is the subagent view of this session, the project kept', () => {
     const r = entryRig();
@@ -11992,8 +13474,8 @@ describe('0.5.1 C: image tiles in the transcript and their wiring (design sectio
   const S1 = '11111111-1111-4111-8111-111111111111';
   const KEY1 = '0123456789abcdef';
   const AGX = 'a0000000000000001';
-  const NAMES = ['function cleanImages(e)', 'function cleanEntries(list)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function imageViewer()', 'function imageTile(',
-    'function watchTile(t)', 'function seenTiles(list)', 'function failThumb(t, line)', 'async function loadThumb(t)', 'function forgetTiles(li)', 'function openTile(t)'];
+  const NAMES = ['function cleanImages(e)', 'function cleanEntries(list, cut = false)', 'function textBlock(e)', 'function foldBlock(e)', 'function subLinkEl(e)', 'function entryEl(e)', 'function imageViewer()', 'function imageTile(',
+    'function watchTile(t)', 'function seenTiles(list)', 'function releaseThumb(t)', 'function failThumb(t, line)', 'async function loadThumb(t)', 'function forgetTiles(li)', 'function openTile(t)'];
   const CONSTS = ['DOTS', 'MID', 'clip', 'ENTRY_ID', 'KINDS', 'IMG_REF', 'IMG_MAX', 'IMG', 'cleanMedia', 'cleanSize', 'whoLong', 'imagePath'];
   const STAMP = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const IMGE = (over = {}) => ({ id: '100:1', at: '2026-11-17T10:02:03.000Z', role: 'user', kind: 'image', text: '', media: 'png', size: 861234, truncated: false, ...over });
@@ -12022,7 +13504,7 @@ describe('0.5.1 C: image tiles in the transcript and their wiring (design sectio
     const viewer = { open: (o) => { log.opened.push(o); } };
     const ctx = {
       h: hReal, icon: iconReal, SUB: sub, sessionId: S1, agentId: sub ? AGX : null, projectKey: KEY1, A: { subs: [] }, subagentHref: subagentHrefReal, SUBAGENT_ID: SUBAGENT_ID_REAL, Date,
-      IntersectionObserver: FakeObserver, scroller: () => sc, $: (id) => { assert.equal(id, 'img-dlg'); return dlg; }, dataUrlOf: dataUrlOfReal, sizeLabel: sizeLabelReal, MAX_THUMBS: MAX_THUMBS_REAL, IMAGE_MIME: IMAGE_MIME_REAL,
+      IntersectionObserver: FakeObserver, scroller: () => sc, $: (id) => { assert.equal(id, 'img-dlg'); return dlg; }, dataUrlOf: dataUrlOfReal, sizeLabel: sizeLabelReal, MAX_THUMBS: MAX_THUMBS_REAL, MAX_THUMB_BYTES: MAX_THUMB_BYTES_REAL, IMAGE_MIME: IMAGE_MIME_REAL,
       createImageViewer: (o) => { log.viewers.push(o); return viewer; }, call: async (p) => { log.calls.push(p); return reply(p); },
     };
     const pre = CONSTS.map(constOf).join('\n');
@@ -12265,6 +13747,69 @@ describe('0.5.1 C: image tiles in the transcript and their wiring (design sectio
     assert.equal(r.IMG.held, 24);
   });
 
+  // -- 0.5.4 SF (RV051 M1): the byte budget (32 MiB of declared sizes) next to the count cap
+
+  const MIB = 1024 * 1024;
+  const seven = (r, n, over = {}) => Array.from({ length: n }, (_, i) => one(r, { id: `${300 + i}:1`, size: 7 * MIB, ...over }));
+
+  test('(+) M1: five 7 MiB tiles are 35 MiB, over the 32 MiB budget although the count cap (24) is far: four are fetched, the fifth is not and stays watched', async () => {
+    const r = rig();
+    const made = seven(r, 5);
+    for (const t of made) r.seen(t.btn);
+    await tick();
+    assert.equal(r.log.calls.length, 4, 'four requests');
+    assert.equal(imgOf(made[4].btn).attrs.src, undefined);
+    assert.equal(r.log.observers[0].watched.has(made[4].btn), true, 'still watched: it loads when there is room again');
+    assert.equal(r.IMG.held, 4);
+    assert.equal(r.IMG.bytes, 28 * MIB);
+  });
+
+  test('(+) M1: a tile that leaves the page gives its bytes back, and a later sighting of the fifth tile fetches it', async () => {
+    const r = rig();
+    const made = seven(r, 5);
+    for (const t of made.slice(0, 4)) r.seen(t.btn);
+    await tick();
+    r.forgetTiles(made[0].li);
+    assert.equal(r.IMG.bytes, 21 * MIB);
+    r.seen(made[4].btn);
+    await tick();
+    assert.equal(r.log.calls.length, 5);
+    assert.equal(r.IMG.bytes, 28 * MIB);
+    assert.equal(r.IMG.held, 4);
+  });
+
+  test('(+) M1: a thumbnail that did not come gives its bytes back too (failThumb), so a failed fetch never uses up the budget', async () => {
+    const r = rig({ reply: async () => ({ status: 404, body: null }) });
+    const made = seven(r, 2);
+    for (const t of made) r.seen(t.btn);
+    await tick();
+    assert.equal(r.IMG.held, 0);
+    assert.equal(r.IMG.bytes, 0);
+  });
+
+  test('(\u2212) M1: a tile without a declared size counts as the largest image (8 MiB): five of them load four; the count cap still ends the small ones at 24', async () => {
+    const r = rig();
+    const unknown = Array.from({ length: 5 }, (_, i) => one(r, { id: `${400 + i}:1`, size: null }));
+    for (const t of unknown) r.seen(t.btn);
+    await tick();
+    assert.equal(r.log.calls.length, 4);
+    assert.equal(r.IMG.bytes, 32 * MIB, 'exactly the budget still fits');
+    const r2 = rig();
+    const small = Array.from({ length: 25 }, (_, i) => one(r2, { id: `${500 + i}:1`, size: 1024 }));
+    for (const t of small) r2.seen(t.btn);
+    await tick();
+    assert.equal(r2.log.calls.length, 24, 'tiny tiles: the count cap, not the bytes');
+    assert.equal(r2.IMG.bytes, 24 * 1024);
+  });
+
+  test('(\u2212) M1: one image of the largest size always fits an empty window (no tile can be starved by the budget alone)', async () => {
+    const r = rig();
+    const big = one(r, { id: '600:1', size: 8 * MIB });
+    r.seen(big.btn);
+    await tick();
+    assert.equal(r.log.calls.length, 1);
+  });
+
   // -- leaving the page: trim, reset
 
   test('(−) a trimmed or reset entry unobserves its tiles and forgets them (and a fetch still on its way is dropped)', async () => {
@@ -12387,5 +13932,599 @@ describe('0.5.1 C: image tiles in the transcript and their wiring (design sectio
     for (const re of [/\.att-open\s*\{[^}]*background:\s*none[^}]*cursor:\s*pointer/, /\.hx-img:focus-visible[^{]*\{[^}]*var\(--focus\)/, /\.hx-imgs\s*\{[^}]*flex-wrap:\s*wrap/, /\.hx-img\s*\{[^}]*cursor:\s*pointer/,
       /\.hx-thumb\s*\{[^}]*max-height:\s*180px/, /\.hx-img-ph,\s*\.hx-img-off\s*\{[^}]*var\(--text-muted\)/, /dialog\.dlg-img\s*\{[^}]*width:\s*min\(1200px/, /dialog\.dlg-img::backdrop\s*\{[^}]*var\(--scrim\)/,
       /\.img-stage\s*\{[^}]*overflow:\s*auto/, /\.img-stage img\s*\{[^}]*max-width:\s*100%/, /\.img-state\s*\{[^}]*display:\s*flex/, /@media \(max-width:\s*600px\)\s*\{\s*dialog\.dlg-img/]) assert.match(block, re, String(re));
+  });
+});
+
+describe('0.5.4 LT: the session window keeps unsent text (wiring)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const mk = (names, ctx) => vm.runInNewContext(`${names.map(fnOf).join('\n')}; ({ ${names.map((n) => n.replace(/^(async )?function /, '').replace(/\(.*$/, '')).join(', ')} })`, ctx);
+  const constOf = (name) => vm.runInNewContext(`${SRC.match(new RegExp(`const ${name} = [^;]+;`))[0]}; ${name}`);
+  const flush = async () => { for (let i = 0; i < 6; i += 1) await Promise.resolve(); };
+
+  afterEach(() => mock.timers.reset());
+
+  // ---- the bounded GET and the PUT
+
+  const keptRig = (answer) => {
+    mock.timers.reset(); // a test may build two rigs
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const log = { calls: [], signals: [] };
+    const ctx = {
+      paneId: '%12', KEPT_TIMEOUT_MS: constOf('KEPT_TIMEOUT_MS'), AbortController, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+      call: (path, opts) => {
+        log.calls.push([path, opts]);
+        if (opts?.signal) log.signals.push(opts.signal);
+        if (answer) return answer(opts);
+        return new Promise((res) => { opts.signal.addEventListener('abort', () => res({ status: 0, body: null })); }); // never answers: the abort ends it, like the real call
+      },
+    };
+    return { ...mk(['async function getKept()', 'function putKept(body)'], ctx), log };
+  };
+
+  test('(+) the bounded GET: kept-draft of the pane, a signal, no method; cut at exactly 3000 ms and answered as a status 0 like any failure', async () => {
+    assert.equal(constOf('KEPT_TIMEOUT_MS'), 3000);
+    const r = keptRig();
+    const p = r.getKept();
+    await flush();
+    assert.equal(r.log.calls.length, 1);
+    const [path, opts] = r.log.calls[0];
+    assert.equal(path, '/api/app/pane/%2512/kept-draft');
+    assert.deepEqual(Object.keys(opts), ['signal']);
+    assert.equal(typeof opts.signal.aborted, 'boolean');
+    mock.timers.tick(2999);
+    assert.equal(opts.signal.aborted, false, 'not yet at 2999 ms');
+    mock.timers.tick(1);
+    assert.equal(opts.signal.aborted, true, 'cut at 3000 ms');
+    assert.deepEqual(jsonClone(await p), { status: 0, body: null });
+  });
+
+  test('(−) the bounded GET: an answer clears the timer (no abort later), and a call that rejects clears it too', async () => {
+    const ok = keptRig(() => Promise.resolve({ status: 200, body: { kept: null } }));
+    assert.deepEqual(jsonClone(await ok.getKept()), { status: 200, body: { kept: null } });
+    mock.timers.tick(10000);
+    assert.equal(ok.log.signals[0].aborted, false, 'the timer went with the answer');
+    const bad = keptRig(() => Promise.reject(new Error('boom')));
+    await assert.rejects(bad.getKept(), /boom/);
+    mock.timers.tick(10000);
+    assert.equal(bad.log.signals[0].aborted, false, 'the timer went with the failure too');
+  });
+
+  test('(+) the PUT: kept-draft of the pane with the body as given and keepalive, and the answer is the call\'s', async () => {
+    const r = keptRig(() => Promise.resolve({ status: 200, body: { kept: true } }));
+    const body = { text: 'unsent words', shell: true };
+    const answer = await r.putKept(body);
+    assert.deepEqual(jsonClone(answer), { status: 200, body: { kept: true } });
+    const [path, opts] = r.log.calls[0];
+    assert.equal(path, '/api/app/pane/%2512/kept-draft');
+    assert.deepEqual(jsonClone(opts), { method: 'PUT', json: { text: 'unsent words', shell: true }, keepalive: true });
+    assert.equal(opts.json, body, 'the body is passed on as it is');
+  });
+
+  test('(−) the PUT carries no signal and no timer: it must outlive a page that is being left', async () => {
+    const r = keptRig(() => Promise.resolve({ status: 200, body: { kept: false } }));
+    await r.putKept({ text: '', shell: false });
+    assert.equal(r.log.signals.length, 0);
+    assert.equal(Object.hasOwn(r.log.calls[0][1], 'signal'), false);
+    assert.equal(fnOf('function putKept(body)').includes('setTimeout'), false);
+  });
+
+  // ---- the io the page hands the sync
+
+  const dsIo = () => {
+    const log = { problems: [], cleared: 0 };
+    const el = { textContent: '' };
+    const fakes = {
+      pullIntoBox() {}, putDraft() {}, suggestDraft() {}, renderDraftNote() {}, setGone() {}, putKept() {}, getKept() {}, announce() {}, composer: () => ({ value: '' }), S: { on: false },
+      showProblem: (m, k, ms) => log.problems.push([m, k, ms]), clearProblem: () => { log.cleared += 1; }, $: () => el, Date, setTimeout, clearTimeout,
+    };
+    const src = SRC.slice(SRC.indexOf('const DS = createDraftSync({'), SRC.indexOf('\n});', SRC.indexOf('const DS = createDraftSync({')) + 4);
+    let io = null;
+    vm.runInNewContext(src, { ...fakes, createDraftSync: (given) => { io = given; return {}; } });
+    return { io, log, el, fakes };
+  };
+
+  test('(+) the sync gets the kept-text io: the PUT, the bounded GET and the live region by name', () => {
+    const { io, fakes } = dsIo();
+    assert.equal(io.keep, fakes.putKept);
+    assert.equal(io.fetchKept, fakes.getKept);
+    assert.equal(io.announce, fakes.announce);
+    assert.equal(io.put, fakes.putDraft, 'the draft write is the same as before');
+    assert.equal(io.setBox, fakes.pullIntoBox, 'and so is the put-back path: a pull');
+    assert.equal(Object.hasOwn(io, 'clearLine'), false, 'no clearLine any more: the over-size state is a note of the sync, not a problem line (round 1, SF-1)');
+  });
+
+  test('(+) problem(message) is a warn line for 6000 ms as before; a second argument sets the time (0 stays until replaced)', () => {
+    const { io, log } = dsIo();
+    io.problem('one');
+    io.problem('two', 0);
+    io.problem('three', 8000);
+    assert.deepEqual(log.problems, [['one', 'warn', 6000], ['two', 'warn', 0], ['three', 'warn', 8000]]);
+  });
+
+  // ---- Send while the text is being brought back
+
+  const sendRig = ({ restoring, sending = false, attPending = false, sendNote = null }) => {
+    const log = { problems: [], atts: 0, reached: false };
+    const ta = { disabled: false, value: 'unsent words' };
+    const ctx = {
+      composer: () => ta, sending, DS: { restoring: () => restoring }, RESTORING_TEXT: RESTORING_TEXT_REAL, STILL_SENDING: STILL_SENDING_REAL, STILL_SENDING_MS: STILL_SENDING_MS_REAL,
+      showProblem: (m, k, ms) => log.problems.push([m, k, ms]),
+      SV: { sendNote: () => { log.reached = true; return sendNote ?? 'STOP-HERE'; } },
+      ATT: { pending: () => attPending, send: () => { log.atts += 1; } },
+    };
+    return { ...mk(['async function sendComposer()'], ctx), log };
+  };
+
+  test('(+) Send while the kept text is being brought back: the fixed line as a warn for 4000 ms, and nothing else is asked (not the survey, not the attachments)', async () => {
+    const r = sendRig({ restoring: true, attPending: true });
+    await r.sendComposer();
+    assert.deepEqual(r.log.problems, [[RESTORING_TEXT_REAL, 'warn', 4000]]);
+    assert.equal(r.log.reached, false, 'the later gates were not reached');
+    assert.equal(r.log.atts, 0, 'ATT.send was not called, so no attachment goes without the text');
+  });
+
+  test('(−) Send with no restore running goes on to the next gate as before; the line is not shown', async () => {
+    const r = sendRig({ restoring: false });
+    await r.sendComposer();
+    assert.equal(r.log.reached, true);
+    assert.deepEqual(r.log.problems, [['STOP-HERE', 'error', undefined]]);
+  });
+
+  test('(−) the "still sending" line comes first: a Send in flight is told so, even while a restore runs', async () => {
+    const r = sendRig({ restoring: true, sending: true });
+    await r.sendComposer();
+    assert.deepEqual(r.log.problems, [[STILL_SENDING_REAL, 'warn', STILL_SENDING_MS_REAL]]);
+  });
+
+  test('(+) the restore check sits after the in-flight check and before the survey, the gate and the attachment hand-over', () => {
+    const f = fnOf('async function sendComposer()');
+    const at = (s) => f.indexOf(s);
+    assert.ok(at('if (sending)') >= 0 && at('if (sending)') < at('DS.restoring()'));
+    assert.ok(at('DS.restoring()') < at('SV?.sendNote()') && at('DS.restoring()') < at('sendGate(') && at('DS.restoring()') < at('ATT.pending()'));
+    assert.equal([...f.matchAll(/DS\.restoring\(\)/g)].length, 1);
+  });
+
+  // ---- a kept text is a value, never markup
+
+  test('(+) a kept text that looks like markup is put back as the box\'s value: no element is made from it, and the draft sync is told through the same pull as any other', async () => {
+    const MARKUP = '<img src=x onerror=alert(1)>';
+    const ta = { value: '', selectionStart: 0, setSelectionRange() {} };
+    let created = 0;
+    const pulls = [];
+    const { pullIntoBox } = mk(['function pullIntoBox(value, shell)'], {
+      composer: () => ta, document: { activeElement: null, createElement() { created += 1; return {}; } }, caretAfter: caretAfterReal, setShell: (s) => pulls.push(s), grow() {}, updateChip() {}, closePalette() {},
+    });
+    const ds = createDraftSyncReal({
+      now: () => 0, after: () => 1, cancel() {}, box: () => ({ value: ta.value, shell: false }), setBox: pullIntoBox, put: async () => ({ status: 200, body: {} }), suggest: async () => ({ status: 200, body: {} }),
+      note() {}, problem() {}, gone() {}, keep: async () => ({ status: 200, body: { kept: true } }), fetchKept: async () => ({ status: 200, body: { kept: { text: MARKUP, shell: true } } }), announce() {},
+    });
+    await ds.restore();
+    assert.equal(ta.value, MARKUP, 'the text is the value, byte for byte');
+    assert.deepEqual(pulls, [true]);
+    assert.equal(created, 0, 'no element was created');
+  });
+
+  test('(−) the page code that handles the kept text makes no element and parses no markup', () => {
+    for (const name of ['async function getKept()', 'function putKept(body)', 'async function sendComposer()']) assert.deepEqual(findSinks(fnOf(name)), [], name);
+    assert.deepEqual(findSinks(code(JS['draft-sync.js'])), []);
+  });
+});
+
+// ---- 0.5.4 PL (LC-QPF, owner answer 2026-11-21): the problem line under the message box has its own icon and word per kind ---------------------------------
+describe('PL (0.5.4): the problem line tells a warning from an error by icon and word, not by colour alone', () => {
+  const SRC = code(JS['session.js']);
+  const css = strip(CSS);
+  const { THEME, ratio } = colourKit();
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const symbol = (n) => new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(HTML)?.[1] ?? null;
+  const rule = (sel) => new RegExp(`(?:^|[\\s}])${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+  afterEach(() => mock.timers.reset());
+
+  /** The page's real showProblem over a fake line: one fake element per id the page has, so the label cannot overwrite the message. */
+  const lineRig = () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const fake = () => { const attrs = {}; return { textContent: '', className: '', hidden: false, attrs, setAttribute(k, v) { attrs[k] = String(v); }, getAttribute(k) { return attrs[k] ?? null; } }; };
+    const nodes = { problem: fake(), 'problem-line': fake(), 'problem-use': fake(), 'problem-label': fake() };
+    nodes['problem-line'].hidden = true;
+    const $ = (id) => { assert.ok(Object.hasOwn(nodes, id), `showProblem looks up ${id}`); return nodes[id]; };
+    const show = vm.runInNewContext(`${fnOf('function showProblem(')}; showProblem`, { $, problemTimer: 0, setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t) });
+    const seen = () => ({ text: nodes.problem.textContent, hidden: nodes['problem-line'].hidden, kind: nodes['problem-line'].getAttribute('data-kind'), href: nodes['problem-use'].getAttribute('href'), label: nodes['problem-label'].textContent });
+    return { nodes, show, seen };
+  };
+
+  // -- the markup and the sprite
+
+  test('(+) the page wraps the line: icon, word, then the alert with the message, in the notes row between the draft note and the echo; it starts hidden as a warning', () => {
+    assert.match(HTML, /<span class="problem-line" id="problem-line" data-kind="warn" hidden><svg class="ic" aria-hidden="true"><use href="#i-warn" id="problem-use"\/><\/svg><span class="problem-label" id="problem-label">Warning:<\/span> <span class="problem" id="problem" role="alert"><\/span><\/span>/);
+    const order = ['id="arg-hint"', 'id="shell-hint"', 'id="draft-note"', 'id="problem-line"', 'id="problem"', 'id="echo"'].map((n) => HTML.indexOf(n));
+    assert.ok(order.every((n) => n > 0) && order.every((n, i) => i === 0 || n > order[i - 1]), order.join(','));
+  });
+
+  test('(\u2212) the line brings no inline style, no event handler and no second alert region', () => {
+    const block = /<span class="problem-line"[\s\S]*?<\/span><\/span>/.exec(HTML)?.[0] ?? '';
+    assert.ok(block.length > 0, 'the block is there');
+    assert.doesNotMatch(block, /\sstyle=|\son[a-z]+=/);
+    assert.equal(block.split('role="alert"').length - 1, 1, 'only the message is the alert');
+  });
+
+  test('(+) the sprite draws i-error once in the 16 x 16 stroke style like i-info: a circle of r 6.2 with an x, and no fill, stroke or style', () => {
+    assert.equal(HTML.split('<symbol id="i-error"').length - 1, 1);
+    const err = symbol('error');
+    assert.ok(err, 'i-error is in the sprite');
+    assert.doesNotMatch(err, /\b(fill|stroke|style)=/);
+    assert.match(err, /<circle cx="8" cy="8" r="6.2"\/>/);
+    assert.match(err, /<path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"\/>/);
+    assert.equal(new Set([err, symbol('info'), symbol('warn'), symbol('off'), symbol('x')]).size, 5, 'a drawing of its own');
+  });
+
+  // -- showProblem
+
+  test('(+) a warning shows the warn icon, "Warning:" and the message, and the message element holds the message and nothing else', () => {
+    const { show, seen, nodes } = lineRig();
+    show('Claude is busy');
+    assert.deepEqual(seen(), { text: 'Claude is busy', hidden: false, kind: 'warn', href: '#i-warn', label: 'Warning:' });
+    assert.equal(nodes.problem.className, 'problem');
+    show('also a warning', 'warn');
+    assert.deepEqual(seen(), { text: 'also a warning', hidden: false, kind: 'warn', href: '#i-warn', label: 'Warning:' });
+  });
+
+  test('(+) an error shows the error icon, "Error:" and the message; the next warning takes the warning look back', () => {
+    const { show, seen, nodes } = lineRig();
+    show('nika could not send this', 'error');
+    assert.deepEqual(seen(), { text: 'nika could not send this', hidden: false, kind: 'error', href: '#i-error', label: 'Error:' });
+    assert.equal(nodes.problem.className, 'problem error');
+    show('try again later', 'warn');
+    assert.deepEqual(seen(), { text: 'try again later', hidden: false, kind: 'warn', href: '#i-warn', label: 'Warning:' });
+    assert.equal(nodes.problem.className, 'problem');
+  });
+
+  test('(\u2212) an empty message hides the whole line: no icon or word is left showing', () => {
+    const { show, seen, nodes } = lineRig();
+    show('nika could not send this', 'error');
+    assert.equal(nodes['problem-line'].hidden, false, 'shown with a message');
+    show('');
+    assert.equal(nodes['problem-line'].hidden, true);
+    assert.equal(seen().text, '');
+    show('x', 'warn');
+    assert.equal(nodes['problem-line'].hidden, false);
+    show('', 'error');
+    assert.equal(nodes['problem-line'].hidden, true, 'whatever the kind');
+  });
+
+  test('(\u2212) after the timeout the text is gone and the line is hidden, and not a moment before; a newer message is not cut short by the older timer', () => {
+    const { show, seen, nodes } = lineRig();
+    show('too many keys', 'warn', 3000);
+    mock.timers.tick(2999);
+    assert.equal(seen().hidden, false);
+    assert.equal(seen().text, 'too many keys');
+    mock.timers.tick(1);
+    assert.equal(nodes['problem-line'].hidden, true);
+    assert.equal(seen().text, '');
+    show('first', 'warn', 3000);
+    mock.timers.tick(1000);
+    show('second', 'error');
+    mock.timers.tick(5000);
+    assert.deepEqual(seen(), { text: 'second', hidden: false, kind: 'error', href: '#i-error', label: 'Error:' });
+  });
+
+  test('(+) the notes row stays quiet for an empty message and opens for a shown one: syncNotes reads the message element', () => {
+    const { show, nodes } = lineRig();
+    const $ = (id) => ({ 'arg-hint': { hidden: true }, 'shell-hint': { hidden: true }, 'draft-note': { hidden: true }, problem: nodes.problem, notes: { classList: { toggle(name, on) { $.quiet = on; } } } })[id];
+    const { syncNotes } = vm.runInNewContext(`${fnOf('function syncNotes()')}; ({ syncNotes })`, { $ });
+    show('Claude is busy');
+    syncNotes();
+    assert.equal($.quiet, false);
+    show('');
+    syncNotes();
+    assert.equal($.quiet, true);
+  });
+
+  test('(\u2212) showProblem stays free of DOM sinks and builds no element', () => {
+    const fn = fnOf('function showProblem(');
+    assert.doesNotMatch(fn, /createElement|\.style\b|\.cssText/);
+    for (const [name, re] of SINKS) assert.doesNotMatch(fn, re, name);
+  });
+
+  // -- the look
+
+  test('(+) .problem-line carries the colour: --idle for a warning, --danger for an error, bold as the line was, the icon beside the first line; tokens only', () => {
+    const line = rule('.problem-line');
+    assert.match(line, /(^|[\s;])color:\s*var\(--idle\)/);
+    assert.match(line, /font-weight:\s*600/);
+    assert.match(line, /display:\s*inline-flex/);
+    assert.match(rule('.problem-line[data-kind="error"]'), /(^|[\s;])color:\s*var\(--danger\)/);
+    assert.match(rule('.problem-line .ic'), /margin-top:\s*3px/);
+    assert.doesNotMatch([line, rule('.problem-line[data-kind="error"]'), rule('.problem-line .ic')].join(' '), /#[0-9a-f]{3,8}\b|rgb|hsl/i);
+  });
+
+  test('(\u2212) the message element has no colour of its own (one source for the colour), and the page\'s global [hidden] rule is what hides the line', () => {
+    assert.doesNotMatch(rule('.problem'), /(^|[\s;])color:/);
+    assert.doesNotMatch(css, /\.problem\.error|\.problem:empty/);
+    assert.match(css, /(^|\n)\[hidden\]\s*\{\s*display:\s*none\s*!important/);
+  });
+
+  for (const name of Object.keys(THEME)) {
+    test(`(+) contrast (${name}): the word and the message are 4.5:1 on the notes row's background (the composer's --surface), for a warning and for an error`, () => {
+      assert.match(rule('.composer'), /background:\s*var\(--surface\)/, 'the notes row sits on the composer');
+      const v = THEME[name];
+      for (const colour of ['--idle', '--danger']) assert.ok(ratio(v[colour], v['--surface']) >= 4.5, `${colour} on ${v['--surface']}: ${ratio(v[colour], v['--surface']).toFixed(2)}`);
+    });
+  }
+});
+
+// ---- 0.5.4, final fix round: the problem line's owner (S3), Send's size line (S2) and the line after nika's own paste (S5) -----------------------------------
+
+describe('0.5.4 final: the problem line keeps its owner (S3) and Send\'s size line goes once the text fits (S2)', () => {
+  const SRC = code(JS['session.js']);
+  const fnOf = (head) => {
+    const at = SRC.indexOf(head);
+    assert.ok(at >= 0, head);
+    return SRC.slice(at, SRC.indexOf('\n}\n', at) + 2);
+  };
+  const NAMES = [...SEND_FUNCS, 'function showProblem(', 'function clearProblemFrom(', 'function sizeLineGone(', 'function wireComposer()'];
+  const nameOf = (head) => head.replace(/^(async )?function /, '').replace(/\(.*$/, '');
+  afterEach(() => mock.timers.reset());
+
+  /** sendComposer, showProblem, clearProblemFrom and the composer's `input` handler for real in one context, over fake page nodes, the real plans and a fake sync and routes. */
+  const rig = ({ value = '', shell = false, submit, screen = null, kind = 'idle', pushAnswer = { ok: true, sig: '00000000000000aa' } } = {}) => {
+    mock.timers.reset();
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const log = Object.assign(sendLog(), { said: [], told: [], pushed: [] });
+    const fake = () => { const attrs = {}; return { textContent: '', className: '', hidden: false, attrs, setAttribute(k, v) { attrs[k] = String(v); }, removeAttribute(k) { delete attrs[k]; }, getAttribute(k) { return attrs[k] ?? null; }, addEventListener() {}, focus() {} }; };
+    const nodes = {};
+    const $ = (id) => (nodes[id] ??= fake());
+    const listeners = {};
+    const ta = { value, disabled: false, selectionStart: 0, selectionEnd: 0, addEventListener(type, f) { listeners[type] = f; } };
+    const ctx = {
+      sending: false, composer: () => ta, DF: null, SV: null, S: { on: shell }, W: { promptOpen: false, prompt: null, pane: 'ok', mode: 'default', confirmed: true }, A: { kind }, M: { cols: 120, gone: false },
+      sendGate: sendGateReal, hasAnswerButtons: hasAnswerButtonsReal, planShell: planShellReal, planSend: planSendReal, draftSendPlan: draftSendPlanReal,
+      $, say: (m) => log.said.push(m), paneId: '%12', setShell() {}, grow() {}, updateChip() {}, wirePalette() {}, document: { querySelectorAll: () => [] },
+      DS: {
+        screen: () => screen, restoring: () => false, beginSend() {}, endSend() {}, sent() {}, edited() {}, composition() {},
+        submitted: (r) => { log.told.push(jsonClone(r)); },
+        send: async (text) => { log.order.push('push'); log.pushed.push(text); return pushAnswer; },
+      },
+      ATT: { pending: () => false },
+      setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t),
+      ...sendIo(log, submit),
+    };
+    delete ctx.clearProblem; // the page's own is evaluated below, over the real showProblem
+    const api = vm.runInNewContext(`let problemTimer = 0; let problemOwner = '';\n${NAMES.map(fnOf).join('\n')}\nconst clearProblem = () => showProblem('');\n({ ${NAMES.map(nameOf).join(', ')}, clearProblem, owner: () => problemOwner })`, ctx);
+    api.wireComposer();
+    return { api, nodes, ta, log, listeners, line: () => nodes.problem?.textContent ?? '', shown: () => nodes['problem-line']?.hidden === false };
+  };
+
+  test('(+) S3: a line shown with an owner is taken down by clearProblemFrom(owner) at once (empty, hidden, no owner left)', () => {
+    const r = rig();
+    r.api.showProblem('Claude\'s notes field is open.', 'warn', 0, 'dialog');
+    assert.equal(r.api.owner(), 'dialog');
+    assert.equal(r.line(), 'Claude\'s notes field is open.');
+    r.api.clearProblemFrom('dialog');
+    assert.equal(r.line(), '');
+    assert.equal(r.shown(), false);
+    assert.equal(r.api.owner(), '');
+  });
+
+  test('(−) S3: clearProblemFrom leaves another owner\'s line, an un-owned line and an empty line alone; the empty owner never matches an un-owned line', () => {
+    const r = rig();
+    r.api.showProblem('mine', 'warn', 0, 'dialog-answer');
+    r.api.clearProblemFrom('dialog');
+    r.api.clearProblemFrom('');
+    r.api.clearProblemFrom(undefined);
+    assert.equal(r.line(), 'mine');
+    assert.equal(r.api.owner(), 'dialog-answer');
+    r.api.showProblem('nobody\'s', 'warn');
+    for (const owner of ['dialog', 'dialog-answer', '', undefined]) r.api.clearProblemFrom(owner);
+    assert.equal(r.line(), 'nobody\'s');
+    r.api.clearProblem();
+    r.api.clearProblemFrom('dialog');
+    assert.equal(r.line(), '');
+    assert.equal(r.shown(), false);
+  });
+
+  test('(+) S3: an un-owned showProblem, clearProblem() and the ms timeout each reset the owner, so the old owner can no longer take down a line that is not its own', () => {
+    const r = rig();
+    r.api.showProblem('A', 'warn', 0, 'dialog');
+    r.api.showProblem('B', 'error'); // another part's line takes the place
+    assert.equal(r.api.owner(), '');
+    r.api.clearProblemFrom('dialog');
+    assert.equal(r.line(), 'B', 'B is not the dialog\'s');
+    r.api.showProblem('C', 'warn', 0, 'dialog');
+    r.api.clearProblem();
+    assert.equal(r.api.owner(), '');
+    r.api.showProblem('D', 'warn', 3000, 'dialog');
+    mock.timers.tick(3000);
+    assert.equal(r.line(), '');
+    assert.equal(r.api.owner(), '', 'the timeout ended the owned line');
+    r.api.showProblem('E', 'warn');
+    r.api.clearProblemFrom('dialog');
+    assert.equal(r.line(), 'E', 'a line shown after the timeout is nobody\'s dialog line');
+  });
+
+  /** The Check again button's handler for real (wireTerminal), over stubs: the order of what it calls. */
+  const checkAgain = () => {
+    const calls = [];
+    const listeners = {};
+    const el = (id) => ({ addEventListener(type, f) { listeners[`${id}:${type}`] = f; }, dataset: {}, scrollHeight: 0, scrollTop: 0, clientHeight: 0, setAttribute() {} });
+    const M = { gone: true, fatal: true, inputOff: true, etag: 'x' };
+    const W = { got: true };
+    const ctx = {
+      $: el, M, W, setFrozen() {}, jumpToLive() {}, wireScroll() {}, wirePassthrough() {}, document: { querySelectorAll: () => [] }, storeGet: () => null, storeSet() {}, paneId: '%1', DOTS: '...',
+      DS: { reset: () => calls.push('DS.reset') }, ATT: { retryRestore: () => calls.push('ATT.retryRestore') },
+      setPaneState: (s) => calls.push(`state ${s}`), setInputEnabled: (on) => calls.push(`input ${on}`), showOverlay: () => calls.push('overlay'), kickMirror: (ms) => calls.push(`kick ${ms}`),
+    };
+    vm.runInNewContext(`${fnOf('function wireTerminal()')}; wireTerminal`, ctx)();
+    listeners['over-retry:click']();
+    return { calls, M, W };
+  };
+
+  test('(+) S1: Check again lists the unsent attachments again: ATT.retryRestore() runs once, after the draft sync is reset and before the mirror is asked for', () => {
+    const { calls, M, W } = checkAgain();
+    assert.deepEqual(calls, ['DS.reset', 'ATT.retryRestore', 'state connecting', 'input true', 'overlay', 'kick 0']);
+    assert.deepEqual([M.gone, M.fatal, M.inputOff, M.etag, W.got], [false, false, false, null, false], 'the rest of the handler is as before');
+  });
+
+  test('(\u2212) S1: Check again never calls restore() itself (that would list after a good list too): ATT.restore() stays boot\'s one call, retryRestore() has one caller', () => {
+    assert.equal((SRC.match(/ATT\.retryRestore\(/g) ?? []).length, 1);
+    assert.equal((SRC.match(/ATT\.restore\(/g) ?? []).length, 1);
+    assert.doesNotMatch(fnOf('function wireTerminal()'), /ATT\.restore\(/);
+  });
+
+  test('(+) S2: Send over 16 KB shows the size line as "send-size"; shortened to exactly 16 KB the line is gone on that input, counted in UTF-8 bytes', async () => {
+    for (const [over, fits] of [['y'.repeat(16 * 1024 + 1), 'y'.repeat(16 * 1024)], ['\u00e9'.repeat(8 * 1024 + 1), '\u00e9'.repeat(8 * 1024)]]) {
+      const r = rig({ value: over });
+      await r.api.sendComposer();
+      assert.equal(r.line(), planSendReal(over).message);
+      assert.match(r.line(), /KB\. A paste can be at most 16 KB/);
+      assert.equal(r.api.owner(), 'send-size');
+      assert.deepEqual(r.log.sent, [], 'nothing was sent');
+      r.ta.value = fits;
+      r.listeners.input();
+      assert.equal(r.line(), '');
+      assert.equal(r.shown(), false);
+      assert.equal(r.api.owner(), '');
+      assert.deepEqual(r.log.sent, []);
+    }
+  });
+
+  test('(+) S2: planSend marks only its over-16 KB refusal `size: true` (the page owns that line); (\u2212) no other plan, and no Shell refusal, is marked', () => {
+    for (const v of ['y'.repeat(16 * 1024 + 1), '\u00e9'.repeat(8 * 1024 + 1)]) assert.equal(planSendReal(v).size, true);
+    for (const v of ['', 'hello', 'a\nb', 'x'.repeat(2000), 'a\tb', 'y'.repeat(16 * 1024), '\u00e9'.repeat(8 * 1024)]) assert.equal('size' in planSendReal(v), false, v.slice(0, 8));
+    for (const v of ['a\nb', 'x'.repeat(1030), 'a\u0007b']) assert.equal('size' in planShellReal(v), false, v.slice(0, 8));
+  });
+
+  test('(\u2212) S2: still over 16 KB after an edit: the size line stays; the box emptied clears it', async () => {
+    const over = 'y'.repeat(16 * 1024 + 1);
+    const r = rig({ value: over });
+    await r.api.sendComposer();
+    r.ta.value = `${over}z`;
+    r.listeners.input();
+    assert.equal(r.line(), planSendReal(over).message, 'the line is the first one: nothing re-computed on the page');
+    assert.equal(r.api.owner(), 'send-size');
+    r.ta.value = 'y'.repeat(16 * 1024 + 1);
+    r.listeners.input();
+    assert.notEqual(r.line(), '');
+    r.ta.value = '';
+    r.listeners.input();
+    assert.equal(r.line(), '');
+    // round 1 (R1-2): bytes, not characters. 8,194 two-byte characters are 16,388 bytes and fewer than 16,384 characters.
+    const e = '\u00e9';
+    const multi = e.repeat(8 * 1024 + 1); // 16,386 bytes
+    const m = rig({ value: multi });
+    await m.api.sendComposer();
+    assert.equal(m.api.owner(), 'send-size');
+    const first = m.line();
+    assert.equal(first, planSendReal(multi).message);
+    m.ta.value = `${multi}${e}`;
+    assert.ok(m.ta.value.length < 16 * 1024, 'fewer than 16,384 characters');
+    assert.equal(Buffer.byteLength(m.ta.value, 'utf8'), 16388);
+    m.listeners.input();
+    assert.equal(m.line(), first, 'still over in bytes: the line stays');
+    assert.equal(m.api.owner(), 'send-size');
+    assert.equal(m.shown(), true);
+    m.ta.value = e.repeat(8 * 1024); // exactly 16,384 bytes
+    m.listeners.input();
+    assert.equal(m.line(), '', 'exactly 16 KB in bytes fits');
+    assert.equal(m.api.owner(), '');
+  });
+
+  test('(\u2212) S2: a non-size Send refusal stays on the same input (Shell: a command over 1023 characters is 2 KB, not over 16 KB)', async () => {
+    const r = rig({ value: 'z'.repeat(2000), shell: true });
+    await r.api.sendComposer();
+    const line = r.line();
+    assert.match(line, /A shell command can be at most 1023 characters/);
+    assert.equal(r.api.owner(), '', 'only the 16 KB refusal is Send\'s size line');
+    r.listeners.input();
+    assert.equal(r.line(), line);
+    r.ta.value = 'z'.repeat(10);
+    r.listeners.input();
+    assert.equal(r.line(), line, 'even a short text leaves a line that is not the size line');
+    const g = rig({ value: 'hello' });
+    g.api.showProblem('A refusal of the route', 'error');
+    g.listeners.input();
+    assert.equal(g.line(), 'A refusal of the route');
+  });
+
+  test('(\u2212) S2: another part\'s line (the kept-text failure, a dialog line) stays on the same input', () => {
+    const r = rig({ value: 'short' });
+    r.api.showProblem(KEEP_FAILED_REAL, 'warn', 8000);
+    r.listeners.input();
+    assert.equal(r.line(), KEEP_FAILED_REAL);
+    r.api.showProblem('A line about the open dialog.', 'warn', 0, 'dialog');
+    r.listeners.input();
+    assert.equal(r.line(), 'A line about the open dialog.');
+    r.api.showProblem('The outcome of an answer.', 'warn', 0, 'dialog-answer');
+    r.listeners.input();
+    assert.equal(r.line(), 'The outcome of an answer.');
+  });
+
+  // ---- S5: the line after nika's own paste meets 409 screen-unclear ----------------------------------------------------------------------------------------
+  const PASTED_LINE = "Your text is in Claude's input. Press Enter in the terminal to send it.";
+  const OLD_LINE = "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept.";
+  const UNCLEAR = () => ({ status: 409, body: { error: 'screen-unclear' } });
+  const D = (state, text = '', over = {}) => ({ state, mode: 'prompt', text, sig: '0000000000000001', box: { top: 30, bottom: 32 }, cursorAtEnd: true, suggestion: null, queued: false, ...over });
+
+  test('(+) S5: the push road (the text was copied into Claude\'s input), then 409 screen-unclear: the new line, as an error; the text stays in the box', async () => {
+    const r = rig({ value: 'fix the typo', screen: D('empty'), submit: UNCLEAR });
+    await r.api.sendComposer();
+    assert.deepEqual(r.log.pushed, ['fix the typo']);
+    assert.deepEqual(r.log.posts.map(([tail]) => tail), ['submit']);
+    assert.equal(r.line(), PASTED_LINE);
+    assert.equal(r.nodes.problem.className, 'problem error');
+    assert.equal(r.ta.value, 'fix the typo', 'the text is kept');
+    assert.deepEqual(r.log.said, []);
+  });
+
+  test('(+) S5: the legacy road with a typed payload (a line, a paste, a Shell command), then 409 screen-unclear: the new line', async () => {
+    for (const [value, shell] of [['fix the typo', false], ['line one\nline two', false], ['ls -la', true]]) {
+      const r = rig({ value, shell, screen: null, submit: UNCLEAR });
+      await r.api.sendComposer();
+      assert.ok(r.log.keys.length > 0, `${value}: nika typed the text`);
+      assert.equal(r.line(), PASTED_LINE, value);
+      assert.equal(r.ta.value, value);
+    }
+  });
+
+  test('(\u2212) S5: the enter road (nika typed nothing: the screen already holds the text, or the box is empty), then 409 screen-unclear: the old line', async () => {
+    const same = rig({ value: 'fix the typo', screen: D('text', 'fix the typo'), submit: UNCLEAR });
+    await same.api.sendComposer();
+    assert.deepEqual(same.log.pushed, []);
+    assert.deepEqual(same.log.keys, []);
+    assert.equal(same.line(), OLD_LINE);
+    const empty = rig({ value: '', screen: D('text', 'typed in the terminal'), submit: UNCLEAR });
+    await empty.api.sendComposer();
+    assert.deepEqual(empty.log.keys, []);
+    assert.equal(empty.line(), OLD_LINE);
+    const nothing = rig({ value: 'x', screen: null, submit: UNCLEAR });
+    await nothing.api.typeThenSubmit([]); // a legacy Send with no payload typed nothing either
+    assert.equal(nothing.line(), OLD_LINE);
+  });
+
+  test('(\u2212) S5: the push road, then a 409 with another code: that code\'s line, never the new one; a push that did not land sends no Enter', async () => {
+    for (const code of ['prompt-open', 'bypass-prompt', 'not-idle', 'draft-changed', 'suggestion-shown', 'input-unreadable', 'mode-unknown', 'busy-switching', 'screen-unclear-x', 'Screen-Unclear', '']) {
+      const r = rig({ value: 'fix the typo', screen: D('empty'), submit: () => ({ status: 409, body: { error: code } }) });
+      await r.api.sendComposer();
+      assert.equal(r.line(), submitMessageReal({ status: 409, code }), code);
+      assert.notEqual(r.line(), PASTED_LINE, code);
+    }
+    for (const status of [500, 404, 429, 0]) {
+      const r = rig({ value: 'fix the typo', screen: D('empty'), submit: () => ({ status, body: { error: 'screen-unclear' } }) });
+      await r.api.sendComposer();
+      assert.equal(r.line(), submitMessageReal({ status, code: '' }), String(status));
+      assert.notEqual(r.line(), PASTED_LINE, String(status));
+    }
+    const lost = rig({ value: 'fix the typo', screen: D('empty'), pushAnswer: { ok: false, message: 'Claude\'s input changed while nika was copying your text.' }, submit: UNCLEAR });
+    await lost.api.sendComposer();
+    assert.deepEqual(lost.log.posts, [], 'no Enter without the push');
+    assert.equal(lost.line(), 'Claude\'s input changed while nika was copying your text.');
   });
 });

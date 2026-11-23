@@ -15,6 +15,8 @@ import { orchState, roleTag, savedPick, otherRunning, parentOf, spawnLimits, eff
 import { parseModes, modesAfter, settingModeEl, MODE_META } from '../public/modes.js';
 import { pluginView, pluginSave, sortIds, countText, filterNote } from '../public/plugin-view.js';
 import { ROLES, ROLE_LABEL, modelLabel, fillRoleOverride, effectiveRoleModels } from '../public/models-ui.js';
+import { makeFixture, cleanup, NOW, fakeExec } from './helpers.js';
+import { collect } from '../src/model.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
@@ -144,7 +146,7 @@ function rowRig({ isApp = true, rowItems = undefined } = {}) {
   const ctx = {
     h, icon, roleTag, roleTagEl, ctxEl, labelEl, agentLabelView, menuEl, hooks, SHAPE, sessionHref, isApp, parentOf,
     state: { modes: { map: {} } }, document: { getSelection: () => ({ isCollapsed: true }) }, location: {},
-    sOf: (a) => (a.live ? 'idle' : 'ended'), rowMode: () => null, canEndRow: () => true, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
+    sOf: (a) => (a.live ? 'idle' : 'ended'), rowMode: () => null, rowNote: () => null, canEndRow: () => true, endedText: () => 'Ended', reasonOf: () => '', endedScope: (s) => `${s}-e`,
     statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
     copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
   };
@@ -188,6 +190,44 @@ describe('rowEl: the role badge', () => {
     const { rowEl } = rowRig({ isApp: false });
     assert.equal(tagOf(rowEl(agent({ role: 'orchestrator' }), grp({ project: null }), { scope: 'g:k' })).className, 'tag');
     assert.equal(tagOf(rowEl(agent({ role: 'sub-orchestrator', depth: 2 }), grp({ project: null }), { scope: 'g:k' })).className, 'tag sub');
+  });
+});
+
+describe('rowEl: Focus pane names the tmux window (0.5.4, P1)', () => {
+  const focus = (pane) => menuTexts(rowRig().rowEl(agent({ pane }), grp(), { scope: 'g:k' })).filter((t) => t.startsWith('Focus'));
+
+  test('(+) a valid window index goes in brackets after the pane id', () => {
+    assert.deepEqual(focus({ id: '%3', windowIndex: '1' }), ['Focus pane %3 (window 1) in tmux']);
+    assert.deepEqual(focus({ id: '%3', windowIndex: '123456' }), ['Focus pane %3 (window 123456) in tmux']);
+    assert.deepEqual(focus({ id: '%3' }), ['Focus pane %3 in tmux'], 'a snapshot without one');
+  });
+
+  test('(\u2212) a window index that is not 1 to 6 digits is not shown', () => {
+    for (const windowIndex of ['x', '1;2', '1234567', '', '-1', '1\n2', ' 1', 1, null, {}, ['1']]) {
+      assert.deepEqual(focus({ id: '%3', windowIndex }), ['Focus pane %3 in tmux'], JSON.stringify(windowIndex));
+    }
+  });
+});
+
+describe('rowEl: Focus pane names the tmux window, from a collected snapshot (0.5.4, P1)', () => {
+  const fxw = makeFixture();
+  after(() => cleanup(fxw));
+  // the real collector over a fixture, then the JSON the server sends, then the page's row menu: no hand-made pane object on the way
+  const focusFor = async (index) => {
+    const tmuxLines = [`%5\twork\t${index}\t[%5] build-7-1\tzsh`, '%6\twork\t2\tidle-pane\tclaude', '%7\twork\t3\t[%7] lazygit pane\tlazygit'];
+    const { snapshot } = await collect({ config: fxw.config, exec: fakeExec({ tmuxLines }), now: NOW, sinceMs: 7 * 86_400_000 });
+    const row = JSON.parse(JSON.stringify(snapshot)).groups.flatMap((g) => g.agents).find((a) => a.pane?.id === '%5');
+    // the rig has no subagent list element, so the subagents are emptied; the pane stays the collector's
+    return menuTexts(rowRig().rowEl({ ...row, subagents: [] }, grp(), { scope: 'g:k' })).filter((t) => t.startsWith('Focus'));
+  };
+
+  test('(+) the index tmux printed reaches the row menu', async () => {
+    assert.deepEqual(await focusFor('1'), ['Focus pane %5 (window 1) in tmux']);
+    assert.deepEqual(await focusFor('37'), ['Focus pane %5 (window 37) in tmux']);
+  });
+
+  test('(\u2212) a malformed index leaves today\'s text', async () => {
+    for (const index of ['x', '1;2', '1234567', '', '-1', ' 1']) assert.deepEqual(await focusFor(index), ['Focus pane %5 in tmux'], JSON.stringify(index));
   });
 });
 
@@ -265,8 +305,9 @@ function flowRig({ project = {}, agents = [], answers = {}, me = { tmux: true, c
       return t;
     },
     announce: () => {}, errText: (r) => r?.body?.message ?? `The server answered ${r?.status}.`, copyText: () => {}, setBusy: () => {}, openDialog: () => {},
-    render: (force) => renders.push(force), buildGroups: () => [g], agentNodes: () => [new El('ul')], swap: (host, list) => host.replaceChildren(...list), interacting: () => false,
+    render: (force) => renders.push(force), buildGroups: () => [g], agentNodes: () => [new El('ul')], swap: (host, list) => host.replaceChildren(...list.filter(Boolean)), interacting: () => false, // filter(Boolean) like the real swap: renderProject now ends its agents list with the removed line, null without a count (0.5.4)
     rulesEl: () => new El('span'), setTimeout, clearTimeout, AbortController, TextEncoder, window: { addEventListener: () => {} },
+    removedLineEl: () => null, removeGroup: () => {}, refresh: () => {}, // 0.5.4 RM: project.js uses these from removed.js and app.js
   };
   const api = vm.runInNewContext(`${PROJECT_SRC}\n({ groupActions, rowItems, startOrchestrator, setPick, forgetPick, renderProject })`, ctx);
   return { api, ctx, g, proj, state, calls, toastLog, navs, renders, node, settle,

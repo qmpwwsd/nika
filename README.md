@@ -247,9 +247,14 @@ More: [docs/packaging.md](docs/packaging.md) (build details, signing, Linux pack
   nika starts the project's tmux session when there is none. If Claude exits right after it starts (for example, it
   needs a login), the project page says so; run `claude` once in a terminal in that folder to see why. See
   [Orchestration (0.4)](#orchestration-04).
+- **Remove from the list.** In the app, a folder nika found that is not one of your projects, and an ended or stuck session,
+  can be removed from the lists: one click, **Undo** right after, and **Show removed** brings them back. It only hides the row:
+  nothing is deleted and no process is touched. The browser dashboard leaves removed rows out and shows how many. Why:
+  [ADR 0022](docs/adr/0022-remove-from-the-list.md).
 - **Settings** (`Mod+,`). Appearance (System, Light, Dark) and the **Single-key shortcuts** switch, the model per role (a
   list of current models and aliases, or a custom ID), Remote Control, default permission mode and pane placement, the
-  agent limit per orchestrator, **Auto-compact** and the rules template: defaults for every project. The Save and Discard bar appears only after a change; invalid fields are marked in place.
+  agent limit per orchestrator, **Auto-compact**, how a session window fits Claude's pane (**Session window**) and the rules
+  template: defaults for every project. The Save and Discard bar appears only after a change; invalid fields are marked in place.
 - **New agents, per project.** The project page's **New agents** card shows the permission mode, pane placement and agent
   limit this project's new sessions get. Click a value to pick this project's own, or **Use Settings** to follow the
   default (marked "from Settings"). They apply to Start and Resume orchestrator, to Spawn agent and Spawn
@@ -392,6 +397,11 @@ shows the tree and the context column, read-only.
 - **Limits.** **Agents per orchestrator** (Settings, 1 to 8) caps the agents and sub-orchestrators under each parent. A
   project as a whole runs at most three times that number, never more than 24. The spawn sheet shows both counts, and a
   spawn that would pass a limit is off, with the reason as its tooltip.
+- **Where new agents go.** An agent opens beside its parent (or under the newest agent, as the pane placement says) when
+  there is room for it. Otherwise nika puts it in a tmux window named `agents`, re-tiles
+  that window as agents come and opens another one when it is full. Your current tmux window stays where it is, and each
+  orchestrator's agents stay in their own windows. `nika spawn` and the app say where the agent went. Why:
+  [ADR 0021](docs/adr/0021-agent-placement.md).
 - **Models per project.** On the project page, **Project setup**, **Models** lists the roles this project sets and
   **Choose models…** changes them (Orchestrator, Reasoner, Builder, Scout; **Use default** follows Settings). They apply
   the next time nika starts or resumes the orchestrator, in the spawn sheet, and in `rules/orchestration.md` once you apply
@@ -399,7 +409,9 @@ shows the tree and the context column, read-only.
 - **Auto-compact.** Settings, **Auto-compact**: "Auto-compact at 80 % of 400k", on by default. Every claude nika starts
   after that (the orchestrator, agents, sub-orchestrators) compacts at that point; nika passes it two environment
   variables, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, and never your Claude settings.
-  Sessions that are already running, and sessions you start yourself, keep Claude Code's own setting. It needs tmux 3.2 or
+  Sessions that are already running, and sessions you start yourself, keep Claude Code's own setting, and Claude does not
+  compact a session while it waits: with the setting on, the app types `/compact` into a live session that waits past that
+  point, whether nika started it or not (see Session window (0.5)). It needs tmux 3.2 or
   newer: on an older tmux the orchestrator may not start until you turn Auto-compact off. Why: [ADR 0014](docs/adr/0014-auto-compact-launch-env.md).
 - **Context column.** Every row on the dashboard and the project page, in the browser too, shows how much of the window
   the session's context fills: a percentage with a thin bar, amber from 60 %, red with a warning icon from 80 %, and "–"
@@ -417,7 +429,11 @@ Desktop app only. None of this is on the browser dashboard.
   and says why.
 - **Prompt suggestions.** Claude's grey suggestion for your next prompt shows in the empty message box; **Tab** or **→** takes it.
 - **Long messages.** Text over 1024 characters or 12 line breaks is not mirrored. Send pastes it into an empty input, and refuses
-  when Claude's input already holds other text.
+  when Claude's input already holds other text. nika keeps such unsent text while the app runs, so it is back when
+  you leave the session and return; it never types it into Claude by itself.
+- **Typed `/compact`.** With **Auto-compact** on, a session that waits for you past its compact point gets `/compact` typed by
+  the app, but only when that is safe: the session is idle, you are not typing in it and its prompt is empty. The session line
+  and the row tooltips say what nika did.
 - **Fit.** The terminal view fills its panel: nika zooms the pane and, while the session window has focus, sizes its tmux window to the
   panel even when other panes share it (the zoom hides them; they get their size and layout back when you leave the session window).
   Without focus a smaller panel only zooms the pane and scales the text.
@@ -432,10 +448,14 @@ Desktop app only. None of this is on the browser dashboard.
   input box and footer do not fit the panel (a tall task list), nika gives the pane 33 rows or more once and scales the text to the panel;
   the chip's panel says so, and Fit again tries full-size text. The terminal view stops above Claude's input box with a thin line; nika asks
   for the rows hidden under that line in the same resize, so Claude's conversation fills the panel down to the line.
+  Settings, **Session window**, picks how it fits: **Auto** (the default), **Always fill the panel**, **Your terminal's size**
+  (nika never resizes a tmux window) or **Off** (nika changes nothing in tmux); a chip other than Auto says so with its own
+  colour, icon and words. Why: [ADR 0017](docs/adr/0017-fit-lease.md).
 - **Question forms.** When Claude asks a question or for a plan approval, a form above the message box answers it one step at a
   time (options, your own text under Other, the review, the plan's choices, Decline). It also works when Claude's task list is
   drawn under the dialog or a permission prompt, and for long questions. A question taller than the terminal panel is read
-  too: while the chip says "Fit · fills the panel", nika gives the pane more rows until the question closes. When nika
+  too: while the chip says "Fit · fills the panel", nika gives the pane more rows until the question closes. On Claude Code
+  2.1.328 and later a question step can show a preview, a note and **Chat about this**, and the form shows each of them. When nika
   cannot read the dialog, or it mentions bypass, you answer in the terminal. Why: [ADR 0015](docs/adr/0015-dialogs-from-the-screen.md).
 
 - **Feedback question.** When Claude asks "How is Claude doing this session? (optional)", a panel above the message box rates it
@@ -456,8 +476,9 @@ Desktop app only. None of this is on the browser dashboard.
   prompt panel and only you answer it (under your own allow rules there may be no prompt).
 - **Where attachments are kept.** In nika's own state folder, `attachments/<repository key>/` (under `XDG_STATE_HOME`,
   default `~/.local/state/nika`), never in your project, with folders at 0700 and files at 0600, and never served back to
-  the page. A file goes when you remove its chip, when you close the window without sending it, and after **Keep
-  attachments for N days** (Settings, **Attachments**: 1 to 30, default 7). The store holds at most 256 MiB and 500 files;
+  the page, except the thumbnail of an unsent image in its own session window. A file goes when you remove its chip, when you send it, when its session ends, and after **Keep
+  attachments for N days** (Settings, **Attachments**: 1 to 30, default 7); leaving the session and coming back brings unsent
+  ones back. The store holds at most 256 MiB and 500 files;
   when it is full, the next upload is refused. nika writes nothing into your project for an attachment.
   The thinking behind it: [ADR 0016](docs/adr/0016-attachments-json-upload-state-dir.md).
 - **Scrolling.** The mouse wheel, the trackpad and PageUp, PageDown, Home and End (with **Type into pane** off) scroll Claude's

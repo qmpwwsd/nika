@@ -5,6 +5,7 @@
 // DOM part: modeEl, the tag. Every string is set as a text node or an attribute, never parsed as markup.
 // Every mode has its own colour (tokens.css), icon (the #i-m-* symbols in the page's sprite) and word: never colour alone.
 import { h, icon } from './dom.js';
+import { cleanNote } from './ctx.js';
 
 const DOTS = String.fromCharCode(0x2026);
 
@@ -48,6 +49,29 @@ export function modesAfter(prev, map) {
 
 /** The mode entry of an agent's row: only a live agent whose pane is in the latest answer (an ended agent's old pane id may be reused). */
 export function rowMode(agent, map) {
+  const id = agent?.live ? agent.pane?.id : null;
+  return typeof id === 'string' && map && Object.hasOwn(map, id) ? map[id] : null;
+}
+
+/**
+ * 0.5.4 AC: the notes of a typed /compact in the same answer (`compacted`: { "<pane id>": { state, at, tokens } }, eligible panes with a
+ * note only) as a clean map. An entry that is not exactly that shape (ctx.js cleanNote) or whose key is not a pane id is dropped; an
+ * answer without the field (an older server) or with a field that is not a plain object gives {}. Never null: whether the poll worked is
+ * parseModes' business.
+ */
+export function parseCompacted(body) {
+  const raw = body?.compacted;
+  const map = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return map;
+  for (const [id, e] of Object.entries(raw)) {
+    const note = PANE_ID.test(id) ? cleanNote(e) : null;
+    if (note !== null) map[id] = note;
+  }
+  return map;
+}
+
+/** The note of an agent's row: like rowMode, only a live agent whose pane is in the latest answer (an ended agent's old pane id may be reused). */
+export function rowNote(agent, map) {
   const id = agent?.live ? agent.pane?.id : null;
   return typeof id === 'string' && map && Object.hasOwn(map, id) ? map[id] : null;
 }

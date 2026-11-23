@@ -9,10 +9,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createServer } from '../src/server.js';
+import { createSessionControl } from '../src/session-control.js';
 import { createAppApi } from '../src/api-app.js';
 import { readHistory, readSubagentHistory } from '../src/collect/history.js';
 import { loadConfig, addProject, removeProject, getOrchestrator, setOrchestrator } from '../src/store.js';
-import { createAttachments } from '../src/attachments.js';
+import { createAttachments, MAX_BYTES } from '../src/attachments.js';
 import { collect, findSession, findSessions } from '../src/model.js';
 import { listCommands as realListCommands } from '../src/collect/commands.js';
 import { startOrchestrator } from '../src/orchestrate.js';
@@ -73,6 +74,7 @@ function makeDeps(over = {}) {
     mirror: { capture: rec('capture', async (pane, inm) => (inm === '"abc"' ? { status: 304, body: null, etag: 'abc' } : { status: 200, body: { cols: 80, rows: [], cursor: { x: 0, y: 0, visible: true }, etag: 'abc' }, etag: 'abc' })) },
     keys: { send: rec('keys', async (pane, body) => (body.text === 'busy' ? { status: 429, body: { error: 'busy', message: 'x' } } : body.text === 'bad' ? { status: 400, body: { error: 'invalid', message: 'x' } } : { status: 200, body: { sent: { text: 1, paste: 0, keys: 0 } } })) },
     picker: { start: () => null, status: () => null },
+    attachments: fakeStore(), // the routes bind a pane's tray (0.5.4, AT), so every server has a store; a test that looks at one passes its own
     window: rec('window', async () => {}),
     appCopy: {
       state: rec('appCopyState', async () => APP_COPY),
@@ -2292,6 +2294,7 @@ function fakeControl(answers = {}) {
       runCommand: method('runCommand', () => ({ status: 200, body: { sent: true } })),
       answer: method('answer', (pane, b) => ({ status: 200, body: { answered: b.n } })),
       stop: method('stop', () => ({ status: 200, body: { stopped: true, presses: 1 } })),
+      autoCompact: method('autoCompact', () => ({ status: 200, body: { sent: true }, keys: 3 })),
       writeDraft: method('writeDraft', () => ({ status: 200, body: { draft: null, typed: 0 } })),
       submit: method('submit', () => ({ status: 200, body: { taken: true, draft: null } })),
       acceptSuggestion: method('acceptSuggestion', () => ({ status: 200, body: { draft: null } })),
@@ -2563,7 +2566,7 @@ describe('GET /api/app/modes', () => {
     screens['%8'] = rowsOf(PROMPT);
     const r = await a.call('GET', '/api/app/modes');
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body, { modes: { '%6': { mode: 'plan', confirmed: true }, '%8': { mode: 'acceptEdits', confirmed: false } } });
+    assert.deepEqual(r.body, { modes: { '%6': { mode: 'plan', confirmed: true }, '%8': { mode: 'acceptEdits', confirmed: false } }, compacted: {} });
     assert.deepEqual(mirror.seen.sort(), ['%6', '%8']); // %5 is a shell, %7 is not a live session
   });
 
@@ -2580,11 +2583,11 @@ describe('GET /api/app/modes', () => {
     a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent', mode: 'plan' });
     screens['%6'] = rowsOf(['t', FOOTER.plan]);
     screens['%8'] = null;
-    assert.deepEqual((await a.call('GET', '/api/app/modes')).body, { modes: { '%6': { mode: 'plan', confirmed: true } } });
+    assert.deepEqual((await a.call('GET', '/api/app/modes')).body, { modes: { '%6': { mode: 'plan', confirmed: true } }, compacted: {} });
     a.deps.state.panes = new Map();
     a.deps.state.error = 'tmux unavailable: no server running';
     a.clock.t += 2000;
-    assert.deepEqual((await a.call('GET', '/api/app/modes')).body, { modes: {} });
+    assert.deepEqual((await a.call('GET', '/api/app/modes')).body, { modes: {}, compacted: {} });
   });
 
   test('(−) at most 4 captures at once', async () => {
@@ -4269,6 +4272,36 @@ describe('capture: the dialog field', () => {
     assert.match(text(screens['%6'][p.top + 1]), /Claude has written up a plan/, 'the plan prompt is right under it');
   });
 
+  test('(+) 0.5.4 (QP): a question step with a preview carries the focus, the preview (rows, hidden count, fallback, view) and the note state; the sig has none of the preview text, the view has it', async () => {
+    const { a, screens } = await bootScreens();
+    const make = (edit = () => {}) => { const d = dialogWorld({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1 }); edit(d); return d; };
+    const read = async (d) => { screens['%6'] = Object.assign(d.screen().rows, { cols: d.cols }); return (await pane(a, '%6', 'capture')).body.dialog; };
+    const w = make();
+    const d = await read(w);
+    assert.equal(d.state, 'ready');
+    assert.deepEqual([d.focus, d.notes, d.options.map((o) => o.label)], [1, { text: null, editing: false }, ['Oval', 'Box', 'Star']]);
+    assert.deepEqual([d.preview.rows, d.preview.hidden, d.preview.fallback], [['( oval )', '', '  long and round'], 0, false]);
+    assert.match(d.preview.view, SIG16);
+    assert.equal(d.preview.view, w.view(), 'the page and the controller agree on the view');
+    assert.equal(d.sig, dialogSig(readDialogScreen(screens['%6'], 120)));
+    const moved = await read(make((x) => { x.tabs[1].preview.rows[0] = ['( oval )', 'changed']; }));
+    assert.equal(moved.sig, d.sig, 'the preview text is not in the sig');
+    assert.notEqual(moved.preview.view, d.preview.view, 'it is in the view');
+    const chat = await read(make((x) => { x.focus = 'chat'; }));
+    assert.equal(chat.focus, 'chat');
+    const noted = await read(make((x) => { x.tabs[1].noteOpen = true; }));
+    assert.deepEqual(noted.notes, { text: '', editing: true });
+  });
+
+  test('(\u2212) 0.5.4 (QP): a plain question step and a plan carry no focus, preview or notes keys', async () => {
+    const { a, screens } = await bootScreens();
+    for (const opts of [{ tabs: [TAB.project, TAB.mode] }, { phase: 'plan' }, { tabs: [TAB.project, TAB.mode], phase: 'review' }]) {
+      screens['%6'] = dialogRows(opts);
+      const d = (await pane(a, '%6', 'capture')).body.dialog;
+      assert.deepEqual(['focus', 'preview', 'notes'].filter((k) => k in d), [], JSON.stringify(opts));
+    }
+  });
+
   test('(−) dialog.top is absent when the dialog is unreadable or a prompt owns the slot', async () => {
     const { a, screens } = await bootScreens();
     screens['%6'] = dialogRows({ phase: 'nudge' });
@@ -4354,9 +4387,11 @@ describe('capture: the dialog field', () => {
 
 describe('POST /api/app/pane/:id/dialog', () => {
   const body = { picks: [2], sig: DSIG };
+  const VIEW = 'fedcba9876543210'; // a view (the page's hash of a preview step) is 16 lowercase hex characters like a sig
 
   test('(+) hands the pane and exactly the body to the controller and relays its answer and status (every shape)', async () => {
-    const shapes = [{ picks: [2], sig: DSIG }, { picks: [], text: 'acme-api', sig: DSIG }, { sig: DSIG, submit: true }, { sig: DSIG, choice: 1 }, { sig: DSIG, cancel: true }];
+    const shapes = [{ picks: [2], sig: DSIG }, { picks: [], text: 'acme-api', sig: DSIG }, { sig: DSIG, submit: true }, { sig: DSIG, choice: 1 }, { sig: DSIG, cancel: true },
+      { sig: DSIG, focus: 2 }, { sig: DSIG, chat: true }, { sig: DSIG, view: VIEW, picks: [2] }, { sig: DSIG, view: VIEW, picks: [2], note: 'round it' }]; // 0.5.4 (QP): the four bodies of a step with a preview
     for (const json of shapes) {
       const { a, control } = await bootScreens({ ctlAnswers: { answerDialog: { status: 200, body: { done: 'next', sent: 1 } } } });
       const r = await pane(a, '%6', 'dialog', { method: 'POST', json });
@@ -4398,6 +4433,13 @@ describe('POST /api/app/pane/:id/dialog', () => {
       { picks: [1], text: '', sig: DSIG }, { picks: [1], text: 5, sig: DSIG }, { picks: [], text: 'a\nb', sig: DSIG }, { picks: [], text: 'a'.repeat(301), sig: DSIG },
       { picks: [], text: ' a', sig: DSIG }, { picks: [], text: 'a ', sig: DSIG }, { picks: [], text: 'a\u001b[2mb', sig: DSIG }, { picks: [], text: 'a\u0000', sig: DSIG },
       { picks: [], text: 'a\u202eb', sig: DSIG }, { picks: [], text: 'a\u200bb', sig: DSIG }, { picks: [], text: 'a\ud800b', sig: DSIG }, { picks: [], text: null, sig: DSIG },
+      { sig: DSIG, focus: 0 }, { sig: DSIG, focus: 8 }, { sig: DSIG, focus: '2' }, { sig: DSIG, focus: 1.5 }, { sig: DSIG, focus: 2, picks: [2] }, { sig: DSIG, focus: 2, chat: true }, // 0.5.4 (QP)
+      { sig: DSIG, chat: false }, { sig: DSIG, chat: 1 }, { sig: DSIG, chat: 'true' }, { sig: DSIG, chat: true, picks: [1] }, { sig: DSIG, chat: true, view: VIEW },
+      { sig: DSIG, view: VIEW }, { sig: DSIG, view: VIEW.toUpperCase(), picks: [1] }, { sig: DSIG, view: VIEW.slice(1), picks: [1] }, { sig: DSIG, view: 5, picks: [1] },
+      { sig: DSIG, view: VIEW, picks: [1, 2] }, { sig: DSIG, view: VIEW, picks: [] }, { sig: DSIG, view: VIEW, picks: [1], text: 'x' },
+      { sig: DSIG, view: VIEW, picks: [1], note: '' }, { sig: DSIG, view: VIEW, picks: [1], note: '2 big' }, { sig: DSIG, view: VIEW, picks: [1], note: ' x' },
+      { sig: DSIG, view: VIEW, picks: [1], note: 'a\nb' }, { sig: DSIG, view: VIEW, picks: [1], note: 'a'.repeat(301) }, { sig: DSIG, view: VIEW, picks: [1], note: null },
+      { sig: DSIG, picks: [1], note: 'no view' },
       [], 'sig',
     ];
     for (const json of bad) {
@@ -4466,7 +4508,9 @@ describe('POST /api/app/pane/:id/dialog', () => {
   /** The real controller on a synthetic Claude: GET capture gives the sig, POST dialog answers one step, the screen changes the way Claude's does. */
   async function live(opts) {
     const world = dialogWorld(opts);
-    const { a, mirror } = await bootScreens({ fake: false });
+    // `mem.plain` (0.5.4, QPF): the app learns that a pane's input is not vim from the draft route's probe; a note test says so up front
+    const over = opts?.mem?.plain === true ? { createSessionControl: (o) => createSessionControl({ ...o, plainOf: () => true }) } : {};
+    const { a, mirror } = await bootScreens({ fake: false, over });
     let shots = 0;
     mirror.capture = async () => {
       shots += 1;
@@ -4530,6 +4574,56 @@ describe('POST /api/app/pane/:id/dialog', () => {
     const r = await bypass.post({ picks: [1], sig: b.sig });
     assert.deepEqual([r.status, r.body.error], [400, 'terminal-only']);
     assert.deepEqual(bypass.world.keysLog(), []);
+  });
+
+  test('(+) 0.5.4 (QP) end to end with the real controller: focus an option, answer it with the view of the capture, then Chat about this on the next step; no digit, one key each', async () => {
+    const { world, sig, post } = await live({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1, mem: { vim: false, plain: true } });
+    const first = await sig();
+    assert.deepEqual([first.state, first.focus], ['ready', 1]);
+    let r = await post({ sig: first.sig, focus: 3 });
+    assert.deepEqual([r.status, r.body.done, r.body.sent], [200, 'focused', 2]);
+    const second = await sig();
+    assert.deepEqual([second.focus, second.sig], [3, first.sig], 'the focus is not in the sig');
+    r = await post({ sig: second.sig, view: second.preview.view, picks: [3] });
+    assert.deepEqual([r.status, r.body.done], [200, 'next']);
+    const size = await sig();
+    assert.equal(size.current, 2);
+    r = await post({ sig: size.sig, chat: true });
+    assert.deepEqual([r.status, r.body.done], [200, 'chat']);
+    assert.deepEqual(world.keysLog(), ['Down', 'Down', 'Enter', 'Down', 'Down', 'Enter']);
+    assert.deepEqual(world.leaks(), []);
+  });
+
+  test('(\u2212) 0.5.4 (QP) end to end: a stale view is 409 preview-changed and a note while the field is open in the terminal is 409 notes-open -- nothing is sent', async () => {
+    const stale = await live({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1 });
+    const s = await stale.sig();
+    stale.world.tabs[1].preview.rows[0] = ['( oval )', 'changed in the terminal'];
+    const r = await stale.post({ sig: s.sig, view: s.preview.view, picks: [1] });
+    assert.deepEqual([r.status, r.body.error], [409, 'preview-changed']);
+    assert.deepEqual(stale.world.keysLog(), []);
+    const open = await live({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1 });
+    open.world.tabs[1].noteOpen = true;
+    const o = await open.sig();
+    const n = await open.post({ sig: o.sig, chat: true });
+    assert.deepEqual([n.status, n.body.error], [409, 'notes-open']);
+    assert.deepEqual(open.world.keysLog(), []);
+  });
+
+  test('(\u2212) 0.5.4 (QPF) end to end: a note on a 52-column pane is 409 note-room and nothing is sent; the capture carries no noteRoom; the same answer without the note goes out; at 119 columns the note goes through', async () => {
+    const narrow = await live({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1, cols: 52, pvX: 29, pvXOpen: 27, mem: { vim: false, plain: true } });
+    const s = await narrow.sig();
+    assert.equal(s.state, 'ready');
+    assert.equal(JSON.stringify(s).includes('noteRoom'), false, 'the page never gets it');
+    const r = await narrow.post({ sig: s.sig, view: s.preview.view, picks: [1], note: 'round it' });
+    assert.deepEqual([r.status, r.body], [409, { error: 'note-room' }]);
+    assert.deepEqual(narrow.world.keysLog(), []);
+    const plain = await narrow.post({ sig: s.sig, view: s.preview.view, picks: [1] });
+    assert.deepEqual([plain.status, plain.body.done], [200, 'next']);
+    const wide = await live({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1, mem: { vim: false, plain: true } });
+    const w = await wide.sig();
+    const ok = await wide.post({ sig: w.sig, view: w.preview.view, picks: [1], note: 'round it' });
+    assert.deepEqual([ok.status, ok.body.done], [200, 'next']);
+    assert.deepEqual(wide.world.keysLog(), ['text:n', 'text:round it', 'Enter']);
   });
 
   test('(−) nothing of the answer text, the picks or the sig reaches a log line, on success and on an internal error', async () => {
@@ -4815,18 +4909,20 @@ const FIT_OK = (b) => ({ status: 200, body: { fit: { state: 'fitted', reason: nu
 
 /** A fit factory that records what the router builds it with (`opts`) and what the routes call; `answers[name]` (a value or a function) replaces a method's result. */
 function fakeFit(answers = {}) {
-  const f = { calls: [], opts: null, answers };
+  // 0.5.3 (P2): `modes` = what setMode was given, in order; `order` = setMode and every other call in one list (setMode is kept out of `calls`, which the older cases compare whole)
+  const f = { calls: [], modes: [], order: [], opts: null, answers };
   const method = (name, fallback) => async (...args) => {
     f.calls.push([name, ...args]);
+    f.order.push([name, ...args]);
     const given = f.answers[name];
     return typeof given === 'function' ? given(...args) : given ?? fallback(...args);
   };
   f.factory = (opts) => {
     f.opts = opts;
     return {
+      setMode: async (m) => { f.modes.push(m); f.order.push(['setMode', m]); },
       hold: method('hold', (id, b) => FIT_OK(b)),
       release: method('release', () => ({ status: 200, body: { released: true } })),
-      releaseWindow: method('releaseWindow', () => false),
       releaseAll: method('releaseAll', () => 0),
       recover: method('recover', () => ({ released: 0, dropped: 0 })),
       size: () => 0,
@@ -5508,9 +5604,10 @@ const GROUP_KEY = 'b1b2b3b4b5b6b7b8'; // a project key for a snapshot group (any
 
 /** A store that records its calls; `over` replaces a method (a function, or a value to return / an Error to throw). */
 function fakeStore(over = {}) {
-  const f = { calls: [] };
+  const f = { calls: [], order: [], binds: [], lists: [], drops: [], keeps: [], reads: [] }; // order: the method names in call order, bindTray included
   const method = (name, fallback) => async (...args) => {
     f.calls.push([name, ...args]);
+    f.order.push(name);
     const given = over[name];
     if (given instanceof Error) throw given;
     return typeof given === 'function' ? given(...args) : given !== undefined ? given : fallback(...args);
@@ -5520,6 +5617,34 @@ function fakeStore(over = {}) {
   f.lookup = method('lookup', () => null);
   f.readImage = method('readImage', () => null);
   f.markSent = (...args) => { f.calls.push(['markSent', ...args]); };
+  // the tray of a pane (0.5.4, AT): recorded apart from `calls`, so the exact call lists of the older tests do not change
+  f.bindTray = async (...args) => {
+    f.binds.push(args);
+    f.order.push('bindTray');
+    if (over.bindTray instanceof Error) throw over.bindTray;
+  };
+  f.listTray = async (...args) => {
+    f.lists.push(args);
+    const given = over.listTray;
+    if (given instanceof Error) throw given;
+    return typeof given === 'function' ? given(...args) : given !== undefined ? given : { files: [], gone: [] };
+  };
+  f.hasTray = (pane) => (typeof over.hasTray === 'function' ? over.hasTray(pane) : over.hasTray === true);
+  // the kept text of a pane (0.5.4, LT): recorded apart from `calls` and `order`, like the tray. The default keep stores (true) a text and, like the real store, answers false for a clear.
+  f.keepText = async (...args) => {
+    f.keeps.push(args);
+    const given = over.keepText;
+    if (given instanceof Error) throw given;
+    return typeof given === 'function' ? given(...args) : given !== undefined ? given : args[2] !== null;
+  };
+  f.readText = async (...args) => {
+    f.reads.push(args);
+    const given = over.readText;
+    if (given instanceof Error) throw given;
+    return typeof given === 'function' ? given(...args) : given !== undefined ? given : null;
+  };
+  f.hasText = (pane) => (typeof over.hasText === 'function' ? over.hasText(pane) : over.hasText === true);
+  f.dropPanes = async (isGone) => { f.drops.push(isGone); return 0; };
   return f;
 }
 
@@ -5654,7 +5779,7 @@ describe('attachments: upload', () => {
     assert.equal(store.calls.length, 0);
     assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: { name: 'x', data: 'A'.repeat(11 * 1024 * 1024) } })).status, 200);
     assert.equal((await att(a, '%6', 'attachments', { method: 'POST', body: JSON.stringify(UPLOAD), headers: { 'content-type': 'text/plain' } })).status, 415);
-    assert.equal((await att(a, '%6', 'attachments', { method: 'GET' })).status, 405);
+    assert.equal((await att(a, '%6', 'attachments', { method: 'DELETE' })).status, 405); // GET is the list since 0.5.4 (AT); the upload route takes POST only
     assert.equal((await att(a, '%6', 'attachments', { method: 'PUT', json: UPLOAD })).status, 405);
     assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD, headers: { 'x-nika-app': null } })).status, 403);
     assert.equal(store.calls.length, 1, 'only the 11 MiB body got through');
@@ -6114,6 +6239,567 @@ describe('images: the session and subagent routes (0.5.1, C; T59)', () => {
   });
 });
 
+describe('attachments: list (GET, 0.5.4 AT)', () => {
+  const list = (a, id = '%6', opts) => att(a, id, 'attachments', opts);
+  const F = (n, over = {}) => ({ id: n.toString(16).padStart(16, '0'), name: `f${n}.png`, type: 'png', size: 10 + n, ...over });
+  /** A snapshot with one live agent on %6; `agent` adds fields (pid, id, hostId). */
+  const oneClaim = (agent = {}) => ({ groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' }, ...agent }] }] });
+  const twice = { groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }, { key: 'c1c2c3c4c5c6c7c8', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+  const noKey = { groups: [{ key: 'BAD KEY', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+  const EMPTY = { files: [], gone: [] };
+
+  test('(+) R1: 200 with exactly { files: [{ id, name, type, size }], gone: [name] }: extra fields dropped, 7 files cut to 6, gone strings only', async () => {
+    const seven = [1, 2, 3, 4, 5, 6, 7].map((n) => ({ ...F(n), path: '/srv/x/secret', extra: n }));
+    const store = fakeStore({ listTray: () => ({ files: seven, gone: ['gone.pdf', 7, null, 'b'.repeat(256), 'two.txt', {}], extra: 'x', path: '/srv' }) });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    const r = await list(a);
+    assert.deepEqual([r.status, r.body], [200, { files: [1, 2, 3, 4, 5, 6].map((n) => F(n)), gone: ['gone.pdf', 'two.txt'] }]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.deepEqual(Object.keys(r.body.files[0]).sort(), ['id', 'name', 'size', 'type']);
+  });
+
+  test('(+) R1: all six types pass; at most 6 gone names', async () => {
+    const types = ['png', 'jpeg', 'gif', 'webp', 'pdf', 'text'];
+    const store = fakeStore({ listTray: () => ({ files: types.map((type, n) => F(n + 1, { type })), gone: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] }) });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    const r = await list(a);
+    assert.deepEqual(r.body.files.map((f) => f.type), types);
+    assert.deepEqual(r.body.gone, ['a', 'b', 'c', 'd', 'e', 'f']);
+  });
+
+  test('(+) R1: the edges that are valid: a file name and a gone name of exactly 255 units, a size of 1 and of 8 MiB', async () => {
+    const store = fakeStore({ listTray: () => ({ files: [F(1, { name: 'n'.repeat(255), size: 1 }), F(2, { size: MAX_BYTES })], gone: ['g'.repeat(255)] }) });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    const r = await list(a);
+    assert.deepEqual(r.body.files.map((f) => [f.name.length, f.size]), [[255, 1], [F(2).name.length, MAX_BYTES]]);
+    assert.deepEqual(r.body.gone.map((n) => n.length), [255]);
+  });
+
+  test('(−) R1: an entry with a bad id, an unknown type, size 0, a size over 8 MiB, a fractional size or a non-string or over-long name is dropped, and a junk answer lists nothing', async () => {
+    const bad = [
+      F(2, { id: 'ZZZZZZZZZZZZZZZZ' }), F(3, { id: 'abc' }), F(4, { id: '0123456789ABCDEF' }), F(5, { type: 'svg' }), F(6, { type: 'PNG' }), F(7, { type: undefined }),
+      F(8, { size: 0 }), F(9, { size: MAX_BYTES + 1 }), F(10, { size: 1.5 }), F(11, { size: '5' }), F(12, { size: -3 }), F(13, { name: 5 }), F(14, { name: 'n'.repeat(256) }), F(15, { name: null }),
+      null, 'x', [], 7,
+    ];
+    const store = fakeStore({ listTray: () => ({ files: [...bad, F(1), F(16, { size: MAX_BYTES }), F(17, { size: 1 })], gone: [] }) });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    assert.deepEqual((await list(a)).body.files, [F(1), F(16, { size: MAX_BYTES }), F(17, { size: 1 })]);
+    for (const answer of [null, 'x', 7, [], { files: 'x', gone: 7 }, { files: {}, gone: {} }, {}]) {
+      const junk = fakeStore({ listTray: () => answer });
+      const { a: b } = await bootScreens({ over: { attachments: junk, collect: async () => keyedSnapshot('%6') } });
+      const r = await list(b);
+      assert.deepEqual([r.status, r.body], [200, EMPTY], JSON.stringify(answer));
+    }
+  });
+
+  test('(+) R2: the claim is { key, owner: { pid, session } } of the one live agent; the session is the hostId after /compact, else the row\'s id; a pid that is not an integer above 0 is null', async () => {
+    const cases = [
+      [{ pid: 4101, id: 'sess-row' }, { pid: 4101, session: 'sess-row' }],
+      [{ pid: 4101, id: 'sess-row', hostId: null }, { pid: 4101, session: 'sess-row' }],
+      [{ pid: 4101, id: 'sess-row', hostId: 'sess-host' }, { pid: 4101, session: 'sess-host' }], // after /compact: the session in the pane, not the child's
+      [{ pid: 0, id: 'sess-row' }, { pid: null, session: 'sess-row' }],
+      [{ pid: 1.5, id: 'sess-row' }, { pid: null, session: 'sess-row' }],
+      [{ pid: '77', id: 'sess-row' }, { pid: null, session: 'sess-row' }],
+      [{ pid: 4101 }, { pid: 4101, session: null }],
+      [{ pid: 4101, id: 5 }, { pid: 4101, session: null }],
+      [{}, null],
+    ];
+    for (const [agent, owner] of cases) {
+      const store = fakeStore();
+      const { a } = await bootScreens({ over: { attachments: store, collect: async () => oneClaim(agent) } });
+      assert.equal((await list(a)).status, 200);
+      assert.deepEqual(store.lists, [['%6', { key: GROUP_KEY, owner }]], JSON.stringify(agent));
+    }
+  });
+
+  test('(+) R2: a pane nika started with no registry entry has its start key and no owner', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store } });
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    assert.equal((await list(a, '%8')).status, 200);
+    assert.deepEqual(store.lists, [['%8', { key: w.project.key, owner: null }]]);
+  });
+
+  test('(−) R2: with no claim or two, a pane without a tray lists empty (200) and the store is not asked; a pane with a tray is 409 no-project and keeps it', async () => {
+    for (const snapshot of [twice, noKey, { groups: [{ agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] }]) {
+      const without = fakeStore();
+      const { a } = await bootScreens({ over: { attachments: without, collect: async () => snapshot } });
+      const r = await list(a);
+      assert.deepEqual([r.status, r.body], [200, EMPTY], JSON.stringify(snapshot).slice(0, 60));
+      assert.deepEqual([without.lists, without.calls, without.binds], [[], [], []]);
+      const withTray = fakeStore({ hasTray: true });
+      const { a: b } = await bootScreens({ over: { attachments: withTray, collect: async () => snapshot } });
+      const r2 = await list(b);
+      assert.deepEqual([r2.status, r2.body.error], [409, 'no-project']);
+      assert.deepEqual([withTray.lists, withTray.calls, withTray.binds], [[], [], []], 'nothing is asked, nothing is deleted');
+      assert.ok(withTray.drops.length > 0 && withTray.drops.every((isGone) => isGone('%6') === false), 'and the eligibility hook keeps the pane\'s tray: it is listed and live');
+    }
+    const started = fakeStore(); // a started pane whose key is not a project key
+    const { a } = await bootScreens({ over: { attachments: started } });
+    a.ctx.started.set('%8', { key: 'not a key', name: 'x', sessionId: null, role: 'agent' });
+    assert.deepEqual([(await list(a, '%8')).status, started.lists], [200, []]);
+  });
+
+  test('(−) R3: a pane that is not in the tmux list, runs a shell, is not live Claude or was not started is 404; a malformed id too; the store is not asked', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6', '%5') } });
+    for (const id of ['%5', '%8', '%99']) assert.equal((await list(a, id)).status, 404, id);
+    assert.equal((await a.call('GET', '/api/app/pane/abc/attachments')).status, 404);
+    assert.equal((await a.call('GET', '/api/app/pane/%2599x/attachments')).status, 404);
+    assert.deepEqual([store.lists, store.calls], [[], []]);
+  });
+
+  test('(−) R3: PUT and DELETE are 405, no secret is 403, and a GET with a body-less request needs no body', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await list(a, '%6', { method: 'PUT', json: {} })).status, 405);
+    assert.equal((await list(a, '%6', { method: 'DELETE' })).status, 405);
+    assert.equal((await list(a, '%6', { headers: { 'x-nika-app': null } })).status, 403);
+    assert.deepEqual(store.lists, []);
+    assert.equal((await list(a)).status, 200);
+  });
+
+  test('(−) R3: a store that throws is 500 internal; the log has the node code only, and neither the answer nor the log carries a name, a path or an id', async () => {
+    const boom = Object.assign(new Error('EACCES /srv/nika/attachments/secret-name.png'), { code: 'EACCES' });
+    const store = fakeStore({ listTray: boom });
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    let r;
+    const lines = await capturingLog(async () => { r = await list(a); });
+    assert.deepEqual([r.status, r.body], [500, { error: 'internal', message: 'internal error' }]);
+    assert.equal(/secret-name|srv|EACCES/.test(r.raw), false);
+    assert.deepEqual(lines, ['nika: attachments: EACCES\n']);
+  });
+
+  test('(+) R4: upload binds the pane\'s tray with the claim before it saves', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => oneClaim({ pid: 4101, id: 'sess-row' }) } });
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD })).status, 200);
+    assert.deepEqual(store.binds, [['%6', { key: GROUP_KEY, owner: { pid: 4101, session: 'sess-row' } }]]);
+    assert.deepEqual(store.order, ['bindTray', 'save']);
+    assert.equal(store.calls[0][1].key, GROUP_KEY);
+  });
+
+  test('(−) R4: upload with no project is 409 and neither binds nor saves; a bindTray that throws is 500 write-failed with a code in the log, and nothing is saved', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => twice } });
+    assert.equal((await att(a, '%6', 'attachments', { method: 'POST', json: UPLOAD })).status, 409);
+    assert.deepEqual([store.order, store.binds], [[], []]);
+    const boom = fakeStore({ bindTray: Object.assign(new Error('EACCES /srv/x'), { code: 'EACCES' }) });
+    const { a: b } = await bootScreens({ over: { attachments: boom, collect: async () => keyedSnapshot('%6') } });
+    let r;
+    const lines = await capturingLog(async () => { r = await att(b, '%6', 'attachments', { method: 'POST', json: UPLOAD }); });
+    assert.deepEqual([r.status, r.body.error], [500, 'write-failed']);
+    assert.deepEqual(lines, ['nika: attachments: EACCES\n']);
+    assert.deepEqual(boom.calls, [], 'save was not reached');
+  });
+
+  test('(+) R5: the chooser binds the pane\'s tray with the claim before it starts', async () => {
+    const store = fakeStore();
+    const picker = fakePicker();
+    const startFiles = picker.startFiles;
+    picker.startFiles = (arg) => { store.order.push('startFiles'); return startFiles(arg); };
+    const { a } = await bootScreens({ over: { picker, attachments: store, collect: async () => oneClaim({ pid: 4101, id: 'sess-row', hostId: 'sess-host' }) } });
+    assert.equal((await att(a, '%6', PICK, { method: 'POST', json: { room: 2 } })).status, 202);
+    assert.deepEqual(store.binds, [['%6', { key: GROUP_KEY, owner: { pid: 4101, session: 'sess-host' } }]]);
+    assert.deepEqual(store.order, ['bindTray', 'startFiles']);
+  });
+
+  test('(−) R5: the chooser with no project is 409 and binds nothing; a bindTray that throws starts no chooser', async () => {
+    const store = fakeStore();
+    const picker = fakePicker();
+    const { a } = await bootScreens({ over: { picker, attachments: store, collect: async () => twice } });
+    assert.equal((await att(a, '%6', PICK, { method: 'POST', json: { room: 1 } })).status, 409);
+    assert.deepEqual([store.binds, picker.starts], [[], []]);
+    const boom = fakeStore({ bindTray: Object.assign(new Error('EACCES /srv/x'), { code: 'EACCES' }) });
+    const { a: b } = await bootScreens({ over: { picker, attachments: boom, collect: async () => keyedSnapshot('%6') } });
+    let r;
+    const lines = await capturingLog(async () => { r = await att(b, '%6', PICK, { method: 'POST', json: { room: 1 } }); });
+    assert.deepEqual([r.status, r.body.error], [500, 'write-failed']);
+    assert.deepEqual(lines, ['nika: attachments: EACCES\n'], 'the code only, no path');
+    assert.deepEqual(picker.starts, []);
+  });
+
+  test('(+) R6: a pane gone from a good tmux listing, or dead, has its tray dropped: the predicate is true for it and false for a listed pane', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await list(a)).status, 200);
+    assert.equal(store.drops.length, 1);
+    assert.deepEqual(['%3', '%6', '%5', '%8'].map((p) => store.drops[0](p)), [true, false, false, false], '%3 is not listed; %6 live, %5 a shell and %8 not claimed are listed, so they keep their trays');
+    a.deps.state.panes.set('%3', { command: 'claude', dead: true });
+    a.clock.t += 2000;
+    assert.equal((await list(a)).status, 200);
+    assert.equal(store.drops.length, 2);
+    assert.deepEqual(['%3', '%6'].map((p) => store.drops[1](p)), [true, false], 'a dead pane is dropped');
+    a.deps.state.panes.set('%3', { command: 'claude', dead: false });
+    a.clock.t += 2000;
+    await list(a);
+    assert.equal(store.drops[2]('%3'), false, 'and a live one is not');
+  });
+
+  test('(−) R6: a failed tmux listing drops nothing; a store without dropPanes is fine', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6') } });
+    a.deps.state.panes = new Map(); // what listPanes gives while tmux is down
+    a.deps.state.error = 'no server running';
+    assert.equal((await list(a)).status, 404);
+    assert.deepEqual(store.drops, [], 'no pane is listed, and still no tray is dropped');
+    const bare = fakeStore();
+    bare.dropPanes = undefined;
+    const { a: b } = await bootScreens({ over: { attachments: bare, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await list(b)).status, 200);
+    const { a: none } = await bootScreens({ over: { attachments: null, collect: async () => keyedSnapshot('%6') } });
+    assert.equal((await list(none, '%3')).status, 404, 'a server with no store at all: the eligibility check still answers');
+  });
+});
+
+describe('kept draft (GET/PUT, 0.5.4 LT)', () => {
+  const kept = (a, id = '%6', opts) => att(a, id, 'kept-draft', opts);
+  const put = (a, json, id = '%6', more = {}) => kept(a, id, { method: 'PUT', json, ...more });
+  const oneClaim = (agent = { pid: 4101, id: 'sess-row' }) => ({ groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' }, ...agent }] }] });
+  const twice = { groups: [{ key: GROUP_KEY, agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }, { key: 'c1c2c3c4c5c6c7c8', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+  const CLAIM = { key: GROUP_KEY, owner: { pid: 4101, session: 'sess-row' } };
+  const MARK = 'kqzwxv91'; // a marker no fixed message, code or log line contains
+  const euros = (n) => '\u20ac'.repeat(n); // 3 UTF-8 bytes each
+  const M_BODY = 'body must be { text, shell }';
+  const M_SHELL = 'shell must be true or false';
+  const M_TEXT = 'text must be at most 16 KB without control characters other than newline and tab';
+  const boot1 = (store, snapshot = oneClaim(), over = {}) => bootScreens({ over: { attachments: store, collect: async () => snapshot, ...over } });
+
+  test('(+) R1: PUT { text, shell } is 200 { kept: true }, no-store, and the store gets (id, { key, owner }, exactly { text, shell }); a clear passes null and answers { kept: false }', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    const r = await put(a, { text: 'two\nlines\tand tab', shell: true });
+    assert.deepEqual([r.status, r.body], [200, { kept: true }]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.deepEqual(store.keeps, [['%6', CLAIM, { text: 'two\nlines\tand tab', shell: true }]]);
+    assert.deepEqual(Object.keys(store.keeps[0][2]).sort(), ['shell', 'text']);
+    const c = await put(a, { text: '', shell: false });
+    assert.deepEqual([c.status, c.body], [200, { kept: false }]);
+    assert.deepEqual(store.keeps.at(-1), ['%6', CLAIM, null]);
+    assert.equal(store.keeps.length, 2);
+    assert.deepEqual(store.calls, [], 'the older call list is untouched');
+  });
+
+  test('(+) R1: a store that answers false (nothing was stored) is 200 { kept: false }; a pane nika started is eligible with its start key and no owner', async () => {
+    const no = fakeStore({ keepText: () => false });
+    const { a } = await boot1(no);
+    assert.deepEqual((await put(a, { text: 'x', shell: false })).body, { kept: false });
+    const store = fakeStore();
+    const { a: b } = await bootScreens({ over: { attachments: store } });
+    b.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    assert.deepEqual((await put(b, { text: 'x', shell: false }, '%8')).body, { kept: true });
+    assert.deepEqual(store.keeps, [['%8', { key: w.project.key, owner: null }, { text: 'x', shell: false }]]);
+  });
+
+  test('(+) R1: only a real boolean true counts as kept: a store answer of 1 or "yes" is { kept: false }', async () => {
+    for (const answer of [1, 'yes', {}, undefined]) {
+      const store = fakeStore({ keepText: () => answer });
+      const { a } = await boot1(store);
+      assert.deepEqual((await put(a, { text: 'x', shell: false })).body, { kept: false }, String(answer));
+    }
+  });
+
+  test('(−) R2: a wrong body is 400 invalid with a fixed message that holds none of the text, and the store is not called', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    const bodies = [
+      [{}, M_BODY], [{ text: 'x' }, M_BODY], [{ shell: true }, M_BODY], [{ text: `${MARK}`, shell: false, extra: 1 }, M_BODY], [{ text: MARK, extra: 1 }, M_BODY], [{ shell: true, other: 1 }, M_BODY],
+      [{ text: MARK, shell: 'true' }, M_SHELL], [{ text: MARK, shell: 1 }, M_SHELL], [{ text: MARK, shell: null }, M_SHELL],
+      [{ text: 5, shell: false }, M_TEXT], [{ text: null, shell: false }, M_TEXT], [{ text: [MARK], shell: false }, M_TEXT],
+      [{ text: `${MARK}\u0007`, shell: false }, M_TEXT], [{ text: `${MARK}\r`, shell: false }, M_TEXT], [{ text: `${MARK}\u001b`, shell: false }, M_TEXT],
+      [{ text: `${MARK}\u007f`, shell: false }, M_TEXT], [{ text: `${MARK}\u0085`, shell: false }, M_TEXT], [{ text: `${MARK}\ud800`, shell: false }, M_TEXT],
+      [{ text: MARK + euros(5462), shell: false }, M_TEXT], [{ text: '', shell: 'no' }, M_SHELL],
+    ];
+    for (const [json, message] of bodies) {
+      const r = await put(a, json);
+      assert.deepEqual([r.status, r.body.error, r.body.message], [400, 'invalid', message], JSON.stringify(json).slice(0, 60));
+      assert.equal(r.raw.includes(MARK), false, 'the answer never echoes the text');
+    }
+    for (const json of [null, [], 'x', 5, [{ text: MARK, shell: true }]]) {
+      const r = await put(a, json);
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], JSON.stringify(json));
+    }
+    assert.deepEqual(store.keeps, []);
+    assert.deepEqual(store.reads, []);
+  });
+
+  test('(−) R2: the body is checked before the pane: a wrong body for a pane that is not eligible is 400, a good one is 404', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    assert.equal((await put(a, { text: 'x' }, '%99')).status, 400);
+    assert.equal((await put(a, { text: 'x', shell: false }, '%99')).status, 404);
+    assert.deepEqual(store.keeps, []);
+  });
+
+  test('(+) R3: 16 384 quotes (over 32 KB of JSON) are 200, not 413; exactly 16 384 bytes of text are kept, 16 385 are 400', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    const quotes = '"'.repeat(16384);
+    const r = await put(a, { text: quotes, shell: false });
+    assert.deepEqual([r.status, r.body], [200, { kept: true }]);
+    assert.equal(store.keeps[0][2].text, quotes);
+    assert.ok(JSON.stringify({ text: quotes, shell: false }).length > 32 * 1024);
+    assert.equal((await put(a, { text: euros(5461) + 'a', shell: true })).status, 200);
+    assert.equal((await put(a, { text: euros(5461) + 'ab', shell: true })).status, 400);
+  });
+
+  test('(−) R3: a body over 34 KB is 413, text/plain is 415, no secret is 403, a foreign Origin is 403; the store is not asked', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    assert.equal((await put(a, { text: 'x'.repeat(35 * 1024), shell: false })).status, 413);
+    assert.equal((await put(a, { text: 'x', shell: false }, '%6', { json: undefined, body: '{"text":"x","shell":false}', headers: { 'content-type': 'text/plain' } })).status, 415);
+    for (const headers of [{ 'x-nika-app': null }, { 'x-nika-app': WRONG_SAME_LENGTH }, { origin: 'http://evil.example' }, { 'sec-fetch-site': 'cross-site' }]) {
+      assert.equal((await put(a, { text: 'x', shell: false }, '%6', { headers })).status, 403, JSON.stringify(headers));
+      assert.equal((await kept(a, '%6', { headers })).status, 403, `GET ${JSON.stringify(headers)}`);
+    }
+    assert.deepEqual([store.keeps, store.reads], [[], []]);
+  });
+
+  test('(−) R3: POST and DELETE are 405 for the path, the verbs it has are GET and PUT', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    for (const method of ['POST', 'DELETE']) {
+      const r = await kept(a, '%6', { method, json: {} });
+      assert.equal(r.status, 405, method);
+      assert.match(r.headers.allow, /GET/);
+      assert.match(r.headers.allow, /PUT/);
+    }
+    assert.deepEqual([store.keeps, store.reads], [[], []]);
+  });
+
+  test('(−) R4: a pane that is not in the tmux list, runs a shell, is not live Claude or was not started is 404 for PUT and GET, a malformed id too; the store is not asked', async () => {
+    const store = fakeStore();
+    const { a } = await bootScreens({ over: { attachments: store, collect: async () => keyedSnapshot('%6', '%5') } });
+    for (const id of ['%5', '%8', '%99']) {
+      assert.equal((await put(a, { text: 'x', shell: false }, id)).status, 404, `PUT ${id}`);
+      assert.equal((await kept(a, id)).status, 404, `GET ${id}`);
+    }
+    for (const path of ['/api/app/pane/abc/kept-draft', '/api/app/pane/%2599x/kept-draft']) {
+      assert.equal((await a.call('PUT', path, { json: { text: 'x', shell: false } })).status, 404, path);
+      assert.equal((await a.call('GET', path)).status, 404, path);
+    }
+    assert.deepEqual([store.keeps, store.reads, store.calls], [[], [], []]);
+  });
+
+  test('(+) R5: 8 PUTs in a second pass, a second later it is served again, another pane has its own count, and a GET is never counted', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    a.ctx.started.set('%8', { key: w.project.key, name: 'x', sessionId: null, role: 'agent' });
+    for (let i = 0; i < 20; i += 1) assert.equal((await kept(a)).status, 200, `GET ${i}`);
+    for (let i = 0; i < 8; i += 1) assert.equal((await put(a, { text: `t${i}`, shell: false })).status, 200, `PUT ${i}`);
+    assert.equal(store.keeps.length, 8);
+    assert.equal((await put(a, { text: 'other pane', shell: false }, '%8')).status, 200, 'another pane');
+    assert.equal((await kept(a)).status, 200, 'a GET is still served while the PUT bucket is full');
+    a.clock.t += 1001;
+    assert.equal((await put(a, { text: 'again', shell: false })).status, 200);
+    assert.equal(store.keeps.length, 10);
+  });
+
+  test('(−) R5: the 9th PUT in a second is 429 busy with a fixed message and reaches no store; a wrong body does not use a slot', async () => {
+    const store = fakeStore();
+    const { a } = await boot1(store);
+    for (let i = 0; i < 3; i += 1) assert.equal((await put(a, { text: 'x' })).status, 400, 'a refused body');
+    for (let i = 0; i < 8; i += 1) assert.equal((await put(a, { text: `t${i}`, shell: false })).status, 200, `PUT ${i}`);
+    const ninth = await put(a, { text: `${MARK}`, shell: false });
+    assert.deepEqual([ninth.status, ninth.body], [429, { error: 'busy', message: 'at most 8 text saves per second per pane' }]);
+    assert.equal(store.keeps.length, 8, 'the refused request reached nothing');
+    assert.equal(ninth.raw.includes(MARK), false);
+    assert.equal((await put(a, { text: '', shell: false })).status, 429, 'a clear counts like a keep');
+    a.clock.t += 600;
+    assert.equal((await put(a, { text: 'x', shell: false })).status, 429, 'the window is a full second, not half of it');
+    a.clock.t += 401;
+    assert.equal((await put(a, { text: 'x', shell: false })).status, 200, 'and it is served again after it');
+  });
+
+  test('(−) R5: the KEPT bucket and the fit buckets are apart: a full one does not refuse the other', async () => {
+    const fit = fakeFit();
+    const store = fakeStore();
+    const { a } = await boot1(store, oneClaim(), { createFit: fit.factory });
+    for (let i = 0; i < 8; i += 1) assert.equal((await put(a, { text: `t${i}`, shell: false })).status, 200);
+    assert.equal((await put(a, { text: 'x', shell: false })).status, 429, 'the KEPT bucket is full');
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200, 'a fit PUT is served');
+    assert.equal((await fitPane(a, '%6', { method: 'DELETE' })).status, 200, 'and a fit DELETE');
+    const fit2 = fakeFit();
+    const store2 = fakeStore();
+    const { a: b } = await boot1(store2, oneClaim(), { createFit: fit2.factory });
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(b, '%6', { json: FIT_BODY })).status, 200);
+    assert.equal((await fitPane(b, '%6', { json: FIT_BODY })).status, 429, 'the fit PUT bucket is full');
+    assert.equal((await put(b, { text: 'x', shell: false })).status, 200, 'a kept PUT is served');
+  });
+
+  test('(+) R6: with no claim or two, a clear of a pane that holds no text is 200 { kept: false } and a GET is 200 { kept: null }; the store is not asked', async () => {
+    const noKey = { groups: [{ key: 'BAD KEY', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] };
+    for (const snapshot of [twice, noKey]) {
+      const store = fakeStore();
+      const { a } = await boot1(store, snapshot);
+      const c = await put(a, { text: '', shell: false });
+      assert.deepEqual([c.status, c.body], [200, { kept: false }], JSON.stringify(snapshot).slice(0, 50));
+      const g = await kept(a);
+      assert.deepEqual([g.status, g.body], [200, { kept: null }]);
+      assert.deepEqual([store.keeps, store.reads, store.binds, store.calls], [[], [], [], []]);
+    }
+    const started = fakeStore(); // a started pane whose key is not a project key
+    const { a } = await bootScreens({ over: { attachments: started } });
+    a.ctx.started.set('%8', { key: 'not a key', name: 'x', sessionId: null, role: 'agent' });
+    assert.deepEqual((await kept(a, '%8')).body, { kept: null });
+    assert.deepEqual([started.keeps, started.reads], [[], []]);
+  });
+
+  test('(−) R6: with no claim or two, a PUT of a text is 409 no-project, and a GET of a pane that holds text is 409 no-project; nothing is stored, read or deleted', async () => {
+    for (const snapshot of [twice, { groups: [{ key: 'BAD KEY', agents: [{ live: true, state: 'idle', pane: { id: '%6' } }] }] }]) {
+      const store = fakeStore({ hasText: true });
+      const { a } = await boot1(store, snapshot);
+      const p = await put(a, { text: MARK, shell: false });
+      assert.deepEqual([p.status, p.body.error], [409, 'no-project']);
+      assert.equal(p.raw.includes(MARK), false);
+      const c = await put(a, { text: '', shell: false });
+      assert.deepEqual([c.status, c.body.error], [409, 'no-project'], 'a clear of a pane that holds text is not taken either');
+      const g = await kept(a);
+      assert.deepEqual([g.status, g.body.error], [409, 'no-project']);
+      assert.deepEqual([store.keeps, store.reads, store.binds, store.calls], [[], [], [], []], 'nothing is asked');
+      const empty = fakeStore(); // a pane that holds no text: a PUT of a text is still not taken (only a clear is a harmless 200)
+      const { a: b } = await boot1(empty, snapshot);
+      const q = await put(b, { text: MARK, shell: false });
+      assert.deepEqual([q.status, q.body.error], [409, 'no-project']);
+      assert.deepEqual([empty.keeps, empty.binds], [[], []]);
+      assert.ok(store.drops.length > 0 && store.drops.every((isGone) => isGone('%6') === false), 'and the eligibility hook keeps the pane\'s tray: it is listed and live');
+    }
+  });
+
+  test('(+) R7: GET is 200 { kept: { text, shell } } with exactly those two fields; a store answer of null is { kept: null }; the store gets (id, { key, owner })', async () => {
+    const store = fakeStore({ readText: () => ({ text: 'a\nb\tc', shell: true, extra: 'x', path: '/srv/x' }) });
+    const { a } = await boot1(store);
+    const r = await kept(a);
+    assert.deepEqual([r.status, r.body], [200, { kept: { text: 'a\nb\tc', shell: true } }]);
+    assert.equal(r.headers['cache-control'], 'no-store');
+    assert.deepEqual(Object.keys(r.body.kept).sort(), ['shell', 'text']);
+    assert.deepEqual(store.reads, [['%6', CLAIM]]);
+    const none = fakeStore({ readText: () => null });
+    const { a: b } = await boot1(none);
+    assert.deepEqual([(await kept(b)).status, (await kept(b)).body], [200, { kept: null }]);
+  });
+
+  test('(+) R7: the edges that are valid: exactly 16 384 bytes, a lone newline and tab, shell false', async () => {
+    for (const text of [euros(5461) + 'a', '\n', '\t', ' ', 'x']) {
+      const store = fakeStore({ readText: () => ({ text, shell: false }) });
+      const { a } = await boot1(store);
+      assert.deepEqual((await kept(a)).body, { kept: { text, shell: false } }, JSON.stringify(text).slice(0, 20));
+    }
+  });
+
+  test('(−) R7: a store answer with a control character, over 16 KB, an empty or non-string text, a non-boolean shell or a non-object is { kept: null }', async () => {
+    const bad = [
+      { text: 'x\u0007', shell: false }, { text: 'x\r', shell: false }, { text: 'x\u001b', shell: false }, { text: 'x\u007f', shell: false }, { text: 'x\u0085', shell: false }, { text: 'x\ud800', shell: false },
+      { text: euros(5462), shell: false }, { text: '', shell: false }, { text: 5, shell: false }, { text: null, shell: false }, { text: ['x'], shell: false }, { text: 'x', shell: 'false' },
+      { text: 'x', shell: 0 }, { text: 'x', shell: null }, { text: 'x' }, { shell: true }, {}, [], 'x', 7, true, undefined,
+      Object.assign(['x'], { text: 'x', shell: false }), // an array that carries the two fields is not an object answer
+    ];
+    for (const answer of bad) {
+      const store = fakeStore({ readText: () => answer });
+      const { a } = await boot1(store);
+      const r = await kept(a);
+      assert.deepEqual([r.status, r.body], [200, { kept: null }], JSON.stringify(answer));
+    }
+  });
+
+  test('(−) R8: a store that throws on PUT and on GET is 500 internal; the log is the node code only, and neither the answer nor the log holds the text', async () => {
+    const boom = Object.assign(new Error(`EACCES /srv/nika/${MARK}`), { code: 'EACCES' });
+    const store = fakeStore({ keepText: boom, readText: boom });
+    const { a } = await boot1(store);
+    let p;
+    let g;
+    const lines = await capturingLog(async () => {
+      p = await put(a, { text: `${MARK} text`, shell: false });
+      g = await kept(a);
+    });
+    assert.deepEqual([p.status, p.body], [500, { error: 'internal', message: 'internal error' }]);
+    assert.deepEqual([g.status, g.body], [500, { error: 'internal', message: 'internal error' }]);
+    assert.equal(/kqzwxv|srv|EACCES/.test(p.raw + g.raw), false);
+    assert.deepEqual(lines, ['nika: attachments: EACCES\n', 'nika: attachments: EACCES\n']);
+  });
+
+  test('(−) R8: the dispatcher\'s own catch is never reached: a store that throws a plain Error is 500 internal and the log line is the fallback code ERR', async () => {
+    const store = fakeStore({ keepText: new Error(`plain ${MARK}`), readText: new Error(`plain ${MARK}`) });
+    const { a } = await boot1(store);
+    let p;
+    let g;
+    const lines = await capturingLog(async () => {
+      p = await put(a, { text: 'x', shell: false });
+      g = await kept(a);
+    });
+    assert.deepEqual([p.status, g.status], [500, 500]);
+    assert.deepEqual(lines, ['nika: attachments: ERR\n', 'nika: attachments: ERR\n'], 'the code only, and not the dispatcher\'s "<method> <path> failed" line');
+  });
+
+  test('(−) R9: a marker text through every PUT and GET path, the 400s, the 404s, the 409s, the 429 and the throws, leaves no slice of it in any log line or answer (the GET that gives a kept text back is R7)', async () => {
+    const text = `${MARK}-the-secret-words`;
+    const slices = [];
+    for (let i = 0; i + 8 <= text.length; i += 1) slices.push(text.slice(i, i + 8));
+    const seen = [];
+    const statuses = new Set();
+    const run = async (store, snapshot, fn) => {
+      const { a } = await boot1(store, snapshot);
+      const lines = await capturingLog(async () => { seen.push(...(await fn(a))); });
+      seen.push(...lines);
+    };
+    const raws = (rs) => {
+      for (const r of rs) statuses.add(r.status);
+      return rs.map((r) => r.raw);
+    };
+    await run(fakeStore(), oneClaim(), async (a) => raws([await put(a, { text, shell: true }), await kept(a), await put(a, { text, shell: 'x' }), await put(a, { text: `${text}\u0007`, shell: false }), await put(a, { text, shell: false }, '%99'), await kept(a, '%99')]));
+    await run(fakeStore({ hasText: true }), twice, async (a) => raws([await put(a, { text, shell: false }), await kept(a)]));
+    await run(fakeStore(), oneClaim(), async (a) => {
+      const out = [];
+      for (let i = 0; i < 9; i += 1) out.push(await put(a, { text, shell: false }));
+      return raws(out);
+    });
+    const boom = Object.assign(new Error(`EACCES ${text}`), { code: 'EACCES' });
+    await run(fakeStore({ keepText: boom, readText: boom }), oneClaim(), async (a) => raws([await put(a, { text, shell: false }), await kept(a)]));
+    await run(fakeStore({ keepText: new Error(text), readText: new Error(text) }), oneClaim(), async (a) => raws([await put(a, { text, shell: false }), await kept(a)]));
+    assert.deepEqual([...statuses].sort(), [200, 400, 404, 409, 429, 500], 'every kind of answer was collected');
+    for (const s of slices) assert.equal(seen.some((line) => line.includes(s)), false, `no line holds "${s}"`);
+  });
+
+  test('(−) neither method is a user action: no PUT (200, 400, 409, 429) and no GET stamps the pane\'s typing time, and neither touches the session controller', async () => {
+    const ac = fakeAutoCompact();
+    const store = fakeStore();
+    const { a, control } = await bootScreens({ over: { createAutoCompact: ac.factory, attachments: store, collect: async () => oneClaim() } });
+    a.clock.t += 5000;
+    assert.equal((await put(a, { text: 'x', shell: false })).status, 200);
+    assert.equal((await put(a, { text: 'x' })).status, 400);
+    assert.equal((await kept(a)).status, 200);
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity, 'no stamp');
+    for (let i = 0; i < 8; i += 1) await put(a, { text: 'x', shell: false });
+    assert.equal((await put(a, { text: 'x', shell: false })).status, 429);
+    const { a: b } = await bootScreens({ over: { createAutoCompact: ac.factory, attachments: fakeStore({ hasText: true }), collect: async () => twice } });
+    assert.equal((await put(b, { text: 'x', shell: false })).status, 409);
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity, 'still none');
+    assert.deepEqual(control.calls, [], 'Claude\'s pane is never touched');
+  });
+
+  test('(+) end to end with the real store: a PUT is read back by a GET (the text, the Shell flag), a clear empties it, and another project\'s claim reads nothing', async () => {
+    const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nika-kept-'));
+    after(() => fs.rmSync(stateRoot, { recursive: true, force: true }));
+    const env = { HOME: stateRoot, XDG_STATE_HOME: stateRoot };
+    const store = createAttachments({ env, loadKeepDays: async () => 7, setTimer: () => null, clearTimer: () => {}, log: () => {} });
+    const { a } = await boot1(store);
+    assert.deepEqual((await kept(a)).body, { kept: null }, 'nothing yet');
+    const text = `${'long words '.repeat(100)}\nand a second line\t`;
+    assert.deepEqual((await put(a, { text, shell: true })).body, { kept: true });
+    const back = await kept(a);
+    assert.deepEqual([back.status, back.body], [200, { kept: { text, shell: true } }]);
+    assert.deepEqual((await put(a, { text: '', shell: false })).body, { kept: false });
+    assert.deepEqual((await kept(a)).body, { kept: null }, 'the clear emptied it');
+    assert.deepEqual((await put(a, { text: 'again', shell: false })).body, { kept: true });
+    a.clock.t += 1500;
+    const other = oneClaim({ pid: 9999, id: 'sess-other' });
+    other.groups[0].key = 'c1c2c3c4c5c6c7c8';
+    const { a: b } = await boot1(store, other);
+    assert.deepEqual((await kept(b)).body, { kept: null }, 'a claim of another project reads nothing');
+    assert.deepEqual((await kept(a)).body, { kept: null }, 'and it dropped the tray with the old project\'s text');
+  });
+});
+
 describe('images: an unsent attachment of the pane (0.5.1, C; T61)', () => {
   const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]);
   const url = (pane, id) => `/api/app/pane/${pane}/attachments/${id}/image`;
@@ -6450,7 +7136,7 @@ describe('a dead pane (remain-on-exit) gets no keys and no capture', () => {
     screens['%6'] = rowsOf(['t', FOOTER.plan]);
     setPane(a, '%6', { command: 'claude', dead: true });
     const r = await a.call('GET', '/api/app/modes');
-    assert.deepEqual(r.body, { modes: {} });
+    assert.deepEqual(r.body, { modes: {}, compacted: {} });
     assert.deepEqual(mirror.seen, []);
   });
 
@@ -6487,5 +7173,507 @@ describe('a dead pane (remain-on-exit) gets no keys and no capture', () => {
     const again = await request(a, '%6', ['GET', 'capture']);
     assert.equal(again.status, 200);
     assert.equal(again.body.mode, 'unknown');
+  });
+});
+
+// --- the Fit mode setting (0.5.3, P2): the routes hand it to the controller; a request never carries it -------------------------------
+
+describe('the Fit mode: settings PUT and the fit PUT hand it to the controller (design-052d 2.1, 2.2)', () => {
+  const settingsFile = (world) => path.join(configDir(world.env), 'config.json');
+  /** A hand edit: config.json is rewritten with another fit.mode, without the API. */
+  const handEdit = (world, mode) => {
+    const cfg = JSON.parse(fs.readFileSync(settingsFile(world), 'utf8'));
+    cfg.fit = { mode };
+    fs.writeFileSync(settingsFile(world), JSON.stringify(cfg));
+  };
+  const put = (a, json) => a.call('PUT', '/api/app/settings', { json });
+  async function rigFit(settings = {}) {
+    const world = await makeWorld(settings);
+    const fit = fakeFit();
+    const a = await boot({ world, deps: makeDeps({ createFit: fit.factory }) });
+    return { world, fit, a };
+  }
+
+  // M-4
+  test('(\u2212) M-4 PUT settings with a bad fit is 400 invalid, setMode is not called and the saved mode stays', async () => {
+    const { world, fit, a } = await rigFit({ fit: { mode: 'terminal' } });
+    for (const json of [
+      { fit: { mode: 'x' } }, { fit: { mode: '' } }, { fit: { mode: null } }, { fit: { mode: 'FILL' } }, { fit: { mode: 1 } }, { fit: { mode: ['off'] } },
+      { fit: { extra: 1 } }, { fit: { mode: 'fill', extra: 1 } }, { fit: 'fill' }, { fit: null }, { fit: [] },
+    ]) {
+      const r = await put(a, json);
+      assert.deepEqual([r.status, r.body.error], [400, 'invalid'], JSON.stringify(json));
+    }
+    assert.deepEqual(fit.modes, []);
+    assert.equal((await a.call('GET', '/api/app/settings')).body.fit.mode, 'terminal');
+    assert.equal(JSON.parse(fs.readFileSync(settingsFile(world), 'utf8')).fit.mode, 'terminal');
+  });
+
+  // M-5
+  test('(+) M-5 PUT settings with each mode calls setMode once with it, answers with the saved fit, and GET shows it; an unrelated save hands over the saved mode again', async () => {
+    const { world, fit, a } = await rigFit();
+    assert.deepEqual((await a.call('GET', '/api/app/settings')).body.fit, { mode: 'auto' }, 'the default');
+    for (const mode of ['fill', 'terminal', 'off', 'auto']) {
+      const before = fit.modes.length;
+      const r = await put(a, { fit: { mode } });
+      assert.equal(r.status, 200, r.raw);
+      assert.deepEqual(r.body.fit, { mode });
+      assert.deepEqual(fit.modes.slice(before), [mode], mode);
+      assert.deepEqual((await a.call('GET', '/api/app/settings')).body.fit, { mode });
+      assert.equal(JSON.parse(fs.readFileSync(settingsFile(world), 'utf8')).fit.mode, mode);
+    }
+    await put(a, { fit: { mode: 'fill' } });
+    assert.equal((await put(a, { ui: { theme: 'dark' } })).status, 200);
+    assert.equal(fit.modes.at(-1), 'fill', 'the mode of the saved config, which a hand edit would also have changed');
+  });
+
+  test('(+) with the real controller behind the router, saving off answers the next fit PUT with the off state and no tmux call; saving auto brings tmux back', async () => {
+    const world = await makeWorld();
+    const calls = [];
+    const exec = async (...args) => { calls.push(args); return { stdout: '', stderr: '' }; };
+    const a = await boot({ world, ctxOver: { exec }, deps: makeDeps() });
+    assert.equal((await put(a, { fit: { mode: 'off' } })).status, 200);
+    a.clock.t += 2000;
+    const r = await fitPane(a, '%6', { json: FIT_BODY });
+    assert.deepEqual([r.status, r.body], [200, { fit: { state: 'off', reason: null, mode: 'off' } }]);
+    assert.deepEqual(calls, [], 'not a single tmux call');
+    assert.equal((await put(a, { fit: { mode: 'auto' } })).status, 200);
+    a.clock.t += 2000;
+    const back = await fitPane(a, '%6', { json: FIT_BODY });
+    assert.deepEqual([back.status, back.body.error], [404, 'not_found'], 'tmux (an empty listing) decides again');
+    assert.deepEqual(calls, [[TMUX, ['-u', ...FIT_LIST.slice(2)]]]);
+  });
+
+  // M-6
+  test('(+) M-6 a fit PUT with open true reads config.json again and hands the mode to the controller before hold; open false does not', async () => {
+    const { world, fit, a } = await rigFit();
+    handEdit(world, 'terminal');
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.deepEqual(fit.order, [['setMode', 'terminal'], ['hold', '%6', FIT_SEEN]], 'setMode first, then hold');
+    handEdit(world, 'fill');
+    a.clock.t += 2000;
+    assert.equal((await fitPane(a, '%6', { json: { ...FIT_BODY, open: false } })).status, 200);
+    assert.deepEqual(fit.modes, ['terminal'], 'a heartbeat does not read the file');
+    assert.deepEqual(fit.order.at(-1), ['hold', '%6', { ...FIT_SEEN, open: false }]);
+    a.clock.t += 2000;
+    assert.equal((await fitPane(a, '%6', { json: { ...FIT_BODY, focus: true } })).status, 200);
+    assert.deepEqual(fit.modes, ['terminal', 'fill'], 'the next open request picks the new edit up');
+    handEdit(world, 'bogus'); // garbage reads as auto, with a warning that is not shown here
+    a.clock.t += 2000;
+    await fitPane(a, '%6', { json: FIT_BODY });
+    assert.deepEqual(fit.modes, ['terminal', 'fill', 'auto']);
+  });
+
+  test('(\u2212) a refused fit PUT (400, 404, 429) reads no file and sets no mode', async () => {
+    const { world, fit, a } = await rigFit();
+    handEdit(world, 'off');
+    assert.equal((await fitPane(a, '%6', { json: { cols: 1, rows: 1, open: true } })).status, 400);
+    assert.equal((await fitPane(a, '%5', { json: FIT_BODY })).status, 404, 'a shell pane');
+    assert.equal((await fitPane(a, '%99', { json: FIT_BODY })).status, 404, 'a pane tmux does not list');
+    assert.deepEqual(fit.order, []);
+    for (let i = 0; i < 4; i += 1) assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 200);
+    assert.deepEqual(fit.modes, ['off', 'off', 'off', 'off']);
+    assert.equal((await fitPane(a, '%6', { json: FIT_BODY })).status, 429);
+    assert.equal(fit.modes.length, 4, 'the refused request set nothing');
+    assert.equal((await fitPane(a, '%6', { method: 'DELETE' })).status, 200);
+    assert.equal(fit.modes.length, 4, 'DELETE sets nothing');
+  });
+
+  // M-7
+  test('(\u2212) M-7 a fit PUT body that carries a mode is 400 before the pane check and the controller is not called', async () => {
+    const { fit, a } = await rigFit();
+    for (const body of [
+      { ...FIT_BODY, focus: true, mode: 'fill' }, { ...FIT_BODY, mode: 'fill' }, { ...FIT_BODY, mode: 'off' }, { ...FIT_BODY, focus: false, mode: null }, { ...FIT_BODY, fit: { mode: 'fill' } },
+    ]) {
+      for (const id of ['%6', '%5']) {
+        const r = await fitPane(a, id, { json: body });
+        assert.deepEqual([r.status, r.body.error, r.body.message], [400, 'invalid', FIT_MESSAGE], `${id} ${JSON.stringify(body)}`);
+      }
+    }
+    assert.deepEqual(fit.order, []);
+  });
+});
+
+// --- AC (0.5.4): the router's two hooks for the typed /compact sweeper (src/autocompact.js): `touchedAt` (when a user's action last named the pane) and the note ---
+
+const REFUSED_AC = { status: 409, body: { error: 'busy-switching', message: 'x' } };
+const SIG_AC = 'abcdef0123456789';
+const NOTE_TYPED = { state: 'typed', at: 1_700_000_000_000, tokens: 331000 };
+const NOTE_COMPACTED = { state: 'compacted', at: 1_700_000_000_000, tokens: 331000 };
+
+/** A createAutoCompact seam: keeps what the router built the sweeper with (`seen`), counts tick() and stop(), answers noteFor from `notes` (pane id -> note) and records what it was asked. */
+function fakeAutoCompact() {
+  const f = { seen: null, notes: new Map(), asked: [], ticks: 0, stops: 0 };
+  f.factory = (d) => {
+    f.seen = d;
+    return {
+      tick: async () => { f.ticks += 1; },
+      stop: () => { f.stops += 1; },
+      noteFor: (p, e) => { f.asked.push([p, e]); return f.notes.get(p) ?? null; },
+    };
+  };
+  return f;
+}
+
+describe('typed /compact: the router builds the sweeper (0.5.4, AC)', () => {
+  test('(+) it is built once, from the eligibility, the keys route\'s pane check, the controller\'s autoCompact, the stamp map, the clock and the log; ctx.autoCompact is that object', async () => {
+    const ac = fakeAutoCompact();
+    const lines = [];
+    const control = fakeControl();
+    const { a } = await bootScreens({ over: { createAutoCompact: ac.factory, createSessionControl: control.factory, log: (l) => lines.push(l) } });
+    assert.deepEqual(Object.keys(ac.seen).sort(), ['compact', 'eligibility', 'isEligible', 'log', 'now', 'touchedAt']);
+    assert.equal(typeof a.ctx.autoCompact.tick, 'function');
+    const e = await ac.seen.eligibility();
+    assert.ok(e.panes instanceof Map && e.live instanceof Map);
+    assert.equal(ac.seen.isEligible(e, '%6'), true, 'a live claude pane');
+    assert.equal(ac.seen.isEligible(e, '%5'), false, 'a shell pane');
+    assert.equal(ac.seen.isEligible(e, '%7'), false, 'a pane that is not a live session\'s');
+    assert.equal(ac.seen.now(), a.clock.t);
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity, 'nobody has touched it');
+    assert.deepEqual(await ac.seen.compact('%6'), { status: 200, body: { sent: true }, keys: 3 });
+    assert.deepEqual(control.calls.at(-1), ['autoCompact', '%6']);
+    ac.seen.log('nika: auto-compact: probe');
+    assert.deepEqual(lines, ['nika: auto-compact: probe'], 'the line goes to deps.log');
+  });
+
+  test('(\u2212) without the seam the real sweeper is built (it has the three methods) and the browser tier has none', async () => {
+    const { a } = await bootScreens();
+    assert.deepEqual(Object.keys(a.ctx.autoCompact).sort(), ['noteFor', 'stop', 'tick']);
+  });
+});
+
+describe('typed /compact: user actions stamp the pane on arrival (0.5.4, AC test 11)', () => {
+  /** The 16 routes of design 2.3: [name, method, suffix, request]. */
+  const ROUTES = [
+    ['keys', 'POST', 'keys', { json: { keys: ['Up'] } }],
+    ['mode', 'POST', 'mode', { json: { target: 'plan' } }],
+    ['draft', 'PUT', 'draft', { json: { text: 'hi', base: '' } }],
+    ['submit', 'POST', 'submit', { json: {} }],
+    ['scroll', 'POST', 'scroll', { json: { dir: 'up', pages: 3 } }],
+    ['attachments', 'POST', 'attachments', { json: UPLOAD }],
+    ['attachments/pick', 'POST', 'attachments/pick', { json: { room: 1 } }],
+    ['DELETE attachments/:id', 'DELETE', `attachments/${ATT}`, {}],
+    ['attach-send', 'POST', 'attach-send', { json: { ids: [ATT], base: BASE16 } }],
+    ['suggestion', 'POST', 'suggestion', { json: { text: 'try it' } }],
+    ['dialog', 'POST', 'dialog', { json: { sig: SIG_AC, cancel: true } }],
+    ['survey', 'POST', 'survey', { json: { n: 1, sig: SIG_AC } }],
+    ['answer', 'POST', 'answer', { json: { n: 1, sig: SIG_AC } }],
+    ['command', 'POST', 'command', { json: { text: '/compact' } }],
+    ['end', 'POST', 'end', { json: {} }],
+    ['stop', 'POST', 'stop', { json: {} }],
+  ];
+
+  /** A router whose every module behind those routes writes down what the stamp of %6 was at the moment it was reached, and refuses. */
+  async function rig() {
+    const ac = fakeAutoCompact();
+    const reached = [];
+    const hit = async () => { reached.push(ac.seen.touchedAt('%6')); return REFUSED_AC; };
+    const control = fakeControl({ switchMode: hit, writeDraft: hit, submit: hit, acceptSuggestion: hit, answerDialog: hit, answerSurvey: hit, answer: hit, runCommand: hit, endSession: hit, stop: hit });
+    const store = fakeStore({ save: hit, remove: hit });
+    const picker = { start: () => null, status: () => null, filesStatus: () => null, startFiles: () => { reached.push(ac.seen.touchedAt('%6')); return null; } };
+    const fit = fakeFit();
+    const { a, screens } = await bootScreens({
+      over: {
+        createAutoCompact: ac.factory, createSessionControl: control.factory, createScroll: fakeScroller(hit).factory, createAttachSend: fakeSender(hit).factory, createFit: fit.factory,
+        attachments: store, picker, keys: { send: hit }, collect: async () => keyedSnapshot('%6'),
+      },
+    });
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    return { a, ac, reached, screens };
+  }
+  const url = (id, suffix) => `/api/app/pane/${id.replace('%', '%25')}/${suffix}`;
+
+  test('(+) each of the 16 routes stamps the pane BEFORE its module is reached, also when the module refuses', async () => {
+    const { a, ac, reached } = await rig();
+    assert.equal(ROUTES.length, 16);
+    for (const [name, method, suffix, req] of ROUTES) {
+      reached.length = 0;
+      a.clock.t += 5000;
+      const t = a.clock.t;
+      const r = await a.call(method, url('%6', suffix), req);
+      assert.equal(reached.length, 1, `${name}: its module was reached once (status ${r.status})`);
+      assert.equal(reached[0], t, `${name}: stamped when the request arrived, before the module`);
+      assert.equal(ac.seen.touchedAt('%6'), t, `${name}: and it stays`);
+    }
+  });
+
+  test('(\u2212) a pane the keys route would refuse (a shell, an unlisted one) is not stamped by a refused request', async () => {
+    const { a, ac } = await rig();
+    for (const id of ['%5', '%7', '%99']) {
+      a.clock.t += 5000;
+      assert.equal((await a.call('POST', url(id, 'keys'), { json: { keys: ['Up'] } })).status, 404, id);
+      assert.equal((await a.call('POST', url(id, 'command'), { json: { text: '/compact' } })).status, 404, id);
+      assert.equal(ac.seen.touchedAt(id), -Infinity, id);
+    }
+  });
+
+  test('(\u2212) a request that fails its body check (400) is not a user action on the pane', async () => {
+    const { a, ac } = await rig();
+    a.clock.t += 5000;
+    for (const [suffix, json] of [['keys', { send: 'yes' }], ['mode', { target: 'nope' }], ['draft', { text: 1 }], ['command', { text: 'compact' }], ['answer', { n: 0 }]]) {
+      const r = await a.call(suffix === 'draft' ? 'PUT' : 'POST', url('%6', suffix), { json });
+      assert.equal(r.status, 400, suffix);
+    }
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity);
+  });
+
+  test('(\u2212) the fit heartbeat and release, the attachment list, the chooser poll, the image read, the modes poll and a plain capture stamp nothing', async () => {
+    const { a, ac } = await rig();
+    a.clock.t += 5000;
+    assert.equal((await a.call('PUT', url('%6', 'fit'), { json: FIT_BODY })).status, 200);
+    assert.equal((await a.call('DELETE', url('%6', 'fit'), { json: {} })).status, 200);
+    assert.equal((await a.call('GET', url('%6', 'attachments'))).status, 200); // the list the page asks for at every open (0.5.4, AT): no user action
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity, 'the list alone left no stamp');
+    assert.equal((await a.call('GET', url('%6', `attachments/pick/${REQ_ID}`))).status, 404);
+    assert.equal((await a.call('GET', url('%6', `attachments/${ATT}/image`))).status, 404);
+    assert.equal((await a.call('GET', '/api/app/modes')).status, 200);
+    assert.equal((await a.call('GET', url('%6', 'capture'))).status, 200);
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity);
+  });
+
+  test('(+) a capture with X-Nika-Typing exactly 1 stamps, before the capture is read, also when the capture fails', async () => {
+    const { a, ac, screens } = await rig();
+    a.clock.t += 5000;
+    assert.equal((await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': '1' } })).status, 200);
+    assert.equal(ac.seen.touchedAt('%6'), a.clock.t);
+    screens['%6'] = null; // the mirror fails
+    a.clock.t += 5000;
+    assert.equal((await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': '1' } })).status, 503);
+    assert.equal(ac.seen.touchedAt('%6'), a.clock.t, 'a failed capture is still a sign that somebody is typing');
+  });
+
+  test('(\u2212) any other header value, an unlisted pane and a header on another route stamp nothing', async () => {
+    const { a, ac } = await rig();
+    a.clock.t += 5000;
+    for (const value of ['2', '', '11', 'true', '1, 1', '0', '01']) { // (HTTP trims the spaces around a value, so ' 1' arrives as 1)
+      const r = await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': value } });
+      assert.equal(r.status, 200, JSON.stringify(value));
+      assert.equal(ac.seen.touchedAt('%6'), -Infinity, JSON.stringify(value));
+    }
+    assert.equal((await a.call('GET', url('%5', 'capture'), { headers: { 'x-nika-typing': '1' } })).status, 404);
+    assert.equal(ac.seen.touchedAt('%5'), -Infinity);
+    assert.equal((await a.call('GET', '/api/app/modes', { headers: { 'x-nika-typing': '1' } })).status, 200);
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity);
+  });
+
+  test('(\u2212) the header does not change the answer or the ETag: the same screen with and without it is one ETag and revalidates to 304', async () => {
+    const { a } = await rig();
+    const plain = await a.call('GET', url('%6', 'capture'));
+    const typing = await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+    assert.equal(typing.headers.etag, plain.headers.etag);
+    assert.deepEqual(typing.body, plain.body);
+    assert.equal((await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': '1', 'if-none-match': plain.headers.etag } })).status, 304);
+  });
+
+  test('(+) a stamp of a pane that tmux no longer lists is forgotten at the next refresh; (\u2212) a failed tmux listing keeps the stamps', async () => {
+    const { a, ac } = await rig();
+    a.clock.t += 5000;
+    await a.call('GET', url('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+    assert.equal((await a.call('DELETE', url('%99', `attachments/${ATT}`), { json: {} })).status, 200, 'not eligibility-gated: the file must go');
+    const t0 = a.clock.t;
+    assert.deepEqual([ac.seen.touchedAt('%6'), ac.seen.touchedAt('%99')], [t0, t0], 'a valid pane id is stamped, listed or not');
+    a.deps.state.error = 'tmux unavailable: no server running'; // a blip
+    a.clock.t += 5000;
+    await a.call('GET', '/api/app/modes');
+    assert.deepEqual([ac.seen.touchedAt('%6'), ac.seen.touchedAt('%99')], [t0, t0], 'one failed listing proves nothing');
+    a.deps.state.error = null;
+    a.clock.t += 5000;
+    await a.call('GET', '/api/app/modes');
+    assert.equal(ac.seen.touchedAt('%99'), -Infinity, 'a good listing without it: gone');
+    assert.equal(ac.seen.touchedAt('%6'), t0, 'a listed pane keeps its stamp');
+    a.deps.state.panes.delete('%6');
+    a.clock.t += 5000;
+    await a.call('GET', '/api/app/modes');
+    assert.equal(ac.seen.touchedAt('%6'), -Infinity);
+  });
+});
+
+describe('typed /compact: a missed registry read does not delete the typing stamp (0.5.4, AC, round 2, M1)', () => {
+  const WAIT_AC = 60000; // the sweeper's QUIET_MS and WAIT_MS (src/autocompact.js)
+  const SESSION_AC = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const typedRow = () => ({ id: SESSION_AC, hostId: null, live: true, state: 'idle', pane: { id: '%6' }, context: { tokens: 330000, window: 400000, compactAt: 320000, pct: 82.5, compaction: 'typed' } });
+  const withRow = { groups: [{ key: GROUP_KEY, agents: [typedRow()] }] };
+  const noRow = { groups: [] }; // the registry read missed the live session (a failed readdir, a session file read mid-write); tmux is fine
+  const urlOf = (id, suffix) => `/api/app/pane/${id.replace('%', '%25')}/${suffix}`;
+
+  /** The router with the REAL sweeper and a fake controller; `world.snap` is what the registry read gives (null: the read fails). */
+  async function boot6() {
+    const world = { snap: withRow };
+    const { a, screens, control } = await bootScreens({ over: { collect: async () => { if (world.snap === null) throw new Error('registry unavailable'); return world.snap; } } });
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    const T0 = a.clock.t;
+    const at = (ms) => { a.clock.t = T0 + ms; };
+    const types = () => control.calls.filter((c) => c[0] === 'autoCompact').length;
+    return { a, world, at, types };
+  }
+
+  test('(\u2212) idle at t0, a typing capture at t0 + 50 s, one capture during a registry miss at t0 + 51.5 s (404): the sweeper does not fire at t0 + 60 s, and only from t0 + 110 s', async () => {
+    const { a, world, at, types } = await boot6();
+    await a.ctx.autoCompact.tick(); // t0: idle seen
+    at(50000);
+    assert.equal((await a.call('GET', urlOf('%6', 'capture'), { headers: { 'x-nika-typing': '1' } })).status, 200);
+    at(51500);
+    world.snap = noRow;
+    assert.equal((await a.call('GET', urlOf('%6', 'capture'))).status, 404, 'the pane reads not eligible for this one refresh');
+    world.snap = withRow;
+    at(WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 0, 'the user typed 10 s ago: the 404 did not wipe the stamp');
+    at(WAIT_AC + 30000);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 0);
+    at(50000 + WAIT_AC - 1);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 0, 'one ms short of 60 s after the typing');
+    at(50000 + WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 1, 'quiet for 60 s: it fires');
+  });
+
+  test('(+) without a miss the same run fires once the 60 s after the typing are over (and not at t0 + 60 s)', async () => {
+    const { a, at, types } = await boot6();
+    await a.ctx.autoCompact.tick();
+    at(50000);
+    await a.call('GET', urlOf('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+    at(WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 0);
+    at(50000 + WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 1);
+  });
+
+  test('(\u2212) a registry read that gives no snapshot at all, or none for the pane, keeps the stamp of a listed pane', async () => {
+    for (const miss of [null, noRow]) {
+      const { a, world, at, types } = await boot6();
+      await a.ctx.autoCompact.tick();
+      at(50000);
+      await a.call('GET', urlOf('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+      world.snap = miss;
+      for (const ms of [51500, 53000, 55000]) { at(ms); await a.call('GET', '/api/app/modes'); }
+      world.snap = withRow;
+      at(WAIT_AC);
+      await a.ctx.autoCompact.tick();
+      assert.equal(types(), 0, miss === null ? 'a failed registry read' : 'a read without the pane');
+    }
+  });
+
+  test('(+) the stamp is forgotten once a good tmux listing no longer lists the pane, also when the registry read gave nothing: the id can be reused', async () => {
+    const { a, world, at, types } = await boot6();
+    await a.ctx.autoCompact.tick(); // t0: idle seen
+    at(5000);
+    await a.call('GET', urlOf('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+    const entry = a.deps.state.panes.get('%6');
+    a.deps.state.panes.delete('%6'); // a good listing without the pane
+    world.snap = null; // and the registry read fails in the same refresh
+    at(8000);
+    await a.call('GET', '/api/app/modes');
+    a.deps.state.panes.set('%6', entry); // tmux gives the id to another session
+    world.snap = withRow;
+    at(WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 1, 'the old stamp (55 s ago) belonged to the old pane: the new one is not held back by it');
+  });
+
+  test('(\u2212) a failed tmux listing keeps the stamp, also when the listing comes back empty', async () => {
+    const { a, at, types } = await boot6();
+    await a.ctx.autoCompact.tick();
+    at(50000);
+    await a.call('GET', urlOf('%6', 'capture'), { headers: { 'x-nika-typing': '1' } });
+    const listed = new Map(a.deps.state.panes);
+    a.deps.state.error = 'tmux unavailable: no server running';
+    a.deps.state.panes = new Map(); // what listPanes gives while tmux is down
+    at(52000);
+    await a.call('GET', '/api/app/modes');
+    a.deps.state.error = null;
+    a.deps.state.panes = listed;
+    at(WAIT_AC);
+    await a.ctx.autoCompact.tick();
+    assert.equal(types(), 0, 'one failed listing proves nothing: the stamp of t0 + 50 s is still there');
+  });
+});
+
+describe('typed /compact: the note on the capture and on /modes (0.5.4, AC tests 32 and 33)', () => {
+  const urlOf = (id, suffix) => `/api/app/pane/${id.replace('%', '%25')}/${suffix}`;
+  async function noted() {
+    const ac = fakeAutoCompact();
+    const { a, screens } = await bootScreens({ over: { createAutoCompact: ac.factory } });
+    screens['%6'] = rowsOf(['text', FOOTER.plan]);
+    return { a, ac };
+  }
+
+  test('(+) the capture body carries the sweeper\'s note for the pane, asked with the pane id and the eligibility', async () => {
+    const { a, ac } = await noted();
+    ac.notes.set('%6', NOTE_TYPED);
+    const r = await a.call('GET', urlOf('%6', 'capture'));
+    assert.deepEqual(r.body.compacted, NOTE_TYPED);
+    const [pane, e] = ac.asked.at(-1);
+    assert.equal(pane, '%6');
+    assert.ok(e.live instanceof Map && e.panes instanceof Map, 'the eligibility the router already holds');
+  });
+
+  test('(\u2212) no note is null, not absent; a note of another pane is not shown here', async () => {
+    const { a, ac } = await noted();
+    const r = await a.call('GET', urlOf('%6', 'capture'));
+    assert.equal(r.body.compacted, null);
+    assert.ok(Object.hasOwn(r.body, 'compacted'));
+    ac.notes.set('%8', NOTE_TYPED);
+    assert.equal((await a.call('GET', urlOf('%6', 'capture'))).body.compacted, null);
+  });
+
+  test('(+) the ETag folds the note in: same screen, a note appears or changes -> another ETag and no 304; the same note keeps the ETag and revalidates', async () => {
+    const { a, ac } = await noted();
+    const none = await a.call('GET', urlOf('%6', 'capture'));
+    ac.notes.set('%6', NOTE_TYPED);
+    const typed = await a.call('GET', urlOf('%6', 'capture'), { headers: { 'if-none-match': none.headers.etag } });
+    assert.equal(typed.status, 200, 'a new note is never hidden by a 304');
+    assert.notEqual(typed.body.etag, none.body.etag);
+    assert.equal(typed.headers.etag, `"${typed.body.etag}"`);
+    assert.equal((await a.call('GET', urlOf('%6', 'capture'), { headers: { 'if-none-match': typed.headers.etag } })).status, 304, 'unchanged: a 304');
+    ac.notes.set('%6', NOTE_COMPACTED);
+    const compacted = await a.call('GET', urlOf('%6', 'capture'), { headers: { 'if-none-match': typed.headers.etag } });
+    assert.equal(compacted.status, 200);
+    assert.notEqual(compacted.body.etag, typed.body.etag);
+    ac.notes.delete('%6');
+    const gone = await a.call('GET', urlOf('%6', 'capture'), { headers: { 'if-none-match': compacted.headers.etag } });
+    assert.equal(gone.status, 200, 'and its going away too');
+    assert.equal(gone.body.etag, none.body.etag);
+  });
+
+  test('(+) /modes carries a compacted map: eligible panes with a note, the note as the sweeper gave it', async () => {
+    const { a, ac } = await noted();
+    ac.notes.set('%6', NOTE_TYPED);
+    const r = await a.call('GET', '/api/app/modes');
+    assert.deepEqual(r.body, { modes: { '%6': { mode: 'plan', confirmed: true } }, compacted: { '%6': NOTE_TYPED } });
+  });
+
+  test('(\u2212) no note: an empty map; a note of a pane that is not eligible (a shell, an unlisted one) is not listed', async () => {
+    const { a, ac } = await noted();
+    assert.deepEqual((await a.call('GET', '/api/app/modes')).body.compacted, {});
+    ac.notes.set('%5', NOTE_TYPED);
+    ac.notes.set('%99', NOTE_COMPACTED);
+    assert.deepEqual((await a.call('GET', '/api/app/modes')).body.compacted, {});
+  });
+
+  test('(\u2212) the note is on /api/app/* only: the browser tier has no capture route, and /api/agents on either tier carries no note', async () => {
+    const { a, ac } = await noted();
+    ac.notes.set('%6', NOTE_TYPED);
+    const browser = createServer({ config: fx.config, exec: fakeExec(), token: 'tok', now: () => NOW, version: '0.0.0' });
+    await new Promise((res) => browser.listen(0, '127.0.0.1', res));
+    servers.push(browser);
+    const bport = browser.address().port;
+    const get = (port, p) => new Promise((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port, path: p, headers: { host: `127.0.0.1:${port}`, 'x-nika-app': SECRET } }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, data }));
+      }).on('error', reject);
+    });
+    assert.equal((await get(bport, '/api/app/pane/%256/capture')).status, 404);
+    assert.equal((await get(bport, '/api/app/modes')).status, 404);
+    for (const r of [await get(bport, '/api/agents?since=all'), await get(a.port, '/api/agents?since=all')]) {
+      assert.equal(r.status, 200);
+      assert.doesNotMatch(r.data, /"compacted"|nika typed/);
+    }
   });
 });

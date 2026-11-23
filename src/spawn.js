@@ -17,7 +17,8 @@ import { clean } from './text.js';
 import { NO_TMUX_SERVER } from './tmuxerr.js';
 import { compactLaunch, compactEnv, PCT_ENV } from './compact.js';
 import { isKind, kindFromModel } from './labels.js';
-import { PROJECT_KEY, AGENT_NAME, parseAgentTag, MODEL_ID, TMUX_SESSION, PANE_ID, WINDOW_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
+import { PROJECT_KEY, AGENT_NAME, parseAgentTag, MODEL_ID, TMUX_SESSION, PANE_ID, RC_PREFIX, RC_NAME, PERMISSION_MODES } from './ids.js';
+import { AGENTS_WINDOW, MIN_COLS, MIN_ROWS, PLACE_FORMAT, parsePlaceRows, readPlaceListing, isStrictPaneListing, parentTags, isAgentsWindow, place } from './place.js';
 import { fail, binsMissing, tmux, tmuxFail, tagPane, earlyExit, sessionNameFor, reduceRc, permissionFlags, launchMode, tmuxLiteral } from './orchestrate.js';
 
 const BRIEF_MAX = 64 * 1024;
@@ -33,8 +34,6 @@ const DENIED_TOOLS = ['Bash(nika:*)', 'Bash(tmux:*)', 'Bash(claude:*)', 'Bash(gi
 const SUB_ALLOWED = new Set(['spawn', 'status']);
 const SUB_ROLE = 'sub-orchestrator';
 const MAX_DEPTH = 3;
-// First window of a project session that a spawn had to create (a constant, no `#`: tmux format-expands `new-session -n`; asserted by the T6 test)
-const AGENTS_WINDOW = 'agents';
 
 /**
  * The `--disallowedTools` of a role. An agent keeps the whole list. A sub-orchestrator keeps it except `Bash(nika:*)`, which becomes
@@ -183,25 +182,29 @@ function resolveParent(v, project, tags, ctx) {
 
 const limitFail = (scope, running, max, message) => ({ status: 409, body: { error: 'limit', message, scope, running, max } });
 
+/** One placement line on stderr. It names the step and the reason only: never listing text, a tag, a name or a path. */
+const sayPlacement = (ctx, text) => (ctx.stderr ?? process.stderr).write(`nika: spawn placement${text}\n`);
+
 /**
- * The app tier's fit (`ctx.fit`, src/fit.js; the CLI has none) may hold the tmux window a split is about to land in: a split would unzoom
- * it and put the new pane into a window sized for the session window, so the window is given back first (owner answer Q3); the page fits
- * it again, with the new pane count, on its next heartbeat. Only asked while the fit holds a window at all. The window is the one `target`
- * names (`=<session>:` or a pane id, both validated), read from tmux; the split's argv is not changed. Best effort: a failure logs the step
- * and its code only and never stops the spawn.
+ * After the split into an agents window (0.5.4, ADR 0021): list the window again, re-tile it only if the listing can be trusted as a whole
+ * (readPlaceListing) and it still holds nothing but this project's agents (and the new pane), then read it back. Best effort: the agent
+ * already runs, so a failure or a changed window only logs the step and tmux's exit code (never layout text, a name or a path) and never fails the spawn.
  */
-async function releaseFitted(ctx, target) {
-  if (typeof ctx.fit?.size !== 'function' || ctx.fit.size() === 0) return;
-  let step = 'lookup';
+async function tileAgents(ctx, key, win, pane) {
+  const say = (text) => sayPlacement(ctx, text);
+  let step = 'relist';
   try {
-    const { stdout } = await tmux(ctx, 'display-message', '-p', '-t', target, '-F', '#{window_id}');
-    const window = String(stdout).trim();
-    if (!WINDOW_ID.test(window)) return;
-    step = 'release';
-    await ctx.fit.releaseWindow(window);
+    const listing = (await tmux(ctx, 'list-panes', '-t', win, '-F', PLACE_FORMAT)).stdout;
+    const read = readPlaceListing(listing);
+    if (!read.trusted) return say(': the agents window listing could not be trusted, so it was not re-tiled');
+    if (!isAgentsWindow({ rows: read.rows, key, win, pane })) return say(': the agents window changed, so it was not re-tiled');
+    step = 'tile';
+    await tmux(ctx, 'select-layout', '-t', win, 'tiled');
+    step = 'readback';
+    const after = parsePlaceRows((await tmux(ctx, 'list-panes', '-t', win, '-F', PLACE_FORMAT)).stdout);
+    if (after.some((r) => r.win === win && (r.w < MIN_COLS || r.h < MIN_ROWS))) say(`: a pane of the agents window is below ${MIN_COLS}x${MIN_ROWS}`);
   } catch (err) {
-    const code = /^[\w-]{1,20}$/.test(String(err?.code)) ? String(err.code) : 'error';
-    (ctx.stderr ?? process.stderr).write(`nika: fit release before spawn failed (${step} ${code})\n`);
+    say(` failed (${step} ${/^[\w-]{1,20}$/.test(String(err?.code)) ? String(err.code) : 'error'})`);
   }
 }
 
@@ -212,7 +215,14 @@ async function lastPane(dir) {
 }
 
 async function doSpawn(v, project, config, ctx) {
-  const { panes, error } = await listPanes(ctx.exec, ctx.tmuxBin);
+  // The same `-a` read gives the collector's map and, for check (c), the text it was parsed from (no second tmux call).
+  let paneRead = '';
+  const recording = async (...call) => {
+    const out = await ctx.exec(...call);
+    paneRead = String(out?.stdout ?? '');
+    return out;
+  };
+  const { panes, error } = await listPanes(recording, ctx.tmuxBin);
   // A failed listing is "no panes yet" only when tmux says no server runs (NO_TMUX_SERVER): the spawn then creates the project session below.
   // Any other failure fails closed (502 tmux_failed, nothing created): the parent, the depth and both caps are read from this listing, and
   // an unreadable listing is not an empty one. listPanes keeps only a string, so the raw error comes from the tag listing: ENOENT is "tmux unavailable".
@@ -229,10 +239,11 @@ async function doSpawn(v, project, config, ctx) {
     tags = new Map();
   }
 
-  // Where the pane goes: -t is `=<session>:` (beside) or a pane id (below another pane).
   const underPane = v.under ? panes.get(v.under) : null;
   if (v.under && !underPane) return fail(404, 'not_found', 'under pane not found');
   if (underPane && v.session && underPane.session !== v.session) return fail(400, 'invalid', 'under pane is in another tmux session');
+  // the session name is a pane's tmux session, not a request value: a name nika cannot target (one with a space, a dot or a `#`) is refused before any read or write
+  if (underPane && !TMUX_SESSION.test(underPane.session ?? '')) return fail(400, 'invalid', 'That pane is in a tmux session nika cannot target.');
 
   const dir = reportsDir(project.key, ctx.env);
   if (!tags) {
@@ -268,12 +279,27 @@ async function doSpawn(v, project, config, ctx) {
       : `You already run ${own} of ${max} agents spawned from nika in ${name}. ${more}`);
   }
 
-  // Placement (beside, under the last agent) applies only when the session exists; otherwise the pane is the session's first.
-  let target = ['-h', '-t', `=${session}:`];
-  if (underPane) target = ['-v', '-t', v.under];
-  else if (exists && panePlacement === 'under-last') {
-    const last = await lastPane(dir);
-    if (last && panes.get(last)?.session === session) target = ['-v', '-t', last];
+  // Where the pane goes (0.5.4, ADR 0021): one listing of the session, read before any file is written, so a failed listing leaves nothing behind.
+  // A session that does not exist yet is created below with this agent's pane as its first.
+  let plan = { op: 'session', placement: 'session' };
+  if (exists) {
+    let listing;
+    try {
+      listing = (await tmux(ctx, 'list-panes', '-s', '-t', `=${session}`, '-F', PLACE_FORMAT)).stdout;
+    } catch (err) {
+      return tmuxFail(err);
+    }
+    const last = panePlacement === 'under-last' ? await lastPane(dir) : null;
+    const first = readPlaceListing(listing);
+    if (!first.trusted) sayPlacement(ctx, ': the session listing could not be trusted, so a new agents window opened'); // 0.5.4 SF (P1): like the second listing's line, so a quiet new window is explained
+    // 0.5.4 SF (item 14): whose tree each pane is in comes from the `-a` read above (its text, `paneRead`); no new tmux call
+    plan = place({ rows: first.rows, key: project.key, parent: who.parent, under: v.under, last, placement: panePlacement, parents: parentTags(paneRead) });
+    // A split goes only to a pane that the collector's own `-a` read lists in this session (review M1, check c), and only when that read is trusted as a
+    // whole (round 4, review R1-1): every non-empty line has all the format's fields and no pane id is on two lines. The collector's map alone is not
+    // enough: its parse accepts a short line and lets a later row win, so a forged row for a foreign pane, in a value that the placement listing does not
+    // carry (`@nika-parent`, `@nika-depth`, `@nika-kind`, the pane's current command), would put that pane in this session beside a forged placement row.
+    // What is left is a race between the reads (a pane created or moved between them is not split into, and a new window opens).
+    if (plan.op === 'split' && (!isStrictPaneListing(paneRead) || panes.get(plan.target)?.session !== session)) plan = v.under ? { op: 'window', placement: 'window', moved: true } : { op: 'window', placement: 'window' };
   }
 
   // Remote Control name: <prefix>-<name>; prefix = req.rc, else the setting, else the project's session name (≤ 20 chars)
@@ -291,13 +317,14 @@ async function doSpawn(v, project, config, ctx) {
   const compact = launch ? { window: launch.window, pct: launch.env[PCT_ENV] } : null;
   await writeAtomic(dir, `${v.name}.agent.json`, `${JSON.stringify({ model: v.model, permissionMode, rc, role, parent: who.parent, depth: who.depth, compact })}\n`);
 
-  if (exists) await releaseFitted(ctx, target.at(-1)); // the -t value: `=<session>:` or a pane id
   let pane;
   try {
     const wrapper = ['-P', '-F', '#{pane_id}', '--', ...ctx.nikaArgv, '_run-agent', project.key, v.name];
-    const { stdout } = await tmux(ctx, ...(exists
-      ? ['split-window', ...target, '-c', tmuxLiteral(project.dir), ...wrapper]
-      : ['new-session', '-d', '-s', session, '-n', AGENTS_WINDOW, '-c', tmuxLiteral(project.dir), '-x', '200', '-y', '50', ...wrapper]));
+    const cwd = ['-c', tmuxLiteral(project.dir)];
+    const argv = plan.op === 'split' ? ['split-window', plan.dir, '-t', plan.target, ...cwd, ...wrapper]
+      : plan.op === 'window' ? ['new-window', '-d', '-t', `=${session}:`, '-n', AGENTS_WINDOW, ...cwd, ...wrapper]
+        : ['new-session', '-d', '-s', session, '-n', AGENTS_WINDOW, ...cwd, '-x', '200', '-y', '50', ...wrapper];
+    const { stdout } = await tmux(ctx, ...argv);
     pane = stdout.trim();
   } catch (err) {
     return tmuxFail(err);
@@ -305,6 +332,7 @@ async function doSpawn(v, project, config, ctx) {
   if (!PANE_ID.test(pane)) return fail(502, 'tmux_failed', 'tmux did not return a pane id');
   ctx.started?.set(pane, { key: project.key, name: v.name, sessionId: null, role, parent: who.parent, depth: who.depth, mode: launchMode(permissionMode) });
   await tagPane(ctx, pane, role, `${project.key}/${v.name}`, who.depth, who.parent, kind);
+  if (plan.tile) await tileAgents(ctx, project.key, plan.tile, pane);
   const exited = await earlyExit(ctx, pane);
   if (exited) {
     ctx.started?.delete(pane);
@@ -315,13 +343,13 @@ async function doSpawn(v, project, config, ctx) {
   await tmux(ctx, 'select-pane', '-t', pane, '-T', `[${pane}] ${v.name}`).catch(() => {});
   return {
     status: 200,
-    body: { pane, session, sessionId: null, kind, reports: { dir, session: `${v.name}.session`, report: `${v.name}.md`, rc: `${v.name}.rc`, remote: `${v.name}.remote` } },
+    body: { pane, session, sessionId: null, kind, placement: plan.placement, ...(plan.moved ? { moved: 'under' } : {}), reports: { dir, session: `${v.name}.session`, report: `${v.name}.md`, rc: `${v.name}.rc`, remote: `${v.name}.remote` } },
   };
 }
 
 /**
  * @param {object} req  POST /api/app/spawn body (contract §3); optional `rc`: "off" or an RC_PREFIX overriding the setting
- * @param {object} ctx  { env, exec, tmuxBin, claudeBin, nikaArgv, started, fit? } (`fit`: the app tier's fit controller, src/fit.js; the CLI has none)
+ * @param {object} ctx  { env, exec, tmuxBin, claudeBin, nikaArgv, started }
  * @returns {Promise<{ status: number, body: object }>} `sessionId` is null: only _run-agent knows it
  */
 export async function spawnAgent(req, ctx) {

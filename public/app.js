@@ -3,9 +3,10 @@
 // (read-only, 127.0.0.1:3335) never loads them. Every server string is rendered through h() (textContent).
 import { isApp, getJSON, windowCommand } from './api.js';
 import { h, icon, roleTagEl, ctxEl, subagentItemEl, labelEl } from './dom.js';
-import { modeEl, rowMode, canEndRow } from './modes.js';
+import { modeEl, rowMode, rowNote, canEndRow } from './modes.js';
 import { wantsHelp, wantsBack, isTextEntry, openShortcuts, helpHint, backHint, wireWindowKeys } from './shortcuts.js';
 import { copyBanner } from './app-copy.js';
+import { removeRow, removedLineEl } from './removed.js';
 import {
   endedPlan, noMatchText, resetEndedState, roleTag, skippedText, statusOf, parentOf, treeRows, hasTree, subagentView, subagentHref, agentLabelView,
 } from './dash-model.js';
@@ -47,10 +48,10 @@ export function buildGroups() {
   for (const [i, g] of (state.data?.groups ?? []).entries()) {
     const project = byKey.get(g.key) ?? byDir.get(g.root) ?? null;
     if (project) seen.add(project.key);
-    out.push({ key: project?.key ?? g.key ?? `g${i}`, project, label: project?.name ?? g.label, root: project?.dir ?? g.root, last: g.lastActivity ?? 0, agents: g.agents });
+    out.push({ key: project?.key ?? g.key ?? `g${i}`, project, label: project?.name ?? g.label, root: project?.dir ?? g.root, last: g.lastActivity ?? 0, hidden: g.hidden ?? 0, agents: g.agents });
   }
   for (const p of projects) {
-    if (!seen.has(p.key)) out.push({ key: p.key, project: p, label: p.name, root: p.dir, last: 0, agents: [] });
+    if (!seen.has(p.key)) out.push({ key: p.key, project: p, label: p.name, root: p.dir, last: 0, hidden: 0, agents: [] });
   }
   for (const g of out) g.counts = countsOf(g.agents);
   // "needs you" first everywhere, then groups with live agents, then the most recent
@@ -200,6 +201,7 @@ function treeSlot(a, scope, tree) {
 function rowEl(a, g, { scope, showProject = false, tree = null, showEnded = state.showEnded }) {
   const s = sOf(a);
   const mode = isApp ? rowMode(a, state.modes.map) : null;
+  const note = isApp ? rowNote(a, state.compacted) : null; // 0.5.4 AC: the last typed /compact of this row's pane, in the meter's tooltip
   const href = isApp ? sessionHref({ session: a.id, pane: a.pane?.id, project: g.project?.key }) : null;
   const fk = (k, sc = scope) => `${k}:${sc}:${a.id}`;
   const what = s === 'attn' ? reasonOf(a) : s === 'ended' ? endedText(a) : a.lastPrompt || '(no prompt yet)';
@@ -207,13 +209,17 @@ function rowEl(a, g, { scope, showProject = false, tree = null, showEnded = stat
   const items = [{ text: 'Copy resume command', run: () => copyText(a.resumeCmd, 'resume command') }];
   if (a.report?.hasFile) items.push({ text: 'Show report', run: () => showReport(a) });
   if (a.bridgeUrl && SHAPE.claudeUrl.test(a.bridgeUrl)) items.push({ text: 'Open in claude.ai ↗', href: a.bridgeUrl });
-  if (a.live && a.pane) items.push({ text: `Focus pane ${a.pane.id} in tmux`, run: () => focusPane(a.pane.id) });
+  // the tmux window index, when tmux gave one (1 to 6 digits), tells which window the pane is in (0.5.4)
+  const inWindow = typeof a.pane?.windowIndex === 'string' && /^\d{1,6}$/.test(a.pane.windowIndex) ? ` (window ${a.pane.windowIndex})` : '';
+  if (a.live && a.pane) items.push({ text: `Focus pane ${a.pane.id}${inWindow} in tmux`, run: () => focusPane(a.pane.id) });
   // app tier, registered projects: the orchestrator items (project.js); they and End session… each start a group, a rule above
   const orchItems = isApp ? hooks.rowItems?.(a, g, scope) ?? [] : [];
   if (orchItems.length) items.push({ ...orchItems[0], group: true }, ...orchItems.slice(1));
   if (isApp && canEndRow(a, state.modes.map)) {
     items.push({ text: 'End session…', group: orchItems.length > 0, run: () => endSession(a, fk('m'), fk('m', endedScope(scope))) });
   }
+  // 0.5.4 RM: a row that runs in no tmux pane nika sees can be taken off the list (hidden only; the server refuses a row in a pane)
+  if (isApp && !(a.live && a.pane)) items.push({ text: 'Remove from the list', group: true, fk: fk('rm'), run: () => removeRow(a, g, { refresh }) });
 
   // in a flat list (the queue, a filter, Ended) a row that hangs under another says so; a nested group shows it by its indent
   const parent = tree ? null : parentOf(a, g.agents);
@@ -231,7 +237,7 @@ function rowEl(a, g, { scope, showProject = false, tree = null, showEnded = stat
       tree?.collapsed ? h('span', { class: 'tree-hid', 'aria-hidden': 'true' }, `+${tree.hiddenCount}`, tree.hiddenAttn ? h('span', { class: 'attn', text: String(tree.hiddenAttn) }) : null) : null,
       tree?.orphan ? h('span', { class: 'tree-orphan', title: "This agent's parent session is no longer running.", text: 'parent ended' }) : null),
     h('div', { class: 'c-model' }, modelEl(a)),
-    h('div', { class: 'c-ctx' }, ctxEl(a.context)),
+    h('div', { class: 'c-ctx' }, ctxEl(a.context, { note })),
     h('div', { class: 'c-what' },
       labelEl(agentLabelView(a)),
       showProject ? h('span', { class: 'proj-chip', title: g.label, text: g.label.length > 18 ? `${g.label.slice(0, 17)}…` : g.label }) : null,
@@ -342,14 +348,15 @@ function groupEl(g, q) {
 function dashboardNodes() {
   const q = state.filter.trim().toLowerCase();
   const groups = buildGroups();
+  const removed = removedLineEl(state.data?.hidden, { where: 'dash', refresh }); // 0.5.4 RM: how many are removed from the list, and Show
   if (!groups.length) {
     if (isApp) {
       return [emptyEl('Add your first project',
         'nika groups Claude Code agents by git repository. Add a repository to start an orchestrator, spawn agents and set up its rules.',
         [h('button', { type: 'button', class: 'btn primary lg', 'data-fk': 'add-first', onclick: () => hooks.addProject?.() }, icon('plus'), 'Add project…')], 'folder'),
-      h('p', { class: 'empty-hint' }, 'Or from a terminal: ', h('code', { text: 'nika projects add <folder>' }))];
+      h('p', { class: 'empty-hint' }, 'Or from a terminal: ', h('code', { text: 'nika projects add <folder>' })), removed];
     }
-    return [emptyEl('No agents in this window', 'Start a Claude Code session; it shows up here within a few seconds.')];
+    return [emptyEl('No agents in this window', 'Start a Claude Code session; it shows up here within a few seconds.'), removed];
   }
   const nodes = [h('p', { class: 'plain-sum', text: plainSummary(countsOf(groups.flatMap((g) => g.agents))) })];
   const queue = queueEl(groups, q);
@@ -364,6 +371,7 @@ function dashboardNodes() {
     const endedMatch = !state.showEnded && groups.some((g) => g.agents.some((a) => sOf(a) === 'ended' && matches(a, g, q)));
     nodes.push(emptyEl('No agent matches', noMatchText({ q: state.filter.trim(), showEnded: state.showEnded, endedMatch })));
   }
+  nodes.push(removed);
   return nodes;
 }
 
@@ -391,7 +399,7 @@ function skippedNote() {
 
 let dashSig = '';
 function renderDashboard(force) {
-  const sig = JSON.stringify([state.data.groups, state.data.skipped, isApp ? state.projects : null, isApp ? state.modes.map : null, state.filter, state.showEnded, [...state.open], [...state.expanded], state.me?.tmux, state.me?.claude, state.error]);
+  const sig = JSON.stringify([state.data.groups, state.data.hidden, state.data.skipped, isApp ? state.projects : null, isApp ? state.modes.map : null, isApp ? state.compacted : null, state.filter, state.showEnded, [...state.open], [...state.expanded], state.me?.tmux, state.me?.claude, state.error]);
   if (!force && (sig === dashSig || interacting())) return;
   dashSig = sig;
   const body = $('#dash-body');

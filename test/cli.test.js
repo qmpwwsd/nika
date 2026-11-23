@@ -10,7 +10,10 @@ import { Readable, Writable } from 'node:stream';
 import { main } from '../src/cli.js';
 import { getOrchestrator, setOrchestrator } from '../src/store.js';
 import { fakeTmux, makeWorld, TMUX } from './tmux-fake.js';
-import { makeFixture, cleanup } from './helpers.js';
+import { makeFixture, cleanup, SID, NOW, fakeExec } from './helpers.js';
+import { collect } from '../src/model.js';
+import { hideSession, hideGroup, HIDDEN_FILE } from '../src/hidden.js';
+import { keyFor } from '../src/store.js';
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'nika');
 const fx = makeFixture();
@@ -484,5 +487,210 @@ describe('orchestrate: the session registry (R1 F2, the CLI)', () => {
     const res = await r.run();
     assert.equal(res.code, 0, res.err);
     assert.equal(r.started(), 1);
+  });
+});
+
+// --- 0.5.4 (RM): `nika status` leaves out what the user removed from the lists in the app, and says how many --------------------------------------
+describe('status and removed rows (0.5.4)', () => {
+  const REMOVED_LINE = /^\u2026 (\d+) removed from the list \(Show removed in the nika app\)$/m;
+  const NOW = Date.now();
+  let n = 0;
+  /** A fresh state folder (the child's XDG_STATE_HOME) with the given session ids and folder keys removed; `file` writes the file as given instead. */
+  async function removed({ sessions = [], groups = [], file } = {}) {
+    n += 1;
+    const dir = path.join(fx.root, `state-rm-${n}`);
+    const extra = { XDG_STATE_HOME: dir };
+    if (file !== undefined) {
+      fs.mkdirSync(path.join(dir, 'nika'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'nika', HIDDEN_FILE), file);
+    }
+    for (const id of sessions) await hideSession(id, extra, { now: NOW - 1000 });
+    for (const key of groups) await hideGroup(key, extra, { now: NOW - 1000 });
+    return extra;
+  }
+  const rows = (snap) => snap.groups.flatMap((g) => g.agents.map((a) => a.id));
+  const json = async (extra) => JSON.parse((await run(['status', '--json', '--since', 'all'], extra)).stdout);
+
+  test('(+) a removed session is left out of --json and counted, per group and in total', async () => {
+    const base = await json();
+    assert.ok(rows(base).includes(SID.ended));
+    assert.equal(base.hidden, 0);
+    const snap = await json(await removed({ sessions: [SID.ended] }));
+    assert.ok(!rows(snap).includes(SID.ended));
+    assert.equal(snap.hidden, 1);
+    assert.equal(snap.groups.find((g) => g.label === 'repo').hidden, 1);
+  });
+
+  test('(+) the text view leaves the row out and prints one line: how many are removed and where to bring them back', async () => {
+    const base = await run(['status', '--since', 'all', '--ended']);
+    assert.match(base.stdout, /review-old/);
+    assert.doesNotMatch(base.stdout, REMOVED_LINE);
+    const r = await run(['status', '--since', 'all', '--ended'], await removed({ sessions: [SID.ended] }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /review-old/);
+    assert.equal(r.stdout.match(REMOVED_LINE)[1], '1');
+  });
+
+  test('(+) a removed folder that is not a project is left out as a whole', async () => {
+    const key = (await json()).groups.find((g) => g.label === 'plain').key;
+    const snap = await json(await removed({ groups: [key] }));
+    assert.deepEqual(snap.groups.map((g) => g.label), ['repo']);
+    assert.equal(snap.hidden, 1);
+  });
+
+  test('(+) a folder added to nika keeps its rows although the folder is removed (the child reads nika\'s project list: its config has env)', async () => {
+    // Claude records the real path of a folder; nika stores a project by its realpath, so the group's key is the project's key
+    const dir = path.join(fx.root, 'claude-rmproj');
+    const real = fs.realpathSync(fx.plain);
+    const file = path.join(dir, 'projects', '-rmproj', 'abababab-abab-4bab-8bab-abababababab.jsonl');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'user', cwd: real, timestamp: new Date(Date.UTC(2026, 10, 1)).toISOString() })}\n${JSON.stringify({ type: 'ai-title', aiTitle: 'Ended work' })}\n`);
+    const cfg = path.join(fx.root, 'nika-config-rm');
+    const added = await run(['projects', 'add', fx.plain], { NIKA_CONFIG_DIR: cfg });
+    assert.equal(added.code, 0, added.stderr);
+    const extra = { ...(await removed({ groups: [keyFor(real)] })), CLAUDE_CONFIG_DIR: dir };
+    const withProject = JSON.parse((await run(['status', '--json', '--since', 'all'], { ...extra, NIKA_CONFIG_DIR: cfg })).stdout);
+    assert.equal(withProject.groups.length, 1, 'the project keeps its group and its row');
+    assert.equal(withProject.hidden, 0);
+    const without = JSON.parse((await run(['status', '--json', '--since', 'all'], { ...extra, NIKA_CONFIG_DIR: path.join(fx.root, 'nika-config-rm-none') })).stdout);
+    assert.deepEqual(without.groups, [], 'the same folder, not a project: removed');
+    assert.equal(without.hidden, 1);
+  });
+
+  test('(\u2212) nothing removed: no line, and --json carries hidden 0', async () => {
+    const r = await run(['status', '--since', 'all', '--ended']);
+    assert.doesNotMatch(r.stdout, /removed from the list/);
+    assert.equal((await json()).hidden, 0);
+  });
+
+  test('(\u2212) a hidden.json that cannot be read hides nothing: every row, exit 0, one warning on stderr', async () => {
+    const r = await run(['status', '--since', 'all', '--ended'], await removed({ file: '{ not json' }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /review-old/);
+    assert.doesNotMatch(r.stdout, /removed from the list/);
+    assert.match(r.stderr, /hidden\.json is not valid JSON/);
+  });
+
+  test('(\u2212) a removed id nobody has changes nothing and counts nothing', async () => {
+    const snap = await json(await removed({ sessions: ['99999999-9999-4999-8999-999999999999'] }));
+    assert.equal(snap.hidden, 0);
+    assert.ok(rows(snap).includes(SID.ended));
+  });
+});
+
+describe('renderStatus: the removed line (0.5.4)', async () => {
+  const { renderStatus, addedTo } = await import('../src/cli.js');
+  const plainPaint = { busy: (s) => s, idle: (s) => s, other: (s) => s, ended: (s) => s, bold: (s) => s };
+  const snap = (extra) => ({ generatedAt: 0, since: '7d', sources: { registry: 'bad' }, skipped: { registry: 0 }, groups: [], ...extra });
+
+  test('(+) a count above zero adds the line after the folder lines and before the notes; one, singular and plural alike', () => {
+    const out = renderStatus(snap({ hidden: 3 }), { ended: false, full: false }, plainPaint);
+    assert.match(out, /^\u2026 3 removed from the list \(Show removed in the nika app\)$/m);
+    assert.ok(out.indexOf('removed from the list') < out.indexOf('note: registry'), 'before the notes');
+    assert.match(renderStatus(snap({ hidden: 1 }), { ended: false, full: false }, plainPaint), /^\u2026 1 removed from the list/m);
+  });
+
+  test('(+) with every row removed it still says "No agents" and then the line', () => {
+    const out = renderStatus(snap({ hidden: 2 }), { ended: false, full: false }, plainPaint);
+    assert.match(out, /^No agents in the last 7d\.$/m);
+    assert.match(out, /^\u2026 2 removed/m);
+  });
+
+  test('(\u2212) zero, a missing count and anything that is not a whole number print nothing', () => {
+    for (const hidden of [0, undefined, null, -1, 1.5, '3', NaN]) {
+      assert.doesNotMatch(renderStatus(snap({ hidden }), { ended: false, full: false }, plainPaint), /removed from the list/, String(hidden));
+    }
+  });
+
+  test('(\u2212) addedTo is the one in src/store.js (the collector and the CLI share it)', async () => {
+    const store = await import('../src/store.js');
+    assert.equal(addedTo, store.addedTo);
+  });
+});
+
+describe('renderStatus: the pane cell is <window>:<pane> (0.5.4, P1)', async () => {
+  const { renderStatus } = await import('../src/cli.js');
+  const plainPaint = { busy: (s) => s, idle: (s) => s, other: (s) => s, ended: (s) => s, bold: (s) => s };
+  const snap = (pane) => ({
+    generatedAt: 0, since: '24h', sources: {}, skipped: { registry: 0 },
+    groups: [{ label: 'acme-api', key: 'a'.repeat(16), root: '/work/acme-api', counts: { busy: 1, idle: 0, other: 0, ended: 0 },
+      agents: [{ live: true, state: 'busy', name: 'builder-1', modelLabel: 'Sonnet 5.5', worktree: null, gitBranch: 'master', pane, lastActivity: 0 }] }],
+  });
+  const row = (pane) => renderStatus(snap(pane), { ended: false, full: false }, plainPaint).split('\n').find((l) => l.includes('builder-1'));
+
+  test('(+) a valid window index is shown before the pane id, and the column keeps its width of 9 for every row', () => {
+    assert.match(row({ id: '%14', windowIndex: '1' }), / 1:%14 {5}\S/);
+    assert.match(row({ id: '%14', windowIndex: '42' }), / 42:%14 {4}\S/);
+    assert.match(row({ id: '%14', windowIndex: '999999' }), / 999999:%\u2026 \S/, 'six digits are accepted; the 9-wide cell cuts what does not fit');
+    assert.match(row({ id: '%14' }), / %14 {7}\S/, 'no window index: the pane id alone, in the same width');
+    assert.equal(row(null).length, row({ id: '%14', windowIndex: '1' }).length, 'no pane: an empty cell of the same width');
+    assert.equal(row({ id: '%14' }).length, row({ id: '%14', windowIndex: '1' }).length);
+  });
+
+  test('(\u2212) a window index that is not 1 to 6 digits is left out, whatever else the snapshot says', () => {
+    for (const windowIndex of ['x', '1;2', '1234567', '', '-1', '1\n2', ' 1', 1, null, undefined, {}, ['1']]) {
+      assert.match(row({ id: '%14', windowIndex }), / %14 {7}\S/, JSON.stringify(windowIndex));
+      assert.doesNotMatch(row({ id: '%14', windowIndex }), /:%14/, JSON.stringify(windowIndex));
+    }
+  });
+});
+
+// `nika status` is `collect({ exec: makeExec() })` then `renderStatus` (src/cli.js, the status command). The binary cannot be driven with a fake `ps` (the collector calls
+// /bin/ps by absolute path), so this runs the same two functions: the real collector over the fixture with an injected exec, then the real renderer on its snapshot.
+describe('nika status: the window index comes from the collector, end to end (0.5.4, P1)', async () => {
+  const { renderStatus } = await import('../src/cli.js');
+  const plainPaint = { busy: (s) => s, idle: (s) => s, other: (s) => s, ended: (s) => s, bold: (s) => s };
+  const DAY = 86_400_000;
+  const statusLine = async (index, name) => {
+    const tmuxLines = [`%5\twork\t${index}\t[%5] build-7-1\tzsh`, '%6\twork\t2\tidle-pane\tclaude', '%7\twork\t3\t[%7] lazygit pane\tlazygit'];
+    const { snapshot } = await collect({ config: fx.config, exec: fakeExec({ tmuxLines }), now: NOW, sinceMs: 7 * DAY });
+    return renderStatus(snapshot, { ended: false, full: false }, plainPaint).split('\n').find((l) => l.includes(name));
+  };
+
+  test('(+) the live agent\'s row reads <window>:<pane> for the index tmux printed', async () => {
+    const cells = async (index) => (await statusLine(index, 'build-7-1')).trim().split(/\s+/);
+    assert.ok((await cells('1')).includes('1:%5'), 'window 1');
+    assert.ok((await cells('12')).includes('12:%5'), 'window 12');
+    assert.equal((await statusLine('12', 'build-7-1')).length, (await statusLine('1', 'build-7-1')).length, 'the column keeps its width');
+  });
+
+  test('(\u2212) a malformed index falls back to the pane id alone, in the same column width', async () => {
+    const good = await statusLine('1', 'build-7-1');
+    for (const index of ['x', '1;2', '1234567', '', '-1', ' 1']) {
+      const line = await statusLine(index, 'build-7-1');
+      assert.ok(line.trim().split(/\s+/).includes('%5'), JSON.stringify(index));
+      assert.doesNotMatch(line, /:%5/, JSON.stringify(index));
+      assert.equal(line.length, good.length, JSON.stringify(index));
+    }
+  });
+});
+
+// 0.5.4 (AC, test 4): `nika status` passes no `typed`, so a live session in a claude pane without a nika role reads `none`, never `typed`. The binary is
+// driven for real: the registry names this test process (alive for the real ps), and NIKA_TMUX is a small script that lists one claude pane.
+describe('nika status: no typed compaction word (0.5.4, AC test 4)', () => {
+  test('(\u2212) a live session in a claude pane reads none with no point', async () => {
+    const dir = path.join(fx.root, 'claude-typed');
+    const sid = 'abababab-abab-4bab-8bab-abababababab';
+    const cwd = fs.realpathSync(fx.plain);
+    const write = (file, text) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, text);
+    };
+    write(path.join(dir, 'sessions', `${process.pid}.json`), JSON.stringify({
+      pid: process.pid, kind: 'interactive', version: '2.1.328', startedAt: NOW - 600_000, updatedAt: NOW - 1000, nameSource: 'derived', sessionId: sid, cwd, name: 'typed-check', status: 'idle', tmux: 'work:@2.%6',
+    }));
+    write(path.join(dir, 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'), `${sid}.jsonl`), [
+      { type: 'user', cwd, timestamp: new Date(NOW - 60_000).toISOString() },
+      { type: 'assistant', message: { model: 'claude-sonnet-5-5', usage: { input_tokens: 312000, output_tokens: 5 } }, timestamp: new Date(NOW - 30_000).toISOString() },
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n');
+    const fakeTmuxBin = path.join(fx.root, 'fake-tmux-typed');
+    write(fakeTmuxBin, "#!/bin/sh\nprintf '%%6\\twork\\t2\\tMacBook.local\\tclaude\\n'\n");
+    fs.chmodSync(fakeTmuxBin, 0o755);
+    const r = await run(['status', '--json', '--since', 'all'], { CLAUDE_CONFIG_DIR: dir, NIKA_TMUX: fakeTmuxBin });
+    assert.equal(r.code, 0, r.stderr);
+    const a = JSON.parse(r.stdout).groups.flatMap((g) => g.agents).find((x) => x.id === sid);
+    assert.equal(a.live, true, 'the session is live');
+    assert.equal(a.pane?.id, '%6', 'its pane is listed');
+    assert.deepEqual(a.context, { tokens: 312000, window: 400000, compactAt: null, pct: 78, compaction: 'none' });
   });
 });

@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import { checkDialogBody } from '../src/session-control.js';
 import { STEPS_MAX, TEXT_MAX } from '../src/dialog.js';
 import { dialogWorld, TAB } from './dialog-fake.js';
+import { span } from './helpers.js';
+import { width } from '../src/draft.js';
 
 const SIG = '0123456789abcdef';
 const PLAIN = { vim: false, plain: true }; // nika's memory of a pane whose input is not vim: it may type when it starts on the text row
@@ -607,7 +609,7 @@ describe('answerDialog: refusals before the first key (nothing is sent)', () => 
     }
   });
 
-  test('(−) a dialog nika cannot read exactly: a narrow pane, a survey, "Exit plan mode?", the auto-mode nudge, an unknown overlay: 409 dialog-changed', async () => {
+  test('(\u2212) a dialog nika cannot read exactly: a narrow pane, a survey, "Exit plan mode?", the auto-mode nudge, an unknown overlay: 409 dialog-unread (0.5.4, QP, O3; was dialog-changed)', async () => {
     const shapes = {
       narrow: (w) => { w.cols = 40; },
       survey: (w) => { const screen = w.screen; w.screen = () => { const s = screen(); return { ...s, rows: [[{ t: 'How is Claude doing this session? (optional)', s: {} }], ...s.rows] }; }; },
@@ -619,17 +621,17 @@ describe('answerDialog: refusals before the first key (nothing is sent)', () => 
       const w = dialogWorld();
       const sig = w.sig();
       make(w);
-      assert.deepEqual(code(await w.answer({ picks: [1], sig })), [409, 'dialog-changed'], name);
+      assert.deepEqual(code(await w.answer({ picks: [1], sig })), [409, 'dialog-unread'], name);
       assert.deepEqual(w.log, [], name);
     }
   });
 
-  test('(−) a capture without the pane width cannot be read exactly: 409 dialog-changed', async () => {
+  test('(\u2212) a capture without the pane width cannot be read exactly: 409 dialog-unread (0.5.4, QP, O3; was dialog-changed)', async () => {
     const w = dialogWorld();
     const sig = w.sig();
     const capture = w.mirror.capture;
     w.mirror.capture = async () => { const r = await capture(); return { status: 200, body: { ...r.body, cols: undefined } }; };
-    assert.deepEqual(code(await w.answer({ picks: [1], sig })), [409, 'dialog-changed']);
+    assert.deepEqual(code(await w.answer({ picks: [1], sig })), [409, 'dialog-unread']);
     assert.deepEqual(w.log, []);
   });
 
@@ -1280,10 +1282,10 @@ describe('answerDialog: moving to another step (0.5.1, D)', () => {
     assert.deepEqual([prompt.keysLog(), prompt.leaks()], [['Right'], []]);
   });
 
-  test('(−) the step becomes unreadable (a clipped option) between two Ups: 409 dialog-changed with sent 1, not a second Up', async () => {
+  test('(\u2212) the step becomes unreadable (a clipped option) between two Ups: 409 dialog-unread with sent 1, not a second Up (0.5.4, QP, O3; was dialog-changed)', async () => {
     const w = three({ focus: 5 });
     racing(w, (world) => { world.tabs[0].options[0].label = 'acme-api\u2026'; });
-    assert.deepEqual(await w.answer({ tab: 1 }), { status: 409, body: { error: 'dialog-changed', sent: 1 } });
+    assert.deepEqual(await w.answer({ tab: 1 }), { status: 409, body: { error: 'dialog-unread', sent: 1 } });
     assert.deepEqual(w.keysLog(), ['Up']);
   });
 
@@ -1423,5 +1425,662 @@ describe('answerDialog: moving to another step (0.5.1, D)', () => {
     moved(await w.answer({ tab: 1 }), 2);
     assert.deepEqual([w.tabs[0].text, w.keysLog()], ['kept words', ['Up', 'Right']]);
     safeMove(w);
+  });
+});
+
+// ---- 0.5.4, QP (O3): no false "The question changed" ----------------------------------------------------------------------------
+// After a key that answers a tab, Claude shows the next step. nika proves the step moved from the strip alone (the same headers, the answered mark of the tab it
+// answered, every other mark as before, the strip one step on), so a next step it cannot read (a preview step before 0.5.4's reader, a clipped option) is `next`, not
+// "The question changed". A dialog nika cannot read at all is 409 dialog-unread; dialog-changed means a readable other step.
+describe('O3 (0.5.4, QP): a step Claude draws next is proven by the strip, and a dialog nika cannot read is dialog-unread', () => {
+  const shot = (extra = {}) => dialogWorld({ tabs: [TAB.project, TAB.shape, TAB.size], ...extra }); // the screenshot's flow: a plain step, then two preview steps
+  const three = (extra = {}) => dialogWorld({ tabs: [TAB.project, TAB.mode, TAB.name], ...extra });
+
+  test('(+) the screenshot: an answer on a plain step whose next step is a preview step is 200 next after one key, not 409 dialog-changed', async () => {
+    const w = shot();
+    ok(await w.answer({ picks: [2] }), 'next', 1);
+    assert.deepEqual([w.i, w.phase], [1, 'ask']);
+    assert.deepEqual(w.keysLog(), ['text:2']);
+    safe(w);
+  });
+
+  test('(+) a next step nika cannot read (a clipped option) is `next` too: the strip proves the move', async () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.mode] });
+    w.onKey = (n, world) => { if (n === 1) world.tabs[1].options[0].label = 'fast\u2026'; };
+    ok(await w.answer({ picks: [1] }), 'next', 1);
+    assert.equal(w.read().unreadable, 'clipped', 'the step Claude moved to is not readable');
+    safe(w);
+  });
+
+  test('(+) a multi-select tab: Right to a step nika cannot read is `next`', async () => {
+    const w = dialogWorld({ tabs: [TAB.tools, TAB.shape] });
+    w.tabs[0].checked = [1];
+    w.tabs[0].answered = true;
+    ok(await w.answer({ picks: [1] }), 'next', 1);
+    assert.deepEqual(w.keysLog(), ['Right']);
+    assert.equal(w.i, 1);
+    safe(w);
+  });
+
+  test('(+) the last question lands on the Review: `review`, as before', async () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.mode], v328: true });
+    ok(await w.answer({ picks: [2] }), 'next', 1);
+    ok(await w.answer({ picks: [1] }), 'review', 1);
+    assert.equal(w.phase, 'review');
+    safe(w);
+  });
+
+  test('(\u2212) the strip proves only the tab that was answered: another header, another answered mark or a step two on is not `next` (409 dialog-changed, sent 1)', async () => {
+    const cases = {
+      'another header': (world) => { world.tabs[2].header = 'Other'; },
+      'an answered mark of another tab': (world) => { world.tabs[2].answered = true; },
+      'two steps on (the person pressed Right too)': (world) => { world.i = 2; },
+      'the answered tab is not marked': (world) => { world.tabs[0].answered = false; },
+    };
+    for (const [name, change] of Object.entries(cases)) {
+      const w = three();
+      w.onKey = (n, world) => { if (n === 1) change(world); };
+      const r = await w.answer({ picks: [1] });
+      assert.deepEqual([r.status, r.body.error, r.body.sent], [409, 'dialog-changed', 1], name);
+      assert.deepEqual(w.keysLog(), ['text:1'], `${name}: no second key`);
+    }
+  });
+
+  test('(\u2212) the key took but the screen is a dialog nika cannot read (no strip): 409 dialog-unread with sent 1, not dialog-changed', async () => {
+    const w = three();
+    w.onKey = (n, world) => { if (n === 1) world.phase = 'exit'; };
+    assert.deepEqual(await w.answer({ picks: [1] }), { status: 409, body: { error: 'dialog-unread', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['text:1']);
+  });
+
+  test('(\u2212) a dialog nika cannot read at the start of a request: 409 dialog-unread, nothing sent (a narrow pane, the auto-mode nudge, an unknown overlay)', async () => {
+    for (const make of [(w) => { w.cols = 40; }, (w) => { w.phase = 'nudge'; }, (w) => { w.phase = 'exit'; }]) {
+      const w = dialogWorld();
+      const sig = w.sig();
+      make(w);
+      assert.deepEqual(code(await w.answer({ picks: [1], sig })), [409, 'dialog-unread']);
+      assert.deepEqual(w.log, []);
+    }
+  });
+
+  test('(\u2212) the codes that stay: a stale sig is dialog-changed, a permission prompt after the key is no-dialog (and dialog-changed for a step move), nothing reaches the prompt', async () => {
+    const stale = three();
+    assert.deepEqual(code(await stale.answer({ picks: [1], sig: SIG })), [409, 'dialog-changed']);
+    const prompt = three();
+    prompt.onKey = (n, world) => { if (n === 1) world.phase = 'prompt'; };
+    const r = await prompt.answer({ picks: [1] });
+    assert.deepEqual([r.status, r.body.error, r.body.sent], [409, 'no-dialog', 1]);
+    assert.deepEqual(prompt.leaks(), [], 'the prompt received nothing');
+    const move = three();
+    move.onKey = (n, world) => { if (n === 1) world.phase = 'prompt'; };
+    assert.deepEqual(await move.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-changed', sent: 1 } });
+  });
+
+  test('(\u2212) moveTab: the dialog turns into one nika cannot read between the request\'s first look and its first round: 409 dialog-unread, no key; a closed dialog there is dialog-changed', async () => {
+    const x = three();
+    x.before = (n, world) => { if (n === 2) world.phase = 'exit'; }; // read 1 is the request's first look, read 2 the round's
+    assert.deepEqual(await x.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-unread' } });
+    assert.deepEqual(x.log, []);
+    const closed = three();
+    closed.before = (n, world) => { if (n === 2) { world.phase = 'idle'; world.result = 'closed in the terminal'; } };
+    assert.deepEqual(await closed.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-changed' } });
+    assert.deepEqual(closed.log, []);
+  });
+
+  test('(+) moveTab: a step it moved to that nika cannot read is still where it is going (the strip is all a move reads); the dialog that goes unreadable is dialog-unread with sent', async () => {
+    const w = shot();
+    assert.deepEqual((await w.answer({ tab: 1 })).body, { done: 'moved', sent: 1 });
+    assert.equal(w.i, 1);
+    const x = three();
+    x.onKey = (n, world) => { if (n === 1) world.phase = 'exit'; };
+    assert.deepEqual(await x.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-unread', sent: 1 } });
+    assert.deepEqual(x.keysLog(), ['Right']);
+  });
+});
+
+// ---- 0.5.4, QP: a question step with a preview (Claude Code 2.1.328): focus, answer, note, Chat, Decline, End and a step move (design-053-qp sections 5 to 7, 10.2) ----
+describe('a question step with a preview (0.5.4, QP): the route', () => {
+  const V = 'fedcba9876543210';
+  const pv = (o = {}) => dialogWorld({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1, mem: PLAIN, ...o });
+  const answerPv = (w, picks, extra = {}) => w.answer({ picks, view: w.view(), ...extra });
+  /** What may go out on a preview step: Down, Up, Enter, Right (a step move), Escape (a Decline only), `n` and a note as text. Never a digit, a paste, two things at once. */
+  function safePv(w, { escape = false } = {}) {
+    assert.deepEqual(w.leaks(), [], 'no key after the dialog closed');
+    for (const e of w.log.filter((x) => !x.failed)) {
+      assert.equal(e.paste, undefined, 'no paste');
+      assert.ok(!(e.keys && e.text !== undefined), 'one thing per request');
+      assert.ok(e.keys === undefined || e.keys.length === 1, 'one key per request');
+      for (const k of e.keys ?? []) {
+        assert.ok(['Down', 'Up', 'Enter', 'Right', 'Escape'].includes(k), `never ${k}`);
+        if (k === 'Escape') assert.ok(escape, 'Escape only for a Decline');
+      }
+      if (typeof e.text === 'string') assert.ok(!/^[1-9]$/.test(e.text), 'a digit is never sent on a preview step (it only moves the focus there)');
+    }
+  }
+
+  test('(+) shapes: the four bodies of a preview step are valid', () => {
+    for (const b of [{ sig: SIG, focus: 3 }, { sig: SIG, focus: 1 }, { sig: SIG, focus: 7 }, { sig: SIG, chat: true }, { sig: SIG, view: V, picks: [3] }, { sig: SIG, view: V, picks: [3], note: 'short note' }, { sig: SIG, view: V, picks: [1], note: 'a'.repeat(TEXT_MAX) }]) {
+      assert.equal(checkDialogBody(b), null, JSON.stringify(b));
+    }
+  });
+
+  test('(\u2212) shapes: a focus outside 1 to 7, chat that is not true, a view that is not 16 lowercase hex, two picks, a note with a leading digit, a control, an edge space or over 300 characters', () => {
+    const bad = [
+      { sig: SIG, focus: 0 }, { sig: SIG, focus: 8 }, { sig: SIG, focus: '2' }, { sig: SIG, focus: 1.5 }, { sig: SIG, focus: null }, { sig: SIG, focus: 2, view: V }, { sig: SIG, focus: 2, picks: [2] },
+      { sig: SIG, chat: false }, { sig: SIG, chat: 1 }, { sig: SIG, chat: 'true' }, { sig: SIG, chat: true, focus: 2 }, { sig: SIG, chat: true, picks: [1] },
+      { sig: SIG, view: 'xyz', picks: [1] }, { sig: SIG, view: V.toUpperCase(), picks: [1] }, { sig: SIG, view: `${V}0`, picks: [1] }, { sig: SIG, view: 5, picks: [1] }, { sig: SIG, view: V },
+      { sig: SIG, view: V, picks: [1, 2] }, { sig: SIG, view: V, picks: [] }, { sig: SIG, view: V, picks: [1], text: 'x' },
+      { sig: SIG, note: 'x', picks: [1] }, { sig: SIG, note: 'x', view: V }, { sig: SIG, view: V, picks: [1], note: '1 first' }, { sig: SIG, view: V, picks: [1], note: 'a\nb' },
+      { sig: SIG, view: V, picks: [1], note: ' a' }, { sig: SIG, view: V, picks: [1], note: 'a ' }, { sig: SIG, view: V, picks: [1], note: '' }, { sig: SIG, view: V, picks: [1], note: 'a'.repeat(TEXT_MAX + 1) },
+      { sig: SIG, view: V, picks: [1], note: 7 }, { sig: SIG, view: V, picks: [1], note: 'a\u202eb' }, { sig: SIG, view: V, picks: [1], extra: 1 }, { sig: SIG, focus: 2, extra: 1 },
+    ];
+    for (const b of bad) assert.equal(checkDialogBody(b)?.status, 400, JSON.stringify(b));
+  });
+
+  test('(\u2212) on a plain step the four new bodies are 400 invalid, nothing sent', async () => {
+    const w = dialogWorld();
+    for (const body of [{ focus: 2 }, { chat: true }, { view: V, picks: [1] }, { view: V, picks: [1], note: 'x' }]) assert.deepEqual(code(await w.answer(body)), [400, 'invalid'], JSON.stringify(body));
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(\u2212) on a preview step: picks without a view and text are 400 invalid, a pick beyond the options too; nothing sent', async () => {
+    const w = pv();
+    for (const body of [{ picks: [1] }, { picks: [], text: 'x' }, { picks: [1], text: 'x' }, { picks: [4], view: w.view() }, { focus: 4 }]) assert.deepEqual(code(await w.answer(body)), [400, 'invalid'], JSON.stringify(body));
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(\u2212) the notes field is open: 409 notes-open for every shape (a Decline and a step move too), nothing sent', async () => {
+    const w = pv();
+    w.tabs[1].noteOpen = true;
+    for (const body of [{ focus: 3 }, { picks: [1], view: w.view() }, { picks: [1], view: w.view(), note: 'x' }, { chat: true }, { cancel: true }, { tab: 2 }]) {
+      assert.deepEqual(code(await w.answer(body)), [409, 'notes-open'], JSON.stringify(body));
+    }
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(\u2212) the view of the page is not the screen\'s: 409 preview-changed, nothing sent (a preview row, the hidden count, the fallback, the focus or a note changed)', async () => {
+    const changes = [(w) => { w.tabs[1].preview.rows[0] = ['( oval )', 'x']; }, (w) => { w.tabs[1].preview.hidden = 3; }, (w) => { w.tabs[1].preview.fallback = true; },
+      (w) => { w.focus = 2; w.lastOption = 2; }, (w) => { w.tabs[1].note = 'typed in the terminal'; }];
+    for (const change of changes) {
+      const w = pv();
+      const view = w.view();
+      change(w);
+      assert.deepEqual(code(await w.answer({ picks: [1], view })), [409, 'preview-changed'], String(change));
+      assert.deepEqual(w.log, []);
+    }
+  });
+
+  test('(\u2212) bypass in a preview row, in the note on screen or in the body\'s note: 400 terminal-only, nothing sent; a Decline stays', async () => {
+    const row = pv();
+    row.tabs[1].preview.rows[0] = ['bypass permissions'];
+    for (const body of [{ picks: [1], view: row.view() }, { focus: 2 }, { chat: true }]) assert.deepEqual(code(await row.answer(body)), [400, 'terminal-only'], JSON.stringify(body));
+    assert.deepEqual(row.log, []);
+    const saved = pv();
+    saved.tabs[1].note = 'no bypass please';
+    assert.deepEqual(code(await answerPv(saved, [1])), [400, 'terminal-only']);
+    assert.deepEqual(saved.log, []);
+    const typed = pv();
+    assert.deepEqual(code(await answerPv(typed, [1], { note: 'bypass this' })), [400, 'terminal-only']);
+    assert.deepEqual(typed.log, []);
+    ok(await row.answer({ cancel: true }), 'declined', 1);
+    safePv(row, { escape: true });
+  });
+
+  test('(\u2212) a note when the step already shows one: 400 invalid, nothing sent; the answer without a note keeps the one on screen', async () => {
+    const w = pv();
+    w.tabs[1].note = 'saved earlier';
+    assert.deepEqual(code(await answerPv(w, [1], { note: 'x' })), [400, 'invalid']);
+    assert.deepEqual(w.log, []);
+    ok(await answerPv(w, [1]), 'next', 1);
+    assert.equal(w.tabs[1].note, 'saved earlier');
+    safePv(w);
+  });
+
+  test('(\u2212) a note on a pane not known plain, or known to be vim: 409 note-mode, nothing sent; an answer without a note goes out', async () => {
+    for (const mem of [{ vim: false, plain: false }, { vim: true, plain: false }, { vim: true, plain: true }]) {
+      const w = pv({ mem });
+      assert.deepEqual(code(await answerPv(w, [1], { note: 'round it' })), [409, 'note-mode'], JSON.stringify(mem));
+      assert.deepEqual(w.log, []);
+    }
+    const w = pv({ mem: { vim: true, plain: false } });
+    ok(await answerPv(w, [1]), 'next', 1);
+  });
+
+  test('(+) focus: Down twice from 1 to 3, Up twice from 3 to 1, one Up from Chat to the last option and two to the one before it', async () => {
+    const down = pv();
+    ok(await down.answer({ focus: 3 }), 'focused', 2);
+    assert.deepEqual([down.keysLog(), down.focus], [['Down', 'Down'], 3]);
+    const up = pv({ focus: 3, lastOption: 3 });
+    ok(await up.answer({ focus: 1 }), 'focused', 2);
+    assert.deepEqual([up.keysLog(), up.focus], [['Up', 'Up'], 1]);
+    const chat = pv({ focus: 'chat', lastOption: 3 });
+    ok(await chat.answer({ focus: 3 }), 'focused', 1);
+    assert.deepEqual([chat.keysLog(), chat.focus], [['Up'], 3]);
+    const chat2 = pv({ focus: 'chat', lastOption: 3 });
+    ok(await chat2.answer({ focus: 2 }), 'focused', 2);
+    assert.deepEqual([chat2.keysLog(), chat2.focus], [['Up', 'Up'], 2]);
+    for (const w of [down, up, chat, chat2]) { safePv(w); assert.equal(w.i, 1, 'nothing was answered'); }
+  });
+
+  test('(+) focus: already there is 200 focused with sent 0 and no key (never an Up at 1, never a Down at the last option)', async () => {
+    const one = pv();
+    assert.deepEqual(await one.answer({ focus: 1 }), { status: 200, body: { done: 'focused', sent: 0 } });
+    const last = pv({ focus: 3, lastOption: 3 });
+    assert.deepEqual(await last.answer({ focus: 3 }), { status: 200, body: { done: 'focused', sent: 0 } });
+    assert.deepEqual([one.log, last.log], [[], []]);
+  });
+
+  test('(\u2212) focus: the person moves it in the terminal between two keys: 409 dialog-focus with sent, no more keys; the person opens notes: notes-open with sent', async () => {
+    const moved = pv();
+    moved.before = (n, world) => { if (n === 4) { world.focus = 1; world.lastOption = 1; } }; // read, round 1, the settle read, then round 2's fresh read
+    assert.deepEqual(await moved.answer({ focus: 3 }), { status: 409, body: { error: 'dialog-focus', sent: 1 } });
+    assert.deepEqual(moved.keysLog(), ['Down']);
+    const open = pv();
+    open.before = (n, world) => { if (n === 4) world.tabs[1].noteOpen = true; };
+    assert.deepEqual(await open.answer({ focus: 3 }), { status: 409, body: { error: 'notes-open', sent: 1 } });
+    assert.deepEqual(open.keysLog(), ['Down']);
+  });
+
+  test('(\u2212) focus: a key that does not take is 409 not-taken (not repeated); a failed send passes its status through', async () => {
+    const lost = pv();
+    lost.drop = (b, n) => n === 1;
+    assert.deepEqual(await lost.answer({ focus: 2 }), { status: 409, body: { error: 'not-taken', sent: 1 } });
+    assert.deepEqual(lost.keysLog(), ['Down']);
+  });
+
+  test('(+) answer: Enter takes the pick that has the focus and goes to the next step; the last question goes to the review', async () => {
+    const w = pv({ focus: 2, lastOption: 2 });
+    ok(await answerPv(w, [2]), 'next', 1);
+    assert.deepEqual([w.keysLog(), w.tabs[1].picked, w.i], [['Enter'], 2, 2]);
+    ok(await answerPv(w, [1]), 'review', 1);
+    assert.equal(w.phase, 'review');
+    safePv(w);
+  });
+
+  test('(\u2212) answer: a pick that does not have the focus is 409 dialog-focus (nothing sent); with Chat focused too, even for the option Chat\'s pointer came from', async () => {
+    const w = pv({ focus: 2, lastOption: 2 });
+    assert.deepEqual(code(await answerPv(w, [1])), [409, 'dialog-focus']);
+    const chat = pv({ focus: 'chat', lastOption: 3 });
+    assert.deepEqual(code(await answerPv(chat, [3])), [409, 'dialog-focus'], 'Chat has a pointer and so has option 3: Enter would choose Chat');
+    assert.deepEqual([w.log, chat.log], [[], []]);
+  });
+
+  test('(\u2212) answer: the preview changes between the read and the Enter: 409 preview-changed with nothing sent (the check is on the screen right before the key)', async () => {
+    const w = pv();
+    w.before = (n, world) => { if (n === 2) world.tabs[1].preview.rows[0] = ['changed']; };
+    assert.deepEqual(code(await answerPv(w, [1])), [409, 'preview-changed']);
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(+) note: `n`, the note and Enter on a pane known plain: the note is typed in Claude\'s field and the step is answered', async () => {
+    const w = pv({ focus: 2, lastOption: 2 });
+    ok(await answerPv(w, [2], { note: 'make it round' }), 'next', 3);
+    assert.deepEqual(w.keysLog(), ['text:n', 'text:make it round', 'Enter']);
+    assert.deepEqual([w.tabs[1].note, w.tabs[1].picked, w.i], ['make it round', 2, 2]);
+    safePv(w);
+  });
+
+  test('(\u2212) note: `n` that does not take is 409 not-taken and the note is not typed; a note that reads back differently is 409 note-mismatch and no Enter goes out', async () => {
+    const lost = pv();
+    lost.drop = (b) => b.text === 'n';
+    assert.deepEqual(await answerPv(lost, [1], { note: 'round it' }), { status: 409, body: { error: 'not-taken', sent: 1 } });
+    assert.deepEqual(lost.keysLog(), ['text:n']);
+    const mangled = pv();
+    mangled.mangle = (t) => t.toUpperCase();
+    assert.deepEqual(await answerPv(mangled, [1], { note: 'round it' }), { status: 409, body: { error: 'note-mismatch', sent: 2 } });
+    assert.deepEqual(mangled.keysLog(), ['text:n', 'text:round it']);
+    assert.equal(mangled.tabs[1].noteOpen, true, 'the field stays open for the person (nika never sends Escape there)');
+    safePv(mangled);
+  });
+
+  test('(\u2212) note: the preview changes after the note was typed: 409 preview-changed with sent, no Enter', async () => {
+    const w = pv();
+    w.onKey = (n, world) => { if (n === 2) world.tabs[1].preview.hidden = 7; };
+    assert.deepEqual(await answerPv(w, [1], { note: 'round it' }), { status: 409, body: { error: 'preview-changed', sent: 2 } });
+    assert.deepEqual(w.keysLog(), ['text:n', 'text:round it']);
+  });
+
+  test('(\u2212) note: the field was opened in the terminal before `n` would go: 409 notes-open, the keys that went out are counted', async () => {
+    const w = pv();
+    w.before = (n, world) => { if (n === 2) world.tabs[1].noteOpen = true; }; // the first round's fresh read
+    assert.deepEqual(await answerPv(w, [1], { note: 'round it' }), { status: 409, body: { error: 'notes-open' } });
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(\u2212) note: after nika\'s own `n` the person closes the field or types into it in the terminal: 409 dialog-touched with sent 1, `n` is not pressed again, no text, no Enter', async () => {
+    for (const [name, change] of [['closes the field', (world) => { world.tabs[1].noteOpen = false; }], ['types into it', (world) => { world.tabs[1].noteText = 'x'; }]]) {
+      const w = pv();
+      w.before = (n, world) => { if (n === 4) change(world); }; // read, round 1, the settle read after `n`, round 2's fresh read
+      assert.deepEqual(await answerPv(w, [1], { note: 'round it' }), { status: 409, body: { error: 'dialog-touched', sent: 1 } }, name);
+      assert.deepEqual(w.keysLog(), ['text:n'], name);
+    }
+  });
+
+  test('(\u2212) note: the `n` takes but not as expected (text appears in the field at once, the focus moves, the preview changes): 409 not-taken with sent 1 and nothing typed after it', async () => {
+    const changes = [(world) => { world.tabs[1].noteText = 'x'; }, (world) => { world.focus = 2; world.lastOption = 2; }, (world) => { world.tabs[1].preview.rows[0] = ['changed']; }];
+    for (const change of changes) {
+      const w = pv();
+      w.tabs[1].preview.rows[1] = [...w.tabs[1].preview.rows[0]]; // two options with the same preview: only the focus tells the move
+      w.onKey = (n, world) => { if (n === 1) change(world); };
+      assert.deepEqual(await answerPv(w, [1], { note: 'round it' }), { status: 409, body: { error: 'not-taken', sent: 1 } }, String(change));
+      assert.deepEqual(w.keysLog(), ['text:n'], String(change));
+    }
+  });
+
+  test('(\u2212) note: the note is typed but the field is no longer open on the next read (closed in the terminal with the text kept): 409 note-mismatch with sent 2, no Enter', async () => {
+    const w = pv();
+    w.onKey = (n, world) => { if (n === 2) { world.tabs[1].noteOpen = false; world.tabs[1].note = 'round it'; } };
+    assert.deepEqual(await answerPv(w, [1], { note: 'round it' }), { status: 409, body: { error: 'note-mismatch', sent: 2 } });
+    assert.deepEqual(w.keysLog(), ['text:n', 'text:round it']);
+  });
+
+  test('(\u2212) focus, Chat and note: the dialog closes while a key is settling (a Decline in the terminal): the answer is the 409 of the lost dialog, never a thrown error, no more keys', async () => {
+    const cases = [[{ focus: 3 }, 1, ['Down']], [{ chat: true }, 1, ['Down']], [{ picks: [1], note: 'round it' }, 1, ['text:n']], [{ picks: [1], note: 'round it' }, 2, ['text:n', 'text:round it']]];
+    for (const [body, at, keys] of cases) {
+      const w = pv();
+      w.onKey = (n, world) => { if (n === at) world.phase = 'idle'; };
+      const r = await w.answer(body.picks ? { ...body, view: w.view() } : body);
+      assert.deepEqual([r.status, r.body.error, r.body.sent], [409, 'no-dialog', at], JSON.stringify(body));
+      assert.deepEqual(w.keysLog(), keys, JSON.stringify(body));
+    }
+  });
+
+  test('(+) Chat: Down to Chat, each proven, then Enter: the dialog is gone and the answer is 200 chat', async () => {
+    const w = pv();
+    ok(await w.answer({ chat: true }), 'chat', 4);
+    assert.deepEqual(w.keysLog(), ['Down', 'Down', 'Down', 'Enter']);
+    assert.deepEqual([w.phase, w.result], ['idle', 'chat']);
+    const at = pv({ focus: 'chat', lastOption: 3 });
+    ok(await at.answer({ chat: true }), 'chat', 1);
+    assert.deepEqual(at.keysLog(), ['Enter']);
+    safePv(w);
+    assert.deepEqual(w.leaks(), []);
+  });
+
+  test('(\u2212) Chat: Enter goes only after a fresh read shows the focus on Chat (a lost Down is not-taken, no Enter); an Enter that does not close the dialog is not-taken', async () => {
+    const lost = pv();
+    lost.drop = (b, n) => n === 3;
+    assert.deepEqual(await lost.answer({ chat: true }), { status: 409, body: { error: 'not-taken', sent: 3 } });
+    assert.deepEqual(lost.keysLog(), ['Down', 'Down', 'Down']);
+    const stays = pv({ focus: 'chat', lastOption: 3 });
+    stays.drop = (b) => b.keys?.[0] === 'Enter';
+    assert.deepEqual(await stays.answer({ chat: true }), { status: 409, body: { error: 'not-taken', sent: 1 } });
+  });
+
+  // QP round 1 (review N6): Chat's Enter counts as taken only when the dialog is gone, no prompt parses AND the screen is not unknown (an input box or a mode line is back)
+  test('(\u2212) Chat: after Enter the screen shows no dialog nika finds, no prompt and no input box (a dialog may still be drawn): 409 with sent 1, never 200 chat', async () => {
+    const w = pv({ focus: 'chat', lastOption: 3 });
+    w.onKey = (n, world) => {
+      world.screen = () => ({ rows: [[span('Some output that is no dialog and no prompt')], [], [span('and no input box either')]], cursor: { x: 0, y: 0, visible: true }, cols: world.cols });
+    };
+    const r = await w.answer({ chat: true });
+    assert.deepEqual(r, { status: 409, body: { error: 'dialog-unread', sent: 1 } });
+    assert.deepEqual(w.keysLog(), ['Enter']);
+    safePv(w);
+  });
+
+  test('(+) Decline: Escape closes the step when the notes field is closed (as on any step)', async () => {
+    const w = pv();
+    ok(await w.answer({ cancel: true }), 'declined', 1);
+    assert.deepEqual(w.keysLog(), ['Escape']);
+    safePv(w, { escape: true });
+  });
+
+  test('(+) End: with the notes field closed it declines as on any dialog; with the field open it is 409 notes-open and no Escape goes out', async () => {
+    const closed = pv();
+    assert.deepEqual(code(await closed.ctl.endSession('%2')), [409, 'not-idle']);
+    assert.deepEqual(closed.keysLog(), ['Escape']);
+    const open = pv();
+    open.tabs[1].noteOpen = true;
+    assert.deepEqual(code(await open.ctl.endSession('%2')), [409, 'notes-open']);
+    assert.deepEqual(open.log, []);
+  });
+
+  test('(+) moveTab: Right from an option row of a preview step; from Chat one Up first (the strip cannot see Chat\'s focus), then Right', async () => {
+    const a = pv();
+    assert.deepEqual((await a.answer({ tab: 2 })).body, { done: 'moved', sent: 1 });
+    assert.deepEqual([a.keysLog(), a.i], [['Right'], 2]);
+    const c = pv({ focus: 'chat', lastOption: 3 });
+    assert.deepEqual((await c.answer({ tab: 2 })).body, { done: 'moved', sent: 2 });
+    assert.deepEqual([c.keysLog(), c.i], [['Up', 'Right'], 2]);
+    for (const w of [a, c]) safePv(w);
+  });
+
+  test('(\u2212) moveTab: the notes field opens between two rounds: 409 notes-open with sent and no Up or Right after; a preview step that turns unreadable with Chat focused: dialog-unread and no Up', async () => {
+    const open = pv({ focus: 'chat', lastOption: 3 });
+    open.before = (n, world) => { if (n === 4) world.tabs[1].noteOpen = true; }; // read, round 1, the settle after its Up, round 2
+    assert.deepEqual(await open.answer({ tab: 2 }), { status: 409, body: { error: 'notes-open', sent: 1 } });
+    assert.deepEqual(open.keysLog(), ['Up']);
+    const unread = pv({ focus: 'chat', lastOption: 3 });
+    unread.before = (n, world) => { if (n === 2) world.tabs[1].options[0].label = 'Oval\u2026'; }; // clipped: the step is no longer read whole
+    assert.deepEqual(await unread.answer({ tab: 2 }), { status: 409, body: { error: 'dialog-unread' } });
+    assert.deepEqual(unread.log, []);
+  });
+});
+
+// ---- 0.5.4, QPF step 2 (F1a): the route through Claude 2.1.329/2.1.330's partial Review (`v330`: the new warning, no Ready row, the unanswered question left out) ----
+describe('answerDialog: the partial Review of Claude 2.1.329/2.1.330 (0.5.4, QPF, F1a)', () => {
+  const rowOf = (r) => r.map((s) => s.t).join('');
+  /** Four questions: the Tools question (a middle one) is left unanswered, and the last, single-select one is the current tab. */
+  const partial = (extra = {}) => dialogWorld({ v330: true, tabs: [{ ...TAB.project, answered: true, picked: 1 }, TAB.tools, { ...TAB.mode, answered: true, picked: 2 }, TAB.name], i: 3, ...extra });
+
+  test('(+) answer three of four with Next on the last: 200 review; then Submit answers: 200 submitted', async () => {
+    const w = partial();
+    ok(await w.answer({ picks: [1] }), 'review', 1);
+    assert.equal(w.phase, 'review');
+    assert.equal(w.read().warn, true, 'the page would get a readable partial Review');
+    assert.equal(w.read().pairs.length, 3);
+    ok(await w.answer({ submit: true }), 'submitted', 1);
+    assert.deepEqual(w.keysLog(), ['text:1', 'Enter']);
+    safe(w);
+  });
+
+  test('(\u2212) the same Review with a mangled warning row is unreadable: 409 dialog-unread, nothing sent', async () => {
+    const w = partial({ phase: 'review' });
+    const was = w.screen;
+    w.screen = () => {
+      const s = was();
+      return { ...s, rows: s.rows.map((r) => (rowOf(r) === '\u26a0 Some questions are unanswered' ? [{ ...r[0], t: '\u26a0 Some questions are unanswered.' }] : r)) };
+    };
+    assert.equal(w.read().unreadable, 'layout');
+    assert.deepEqual(await w.answer({ sig: SIG, submit: true }), { status: 409, body: { error: 'dialog-unread' } });
+    assert.deepEqual(w.log, []);
+  });
+});
+
+// ---- 0.5.4, QPF step 3 (F3): a plan whose prompt wraps is `wide`, never `cut` ----
+describe('a plan whose prompt wraps (0.5.4, QPF, F3)', () => {
+  test('(+) the fake plan at 85 columns (the prompt wrapped, the whole plan on screen) is unreadable/wide; a choice is 409 dialog-unread and nothing is sent', async () => {
+    const w = dialogWorld({ phase: 'plan', cols: 85 });
+    assert.deepEqual(w.read(), { unreadable: 'wide', kind: 'plan' });
+    assert.deepEqual(await w.answer({ sig: SIG, choice: 1 }), { status: 409, body: { error: 'dialog-unread' } });
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(\u2212) the same plan at 86 and 120 columns reads, and a choice goes through', async () => {
+    for (const cols of [86, 120]) {
+      const w = dialogWorld({ phase: 'plan', cols });
+      assert.equal(w.read().kind, 'plan', `${cols} columns`);
+      assert.equal(w.read().unreadable, undefined, `${cols} columns`);
+    }
+    const w = dialogWorld({ phase: 'plan', cols: 120 });
+    ok(await w.answer({ choice: 1 }), 'chosen', 1);
+  });
+
+  test('(+) F3b: a plan whose path row wraps the footer is unreadable/wide at any height', () => {
+    const w = dialogWorld({ phase: 'plan', cols: 106, planPath: `<plans>/${'demo-api-plan-'.repeat(10)}.md` });
+    assert.deepEqual(w.read(), { unreadable: 'wide', kind: 'plan' });
+  });
+});
+
+// ---- 0.5.4, QPF step 4 (F2): a note is typed only where Claude's open notes field fits the pane ----
+describe('a note on a narrow pane: 409 note-room (0.5.4, QPF, F2)', () => {
+  const pv = (o = {}) => dialogWorld({ tabs: [TAB.project, TAB.shape, TAB.size], i: 1, mem: PLAIN, ...o });
+  const pv52 = (o = {}) => pv({ cols: 52, pvX: 29, pvXOpen: 27, ...o });
+  const answerPv = (w, picks, extra = {}) => w.answer({ picks, view: w.view(), ...extra });
+  const NOTE = 'round it';
+
+  test('(+) 52 columns: the step reads closed and not open (the cut placeholder), so a note is 409 note-room before any key -- no `sent`, the read phase alone refuses (one capture)', async () => {
+    const w = pv52();
+    assert.equal(w.read().unreadable, undefined);
+    assert.equal(w.read().noteRoom, false);
+    w.tabs[1].noteOpen = true;
+    assert.equal(w.read().unreadable, 'wide', 'the open field is what LC-QPB saw: unreadable');
+    w.tabs[1].noteOpen = false;
+    assert.deepEqual(await answerPv(w, [1], { note: NOTE }), { status: 409, body: { error: 'note-room' } });
+    assert.deepEqual([w.log, w.keysLog(), w.captures], [[], [], 1], 'nothing typed, and refused on the first look');
+    assert.equal(w.tabs[1].noteOpen, false);
+  });
+
+  test('(+) the boundary on the route (X 34): at 67 columns the note goes through, at 66 it is 409 note-room with nothing sent', async () => {
+    const roomy = pv({ cols: 67 });
+    ok(await answerPv(roomy, [1], { note: NOTE }), 'next', 3);
+    assert.deepEqual([roomy.keysLog(), roomy.tabs[1].note], [['text:n', `text:${NOTE}`, 'Enter'], NOTE]);
+    const tight = pv({ cols: 66 });
+    assert.deepEqual(await answerPv(tight, [1], { note: NOTE }), { status: 409, body: { error: 'note-room' } });
+    assert.deepEqual(tight.log, []);
+  });
+
+  test('(+) the same note at 119 columns goes through: 200 next and the note arrived', async () => {
+    const w = pv({ cols: 119 });
+    ok(await answerPv(w, [1], { note: NOTE }), 'next', 3);
+    assert.equal(w.tabs[1].note, NOTE);
+  });
+
+  test('(+) the pane narrows from 119 to 66 columns between the read phase and the first round: 409 note-room, no key (the round checks again)', async () => {
+    const w = pv({ cols: 119 });
+    w.before = (n, world) => { if (n === 2) world.cols = 66; }; // read 1 is the request's first look, read 2 the first round's
+    assert.deepEqual(await answerPv(w, [1], { note: NOTE }), { status: 409, body: { error: 'note-room' } });
+    assert.deepEqual([w.log, w.captures], [[], 2], 'refused by the round, not by the read phase');
+  });
+
+  test('(\u2212) at 52 columns an answer with no note goes out (200 next), a Decline and a focus move too: the width is measured only for a note', async () => {
+    const pick = pv52();
+    ok(await answerPv(pick, [1]), 'next', 1);
+    assert.deepEqual(pick.keysLog(), ['Enter']);
+    const decline = pv52();
+    ok(await decline.answer({ cancel: true }), 'declined', 1);
+    const focus = pv52();
+    ok(await focus.answer({ focus: 2 }), 'focused', 1);
+  });
+
+  test('(\u2212) at 52 columns a note on a step that already shows a note is 400 invalid, as before (the width is never measured there)', async () => {
+    const w = pv52();
+    w.tabs[1].note = 'saved';
+    assert.deepEqual(code(await answerPv(w, [1], { note: NOTE })), [400, 'invalid']);
+    assert.deepEqual(w.log, []);
+  });
+
+  test('(\u2212) the older refusals keep their order at 52 columns: a stale view is preview-changed, a pane not known plain is note-mode, bypass is terminal-only (before note-room)', async () => {
+    const stale = pv52();
+    const view = stale.view();
+    stale.tabs[1].preview.rows[0] = ['( oval )', 'x'];
+    assert.deepEqual(code(await stale.answer({ picks: [1], view, note: NOTE })), [409, 'preview-changed']);
+    const mode = pv52({ mem: { vim: false, plain: false } });
+    assert.deepEqual(code(await answerPv(mode, [1], { note: NOTE })), [409, 'note-mode']);
+    const bypass = pv52();
+    assert.deepEqual(code(await answerPv(bypass, [1], { note: 'bypass this' })), [400, 'terminal-only']);
+  });
+});
+
+// ---- 0.5.4, QPF step 1: the fake world draws the shapes the QP live check (LC-QPB) showed. These tests pin the fake itself, so the later steps can trust it. ----
+describe('the fake world draws what the QP live check showed (0.5.4, QPF)', () => {
+  const rowOf = (r) => r.map((s) => s.t).join('');
+  const textsOf = (w) => w.screen().rows.map(rowOf);
+  const MID = '·';
+  const WARN_OLD = '⚠ You have not answered all questions';
+  const WARN_NEW = '⚠ Some questions are unanswered';
+  const READY = 'Ready to submit your answers?';
+  const four = (n) => [TAB.project, TAB.tools, TAB.mode, TAB.name].map((t, j) => ({ ...t, answered: j < n, picked: j < n && !t.multi ? 1 : null, checked: j < n && t.multi ? [1] : [] }));
+  const review = (o) => dialogWorld({ phase: 'review', tabs: four(3), ...o });
+
+  test('(+) v330: the Review has no Ready row and, with a question unanswered, the new warn row; the unanswered question is left out', () => {
+    const t = textsOf(review({ v330: true }));
+    assert.ok(t.includes(WARN_NEW), 'the 2.1.329/330 warn row');
+    assert.ok(!t.includes(WARN_OLD) && !t.includes(READY), 'neither the old warn text nor a Ready row');
+    assert.equal(t.filter((x) => x.startsWith(' ● ')).length, 3, 'three pairs for three answered questions');
+  });
+
+  test('(−) v330 with every question answered has no warn row; v328 alone keeps the old warn text; no option keeps the old text and the Ready row', () => {
+    const all = textsOf(review({ v330: true, tabs: four(4) }));
+    assert.ok(!all.includes(WARN_NEW) && !all.includes(WARN_OLD) && !all.includes(READY));
+    const v328 = textsOf(review({ v328: true }));
+    assert.ok(v328.includes(WARN_OLD) && !v328.includes(WARN_NEW) && !v328.includes(READY));
+    const plain = textsOf(review());
+    assert.ok(plain.includes(WARN_OLD) && plain.includes(READY));
+  });
+
+  const pv52 = (o = {}) => dialogWorld({ cols: 52, pvX: 29, pvXOpen: 27, tabs: [TAB.project, TAB.shape], i: 1, ...o });
+  const notesAt = (t) => t.findIndex((x) => /^ *Notes:/.test(x));
+
+  test('(+) 52 columns, closed: the box top and the Notes hint start at column 29, the hint wraps to the next row at column 36', () => {
+    const t = textsOf(pv52());
+    assert.equal(t.find((x) => x.includes('┌')).indexOf('┌'), 29);
+    const n = notesAt(t);
+    assert.equal(t[n], `${' '.repeat(29)}Notes: press n to add`);
+    assert.equal(t[n + 1], `${' '.repeat(36)}notes`);
+  });
+
+  test('(+) 52 columns, open and empty: everything moves to column 27 and Claude cuts the placeholder so the row is 52 cells wide and ends in an ellipsis', () => {
+    const w = pv52();
+    w.tabs[1].noteOpen = true;
+    const t = textsOf(w);
+    assert.equal(t.find((x) => x.includes('┌')).indexOf('┌'), 27);
+    const n = notesAt(t);
+    assert.equal(t[n], `${' '.repeat(27)}Notes: Add notes on this…`);
+    assert.equal(width(t[n]), 52);
+    assert.ok(!/^ *Notes:/.test(t[n + 1]) && t[n + 1].trim() === '', 'one row: the placeholder is cut, not wrapped');
+  });
+
+  test('(+) 119 columns (column 34), open and empty: the placeholder is whole and the row ends at column 66; text in an open field wraps at the pane width', () => {
+    const w = dialogWorld({ cols: 119, tabs: [TAB.project, TAB.shape], i: 1 });
+    w.tabs[1].noteOpen = true;
+    const t = textsOf(w);
+    assert.equal(t[notesAt(t)], `${' '.repeat(34)}Notes: Add notes on this design…`);
+    assert.equal(width(t[notesAt(t)]), 66);
+    w.tabs[1].noteText = words(30);
+    const t2 = textsOf(w);
+    const n = notesAt(t2);
+    assert.ok(t2[n + 1].startsWith(' '.repeat(41)) && t2[n + 1][41] !== ' ', 'the wrapped rest starts at column 41');
+    assert.ok(t2.slice(n, n + 3).every((x) => width(x) <= 118), 'wrapped at the pane width');
+  });
+
+  test('(−) without pvX the geometry is the old one: column 34, one Notes row at 120 columns, open or closed', () => {
+    const w = dialogWorld({ tabs: [TAB.project, TAB.shape], i: 1 });
+    const t = textsOf(w);
+    assert.equal(t.find((x) => x.includes('┌')).indexOf('┌'), 34);
+    assert.equal(t[notesAt(t)], `${' '.repeat(34)}Notes: press n to add notes`);
+    w.tabs[1].noteOpen = true;
+    assert.equal(textsOf(w).find((x) => x.includes('┌')).indexOf('┌'), 34);
+  });
+
+  const PROMPT = 'Claude has written up a plan and is ready to execute. Would you like to proceed?';
+  const planTexts = (o) => textsOf(dialogWorld({ phase: 'plan', ...o }));
+  /** The rows between the plan's closing plain rule and its first option: where the prompt is drawn. */
+  const promptRows = (t) => {
+    const first = t.findIndex((x) => /^ {3}[\u276f ] 1\. /.test(x));
+    const rule = t.findLastIndex((x, j) => j < first && /^ *\u2500+$/.test(x));
+    return t.slice(rule + 1, first).filter((x) => x.trim() !== '');
+  };
+
+  test('(+) a plan at 85 columns draws its prompt in two rows at indent 3 that join to the prompt; at 86 and 120 columns it is one row; at 40 columns three rows', () => {
+    const two = promptRows(planTexts({ cols: 85 }));
+    assert.equal(two.length, 2);
+    assert.ok(two.every((x) => /^ {3}\S/.test(x)) && two.every((x) => width(x) <= 84));
+    assert.equal(two.map((x) => x.trim()).join(' '), PROMPT);
+    for (const cols of [86, 120]) assert.deepEqual(promptRows(planTexts({ cols })), [`   ${PROMPT}`]);
+    const three = promptRows(planTexts({ cols: 40 }));
+    assert.equal(three.length, 3);
+    assert.equal(three.map((x) => x.trim()).join(' '), PROMPT);
+  });
+
+  test('(+) planPath: a long plan path goes on a second footer row at indent 3, cut at the pane width; the default path is one footer row', () => {
+    const long = `<plans>/${'demo-api-plan-'.repeat(10)}.md`;
+    const wide = planTexts({ cols: 106, planPath: long });
+    assert.equal(wide.at(-2), `   ctrl+g to edit in Vim ${MID}`);
+    assert.equal(width(wide.at(-1)), 106);
+    assert.ok(wide.at(-1).startsWith('   <plans>/demo-api-plan-'));
+    assert.equal(planTexts({ cols: 106 }).at(-1), `   ctrl+g to edit in Vim ${MID} <plans>/demo-api.md`);
+    assert.equal(planTexts({ cols: 106, planPath: '<plans>/demo-api.md' }).at(-1), `   ctrl+g to edit in Vim ${MID} <plans>/demo-api.md`);
   });
 });

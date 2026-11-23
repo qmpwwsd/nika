@@ -1100,3 +1100,71 @@ describe('attachments (0.5, W2: how long the session window keeps uploaded files
     assert.deepEqual((await loadConfig(env)).config.attachments, { keepDays: 20 });
   });
 });
+
+describe('fit (0.5.4, P2: the Fit mode setting)', () => {
+  const fileOf = (env) => { fs.mkdirSync(configDir(env), { recursive: true, mode: 0o700 }); return path.join(configDir(env), 'config.json'); };
+  const MODES = ['auto', 'fill', 'terminal', 'off'];
+
+  // M-1
+  test('(+) M-1: fit defaults to { mode: "auto" }, also for a config.json written before 0.5.3 and for one with only fit {}, with no warning', async () => {
+    const env = fresh('ft1');
+    assert.deepEqual(defaults().fit, { mode: 'auto' });
+    assert.deepEqual((await loadConfig(env)).config.fit, { mode: 'auto' });
+    for (const raw of [{ ui: { theme: 'dark' } }, { fit: {} }]) {
+      fs.writeFileSync(fileOf(env), JSON.stringify(raw));
+      const r = await loadConfig(env);
+      assert.deepEqual(r.config.fit, { mode: 'auto' }, JSON.stringify(raw));
+      assert.deepEqual(r.warnings, [], JSON.stringify(raw));
+    }
+  });
+
+  // M-2
+  test('(+) M-2: each of the four modes round-trips through updateSettings and loadConfig, is written to config.json, and survives an unrelated patch', async () => {
+    const env = fresh('ft2');
+    for (const mode of [...MODES, 'terminal', 'auto']) {
+      assert.deepEqual((await updateSettings({ fit: { mode } }, env)).fit, { mode }, mode);
+      const r = await loadConfig(env);
+      assert.deepEqual([r.config.fit, r.warnings], [{ mode }, []], mode);
+      assert.deepEqual(JSON.parse(fs.readFileSync(fileOf(env), 'utf8')).fit, { mode }, mode);
+    }
+    await updateSettings({ fit: { mode: 'fill' } }, env);
+    assert.deepEqual((await updateSettings({ permissionMode: 'plan' }, env)).fit, { mode: 'fill' }, 'an unrelated patch keeps the mode');
+    assert.equal((await loadConfig(env)).config.permissionMode, 'plan');
+    for (const mode of MODES) {
+      fs.writeFileSync(fileOf(env), JSON.stringify({ fit: { mode } }));
+      assert.deepEqual((await loadConfig(env)).config.fit, { mode }, `read from a hand-written file: ${mode}`);
+    }
+  });
+
+  // M-3
+  test('(\u2212) M-3: an unknown mode, a fit that is not an object and an unknown inner key in config.json fall back to auto / are dropped, each with a warning', async () => {
+    const env = fresh('ft3');
+    for (const bad of ['max', 'FILL', 'Fill', ' fill', 'fill ', '', null, 1, true, [], ['fill'], {}]) {
+      fs.writeFileSync(fileOf(env), JSON.stringify({ fit: { mode: bad } }));
+      const r = await loadConfig(env);
+      assert.deepEqual(r.config.fit, { mode: 'auto' }, JSON.stringify(bad));
+      assert.ok(r.warnings.some((x) => x.includes('fit.mode invalid')), JSON.stringify(bad));
+    }
+    for (const raw of ['auto', 'fill', 5, null, ['fill'], true]) {
+      fs.writeFileSync(fileOf(env), JSON.stringify({ fit: raw }));
+      const r = await loadConfig(env);
+      assert.deepEqual(r.config.fit, { mode: 'auto' }, JSON.stringify(raw));
+      assert.ok(r.warnings.some((x) => x.includes('fit invalid')), JSON.stringify(raw));
+    }
+    fs.writeFileSync(fileOf(env), JSON.stringify({ fit: { mode: 'terminal', extra: 'x' } }));
+    const r = await loadConfig(env);
+    assert.deepEqual(r.config.fit, { mode: 'terminal' }, 'the good key stays, the unknown one is dropped');
+    assert.ok(r.warnings.some((x) => x.includes('unknown key fit.extra')));
+  });
+
+  test('(\u2212) M-3b: updateSettings and saveConfig refuse an unknown mode, a non-string, an unknown inner key and a non-object; the saved mode stays', async () => {
+    const env = fresh('ft4');
+    await updateSettings({ fit: { mode: 'terminal' } }, env);
+    for (const patch of [
+      { fit: { mode: 'max' } }, { fit: { mode: 'FILL' } }, { fit: { mode: '' } }, { fit: { mode: null } }, { fit: { mode: 1 } }, { fit: { mode: ['off'] } },
+      { fit: { mode: 'fill', extra: 1 } }, { fit: { extra: 1 } }, { fit: 'fill' }, { fit: null }, { fit: [] },
+    ]) await assert.rejects(updateSettings(patch, env), { code: 'EINVAL' }, JSON.stringify(patch));
+    await assert.rejects(saveConfig({ ...defaults(), fit: { mode: 'max' } }, env), { code: 'EINVAL' });
+    assert.deepEqual((await loadConfig(env)).config.fit, { mode: 'terminal' });
+  });
+});

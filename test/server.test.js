@@ -163,7 +163,7 @@ describe('focus pane', () => {
 });
 
 describe('browser tier: /api/app is not mounted', () => {
-  const PATHS = ['/api/app', '/api/app/', '/api/app/me', '/api/app/projects', '/api/app/settings', '/api/app/spawn', '/api/app/pane/%256/keys', '/api/app/rules/apply', '/api/app/window',
+  const PATHS = ['/api/app', '/api/app/', '/api/app/me', '/api/app/projects', '/api/app/settings', '/api/app/spawn', '/api/app/pane/%256/keys', '/api/app/pane/%251/attachments', '/api/app/pane/%251/kept-draft', '/api/app/rules/apply', '/api/app/window',
     `/api/app/session/${SID.busy}/history`, `/api/app/session/${SID.busy}/subagents/aaa111/history`];
 
   test('(−) every /api/app path is 404 for GET, POST, PUT and DELETE, with or without an X-Nika-App header', async () => {
@@ -328,6 +328,45 @@ describe('context on the browser tier (0.4 O5, R3)', () => {
     const raw = JSON.stringify(list);
     assert.equal(/input_tokens|cache_read|cache_creation|output_tokens|"usage"/.test(raw), false);
     assert.equal(raw.includes('synthetic prompt'), false);
+  });
+});
+
+// 0.5.4 (AC, test 4): the word `typed` exists on the app tier only. The same live session, in a claude pane without a nika role, reads
+// `typed` through a server with the app handler mounted and `none` through the browser tier's server.
+describe('typed compaction word per tier (0.5.4, AC test 4)', () => {
+  const fx5 = makeFixture();
+  const servers = [];
+  const ports = {};
+  before(async () => {
+    const slug = (d) => d.replace(/[^A-Za-z0-9]/g, '-');
+    const line = `${JSON.stringify({ type: 'assistant', message: { model: 'claude-sonnet-5-5', usage: { input_tokens: 312000, output_tokens: 5 } } })}\n`;
+    // idle: live in a claude pane (%6); busy: live in a shell pane (%5); dead: an ended session
+    for (const [dir, id] of [[fx5.repo, SID.idle], [fx5.wt, SID.busy], [fx5.repo, SID.dead]]) fs.appendFileSync(path.join(fx5.claudeDir, 'projects', slug(dir), `${id}.jsonl`), line);
+    for (const [name, app] of [['app', async () => false], ['browser', null]]) {
+      const srv = createServer({ config: fx5.config, exec: fakeExec(), token: TOKEN, now: () => NOW, version: '0.2.0', app });
+      await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+      servers.push(srv);
+      ports[name] = srv.address().port;
+    }
+  });
+  after(async () => {
+    await Promise.all(servers.map((srv) => new Promise((r) => srv.close(r))));
+    cleanup(fx5);
+  });
+  const row = async (name, id) => {
+    const body = await (await fetch(`http://127.0.0.1:${ports[name]}/api/agents?since=7d`)).json();
+    return body.groups.flatMap((g) => g.agents).find((x) => x.id === id);
+  };
+
+  test('(+) the app tier\'s /api/agents row of a live session in a claude pane reads typed, with the point', async () => {
+    const a = await row('app', SID.idle);
+    assert.deepEqual(a.context, { tokens: 312000, window: 400000, compactAt: 320000, pct: 78, compaction: 'typed' });
+  });
+
+  test('(\u2212) the browser tier\'s row of the same session reads none with no point; a shell pane and an ended session read none on the app tier', async () => {
+    const a = await row('browser', SID.idle);
+    assert.deepEqual(a.context, { tokens: 312000, window: 400000, compactAt: null, pct: 78, compaction: 'none' });
+    for (const id of [SID.busy, SID.dead]) assert.deepEqual((await row('app', id)).context, { tokens: 312000, window: 400000, compactAt: null, pct: 78, compaction: 'none' }, id);
   });
 });
 

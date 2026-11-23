@@ -10,7 +10,7 @@ Id shapes come from `src/ids.js`:
 | Name | Shape |
 |---|---|
 | `UUID` | `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` |
-| `PANE_ID` | `^%\d{1,6}$` |
+| `PANE_ID` | `^%(?:0\|[1-9]\d{0,5})$` — canonical since 0.5.4 (SF): `%0` or no leading zero, because tmux reads a `%` target by number, so `%07` would be a second spelling of `%7`; checked at every boundary (API, CLI, collectors) |
 | `PROJECT_KEY` | `^[a-z0-9]{16}$` — first 16 hex chars of `sha256(realpath(project dir))` |
 | `AGENT_NAME` | `^[a-z0-9][a-z0-9-]{0,39}$` |
 | `MODEL_ID` | `^(?:claude-[a-z0-9-]{3,60}\|opus\|sonnet\|haiku\|fable\|best\|opusplan)(?:\[1m\])?$` (0.3; brackets are argv only, never a shell, and contain no `#`) |
@@ -49,7 +49,7 @@ missing; since 0.4 a tmux server that is not running is not an error for Start o
 a second after Start, Resume or spawn created it), `limit` 409 (maxAgents reached), `foreign` 409 (rules file not written by nika, apply without
 `overwriteForeign`), `refused` 409 (a write-safety check failed; `"code"` carries the fwrite/OS code such as `ESYMLINK`),
 and for session control (0.3) `not-idle`, `mode-unknown`, `mode-unchanged`, `not-in-cycle`, `busy-switching`, `no-prompt`,
-`prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores. Draft sync (0.5) adds `draft-unreadable`, `draft-changed`, `screen-changed` and `draft-mismatch`, all 409 (`PUT /api/app/pane/:id/draft`; the first, second and fourth also `POST /api/app/pane/:id/suggestion`). Sending while Claude works (0.5, W13) adds `cursor-not-at-end` and `clear-stopped` (`PUT /api/app/pane/:id/draft`) and `prompt-open` and `suggestion-shown` (`POST /api/app/pane/:id/submit`; that route also answers `not-idle`, `bypass-prompt`, `screen-unclear`, `input-unreadable`, `draft-changed` and `busy-switching`), all 409. The keys route with `send: true` (Send's own typing) answers `prompt-open` and `screen-unclear`, both 409, besides its `bypass-prompt`. Attachments (0.5, W2) add, on the upload and the file chooser, `empty` and `secret-file` 400, `too-big` 413 (more than 8 MiB decoded; the dispatcher's own `too_large` 413 is a body over the route's cap), `wrong-type` 415, `folder-unsafe`, `path-unusable` and `no-project` 409, `busy` 429, `storage-full` and `disk-full` 507 and `write-failed` 500; and, on `POST /api/app/pane/:id/attach-send`, `attachment-gone`, `path-unusable`, `not-idle`, `mode-unknown`, `input-unreadable`, `draft-unreadable`, `shell-mode`, `draft-changed`, `cursor-not-at-end`, `vim-normal`, `screen-changed`, `not-taken` and `busy-switching`, all 409, and `internal` 500. Scrolling (0.5, W3) adds `no-view`, `prompt-open`, `screen-unclear`, `menu-open` and `busy-switching`, all 409 (`POST /api/app/pane/:id/scroll`). The feedback survey (0.5, F14) adds `no-survey`, `survey-changed`, `text-mode` and `survey-undo`, all 409, and `terminal-only` 400 (`POST /api/app/pane/:id/survey`; `survey-undo` is also an answer of Stop, End, the commands, the draft route and the dialog route, see there).
+`prompt-changed`, `already-answered`, `input-not-empty`, `input-unreadable`, `not-at-prompt`, `bypass-prompt`, `screen-unclear`, all 409. The 0.3 codes are hyphenated, as the spec names them; the older codes keep their underscores. Draft sync (0.5) adds `draft-unreadable`, `draft-changed`, `screen-changed` and `draft-mismatch`, all 409 (`PUT /api/app/pane/:id/draft`; the first, second and fourth also `POST /api/app/pane/:id/suggestion`). Sending while Claude works (0.5, W13) adds `cursor-not-at-end` and `clear-stopped` (`PUT /api/app/pane/:id/draft`) and `prompt-open` and `suggestion-shown` (`POST /api/app/pane/:id/submit`; that route also answers `not-idle`, `bypass-prompt`, `screen-unclear`, `input-unreadable`, `draft-changed` and `busy-switching`), all 409. The keys route with `send: true` (Send's own typing) answers `prompt-open` and `screen-unclear`, both 409, besides its `bypass-prompt`. Attachments (0.5, W2) add, on the upload and the file chooser, `empty` and `secret-file` 400, `too-big` 413 (more than 8 MiB decoded; the dispatcher's own `too_large` 413 is a body over the route's cap), `wrong-type` 415, `folder-unsafe`, `path-unusable` and `no-project` 409, `busy` 429, `storage-full` and `disk-full` 507 and `write-failed` 500; and, on `POST /api/app/pane/:id/attach-send`, `attachment-gone`, `path-unusable`, `not-idle`, `mode-unknown`, `input-unreadable`, `draft-unreadable`, `shell-mode`, `draft-changed`, `cursor-not-at-end`, `vim-normal`, `screen-changed`, `not-taken` and `busy-switching`, all 409, and `internal` 500. Scrolling (0.5, W3) adds `no-view`, `prompt-open`, `screen-unclear`, `menu-open` and `busy-switching`, all 409 (`POST /api/app/pane/:id/scroll`). The feedback survey (0.5, F14) adds `no-survey`, `survey-changed`, `text-mode` and `survey-undo`, all 409, and `terminal-only` 400 (`POST /api/app/pane/:id/survey`; `survey-undo` is also an answer of Stop, End, the commands, the draft route and the dialog route, see there). 0.5.4 adds, at their routes: `tray-full` 409 to the upload and the file chooser (the attachment tray, AT), `no-project` 409 to `GET /api/app/pane/:id/attachments` and to `PUT` and `GET /api/app/pane/:id/kept-draft`, and `busy` 429 to the `PUT` of the kept-draft route (LT); `dialog-unread`, `notes-open`, `preview-changed`, `note-mode`, `note-room` and `note-mismatch`, all 409, to `POST /api/app/pane/:id/dialog` (question steps with a preview, QP and QPF; `dialog-unread` also replaces the false `dialog-changed` for any dialog nika cannot read, and `dialog-unread` and `notes-open` are also answers of the move to another step, and `notes-open` of End); `in-tmux` and `registered` 409, `index_unavailable` 503 and `write_failed` 500 to the remove and unhide routes (RM, see "Removed items"). The typed `/compact` (AC), the Fit mode (P2) and the spawn placement (P1) add no error code of their own; the typing stamp (AC) is not a code but a header, see `GET …/capture`.
 
 ## 3. Routes
 
@@ -108,7 +108,7 @@ unknown and the page keeps what it had) or
 ```json
 { "sessionId": "<UUID>", "state": "live" | "ended" | "gone", "name": "<clean(name)>" | null, "pane": "%3" | null }
 ```
-It is checked against the transcript index, not the 24 h window: `live` = the session runs (its `pane` is set when tmux shows it),
+It is checked against the transcript index, not the snapshot's window (7 days by default): `live` = the session runs (its `pane` is set when tmux shows it),
 `ended` = its transcript exists and it does not run (it can be resumed), `gone` = the id is saved but nika's index has no transcript
 for it, **or the session belongs to another project** (the same membership check as Start and the PUT: a hand-edited config cannot make
 the page show or open another project's session; `name` and `pane` are `null`). The picker's `project` carries the same field.
@@ -123,7 +123,7 @@ and nothing moves for a pick that is already the child's id, a host with no link
 Start and PUT never move it; the PUT with the child's id while the pick is the host id is an ordinary save. The browser tier never moves
 a pick.
 
-Cost: the page polls this route every 3 s, so the whole list is built from ONE snapshot (the cached 24 h one, shared with `/modes`;
+Cost: the page polls this route every 3 s, so the whole list is built from ONE snapshot (the cached one of the default 7-day window, shared with `/modes`;
 a live session is always in it) and at most ONE transcript-index walk per request, whatever the number of projects: the picks
 the snapshot does not hold are ended or gone, and `findSessions` settles all of them together (ids de-duplicated). It never runs a
 full collect per project. With no snapshot, or an index that cannot be read, the field is `null` for the picks that could not be
@@ -185,7 +185,15 @@ default `{ true, 80, 400000 }`. It is a group like the others: a one-key patch (
 A fraction, 19, 96, a string, an unknown window (`300000`, `"400000"`, `"auto"`) or a non-boolean `enabled` is `400 invalid` naming the field
 (`compaction.pct`, `compaction.window`, `compaction.enabled`); an unknown inner key is `400` too. It decides the launch environment of
 every claude nika starts from then on: the orchestrator (fresh or resumed) and spawned agents and sub-orchestrators (§8). Running
-sessions and sessions the user starts are untouched.
+sessions and sessions the user starts get no environment. Since 0.5.4 (AC) `enabled`, `pct` and `window` also decide when the app tier types `/compact`
+into a live session that waits past its compact point, whether nika started it or not (the capture route's `compacted`, below; ADR 0014, amendment
+2026-11-19); the browser tier and the CLI never type.
+
+**`fit` (0.5.4, P2)** — `{ "mode": "auto" | "fill" | "terminal" | "off" }`, default `{ "auto" }` (`FIT_MODES`): how a session window fits Claude's pane to its panel, for every
+project (§3 `PUT …/fit`, "Fit mode"). A group like the others (a one-key patch keeps the rest). Any other value, a non-string or an unknown inner key is `400 invalid` naming the
+field (`fit.mode`). A saved change reaches the running controller at once (`fit.setMode`, after the save succeeded; a refused save never gets there), and every open session window follows
+within its next request (5 s at most). A `config.json` with no `fit` reads as `auto` with no warning; an unknown value reads as `auto` with the warning `fit.mode invalid, default used`; a 0.5.1 or
+older nika drops the group (`unknown key fit dropped`), which is `auto`, the safe side. The browser tier reads nothing new.
 
 **`attachments` (0.5, W2)** — `{ "keepDays": integer 1–30 }`, default `{ 7 }`: how many days a file attached in the session window stays in
 nika's state folder (§6). A group like the others (a one-key patch keeps the rest). A fraction, 0, 31 or a string is `400 invalid` naming
@@ -239,6 +247,50 @@ projects (or Settings and a project page) cannot overwrite each other.
 `fsafe`, ≤ 50, sorted) in `configDir()/templates/`; `[]` when the folder is missing. Names only, never contents or
 paths. Users add templates by copying a file into that folder (`nika doctor` prints it).
 
+### Removed items (0.5.4, RM; `src/hidden-routes.js`, `src/hidden.js`; ADR 0022)
+The user can take a session or a detected folder out of nika's lists, and bring it back. It changes **nika's own list only**: no process is touched and nothing of Claude's is
+deleted (the sessions and their transcripts stay; `claude` itself still lists them). Five routes, all under the app guard (§2) and **never mounted on :3335**; every write body is
+exactly `{}` (anything else is `400 invalid`, `body must be {}`), a path segment is only a lookup key, and nothing in a request names a path, a label or a time. The error bodies carry fixed
+words. Writes are capped at `CAP.small`.
+
+| Route | `200` | Errors (nothing written) |
+|---|---|---|
+| `POST /api/app/session/:id/remove` (`:id` a `UUID`) | `{ "hidden": true, "dropped": 0 }` | `400 invalid` (body) · `404 not_found` (not a UUID, unknown to nika's index, or a host id: the id of a session that `hostId` folds into another row) · `409 in-tmux` (the row runs in a tmux pane nika sees, `This session runs in a tmux pane, so it stays in the list.`) · `503 index_unavailable` (the index could not be read) · `500 write_failed` |
+| `POST /api/app/session/:id/unhide` | `{ "hidden": false }` (also when nothing was stored, and for an id nika has no transcript for) | `400 invalid` · `404 not_found` (not a UUID) · `500 write_failed` |
+| `POST /api/app/groups/:key/remove` (`:key` a `PROJECT_KEY`) | `{ "hidden": true, "sessions": n, "dropped": 0 }` (`sessions`: the rows it takes out, without those in a pane; `0` for a key that was already stored and has no folder now) | `400 invalid` · `404 not_found` (not a key, no such folder, or the folder `(unknown)` that has no working folder) · `409 registered` (the folder, by key or by working folder, is a project added to nika: `This folder is a project in nika, so it stays in the list.`) · `503 index_unavailable` · `500 write_failed` |
+| `POST /api/app/groups/:key/unhide` | `{ "hidden": false }` | `400 invalid` · `404 not_found` (not a key) · `500 write_failed` |
+| `GET /api/app/hidden` | below | never `500` for a bad file (empty lists) |
+
+- The checks run in this order: body `400`, the id or key `404`, the lookup (`503` when the transcript index cannot be read: "no such session" would be a guess), the `409`, then the write.
+- **Session remove** finds the session through the unfiltered lookup (`findSession`) and refuses one that is live in a tmux pane (`409 in-tmux`): that one can be ended normally, so it always shows.
+- **Group remove** looks the key up in the app tier's eligibility snapshot, which holds the sessions of the last **7 days** (the default window, not 24 h). A folder whose sessions all ended
+  earlier is found by an **index-only walk** of every transcript (`findGroup`: no ps, tmux, registry or report read, so nothing is live), so a folder can be removed at any age. A key that is already stored is
+  stamped again (`at` is renewed), even when the index cannot be read. A folder that is a project added to nika can never be removed (`409 registered`).
+- `dropped` is the number of other entries the write removed (see below). **Show again** works for any id or key, also one nika no longer knows, so a stale entry never stays until it expires.
+- `GET /api/app/hidden` answers what is removed, newest first, at most 100 of each list (`more` counts the rest; no `404`, no `503`):
+```json
+{ "groups":   [ { "key": "<16 hex>", "label": "demo", "root": "<project folder>", "at": 1700000000000 } ],
+  "sessions": [ { "id": "<UUID>", "name": "builder-1", "project": "demo", "at": 1700000000000 } ],
+  "more": { "groups": 0, "sessions": 0 } }
+```
+  `label` (`clean`, 120) and `root` (`clean`, 300) come from the folder with that key in the unfiltered snapshot, else from **one** index-only walk for all the folders that snapshot misses
+  (`findGroups`; an index that fails after it found some folders keeps those), else `null`; `name` (`clean`, 80) and `project` (`clean`, 120) come from the transcript index, `null` when it cannot
+  read or does not know the id. `at` is the time of the removal in ms. The list is app tier only.
+
+**What a removal hides.** A **session** entry hides that session (and the row its host id folds into) from every list. A **folder** entry hides the rows of that folder that started at or before the
+removal (a session that starts later brings the folder back, with only the new rows), and only while the folder is not a project added to nika. A row that is **live in a tmux pane nika sees always
+shows**, whatever the entries say; every write drops the session entries that run in a pane. The snapshot leaves a hidden row out and counts it (`group.hidden`, `snapshot.hidden`, next section); a folder
+that is not a project and has no row left is dropped from the snapshot, and a project's group stays, empty.
+
+**Storage** (`src/hidden.js`; `docs/security.md`, the RM rows; §6): `<state>/hidden.json`, `{ "v": 1, "sessions": { "<UUID>": { "at": <ms> } }, "groups": { "<project key>": { "at": <ms> } } }` and nothing
+else (no name, no path), 0600 in a 0700 folder, written atomically through `src/fwrite.js` one write after the other. It is nika's own file, but any local process of the user can edit it, so it is read like
+every agent-writable file (through `src/fsafe.js`, 64 KiB at most, parsed strictly): an invalid entry is ignored and a bad file reads as empty, each with one warning on stderr, never a crash. An entry older than
+90 days is dropped, and the newest 500 of both lists together are kept. Reads never write. The server's snapshot cache (1.5 s) is keyed by a counter that every successful write of the process moves, so the
+refresh right after a Remove or an Undo is fresh (the browser tier, its own process, follows within the 1.5 s).
+
+**Which snapshot is filtered.** The list views are: `GET /api/agents` (both tiers), the app's status line and `nika status`. The app tier's eligibility snapshot (pane eligibility, the orchestrator and the saved-pick states,
+`paneKey`) and `findSession(s)` are **not** filtered, so a removed session that runs still has its pane, a saved orchestrator still reads as running, and the session page still opens.
+
 ### Dashboard snapshot additions (`GET /api/agents`, both tiers)
 Each group gains `"key": "<keyFor(repo root)>"` (16 hex, matches a registered project's key when the repo is
 registered). Each agent gains `"role": "orchestrator" | "sub-orchestrator" | "agent" | null` (from the pane's `@nika-role`, read with
@@ -273,22 +325,28 @@ report is its own, the host's id when it was taken from the host, `null` when th
 (see `orchestrator` above). The ids are compared for equality only (`^[A-Za-z0-9_-]{1,64}$`), never used as a path, argv element or text.
 
 0.4 adds the context size, on both tiers (C6), so the rows and the session header can show how full a session's context is:
-- `"context": { "tokens": n, "window": n | null, "compactAt": n | null, "pct": n | null, "compaction": "on" | "off" | "none" } | null`.
+- `"context": { "tokens": n, "window": n | null, "compactAt": n | null, "pct": n | null, "compaction": "on" | "off" | "typed" | "none" } | null`.
   Numbers and one state word; no transcript text and no model id. `null` when the transcript's last assistant entry carries no usable usage
   (see below).
 - `tokens`: `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` of the LAST assistant entry in the transcript's tail chunk
   (the same bounded head and tail read as everything else; an entry beyond the tail window is not read, and a head that is far behind the end
-  is never used). A missing or `null` field counts as 0 (the API types allow `null` for the cache counts). A usage with a present, non-null field that is not a whole number from 0 to 10,000,000, or a sum above it, gives
+  is never used; but see the compact boundary below). A missing or `null` field counts as 0 (the API types allow `null` for the cache counts). A usage with a present, non-null field that is not a whole number from 0 to 10,000,000, or a sum above it, gives
   `null`; so does a last assistant entry with no usage. A synthetic entry (model `<synthetic>`: an interrupt or an API error, usage all zeros)
   is skipped, not read.
+- Compact boundary (0.5.4, AC): a `system` entry with `subtype` `compact_boundary` that comes **after** the last assistant entry of the tail ends the
+  older reply's size: `tokens` is then its integer `compactMetadata.postTokens` (0 to 10,000,000, else `context` is `null`), and nothing else of that entry
+  is read. The model is the nearest earlier real assistant entry's, else the transcript's own. So a size taken before a compaction is never shown after it,
+  and a typed `/compact` (below) re-arms only after a real drop. The next assistant entry takes over again.
 - `window`: the compaction window in tokens. Auto-compact on: the window the launch uses (`src/compact.js`: the setting's window, cut to the
   model's own, or the model's own for `"model"`; so a 400k setting on a 1M-window model is `400000`). Off: the model's own window. A model id
   the catalog does not know counts as 200k. `null` (with `compactAt` and `pct`) when the entry names no model.
 - `pct`: `tokens / window x 100`, one decimal, not capped (over 100 is possible).
-- `compactAt`: the launch threshold in tokens (`compactLaunch(model, compaction).compactAt`), and only for a live session nika started
-  (its pane carries a nika `@nika-role`); `null` otherwise.
-- `compaction`: `"off"` when Settings has auto-compact off (every session); else `"on"` for a live session nika started, and `"none"` for any
-  other (a session nika did not start, or an ended one: nika's setting does not act on it, so its window is only a yardstick). An orchestrator
+- `compactAt`: the launch threshold in tokens (`compactLaunch(model, compaction).compactAt`), for a live session nika started (its pane carries a nika
+  `@nika-role`; `"on"`) and, since 0.5.4, for a session nika types into (`"typed"`); `null` otherwise.
+- `compaction`: `"off"` when Settings has auto-compact off (every session); else `"on"` for a live session nika started; `"typed"` (0.5.4, AC) for a live
+  session nika did not start **on the app tier**: its pane is listed by tmux, not dead, and runs claude (`CLAUDE_COMMAND`), so nika types `/compact` at `compactAt`
+  when the session waits past it; and `"none"` for any other (an ended session, a pane nika cannot type into, or any session on the browser tier and in
+  `nika status`, which never read `typed`: nika's setting does not act on it there, so its window is only a yardstick). An orchestrator
   nika adopted (O1) carries the tag but was started by the user, so it reads `"on"` until nika resumes it.
 - The setting comes from nika's own `config.json` through the validated `loadConfig`, on both tiers; the browser tier (:3335) therefore
   also shows these numbers. The page formats them and never computes a window, a per cent or a threshold.
@@ -336,6 +394,15 @@ depends on it, and it never reaches claude.
   documentation page); if they are not Claude's they still map, to harmless words. Lookup is by own property: `constructor` or `__proto__`
   is a name, not a table hit.
 - No new field carries a path or a transcript string; the values are the seven words, `sub-orchestrator`, a cleaned type name, or `null`.
+
+0.5.4 (RM) adds the removed counts, on both tiers: each group gains `"hidden": n` (its rows left out by the user's removals, §3 "Removed items") and the snapshot gains `"hidden": n` (all of them, those of
+dropped folders included). **Counts only**: no id, key or time of a removed item reaches :3335. A hidden row is in none of the `counts`. `nika status` prints one line when the total is above 0
+(`… N removed from the list (Show removed in the nika app)`).
+
+0.5.4 (P1) writes down the agent's `pane` object, which both tiers carry: `"pane": { "id": "%12", "session": "<clean(tmux session, 80)>", "windowIndex": "<digits>" | null, "title": "<clean(title, 200)>",
+"command": "<clean(command, 80)>" } | null` (`null` for a session with no pane). `windowIndex` (0.5.4) is the tmux window's index in its session, from `#{window_index}` of the same pane listing (§8): a string of 1 to 6
+digits (`WINDOW_INDEX`), else `null`. It is display only (`nika status` shows `<index>:<pane id>`, the app's row hint says `(window <index>)`) and never an argument to tmux. A page that gets no field, from an older server,
+reads it as `null`.
 
 ### `GET /api/app/plugins`
 `200 { "plugins": [ "<PLUGIN_NAME>", … ] }` — installed plugin names read from Claude Code's config dir (names only,
@@ -510,7 +577,7 @@ Checks, in this order; the first that fails answers:
 
 200: `{ "type": "png" | "jpeg" | "gif" | "webp", "data": "<standard base64>" }`. `data` is the server's own encoding of the decoded bytes (the transcript's string is never relayed, so
 unused bits of the last character or any other variation cannot pass through). `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, JSON. No refusal carries a byte, a type
-name or a path from the block. The reads take a slot of the history limiter (4 in flight) and the one long slot. The page turns the answer into a `data:` URL from a fixed MIME table
+name or a path from the block. The reads take three slots in one fixed order (0.5.4, SF): the image gate (one picture read waits at a time), then a slot of the history limiter (4 in flight, shared with the page reads), then the one long slot; a page read takes the limiter and, only for a window inside one long line, the long slot, never the gate, so queued pictures never hold up a page read and no wait can form a cycle. The page turns the answer into a `data:` URL from a fixed MIME table
 (png, jpeg, gif, webp) and a validated base64 string and sets it as an `<img>` source only; there is no `blob:` and no raw image route (an `<img>` cannot send the secret).
 
 ### `GET /api/app/pane/:id/attachments/:attId/image` (0.5.1, C)
@@ -622,10 +689,10 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
   pure function of the rows and the width, which the ETag already covers, so the ETag does not change.
 - `{ "state": "unreadable", "kind": "ask" | "plan" | null, "reason": "cut" | "clipped" | "wide" | "numbers" | "tab" | "layout" | "survey" }`:
   a dialog shape is on screen but is not read exactly (checked in that order, the first reason decides). `cut`: no top rule above the
-  strip, no strip, or a plan without its rules (the dialog is taller than the pane and Claude clipped its top: for a question the page may give the pane more rows, F16, see "A cut-off question" under `PUT …/fit`);
+  strip, no strip, or a plan whose opening or closing dashed rule is not on screen (the dialog is taller than the pane and Claude clipped its top: the page may give the pane more rows for a question, F16, and, since 0.5.4 (O2), for a plan too, see "A cut-off question" under `PUT …/fit`; a plan with both dashed rules on screen and no prompt row is `layout`, not `cut`, 0.5.4 QPF F3c);
   `clipped` (0.5, F16): a tab header, an option label (also a plan's), the question, or a review question or answer that ends in `…` (Claude shortened it to the pane's width; more rows never help, so the page never grows for it; before F16 this was `cut`);
   `wide`: a row as wide as the pane (Claude may have cut it), a
-  label that may have been word-wrapped, a wrapped footer, or fewer than 20 columns; `numbers`: option numbers not `1..k+2` without gaps,
+  label that may have been word-wrapped, a plan's wrapped footer, a plan's wrapped prompt row (0.5.4, QPF F3: `Claude has written up a plan and is ready to execute. Would you like to proceed?` wraps at 85 columns; such a plan is `wide` at any height, never `cut`, so the page never grows for it), or fewer than 20 columns. A question or review footer wrapped over two or three rows is **read** since 0.5.4 (QP, O1) when each row but the last is too full to take the next row's first word at the pane width (`wrapProven` in `src/dialog.js`), else it is `layout`; `numbers`: option numbers not `1..k+2` without gaps,
   or above 9; `tab`: not exactly one current tab (two marked, or none); `layout`: any other shape (a duplicate label, a header with `☐`,
   `☒` or `✔`, a footer that disagrees with the strip, a string over its maximum); `survey`: a feedback survey is on screen, or Claude's row `(Optional) Press [1] to tell us more` that it draws for a few seconds after a rating (0.5, M1: a digit typed for an option could reach that row's `1`, which opens `/feedback`). `Exit plan
   mode?` and the auto-mode nudge are `unreadable` with `kind: null` and `reason: "layout"`: nika recognises them so that every control
@@ -643,8 +710,13 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
     characters makes the whole step `unreadable` (`layout`), so `typed.text` is never cut.
   - `checked` and `typed` are display only. Neither is in the `sig` or in the step's identity, so `sig` does not change when an answer is
     given, changed or typed in the terminal; the ETag follows the rows as before.
+- **A question step with a preview** (0.5.4, QP; Claude Code 2.1.328, `claude-tui.md` §13.10): the same `ready` / `ask` / `question` state as above, with three more keys, `focus`, `preview` and `notes`. There is no text row: `other` is `false`, `typed` is `null`, and every `options[].description` is `null` (`checked` is the answered tick, as on any single-select question); Claude's unnumbered `Chat about this` row is not an option. A digit never answers such a step (it only moves Claude's focus), so the options are `1..k` with `k` at most 7.
+  - `focus`: the number of the option that has Claude's pointer, an integer `1..k`, or `"chat"` when the `Chat about this` row has it (Claude also keeps a pointer on one option row then; nika reads `chat`). The focus is not in the `sig`.
+  - `preview`: `{ "rows": [<string>], "hidden": <integer>, "fallback": <boolean>, "view": "<16 hex>" }`. `rows` are the lines of the preview box as Claude draws them (at most 120 rows of at most 200 characters, `clean()`ed, the end of each row trimmed and the spaces before it kept), `[]` when `fallback` is true. `hidden` is the number of lines Claude left out of the box (its `✂ … N lines hidden` divider, up to 99999; `0` when there is no divider; the divider itself is read, never shown). `fallback` is true when Claude drew its one-line fallback (`(can't show the full preview · compare the labels and descriptions instead)`) instead of a preview. `view` is the first 16 hex characters of sha256 over the `sig`, the focus, `rows`, `hidden`, `fallback` and the note text: the one thing an answer on this step must not outrun (`POST …/dialog` below). More than 120 preview rows, a row of more than 200 characters, a `hidden` count above 99999, more than 7 options or a row that is not the captured shape make the step `unreadable` (`layout`); nothing is cut.
+  - `notes`: `{ "text": null | <string, at most 300 characters>, "editing": <boolean> }`. `text` is `null` while the field is closed (`press n to add notes`), `""` while Claude's field is open and empty (`Add notes on this design…`), else the note Claude holds. `editing` is true while the field is open (the footer then also reads `ctrl+g to edit in <editor>`). A step whose footer carries `n to add notes` but not the up/down hint and `Tab to switch questions` as one set, or that has no strip with its Submit token, is `layout`.
+  - The `sig` of a preview step has its own marker, so it differs from a plain step's with the same question and labels, and it does not move with the focus, the preview rows or the note (the `view` does). Server-side only, never in the capture: `noteRoom`, whether Claude's open notes field would still end before the pane's last cell (`POST …/dialog`, `note-room`). `final` is true for a single tab (the answer ends the dialog), as for any single-select question.
 - `{ "state": "ready", "kind": "ask", "at": "review", "sig", "bypass", "tabs", "warn", "pairs": [ { "question", "answer" } ] }`: Claude's
-  review step (`warn` is its `You have not answered all questions` row; the review lists the answered questions only). Claude 2.1.326 draws a `│ ` bar in front of the rows of a long review question (and of none
+  review step (`warn` is its `You have not answered all questions` row, or, since 0.5.4 (QPF F1a), the row `⚠ Some questions are unanswered` that Claude Code 2.1.329 and 2.1.330 draw; the review lists the answered questions only. Since Claude Code 2.1.328 it has no `Ready to submit your answers?` row: nika reads the review from the `1. Submit answers` row at column 0, `claude-tui.md` §13.2). Claude 2.1.326 draws a `│ ` bar in front of the rows of a long review question (and of none
   else); nika reads it per question, and `question`, `answer` and `sig` are the same with or without it (`claude-tui.md` §13.2).
 - `{ "state": "ready", "kind": "plan", "at": "plan", "sig", "bypass", "options": [ { "n", "label", "text" } ] }`: the plan approval's
   choices; `text` marks the last option, Claude's free-text one (`Tell Claude what to change`, which nika never answers). The plan text is not
@@ -682,11 +754,38 @@ wrap rule in `claude-tui.md` §10); the page mirrors it into the message box (sp
 - The field is part of the ETag (it depends on the pane's vim memory, which the rows' hash does not cover). App tier only: `/api/agents` and the browser tier never carry it.
   Nothing of it is logged.
 
+0.5.4 field, the note of the typed `/compact` (AC; ADR 0014, amendment 2026-11-19; `src/autocompact.js`): `"compacted": null | { "state": "typed" | "compacted" | "stopped", "at": <ms>, "tokens": n }`,
+always present in the capture body of the app tier (`null` when there is no note), keys in that order, **no session id and no text**.
+- `typed`: nika typed `/compact` into the pane's session at `at` (the size `tokens` was at or past the compact point). `compacted`: that session's size has dropped
+  below the point since (the note of a `typed` one turns into this). Both belong to the session that was typed into, found by its id or its `hostId`: another session in
+  the pane (a `/clear`) shows none. `stopped`: nika gave up on the **pane** after 3 failed attempts (a total since the app started; a success never resets it) and types
+  nothing more into it until the app restarts; the pane's own note, whatever session is in it. The page draws each with its own icon, colour and words, from the numbers.
+- What decides it (the sweep runs on the app's 3 s status timer, at most one pane per tick; none of it is a request): the setting is on; the pane is an eligible pane
+  holding exactly one live session; the size is at or past `compactAt`; the registry has read `idle` at each of nika's ticks for at least 60 s with the size and the session
+  unchanged (a tick that does not observe the pane restarts the count); no user action named the pane for 60 s (below); a size below the point has been read since the
+  last typed `/compact` (the pane is *armed*); at least 10 minutes since the last attempt that sent a key; fewer than 3 failed attempts. A refusal before any key retries after
+  30 s; an attempt that sent a key counts as failed unless a turn started or the box no longer read `/compact` within about 2 s after the `Enter` (a box that still reads `/compact` gets nika's own text taken out with `C-u`; one nika cannot read after the `Enter` is not confirmed either). The typing is the Compact quick action's own (`/`, `compact`, `Enter` only when the box reads exactly `❯ /compact` and the screen is quiet; `claude-tui.md` §10),
+  inside the pane's control lock, without waiting for it, and nothing else is sent (at most 11 key requests per attempt, through the per-pane key limit). All of it is in memory:
+  an app restart arms every pane again and clears the failure count.
+- The note is part of the ETag (it changes without the screen changing). App tier only: `/api/agents`, the browser tier and the CLI never carry it.
+
+**Typing stamp (0.5.4, AC).** So that nika never types `/compact` over a user who is typing, a request that names the pane as typed in **stamps** it (in memory; it only delays the
+typing, and a holder of the app secret can send it). The stamp is set once the request's body check and pane check have passed, on arrival, before the controller, so a 409 or 429
+answer stamps too; a `400`, `413` or `415` body check, or a `404` pane check, stamps nothing. A stamp is forgotten only when a good tmux listing no longer lists the pane.
+- The request header `X-Nika-Typing: 1` on this route (exactly the string `1`; any other value is ignored) stamps the pane, also when the capture then fails. The session page sends it
+  once, on the first capture after an edit in its message box (some edits make no draft request at all; IME events count).
+- Sixteen routes stamp: `POST …/keys`, `POST …/mode`, `PUT …/draft`, `POST …/submit`, `POST …/scroll`, `POST …/attachments`, `POST …/attachments/pick`,
+  `DELETE …/attachments/:attId` (it is not eligibility-gated, so the pane may be gone; the stamp of an unlisted pane is dropped at the next refresh), `POST …/attach-send`,
+  `POST …/suggestion`, `POST …/dialog`, `POST …/survey`, `POST …/answer`, `POST …/command`, `POST …/end` and `POST …/stop`.
+- Not stamped: the fit routes (`PUT`/`DELETE …/fit`, the heartbeat), a capture without the header, `GET …/modes`, the chooser's poll, the image reads, the attachment list
+  (`GET …/attachments`) and the kept-draft routes (a save of the unsent text is not a keystroke to Claude).
+
 ### `GET /api/app/modes`
-`200 { "modes": { "%3": { "mode": "plan", "confirmed": true } } }` — one entry per eligible pane (same rule as
+`200 { "modes": { "%3": { "mode": "plan", "confirmed": true } }, "compacted": { "%3": { "state": "typed", "at": 1700000000000, "tokens": 330000 } } }` — one entry per eligible pane (same rule as
 capture), keyed by `PANE_ID`; `mode` and `confirmed` as capture's `mode` and `modeConfirmed` (the key stays
-`confirmed`). Reads go through the mirror's capture cache (100 ms per pane, one capture in flight per pane), at most 4
-captures at once; a pane whose capture fails is left out. The app-tier dashboard polls it every 3 s. This route is the
+`confirmed`). Since 0.5.4 (AC) the body also carries `compacted`: always an object, with an entry (the capture's note, above) only for an eligible pane that has one, so the dashboard can
+show the notes without a capture per pane. Reads go through the mirror's capture cache (100 ms per pane, one capture in flight per pane), at most 4
+captures at once; a pane whose capture fails is left out (of `modes`; its note is still listed). The app-tier dashboard polls it every 3 s. This route is the
 "app-tier snapshot" mode of spec §6.1: `/api/agents`, shared by both tiers, stays unchanged and gains no mode.
 
 ### `POST /api/app/pane/:id/keys` (body ≤ 20 KB)
@@ -786,7 +885,8 @@ the other control routes. Checks and steps, in this order (every step fails clos
    must be inside the envelope for the pane's width: 1024 characters, 12 newlines, 13 estimated rows (`claude-tui.md` §10.9), no
    run of 699 or more spaces and tabs; else `400 invalid` ("text does not fit the input box"). The page runs an exact twin of this
    envelope check (browser code cannot import `src/`; `test/draft-sync.test.js` asserts the twin answers like `src/draft.js`) before it
-   calls this route and never sends a text that fails it, so a text the page passes the server passes too.
+   calls this route and never sends a text that fails it, so a text the page passes the server passes too. A text that fails it stays in the page; since
+0.5.4 (LT) the page keeps it in the server's memory through `PUT /api/app/pane/:id/kept-draft` (below), never through this route.
 9. The screen already reads as `text` (spaces at line ends, tabs and no-break spaces compared as `claude-tui.md` §10 says) →
    `200 { draft, typed: 0 }`, nothing sent.
 10. Plan: **append** (the cursor is at the end, the new text starts with the old text, the mode (`❯` or `!`) agrees, and Claude is in
@@ -853,6 +953,67 @@ own `i` from an empty box, and one `BSpace` to leave `!` mode (`claude-tui.md` �
 
 Logging: nothing of the body or of a draft (no text, no `sig`, no `base`) goes to a log or the console; errors carry the pane id and
 the code only. The route exists on the app tier only.
+
+### `PUT` and `GET /api/app/pane/:id/kept-draft` (0.5.4, LT; PUT body ≤ 34 KB, `KEPT_CAP`)
+The message box's unsent text that the draft sync did not copy into Claude's input, kept for the session window so that it is back when the window opens
+again (ADR 0016, amendment 2026-11-20; `docs/security.md`, the LT rows). It is the text outside the sync's envelope (step 8 above: over 1024 characters,
+over 12 newlines or 13 rows, a long run of spaces), text the draft route refused with `400`, text that waits (no readable box, a paused sync, a held or
+failing write) and text the page itself put back. The text sits in the pane's tray in memory (the attachment store, AT above): **one text and its Shell
+flag per pane**, bound to the pane's project key and to the Claude in the pane like the tray's files (pid or session, so `/clear` and `/compact` keep it),
+and it goes when the tray goes (the session ends, another Claude or project claims the pane, an app restart, or the 65th tray forgets the oldest). App tier
+only (the browser tier answers `404`). **Memory only:** nothing of the text is written to disk, put in argv or env, served on :3335 or logged (a store
+error is logged as `nika: attachments: <code>` only, the `400` messages are fixed words that never echo the text), and **the server never types it**:
+neither route sends a key, and the text reaches Claude only when the user presses Send, through the draft, keys and submit routes and their limits.
+```json
+{ "text": "<at most 16 KB of UTF-8; \n and \t allowed, no other control character, well-formed; \"\" clears>", "shell": true }
+```
+`PUT` body: exactly the keys `text` and `shell` (a boolean: the box was in Shell mode). A non-empty `text` must be well-formed (no lone surrogate), at most
+16 KB of UTF-8 (`MAX_PASTE`, Send's paste limit) and hold no C0 control other than `\n` and `\t` (`\r` included), no DEL and no C1 control; the page
+removes `\r` and those controls first, as Send's paste would. Order:
+1. Body → `400 invalid`, before the pane check, with one of three fixed messages: `body must be { text, shell }`, `shell must be true or false`,
+   `text must be at most 16 KB without control characters other than newline and tab`. A body over 34 KB (16 KB of `"` or `\` doubles in JSON) is `413 too_large` and
+   another content type `415 unsupported_media`, both from the dispatcher.
+2. Ineligible pane (same rule as capture) → `404 not_found`.
+3. Rate: more than 8 saves a second on one pane (`KEPT_RATE`, its own bucket; the page saves 500 ms after the last change, one request at a time) → `429 busy`.
+4. The pane's repository key and Claude, from nika's own snapshot (never from the request). None, or two claims: a clear (`""`) of a pane that holds no text →
+   `200 { "kept": false }`, and anything else → `409 no-project` (`nika can't tell this session's project`), changing nothing.
+5. The store: a keep binds the tray first, as the upload does (a tray of another project or Claude is dropped, its unsent files deleted), then stores the text; a clear
+   removes it, and drops a tray of another project or Claude; a tray left with neither files nor text is deleted. A store error is logged as its code only and
+   answers `500 internal`.
+
+Success `200 { "kept": true }` when the text was stored, `200 { "kept": false }` for a clear (also of a pane with no tray) and when the store kept nothing. It is **not** a
+user's action: no typing stamp (it is not a keystroke to Claude; `GET …/capture`, "Typing stamp"), and it never touches Claude's pane.
+
+`GET` has no body and no rate limit (the page asks once per open, and again on a return from the back/forward cache). Order: pane `404`, then the claim as above.
+With no claim or two, a pane that holds no text answers `200 { "kept": null }` and one that holds text `409 no-project`, deleting nothing. Otherwise a tray of another
+project or Claude is dropped (files and text) and the answer is `{ "kept": null }`. The answer is rebuilt as exactly this shape, never passed through, and
+**returned unchanged** (no `clean()`: it would turn a zero-width joiner of an emoji sequence into a space):
+```json
+{ "kept": null }
+{ "kept": { "text": "…", "shell": false } }
+```
+A text that is not keepable, or a `shell` that is not a boolean, answers `{ "kept": null }`. A store error answers `500 internal`.
+
+**What the page does** (`public/draft-sync.js`, `public/session.js`): it writes the text one request at a time (`keepalive`), 500 ms after the last change and once
+more on `pagehide`; it clears the copy at once when its Send succeeds, when the sync shows the text in Claude's input, when the terminal's text is pulled or
+adopted, and when the box is emptied. A text over 16 KB is not kept: the page says so with its own line (`Not kept:`, the warning icon, `--danger` colours). When
+the window opens it asks `GET`, puts the text back only into an **empty box the user has not typed in** and never clears its box on an empty answer; a page back
+from the back/forward cache takes the server's copy when it differs, or keeps a box that still holds the copy this page saved. A put-back text is never copied into
+Claude's input by itself while Claude's input holds other text (nika never clears Claude's input to make room, owner decision 2026-11-14): only the user's next
+edit or Send does. A restore that ends on a `404` or an error does not clear the server's copy.
+
+**Known limits.**
+- A clear that never arrives (the page dies right after Send) brings the sent text back into the box once; two writes reordered at a leave can leave the older text;
+  a tray forgotten at the 64-tray cap or an app restart answers empty.
+- With two pages of the same pane, a returning page whose box holds text it never saved keeps its box, and its save replaces the other page's copy; nothing tells
+  the user.
+- While a capture re-try is pending (at most 3 per restore chain, about 2 s apart, then a fixed failure line; up to about 6 s in all), edits are held and a leave keeps
+  nothing; text typed in that window is kept only after one more edit, and typing in it can replace Claude's input text that the box does not show (a later release
+  may hold the push until the chain ends); a `GET` that hangs holds Send and Tab for up to 3 s per re-try, and Tab on a suggestion is refused with "nika is bringing back
+  the text you had not sent. Try again in a moment." for those seconds.
+- A save in flight across a Send whose clear fails can delete another page's copy with no line (nothing that was sent comes back).
+- Residual of the binding as for the attachments: a reused pane id with no tmux listing in between and no claim on one side can put old text into a new session's box;
+  the user sees it and must press Send.
 
 ### `POST /api/app/pane/:id/suggestion` (body ≤ 4 KB, `CAP.small`)
 Takes Claude's prompt suggestion into Claude's input box: the page's `Tab` (or `→`) in an empty message box that shows the
@@ -1016,9 +1177,10 @@ pane, nothing is executed on a refusal); then the controller (`src/fit.js`).
 
 **200 body**
 ```json
-{ "fit": { "state": "fitted", "reason": null, "pane": { "cols": 120, "rows": 39 }, "panes": 3, "userZoom": false } }
+{ "fit": { "state": "fitted", "reason": null, "pane": { "cols": 120, "rows": 39 }, "panes": 3, "userZoom": false, "mode": "auto" } }
 ```
-`pane` is the mirrored pane's size as tmux reports it (for `fitted` and `zoomed` the read-back after nika's change; for `terminal` the size in
+Since 0.5.4 (P2) every answer carries `mode`, the Fit mode in force (`auto` | `fill` | `terminal` | `off`, "Fit mode" below), and the mode `off` has one more answer, `{ "fit": { "state": "off", "reason": null, "mode": "off" } }`
+(no `pane`, `panes` or `userZoom`). `pane` is the mirrored pane's size as tmux reports it (for `fitted` and `zoomed` the read-back after nika's change; for `terminal` the size in
 the last listing of that request, the read-back after an acquire or the request's own listing at a beat: the terminal sizes the window, so it
 can change between requests, and the capture carries the live size; since F10 the page also reads it as the size nika's own resize is under way to, which starts its redraw hold), `panes` the number of panes in its tmux window, `userZoom` whether the
 user had the mirrored pane zoomed. `state` and `reason`:
@@ -1036,6 +1198,7 @@ user had the mirrored pane zoomed. `state` and `reason`:
 | `blocked` | `changed` | something nika read did not hold (a layout nika may not keep, a lease file over 16 KB, no active pane), or the read-back after its own change differed (a tmux hook fought back) | nothing, or everything put back |
 | `blocked` | `user-change` | the user changed the window (unzoomed, navigated, split, killed a pane, resized) after nika fitted it. A split or an exit of nika's own agent pane is not one (0.5, F2): it is a refit, see "When the server gives the window back by itself" | everything put back |
 | `other` | `null` | another session window of nika holds this tmux window and this request has `open: false` (with `open: true`, the page's Fit here, this window takes it over: row 6) | nothing |
+| `off` | `null` | (0.5.4, P2) the Fit mode is `off`: nothing is held in this mode, so nothing is asked of tmux | nothing; a lease this pane still holds (a request that was already running when the mode switched) is given back, with no note |
 
 `user-change` and `changed` (after a read-back mismatch) keep the window **off**: the answer to every later request with
 `open: false` is `blocked` with that reason and nothing is changed, until a request with `open: true` arrives (the session window
@@ -1069,6 +1232,28 @@ nothing. While a lease is `terminal`, a terminal resize is not a user change (th
 same size and focus takes no lock and makes no tmux call (it keeps the panel's `cols` and `rows`), and the lease turns back into `fitted` or `zoomed` after no
 terminal has shown the window for `GROW_MS` = 30 s, or at once when the page gets focus (the watch and the request, below). An unzoom, a focus change in
 tmux and a user's split or kill are still user changes; a change of the **session window's** focus is not.
+
+**Fit mode (0.5.4, P2; `docs/security.md`, the P2 rows; ADR 0017).** A global setting (`fit.mode`, §3 Settings) that the controller enforces. It never comes from the request (the body has no `mode`
+key, and a fourth key is still `400`): the app passes it at start (before `recover()`, which runs in every mode: it only gives back what an earlier run left), after a Settings save (`PUT /api/app/settings`,
+once the save succeeded) and on a fit `PUT` with `open: true` (a page load, or Fit again), which re-reads `config.json` first, after the `400`, `404` and `429` checks, so a hand-edited file is picked up; a hand
+edit with no save and no open window waits for the next app start. The page sends the same body at the same times in every mode.
+
+| | `auto` (default) | `fill` (Always fill the panel) | `terminal` (Your terminal's size) | `off` |
+|---|---|---|---|---|
+| Effective `focus` (what the rows below read) | the page's own | always `true` | always `false` | not read |
+| Counts as "a terminal shows the window" | `#{window_active_clients}` above 0 | as `auto` | always | not read |
+| Lease (memory, 0600 file, `@nika-fit` tag) | yes | yes | yes (tag; zoom only) | none |
+| `resize-window` | as before (F4, F9, F15) | to the panel whenever the window is held: a terminal's presence, a blur and F15's squeeze no longer stop it | **never**; a size nika set before the switch is given back within about 1 s | never |
+| Zoom (several panes, nobody zoomed) | yes | yes | yes | never |
+| Answers | the states above, `mode: "auto"` | `fitted`, `zoomed`, `blocked`, `other`, `mode: "fill"` | `terminal`, `blocked`, `other`, `mode: "terminal"` | `off`, `mode: "off"` |
+
+The decision table below is the `auto` one; in `fill` and `terminal` its rows read the effective `focus` and the "terminal shows" test of the column, and a lease keeps the page's own `focus` (leaving `fill` or `terminal`
+hands the decision back to the page at once). `blocked` and `other` are as in `auto`. In `off` the controller answers before the first row. The page's text scale (at most 1×, at least 0.4×) is the same in every mode, and the page's
+room (F10), hidden-rows (F11) and grow (F16) asks run only in `auto` and `fill`. **Changing the mode while leases are held:** to `off`: every lease is given back at once (queued like a release, with no mark and no note, so leaving
+`off` never leaves a window blocked), and each page gets `off` on its next request; `auto` or `fill` to `terminal`: memory only, the 1 s watch gives a resized lease back (or views an unresized one in the terminal form);
+to `fill`: the watch takes the size (counts toward the 12 per minute cap, "When the server gives the window back by itself"); to `auto`: the page's own focus decides again; from `off`: nothing is held, and the next request
+(5 s at most, `open: false`) acquires. A request that was already running when the mode switched resizes nothing in `off`, and a plan made under another mode is stale (nothing is resized; the lease goes on, and the watch or
+the next request decides again). `fit.mode` adds no tmux argv: the mode only picks among the moves above.
 
 **What the server decides**, in this order (the first row that matches ends the request):
 
@@ -1185,8 +1370,9 @@ read-back), so a lock is never held for two steps at once.
 | 15 s without a request for this pane (`LAPSE_MS`: the page is gone without a `DELETE`) | released (no mark); a lapsed lease is only released, never refitted, never waited for, never given a move (give or take) and (F4) never moved to or kept in the terminal form |
 | tmux answers that no server runs | every lease is dropped |
 
-**Refit (0.5, F2; owner decisions 2026-11-15).** nika's own spawn splits a pane into a fitted window (a CLI `nika spawn` from the
-orchestrator is another process, so the app's release before the split never runs for it), and an agent's pane closes when its claude
+**Refit (0.5, F2; owner decisions 2026-11-15).** A pane of nika's own spawn can join a fitted window (since 0.5.4 only through a race between the
+spawn's read and its split, or a forged listing: a spawn never picks a window with `@nika-fit`, §3 "Placement"; before 0.5.4 the app's spawn gave
+the window back first, and a CLI `nika spawn` never did), and an agent's pane closes when its claude
 ends: neither is the user's doing, so neither turns the fit off. The fit's listing (§8) has a 12th field, `#{@nika-role}`, and a pane
 counts as nika's own only when that is exactly `agent` or `sub-orchestrator` (`NIKA_PANES`; never `orchestrator`, never another text; a
 row with a tab in its role has 14 fields and is dropped, and a dropped row of the window makes the row count differ from
@@ -1314,7 +1500,7 @@ kept too).
 (an in-memory map, at most 64 windows, the oldest dropped first): a `PUT` with `open: false` in that time is the page's last
 heartbeat in flight, not a page that wants the window, and answers `blocked / user-change` with no tmux call and no mark (row 8). A
 `PUT` with `open: true` clears the note and any mark. Nothing is noted by a `DELETE` that held no lease (`released: false`) or
-failed (409, 502, 503), by `releaseWindow` (a spawn), by the watch (a refit included, 0.5 F2), by a lapse or by quit.
+failed (409, 502, 503), by the watch (a refit included, 0.5 F2), by a lapse or by quit.
 
 **What the page does with an answer** (`public/fit-ui.js`): 200 shows the chip for `state` and `reason` (spec §9.13) and nothing
 else; 403 stops the fit for good and hides the chip; `404`, `409`, `429`, `502`, `503`, any other status and a lost request change
@@ -1421,8 +1607,8 @@ above). Everything below is the page's behaviour, written here because it decide
   keys typed into the pane (the passthrough and the arrow keys, `…/keys`), the answers to a prompt or a dialog (a prompt or a dialog ends the hold at once), and Stop.
   **Every server gate is unchanged:** each request takes its own fresh capture under the same lock and refuses on the same rules as before; the page never sends anything on the
   strength of the held frame, and the wait only keeps the page from asking while nika's own resize has the screen half drawn.
-- **A cut-off question (0.5, F16; owner decision 2026-11-16, "Grow the pane", questions only 2026-11-17; the page: spec §9.13; ADR 0017 amendment; no server change).** Claude clips a question dialog that is taller than the pane
-  from the top, and the capture's `dialog` then says `unreadable` with `kind: "ask"` and `reason: "cut"` (above; a text ending in `…` is `clipped`, which rows never fix, and a plan approval is never grown for). While that holds and the
+- **A cut-off question (0.5, F16; owner decision 2026-11-16, "Grow the pane", questions only 2026-11-17; 0.5.4 adds a cut plan, O2, and a preview with hidden lines, QP; the page: spec §9.13; ADR 0017 amendment; no server change).** Claude clips a question dialog that is taller than the pane
+  from the top, and the capture's `dialog` then says `unreadable` with `kind: "ask"` and `reason: "cut"` (above; a text ending in `…` is `clipped`, which rows never fix). Since 0.5.4 the page grows for two more screens (`growWanted` in `public/fit-ui.js`; still no server change): a plan approval that is `unreadable` with `kind: "plan"` and `reason: "cut"` (O2: a plan clipped at the top; a plan that is `wide` or `layout` never grows, QPF F3), and a question step with a preview that Claude drew with lines left out (`ready`, `preview.hidden` above 0 and `preview.fallback` false; owner answer Q1 = A; the fallback has nothing to show, so it never asks). "Cut" below means any of the three. While that holds and the
   chip's state from the last answer is exactly `fitted` (also with a terminal on the window, F4), the page asks for more rows in the same body and ranges (40–400 × 10–200), through the planner's `size(cols, rows, { now: true })`
   (no 250 ms debounce):
   - *Rows.* `min(120, max(rows + 12, 2 × rows))` (`GROW_STEP_MIN` 12, `GROW_CAP` 120), counted from the size the fit asks without the grow (the last commit's `fillSize`, F11), columns unchanged. 120 is the reader's
@@ -1526,8 +1712,9 @@ Claude before Send, and exactly one route serves a stored file back (the image r
 ```json
 { "name": "notes.md", "data": "<standard base64>" }
 ```
-The body is exactly these two keys: `name` a string of at most 255 UTF-16 units (used only to pick the extension of a text file; it never
-reaches the disk, a log or an answer), `data` standard base64 (length a multiple of 4, alphabet `A-Za-z0-9+/`, at most two `=`). Anything
+The body is exactly these two keys: `name` a string of at most 255 UTF-16 units (used to pick the extension of a text file; it never
+reaches the disk or a log: since 0.5.4 (AT) its last part, through `clean()` and cut to 255 characters, is kept in memory as the chip's label and returned only by
+`GET …/attachments` below), `data` standard base64 (length a multiple of 4, alphabet `A-Za-z0-9+/`, at most two `=`). Anything
 else is `400 invalid`. A body over 12 MiB is `413 too_large` and a content type other than JSON `415 unsupported_media`, both from the
 dispatcher. Checks, in this order:
 1. Body shape → `400 invalid`; a `name` whose last part is `.env`, `.env.*`, `.envrc`, `.envrc.*`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ovpn`,
@@ -1538,35 +1725,70 @@ dispatcher. Checks, in this order:
 2. Ineligible pane (same rule as capture) → `404 not_found`.
 3. The pane's repository key, from nika's own snapshot (exactly one live agent claims the pane, else the key of a pane nika started; never
    from the request) → none, or two claims → `409 no-project` (`nika can't tell this session's project`).
-4. Admission: one save at a time (the chooser's reads count too) and at most 30 a minute for the whole server → `429 busy`.
-5. The decoded size: more than 8 MiB (`MAX_BYTES`) → `413 too-big`.
-6. The type, from the bytes (never the name or the page's file type): PNG, JPEG, GIF (87a or 89a), WebP, PDF, or strict UTF-8 text with no
+4. The pane's tray (0.5.4, AT) already holds 6 unsent files (a file whose copy is gone does not count) → `409 tray-full`. It is checked before the
+   rate slot, so a refusal uses none, and it applies to the chooser's saves too (below).
+5. Admission: one save at a time (the chooser's reads count too) and at most 30 a minute for the whole server → `429 busy`.
+6. The decoded size: more than 8 MiB (`MAX_BYTES`) → `413 too-big`.
+7. The type, from the bytes (never the name or the page's file type): PNG, JPEG, GIF (87a or 89a), WebP, PDF, or strict UTF-8 text with no
    C0 control other than tab, LF and CR and no DEL or C1 code point (stored as `text`). No bytes → `400 empty`; anything else →
    `415 wrong-type`.
-7. The folders: `<state>/attachments/` and `<key>/` are created 0700 and resolved; not real folders you own → `409 folder-unsafe`; no space
+8. The folders: `<state>/attachments/` and `<key>/` are created 0700 and resolved; not real folders you own → `409 folder-unsafe`; no space
    left → `507 disk-full`.
-8. The full path must match `^/[A-Za-z0-9._/+-]{1,200}$` (it will be pasted into Claude as one token) → else `409 path-unusable`.
-9. Pruning and the caps (§6): over 256 MiB or 500 files even after everything that may go has gone, or only files younger than 1 h left to
+9. The full path must match `^/[A-Za-z0-9._/+-]{1,200}$` (it will be pasted into Claude as one token) → else `409 path-unusable`.
+10. Pruning and the caps (§6): over 256 MiB or 500 files even after everything that may go has gone, or only files younger than 1 h left to
    evict → `507 storage-full`; the caps could not be checked → `507 disk-full`.
-10. The write (`writeAtomic`, 0600, the id 16 random hex): no space left → `507 disk-full`; any other failure → `500 write-failed`. An
+11. The write (`writeAtomic`, 0600, the id 16 random hex): no space left → `507 disk-full`; any other failure → `500 write-failed`. An
     exception anywhere in the store is logged as `nika: attachments: <code>` (never a path, name or id) and answered `500 write-failed`.
 
+The route also binds the pane's tray (0.5.4, AT) to this project and this Claude right before the file lands in it (`bindTray`): a tray of another
+project, or of a Claude with neither the same pid nor the same session in the pane (`/clear` keeps the pid, `/compact` keeps the session, so both keep it),
+is dropped first and its unsent files deleted.
+
 Success: `200 { "id": "<16 hex>", "type": "png" | "jpeg" | "gif" | "webp" | "pdf" | "text", "size": n }` (`size` in bytes). The id is the
-only handle: Send and Delete name a file by it, never by a path. The server remembers the ids it issued in memory only (the 500 newest);
-after the app restarts an old id is unknown (`attachment-gone` at the send, `removed: false` at the delete). Every answer is
+only handle: Send and Delete name a file by it, never by a path. The server remembers the ids it issued in memory only (the 500 newest), and, since
+0.5.4 (AT), one **tray** per pane: the ids of that pane's unsent files in the order stored, each with its label (the last part of the name through
+`clean()`, at most 255 characters), at most 6 per pane (`409 tray-full` above) and 64 trays (the 65th makes the oldest forgotten from memory only; its files
+wait for pruning). The tray is bound to the pane's project key and to the Claude in the pane; nothing of it is written to disk. After the app
+restarts an old id is unknown (`attachment-gone` at the send, `removed: false` at the delete) and the tray is gone, so the page lists nothing; the files wait
+for `attachments.keepDays`. Every answer is
 `{ error, message }` for a refusal, where `message` is the code in words and the page never shows it.
 
-The page allows 6 files of at most 8 MB per message and uploads one at a time; the server enforces the 6 only at the send.
+The page allows 6 files of at most 8 MB per message and uploads one at a time; the server enforces the 6 at the send and, since 0.5.4, at the upload
+(`409 tray-full`).
+
+### `GET /api/app/pane/:id/attachments` (0.5.4, AT)
+The pane's unsent attachments, for the session window when it opens or comes back from the back/forward cache, so the chips return after the
+page was left (ADR 0016, amendment 2026-11-20; `docs/security.md` residual item "A page that leaves"). App tier only (the browser tier answers `404`);
+no body, no rate limit (the page asks once per open), `no-store`, and **not a user's action**: no typing stamp. Order: pane, then the claim.
+1. An ineligible pane (same rule as capture) → `404 not_found`.
+2. The pane's repository key and Claude, from nika's own snapshot (never from the request). None, or two claims: a pane that has no tray
+   answers `200 { "files": [], "gone": [] }` (it can never have stored a file; a tray that holds only kept text, LT below, counts as none), and a pane that has one answers `409 no-project`
+   (`nika can't tell this session's project`), listing nothing and deleting nothing.
+3. A tray of another project, or of a Claude with neither the same pid nor the same session as the claim's, is dropped (its unsent files deleted) and the
+   answer is the empty one above. A tray whose only content is kept text (LT, below) lists empty and stays.
+4. Each item gets the send's file check (a record that is this pane's and unsent, and the file opened through `fsafe` and compared; no byte is read).
+   A file that fails it is marked **gone**: it keeps its place, is listed under `gone` again and again, and its record is deleted; it never counts toward the
+   6 and goes at the next save, remove or send on that pane.
+```json
+{ "files": [ { "id": "<16 hex>", "name": "notes.md", "type": "text", "size": 2048 } ], "gone": [ "old.png" ] }
+```
+The answer is rebuilt by the route as exactly this shape, never passed through: `id` 16 lowercase hex, `type` one of `png` · `jpeg` · `gif` · `webp` · `pdf` ·
+`text`, `size` an integer 1 to 8 MiB, `name` at most 255 characters, at most 6 entries of each list, and **never a path**; an entry that does not fit is
+left out. A store error is logged as its code only (`nika: attachments: <code>`) and answers `500 internal`. The page builds chips that are already
+`ready` from `files` (the label through `textContent`) and shows one note for `gone` ("Not restored:", its own colour tokens and icon). It asks once more
+after a failed read; add, choose and Send wait while it asks (about 8 s at most), and a `404` is left to the session window's own gone flow. The ids it gets
+back are the ones Send and Delete already take.
 
 ### `DELETE /api/app/pane/:id/attachments/:attId` (no body)
-Removes an unsent file now: the chip's ×, a closed window (`pagehide`, with `keepalive: true`; a `pagehide` with `persisted` exactly `true` sends nothing,
-because the page goes into the back/forward cache and comes back with its chips, for example after the "Open subagent transcript" link, which opens in the
-same window; a page that never returns leaves its files to the expiry), a chip removed while it uploaded. `id` must
+Removes an unsent file now: the chip's ×, or a chip removed while it uploaded. A page that leaves deletes nothing (0.5.4, AT: the chips come back
+when the session window opens again, `GET …/attachments` above); the files go when the user removes or sends them, when the session ends (the pane is gone
+from a successful tmux listing or is dead, or another project, or a Claude with neither the same pid nor the same session, claims the pane), and after
+`attachments.keepDays`. `id` must
 match `PANE_ID` and `attId` `^[0-9a-f]{16}$`, else `400 invalid` (`invalid pane or attachment id`; `DELETE …/attachments/pick` lands here too).
 It is **not** eligibility-gated (the pane may be gone and the file must still go). Answer `200 { "removed": true | false }`; `false` for an
 id that is unknown, belongs to another pane, was already sent, whose file is already gone, or whose removal was refused (a linked folder or a
 second link), all alike, so the route is no oracle. A store error is logged as its code and answers `200 { "removed": false }`. A file
-that was never removed is pruned after `attachments.keepDays`.
+that was never removed is pruned after `attachments.keepDays`. It stamps the pane (a user's action, 0.5.4, AC) on arrival, before the store runs; a stamp of a pane that is not listed is dropped at the next refresh.
 
 ### `POST /api/app/pane/:id/attach-send` (body ≤ 4 KB, `CAP.small`)
 Puts the stored files of a message into Claude's input and presses `Enter` (0.5, W2; ADR 0016, `docs/security.md` T38, T51, T54). It
@@ -1661,7 +1883,8 @@ never opened), one entry each, and a failed entry never stops the next one:
   refused by name before anything is opened) · `unreadable` (it could not be opened as a regular file you own with one link, with no
   following of a final symbolic link: a link, a folder, a FIFO, a hard-linked file, another owner's file, a file that is gone) · `too_large`
   (more than 8 MiB, decided from the size of the open file before any byte is read) · and the upload's codes `too-big`, `empty`,
-  `wrong-type`, `path-unusable`, `folder-unsafe`, `storage-full`, `disk-full`, `write-failed`, `busy` (another save was running, or 30
+  `wrong-type`, `path-unusable`, `folder-unsafe`, `tray-full` (0.5.4, AT: the pane's tray already holds 6 unsent files; the page never posts a `room` that is
+  too big, so only a second page of the same session can hit it), `storage-full`, `disk-full`, `write-failed`, `busy` (another save was running, or 30
   saves in the last minute). An unexpected failure while reading or storing is `write-failed`.
 - `name` is the last part of the path only, through `clean()` and at most 255 characters (`file` when nothing is left). **No answer, log or
   error ever holds a path, and nothing logs a name**; the store's own `nika: attachments: <code>` lines stay codes only.
@@ -1748,7 +1971,7 @@ Answers a permission prompt with a fresh parse (T26); "Esc = No" stays the keys 
 Answers Claude's question dialog (`AskUserQuestion`) or plan approval (`ExitPlanMode`), **one step per request**, or declines it (0.5, W1;
 ADR 0015, `docs/security.md` T37). The dialog is read from the screen only (the `dialog` field above); nika follows Claude's own tabs: the
 current question, then (for a form with several) the next one under a new `sig`, then Claude's review. Since 0.5.1 (D) the same route also
-moves Claude's dialog to another step without answering anything (`tab`, below), and an answered step can be answered again. Five body shapes,
+moves Claude's dialog to another step without answering anything (`tab`, below), and an answered step can be answered again. Since 0.5.4 (QP) it also takes three bodies for a question step with a preview (Claude Code 2.1.328, `claude-tui.md` §13.10). Eight body shapes,
 exact key sets (anything else is `400 invalid`, checked before the pane):
 ```json
 { "sig": "<16 hex>", "picks": [2], "text": "my own answer" }
@@ -1756,6 +1979,9 @@ exact key sets (anything else is `400 invalid`, checked before the pane):
 { "sig": "<16 hex>", "choice": 2 }
 { "sig": "<16 hex>", "cancel": true }
 { "sig": "<16 hex>", "tab": 1 }
+{ "sig": "<16 hex>", "focus": 2 }
+{ "sig": "<16 hex>", "view": "<16 hex>", "picks": [2], "note": "my note" }
+{ "sig": "<16 hex>", "chat": true }
 ```
 - `picks` (with `text` optional): the current question. 0 to 7 distinct integers 1 to 7. `text`: 1 to 300 UTF-16 units, well formed, no control,
   bidi, zero-width, line-separator or other format character (`\p{Cf}`), no leading combining mark, no space at either end, **and not
@@ -1763,7 +1989,8 @@ exact key sets (anything else is `400 invalid`, checked before the pane):
   shortcut on an empty text row (a live check found it typed as text). `submit: true` is the review's Submit. `choice` is an integer 1 to 9.
   `cancel: true` is Decline, for any step. `tab` (0.5.1, D) is an integer 0 to 8: the index of the step to move to, where the number of
   questions (`tabs.length`) is Claude's Review step. A body with `tab` moves, and does not answer; the rest of this section's answer rules
-  do not apply to it (see "Moving to another step" below). The `invalid` message for a body of any other shape names all five shapes.
+  do not apply to it (see "Moving to another step" below). The `invalid` message for a body of any other shape names all eight shapes. (The `{ sig, view, picks, note }` shape takes `note` optionally; `view` goes with `picks` alone, never with `text`.)
+- A question step **with a preview** (0.5.4, QP; the capture's `dialog` has `preview`, `notes` and `focus`): a digit never answers there (Claude's digits only move its pointer), so none of the shapes above that need one is used. `focus` (an integer 1 to 7, an option of the step) moves Claude's pointer to that option and answers nothing. `{ view, picks: [n], note? }` answers the option the pointer is on: `view` is the capture's `preview.view` (16 lowercase hex characters) and goes with exactly one pick; `note` (optional, only with `view`) follows the rules of `text` above (1 to 300 UTF-16 units, no control, format or bidi character, no leading combining mark, no space at either end, not starting with 1 to 9). `chat: true` presses Claude's `Chat about this` and closes Claude's questions (below). The step takes no `text` (it has no text row), and no other step takes `focus`, `chat`, `view` or `note`: `400 invalid`, after the read, with the message `focus, chat, view and note are for a step with a preview`; a `picks` without `view` on a preview step is `400 invalid` too (`a step with a preview takes { focus }, { picks, view, note? }, { chat } or a Decline`), and so is a `focus` that is not one of the options or a `note` when the step already shows one (`this step already shows a note`; Claude keeps it and the answer carries none).
 - Single-select: exactly one pick or one `text` (not both). Multi-select: at least one pick, or `text`; `text` only on the last tab. `picks`
   may not name a number beyond the options; `choice` must be a shown option and not the plan's free-text one; the shape must fit the step
   (`picks` the question, `submit` the review, `choice` the plan). These misfits are `400 invalid`, after the read.
@@ -1772,19 +1999,31 @@ exact key sets (anything else is `400 invalid`, checked before the pane):
 1. Body invalid → `400 invalid`. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane
    (waits up to 5 s) → 409 `busy-switching`.
 2. A fresh capture (never the cache); a failed capture → its own status and body.
-3. No dialog on screen → 409 `no-dialog`; a screen with no readable footer and no input box, where nika cannot read a dialog that may be open
-   (a wrapped footer, `Exit plan mode?`, the auto-mode nudge) → 409 `dialog-changed`.
-4. The dialog is `unreadable`, the body's shape does not fit its step, or the `sig` differs from the body's → 409 `dialog-changed`.
-5. The same `sig` was answered on this pane in the last 3 s → 409 `already-answered`.
-6. The step mentions bypass, or `text` does (any spelling, NFKC), and this is not a Decline → `400 terminal-only`.
-7. The body does not fit the step (the misfits above) → `400 invalid`.
+3. No dialog on screen and no sign of one → 409 `no-dialog`. A screen with no readable footer and no input box that may hold a dialog nika cannot read
+   (`Exit plan mode?`, the auto-mode nudge, an unknown overlay), or a dialog that is `unreadable` (a clipped option, a narrow pane, a cut step) → 409
+   `dialog-unread` (0.5.4, QP, O3; before, both were a false `dialog-changed`, which now means only that the screen shows another readable step).
+4. The body's shape does not fit the step's kind (`picks`, `focus` or `chat` need a question step, `submit` the review, `choice` a plan; `cancel` fits any) or
+   the `sig` differs from the body's → 409 `dialog-changed`.
+5. (0.5.4, QP) A preview-step rule of the list above broken (`focus`, `chat`, `view` or `note` on another step; `picks` without `view` on a preview step) → `400 invalid`.
+6. Claude's notes field is open on the step (the capture's `notes.editing`: the footer reads `ctrl+g to edit in`) → 409 `notes-open`, a Decline included: nothing
+   is sent, because what `Escape` does inside the field was never seen.
+7. The body's `view` differs from the step's view as read now → 409 `preview-changed` (the preview rows, the hidden count, the focus or the note changed after
+   the page looked).
+8. The body has a `note` and the pane is not known to be plain, vim is known for it or INSERT shows → 409 `note-mode` (the text row's two roads to a vim pane
+   do not exist in the notes field).
+9. The same `sig` was answered on this pane in the last 3 s → 409 `already-answered`.
+10. The step (a preview row and the note included) mentions bypass, or `text` or `note` does (any spelling, NFKC), and this is not a Decline → `400 terminal-only`.
+11. The body does not fit the step (the misfits above) → `400 invalid`.
+12. A `note` on a step that already shows a note → `400 invalid` (above). A `note` when Claude's open notes field would not fit the pane's width (its `Notes:`
+    column plus 32 cells must stay under the width; the reader's own `noteRoom`, 0.5.4 QPF F2) → 409 `note-room`, nothing typed.
 
 **Steps** (at most 24 rounds, a backstop that no consistent screen reaches). Each round: a fresh capture whose identity (the parsed step) must
-equal the request's, else nothing more is sent (409 `no-dialog` | `dialog-changed`, `400 terminal-only`); the screen the last key was proven on
-must not have changed in the terminal since (focus → 409 `dialog-focus`; a box, the text or the INSERT marker → 409 `dialog-touched`); the
+equal the request's, else nothing more is sent (409 `no-dialog` | `dialog-unread` | `dialog-changed`, `400 terminal-only`); the screen the last key was proven on
+must not have changed in the terminal since (focus → 409 `dialog-focus`; a box, the text, the INSERT marker or a preview step's note → 409 `dialog-touched`; Claude's notes
+field open in the terminal, not opened by nika's own `n` → 409 `notes-open`); the
 one key the screen calls for; a Stop or End interrupt running, or its `Escape` sent less than 40 ms ago → 409 `not-idle`; one
 `keys.send` (a failure → its status and body); then a settle of up to 4 captures 150 ms apart for the state that key should leave (no match →
-409 `not-taken`, or `no-dialog` | `dialog-changed` when the last read shows that, or `text-mismatch` for typed text that does not read back).
+409 `not-taken`, or `no-dialog` | `dialog-unread` | `dialog-changed` when the last read shows that, or `text-mismatch` for typed text that does not read back).
 
 | Step | The key the screen calls for | Refused (409, nothing more sent) |
 |---|---|---|
@@ -1795,15 +2034,21 @@ one key the screen calls for; a Stop or End interrupt running, or its `Escape` s
 | review, `submit` | `Enter`, only with the focus on `1. Submit answers` | `dialog-focus` |
 | plan, `choice` | the digit as text, with the focus not on the free-text option | `dialog-touched` (feedback typed in the free-text option); `dialog-focus` |
 | `cancel` | `Escape`; in vim INSERT the first only leaves INSERT, and a second goes after 40 ms only once a fresh read shows INSERT gone | `dialog-focus` after two |
+| preview step, `focus` | no key when Claude's pointer is already on the option (`200 { "done": "focused" }`); else `Down` or `Up`, one per round, toward the option (from `Chat about this`: `Up`, which lands on the last option); each is proven by the next read (same step, pointer on the next option); a budget of the distance in keys (from Chat: `k − focus + 1`) | `dialog-focus` (budget used up, or the pointer was moved in the terminal); `not-taken` |
+| preview step, `{ view, picks: [n] }` | `Enter`, only with the pointer on option `n` (not on Chat) and the step's view equal to the request's `view`, compared again right before the key; it is proven by the strip alone (`moved`, as for any answer) | `dialog-focus` (the pointer is not on `n`, or is on Chat; nothing is moved for an answer: the page sends `focus` first); `preview-changed` |
+| preview step, with `note` | `n` as literal text (opens Claude's notes field; proven by a read that shows the field open and empty, the same focus and the same preview rows), the note as one `send-keys -l` (proven by a read-back of the whole note with the focus unmoved), then `Enter` once the step's view equals the view nika computed for the step with this note typed. A note nika did not open itself is `notes-open` | `note-room`; `dialog-touched` (a note is already shown); `note-mismatch` (the note does not read back); `preview-changed`; `dialog-focus` |
+| preview step, `chat` | `Down` until the pointer is on `Chat about this` (at most `k − focus + 1` keys), then `Enter` once; proven when no dialog, no permission prompt and no unknown screen is left | `dialog-focus`; `not-taken` |
 
 Free text is typed only when INSERT shows, on a pane nika knows is plain (a probe `i` landed as text, the draft route), or when nika's own
 `Down` just brought the focus onto the row and no INSERT came and vim is not known for the pane (vim enters INSERT on that row at once; plain
 mode and vim NORMAL draw the same screen, so a request that starts on the row with no INSERT is `text-mode`).
 
-**Answers.** `200 { "done": "next" | "review" | "submitted" | "chosen" | "declined", "sent": <keys> }`: `next` (another tab is current),
-`review` (Claude shows its review), `submitted` (a final question or the review), `chosen` (a plan choice), `declined`. Errors: `400`
-`invalid`, `terminal-only`; `404 not_found`; `409` `busy-switching`, `no-dialog`, `dialog-changed`, `already-answered`, `dialog-touched`,
-`dialog-focus`, `text-mode`, `text-mismatch`, `not-taken`, `not-idle`; `429` and `5xx` from `keys.send` or the capture. **Every non-200
+**Answers.** `200 { "done": "next" | "review" | "submitted" | "chosen" | "declined" | "focused" | "chat", "sent": <keys> }`: `next` (another tab is current),
+`review` (Claude shows its review), `submitted` (a final question or the review), `chosen` (a plan choice), `declined`, and since 0.5.4 (QP) `focused` (a `focus` request: Claude's
+pointer is on the option, `sent` may be 0) and `chat` (a `chat` request: Claude's questions are closed, which nika proves by the dialog being gone). A `focus` request holds nothing;
+the 3 s `already-answered` hold of a `sig` starts with every other verdict, `chat` included. Errors: `400`
+`invalid`, `terminal-only`; `404 not_found`; `409` `busy-switching`, `no-dialog`, `dialog-unread`, `dialog-changed`, `already-answered`, `dialog-touched`,
+`dialog-focus`, `text-mode`, `text-mismatch`, `not-taken`, `not-idle`, and (0.5.4, preview steps) `notes-open`, `preview-changed`, `note-mode`, `note-room`, `note-mismatch`; `429` and `5xx` from `keys.send` or the capture. **Every non-200
 after the first key carries `sent`** (the keys already pressed). Nothing is undone: nika never types to clean up (a half-toggled multi
 question, a moved focus and typed text stay as they are; the same request again resumes, the xor fixes the boxes).
 
@@ -1817,8 +2062,9 @@ Other text in the row is `dialog-touched` for a `text` request, and on a **multi
 same text (the page sends the typed text in every multi-select answer for this reason). The 3-second `already-answered` hold of a `sig`
 is forgotten when a move succeeds, so a step the user went back to can be answered at once.
 
-**Never sent by an answer:** `Up`, `Left`, `Tab`, `BTab`, `Space`, `C-c`, `C-u`, `C-d`; a digit while the text row has the focus; anything on `Chat about
-this`; `Enter` except as listed; any key after the dialog closed; any key toward another tab (moving is its own body, next section). The
+**Never sent by an answer:** `Left`, `Tab`, `BTab`, `Space`, `C-c`, `C-u`, `C-d`; `Up` (except by a `focus` request on a preview step, and by a move to another step, below); a digit while the text row has the
+focus, and a digit as a key on a preview step (a note may hold digits, but never starts with one); anything on `Chat about this` except the `Down`s and the one `Enter` of a `chat` request on a preview step (and a `Chat about this` on any other step is never
+answered); the letter `n`, except as the first key of a preview step's `note`; `Enter` except as listed; any key after the dialog closed; any key toward another tab (moving is its own body, next section). The
 named-key allow-list is unchanged.
 
 **Moving to another step (0.5.1, D; `{ sig, tab }`; `docs/security.md` T63).** The body names the step the dialog should show: `tab` is the
@@ -1831,13 +2077,13 @@ Claude 2.1.326 it relies on (`claude-tui.md` §13.9): `Right` and `Left` move on
 *Read phase, nothing sent* (the first match decides):
 1. Body invalid (`tab` not an integer 0 to 8 included) → `400 invalid`. Ineligible pane → `404 not_found`. Lock → `409 busy-switching`.
 2. A fresh capture; a failed one → its own status and body.
-3. No dialog on screen → `409 no-dialog`; a screen that may hold a dialog nika cannot read, an `unreadable` dialog, a plan approval, or a
-   `sig` that is not the body's → `409 dialog-changed`. A dialog with fewer than two steps → `400 invalid` ("this dialog has one question").
+3. No dialog on screen → `409 no-dialog`; a screen that may hold a dialog nika cannot read, or an `unreadable` dialog → `409 dialog-unread` (0.5.4, QP, O3); a plan approval, or a
+   `sig` that is not the body's → `409 dialog-changed`. Claude's notes field open on a preview step → `409 notes-open`, nothing sent. A dialog with fewer than two steps → `400 invalid` ("this dialog has one question").
 4. Bypass on the dialog → `400 terminal-only` (checked before the `tab` value). `tab` above `tabs.length` → `400 invalid` ("tab is not one of
    the steps"); `tab` equal to the current step → `400 invalid` ("tab is the current step").
 
 *Steps* (at most 24 rounds; a key budget of the distance plus 3). Each round starts with a **fresh** capture, read for the strip of tabs
-only (`stripOf` in `src/dialog.js`, which does not need the options to be readable). It must still show the same tab headers (else 409
+only (`stripOf` in `src/dialog.js`, which does not need the options to be readable). It must still be readable as a strip (one nika cannot read while a dialog is on screen → 409 `dialog-unread`; none, the dialog closed → `dialog-changed`), show no open notes field (409 `notes-open`) and show the same tab headers (else 409
 `dialog-changed`) and the same answered marks (else 409 `dialog-touched`), no bypass (400 `terminal-only`), and the step our last
 `Right` or `Left` should have reached (else 409 `dialog-changed`: the user pressed a key too, or Claude redrew elsewhere). Then:
 - the strip shows the asked step → `200 { "done": "moved" }`, plus `sent` (the keys pressed) when any went out;
@@ -1849,20 +2095,28 @@ only (`stripOf` in `src/dialog.js`, which does not need the options to be readab
     a full read of the same step shows another focus. At most 3 `Up`s, then 409 `text-focus`. An input row of a step **other** than
     the one the request started on → 409 `dialog-focus` (the person moved the focus in the terminal). nika presses no `Up` on a step it
     cannot read whole (409 `dialog-changed`), because it could not prove that the focus changed.
+- on a step **with a preview** (0.5.4, QP; the footer carries `n to add notes`): Chat's focus draws no `ctrl+g`, so the strip cannot see it and the step is read whole; one nika cannot read whole → 409 `dialog-unread`.
+  With the pointer on `Chat about this`: `Up` (it lands on the last option; at most 3 `Up`s, then 409 `text-focus`; Chat of another step than the request started on → `dialog-focus`), settled when a full read shows the same step with the pointer on the last option.
+  On the option rows `Right` and `Left` switch steps as before;
 - a key that did not change the step within the settle window (up to 4 captures 150 ms apart), the key budget used up or 24 rounds → 409
   `not-taken` (never repeated); the strip gone or unreadable at the settle read → 409 `dialog-changed`.
 
 Answer: `200 { "done": "moved", "sent": <keys> }`. Errors: `400` `invalid`, `terminal-only`; `404 not_found`; `409` `busy-switching`,
-`no-dialog`, `dialog-changed`, `dialog-touched`, `dialog-focus`, `text-focus`, `not-taken`, `not-idle`; `429` and `5xx` from the capture or
+`no-dialog`, `dialog-unread`, `dialog-changed`, `dialog-touched`, `dialog-focus`, `text-focus`, `notes-open`, `not-taken`, `not-idle`; `429` and `5xx` from the capture or
 `keys.send`. **Every non-200 after the first key carries `sent`.** Nothing is undone: a move stops where it is. The page follows the
 capture: it draws the step Claude now shows, under its own `sig`. Each key counts toward the keys route's 20 requests/s per pane.
 Nothing of a body, a dialog string or a `sig` is logged. One action per pane at a time (the lock shared with mode, End, commands, answer, draft,
 submit and fit steps); each key counts toward the keys route's 20 requests/s per pane.
 
+**A step with a preview: Chat, notes and known limits (0.5.4, QP and QPF).** `chat` closes Claude's questions and cannot be undone; Claude's tool result then says the questions were declined, and answers already given may not reach Claude (live check, Claude Code 2.1.328; the page's button title says so). Known limits, none fixed in 0.5.4:
+- *The focus moves while a note is typed.* If Claude's focus moves while a note is typed on the page (keys pressed in the terminal), the form follows it, and `Enter` in the note field answers the option now checked, with the note. The page text for the owner's answer: "If Claude's focus moves while you type a note, the form follows it; check the selected option before you press Enter." The route checks the `sig` and the `view` and answers exactly what the form shows, so nothing the page never showed is answered (pre-existing since QP).
+- *A note that wraps.* A note that wraps onto a second `Notes:` row on a step whose preview is cut can make Claude hide one more preview line; nika then stops before `Enter` (409 `preview-changed`, `sent` 2) and the note stays in Claude's notes field, so every later request answers `notes-open`: finish in the terminal. `Escape` closes Claude's notes field and keeps the note (checked live, Claude Code 2.1.328); nika never sends it. No check can know the room Claude has below the dialog before the note is typed, so `note-room` only covers the width.
+- *A plan on a narrow pane.* A plan approval is not read below about 109 columns (its footer's second row, the plan path, is wider than a narrower pane; a longer path raises the number) and not at 85 columns or fewer (Claude wraps the prompt row there): it is `unreadable` with reason `wide`, the grow does not run, and the page says to answer in the terminal.
+
 **Other controls while a dialog shows** (`promptOpen`: a permission prompt, a question step, the review, a plan approval, `Exit plan mode?`
 or the auto-mode nudge): Stop → 409 `prompt-open` (a screen with no mode line and no input box where nika recognises no dialog → 409 `screen-unclear`), nothing sent; End sends one
 `Escape` first, as for a permission prompt, then the usual re-read (409 `not-idle` if the dialog is still there; on a screen with no mode line
-and no input box where nika recognises no dialog, End sends nothing and answers 409 `mode-unknown`, see End step 2); the mode switch and the
+and no input box where nika recognises no dialog, End sends nothing and answers 409 `mode-unknown`, see End step 2). End also refuses 409 `notes-open`, before any key and before the screen-unclear check, while Claude's notes field of a preview step is open (0.5.4, QP: an `Escape` there would land in the field; the footer alone decides, so it holds for a step nika cannot read whole too); the mode switch and the
 commands → 409 `not-idle`; a draft write and a suggestion accept → 409 `not-idle`; `submit` → 409 `prompt-open`; the attachment send → 409
 (its box read finds no plain box); the scroll route → 409 `screen-unclear`; the keys route and the page's passthrough are unchanged (the
 bypass guard of T26); the permission `answer` route is unchanged and sees no prompt.
@@ -1962,7 +2216,7 @@ Body `{}`. Steps, in this order:
 
 1. Ineligible pane (same rule as capture) → `404 not_found`. Another control action running on this pane → 409
    `busy-switching`.
-2. Fresh capture and registry state. **First, before any key (0.5.1, `docs/security.md` T64):** a screen with no readable mode line (footer
+2. Fresh capture and registry state. **Before everything else in this step (0.5.4, QP):** Claude's notes field open on a question step with a preview (`notesOpen` in `src/dialog.js`: the footer carries `n to add notes` and `ctrl+g to edit in`; it reads the footer only, so it holds for a step nika cannot read whole too) → 409 `notes-open`, nothing sent: an `Escape` there would land in the field. **Then, before any key (0.5.1, `docs/security.md` T64):** a screen with no readable mode line (footer
    `unknown`) and no input box that `src/draft.js` reads, when no permission prompt and no dialog that nika recognises (`promptOpen`) is on
    screen → 409 `mode-unknown`, nothing sent, whatever the registry says (busy, needs-you or idle) and without the `Escape` below. nika
    cannot tell such a screen from one where an `Escape` does harm: a subagent's view of the parent's pane, Claude's subagent list or the
@@ -2031,8 +2285,10 @@ otherwise. Never `kill-pane`, never a signal. The eligibility cache is reset aft
 A one-word `brief` (no whitespace once trimmed) → 400 `brief must be more than one word`: the brief is claude's positional
 prompt after `--`, and a lone `update` or `doctor` could be read as a subcommand; `_run-agent` refuses a stored one-word
 brief too (exit 3). `permissionMode` defaults to settings; `bypassPermissions` → 400. `rc` overrides the Remote Control setting for this
-agent. `under`: split `-v` below that pane (unknown pane → 404, pane in another session than `session` → 400; the
-response `session` is the pane's session). With neither `under` nor `session`, a spawn under a `parent` (see Nesting) opens beside that
+agent. `under`: split `-v` below that pane when both halves keep the placement floor (**Placement** below; unknown pane → 404, pane in
+another session than `session` → 400, a pane whose tmux session name is not a `TMUX_SESSION` → `400 invalid` "That pane is in a tmux session nika
+cannot target.", checked before any read or write; the response `session` is the pane's session). When that pane has no room, the setting places the
+agent instead and the answer says `moved` (below). With neither `under` nor `session`, a spawn under a `parent` (see Nesting) opens beside that
 parent, in the parent's own tmux session (read from the tags listing, and only when the name is a valid `TMUX_SESSION`), so an orchestrator
 adopted from the user's own tmux session keeps its children with it; an explicit `under` or `session` always wins, and with no parent, or a
 parent session name that is not valid, the project's session is used as before.
@@ -2040,7 +2296,7 @@ parent session name that is not valid, the project's session is used as before.
 **No server or no project session (0.4).** When the session to use does not exist, because no tmux server runs or the server has no
 session of that name, and it is the project's own (`TMUX_SESSION` reduction of its name, §8), the spawn creates it: one `new-session -d
 -s <session> -n agents …` (§8) whose first pane runs the agent, tagged and titled like any spawned pane. There is no placement then
-(`beside` and `under last` apply only to a session that exists). A named `session` that is not the project's own and does not exist is
+(the answer says `placement: "session"`; the rules of **Placement** apply only to a session that exists). A named `session` that is not the project's own and does not exist is
 still `404 not_found` (`tmux session <name> not found`, nothing started): nika creates only the project's session. A failed `new-session` is
 `502 tmux_failed`; `503 tmux_unavailable` now means only that the tmux binary is missing (no binary, or ENOENT when it is run). A failing
 listing counts as "no server" only when tmux says so (`NO_TMUX_SERVER` in `src/tmuxerr.js`: `no server running`, or `error connecting to …`
@@ -2053,11 +2309,47 @@ needed, a broken install) and took the pane, and a server nika had just started,
 answer is `502 claude_exited`, message "Claude exited right after it started. Run `claude` once in a terminal in this folder to see why (for
 example, to log in)." The same check runs for Start and Resume. One check at 1 s: a claude that dies later is not caught here. Response:
 ```json
-{ "pane": "%12", "session": "<tmux session>", "sessionId": "<UUID>", "kind": "coder", "reports": { "dir": "<stateDir>/projects/<key>/reports",
+{ "pane": "%12", "session": "<tmux session>", "sessionId": "<UUID>", "kind": "coder", "placement": "beside", "moved": "under"?,
+  "reports": { "dir": "<stateDir>/projects/<key>/reports",
   "session": "<name>.session", "report": "<name>.md", "rc": "<name>.rc", "remote": "<name>.remote" } }
 ```
 `kind` (0.5, W9) is only in a spawn's answer: the word nika tagged on the agent's pane, or `null` for a sub-orchestrator. A spawn's `sessionId` is
 `null` (only `_run-agent` knows the id); the UUID in the example is what Start and Resume answer.
+
+**Placement (0.5.4, ADR 0021).** `placement` (a spawn's answer only, never Start or Resume) says where the pane went, one of `beside` (split
+`-h` next to a pane), `under` (split `-v` below a pane), `tiled` (split into a window of agents only, then re-tiled), `window` (a new tmux
+window named `agents`) or `session` (the project's session did not exist and was created with this pane). `moved: "under"` is present only
+when the request's `under` pane had no room (or its session read could not be trusted) and the setting placed the agent instead. The
+placement setting is `panePlacement` (`beside` or `under-last`, per project or from Settings). Before anything is written a spawn into a session
+that exists reads that session once, `list-panes -s -t =<session>` with 15 constant fields (§8), and decides from tmux's own sizes and tags; a
+failed listing is `502 tmux_failed` with nothing left behind. The first rule that fits wins:
+1. `under`: split below that pane;
+2. `under-last` (the setting): split below the pane `.last-pane` names, only inside the spawn's tree (below);
+3. the home window: the parent's own window (the session's current window for "you" or a parent that is not listed). When it is a window of
+   agents that is open to the spawn and has room, a split of its biggest pane followed by a re-tile; else a split `-h` of the widest agent pane
+   of this project in it, else of the parent, else, for "you", of the window's active pane (each only while both halves keep the floor);
+4. an agents window of this project that has room, the one with the fewest panes first, then the lowest index;
+5. a new window: `new-window -d -t =<session>: -n agents …` (`-d` keeps the user's current window).
+
+Every split must leave both halves at least 80 columns and 15 rows (`MIN_COLS`, `MIN_ROWS` in `src/place.js`), and a split into a window of agents
+is made only when tmux's tiled grid for the new pane count keeps every pane at that size. A window is never a split target when tmux lists it as
+zoomed, when `@nika-fit` is set on it, when its rows do not add up to `#{window_panes}`, when its rows disagree on the window's own fields or
+name two active panes; a dead pane (`remain-on-exit`) is never split. A window of agents is a window whose every pane has `@nika-role` `agent`
+or `sub-orchestrator` and an `@nika-agent` tag of this project; only that window is ever re-tiled (`select-layout -t @W tiled`, after a fresh
+`list-panes -t @W` that must still show an agents window holding the new pane, and read once more afterwards, the result only logged).
+Trees stay apart (0.5.4): a window is open to a spawn only when every pane in it is the spawn's parent or has `@nika-parent` exactly the parent's
+pane id (for "you": a pane with no `@nika-parent`), and a window that holds a sub-orchestrator is open only to that sub-orchestrator's own agents;
+a pane the `-a` read does not list, or whose tag is not exactly the parent's pane id, closes the window, and `under-last` follows the last
+spawned pane only inside the same tree. The two reads are evidence, not trust: a line that does not parse or a pane id on two lines makes the
+whole placement listing untrusted (no row is used, a new agents window opens, one line `nika: spawn placement: the session listing could not be
+trusted, so a new agents window opened` goes to stderr), and a split goes only to a pane that nika's own `list-panes -a` read (the collector's, §8)
+also lists in that session, where that read must have every field on every line and no pane id twice; otherwise a new window opens. A race
+between the reads, or a tmux whose tiling differs from the model, can still leave a pane below the floor; the read-back after a re-tile only
+logs it (`nika: spawn placement: a pane of the agents window is below 80x15`), and a re-tile that is skipped or fails (`…: the agents window
+listing could not be trusted, so it was not re-tiled`, `…: the agents window changed, so it was not re-tiled`, `… failed (<step> <code>)`)
+leaves the split's halves as they are. Nothing resizes, moves, swaps or kills a pane except that one re-tile. A spawn no longer gives a fitted
+window back first: it never splits into one (the old `releaseWindow` call is gone; `docs/security.md` T65, T52). `nika spawn` prints
+`placement: <word>` and, for `moved`, `note: that pane had no room, nika placed it by the setting`.
 
 **Nesting (0.4, ADR 0013).** `role` defaults to `agent`; `orchestrator` starts a *sub-orchestrator* (its pane is tagged
 `sub-orchestrator`). Both values are checked: anything else is 400 `invalid`, as is a `parent` that is not a pane id. The parent is
@@ -2295,14 +2587,15 @@ warning in `loadConfig().warnings`; a tampered or unreadable file never throws):
   "rules": { "localTemplate": null },
   "ui": { "theme": "system", "singleKeyShortcuts": true },
   "compaction": { "enabled": true, "pct": 80, "window": 400000 },
-  "attachments": { "keepDays": 7 }
+  "attachments": { "keepDays": 7 },
+  "fit": { "mode": "auto" }
 }
 ```
 `ui.theme` ∈ `system light dark` (default `system` = follow `prefers-color-scheme`). `ui.singleKeyShortcuts` boolean
 (default `true`; a missing or non-boolean value reads as the default): whether `?` opens Keyboard shortcuts (design spec
 §4.6). Mod+/ always does. `compaction` (0.4): `enabled` boolean, `pct` an integer 20–95, `window` one of `200000`,
 `400000`, `1000000`, `"model"`; a bad leaf falls back to its default with a warning (`compaction.pct invalid, default used`).
-`attachments.keepDays` (0.5, W2) an integer 1–30, default 7 (`attachments.keepDays invalid, default used`).
+`attachments.keepDays` (0.5, W2) an integer 1–30, default 7 (`attachments.keepDays invalid, default used`). `fit.mode` (0.5.4, P2) one of `auto`, `fill`, `terminal`, `off`, default `auto` (`fit.mode invalid, default used`).
 Field rules: `models.*` `MODEL_ID`; `remoteControl.prefix` `""` (= project name) or `RC_PREFIX`; `permissionMode` ∈
 `PERMISSION_MODES`; `panePlacement` ∈ `PANE_PLACEMENTS`; `limits.maxAgents` 1–8 (there is no turn limit: Claude Code
 has no `--max-turns` for interactive sessions); `perProject` keys are `PROJECT_KEY`s and each entry holds `plugins` (≤ 200 names, deduplicated), `orchestratorSessionId` (a
@@ -2387,8 +2680,8 @@ Write API (`src/fwrite.js`): `ensureDir(dir, mode = 0o700)`, `writeAtomic(dir, n
 | `nika app` | launch the desktop app (same lookup as `open --app`, does not block); exit 1 with an install hint when it is missing |
 | `nika app install` | macOS: copy or update the app in `~/Applications` (§6 "App copy"); prints "added nika X.Y.Z to ~/Applications (find it with Spotlight)", "updated …" or "already current"; exit 1 with the reason for `no-source` / `foreign-target` / `copy-failed`; Linux: exit 1, "the .deb or AppImage installs the desktop entry" |
 | `nika serve [--app]` | browser tier on `NIKA_PORT` (3335) · app tier on port 0 with the stdio protocol (§5); `--app` refuses a TTY stdin |
-| `nika status [--json] [--since w] [--ended] [--full]` | 0.4.0: ended rows only with `--ended` (the latest 5 per project) or `--full` (all, implies `--ended`); otherwise one line says how many are hidden. Every project added to nika is listed, also one with no session in the window (`<name>  <folder>   no sessions yet` for `--since all`, else `no sessions in the last <window>`); a folder never added shows only while a session runs there, or with `--ended`. The project list is read in every text view (a `config.json` nika cannot use gives a `note:` line and no empty projects). `--json` is unchanged (the snapshot only) and carries every agent |
-| `nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix\|off] [--role agent\|orchestrator] [--kind <kind>] [--under %pane] [--session name]` | spawn an agent in tmux (needs `$TMUX` or `--session`); `brief` is a file path or `-` for stdin. 0.4: `--role orchestrator` starts a sub-orchestrator (only the main orchestrator's pane may; else exit 3, `depth`). The parent is the pane it runs in, `$TMUX_PANE`, when that is a pane id (else none); there is no `--parent` option, and a `$TMUX_PANE` that tmux no longer lists is "no parent". The server reads that pane's role and depth from tmux's tags. 0.5 (W9): `--kind coder\|reviewer\|tester\|designer\|scout\|writer\|agent` is the label on the agent's row (§3, spawn "Kind"); anything else is exit 2 (`--kind must be one of coder, reviewer, tester, designer, scout, writer, agent`), and so is `--kind` with `--role orchestrator` (`--kind is for agents: a sub-orchestrator always shows sub-orchestrator`), before anything runs; without it nika picks one from the model's role. The output gains a `kind: <word>` line after `session:` when the answer carries a kind (an agent; a sub-orchestrator has none, so no line). Its help line reads `--kind <kind>      coder \| reviewer \| tester \| designer \| scout \| writer \| agent: the label on its row (default: from the model's role)` |
+| `nika status [--json] [--since w] [--ended] [--full]` | 0.4.0: ended rows only with `--ended` (the latest 5 per project) or `--full` (all, implies `--ended`); otherwise one line says how many are hidden. Every project added to nika is listed, also one with no session in the window (`<name>  <folder>   no sessions yet` for `--since all`, else `no sessions in the last <window>`); a folder never added shows only while a session runs there, or with `--ended`. The project list is read in every text view (a `config.json` nika cannot use gives a `note:` line and no empty projects). `--json` is unchanged (the snapshot only) and carries every agent. 0.5.4 (RM): rows the user removed in the app (§3 "Removed items") are left out here too, and one last line says `… N removed from the list (Show removed in the nika app)`; `--json` carries the counts (`hidden`). 0.5.4 (P1): a row's pane shows as `<window index>:<pane id>` when the index is known |
+| `nika spawn <name> <model> <brief> [--project dir] [--permission-mode m] [--rc prefix\|off] [--role agent\|orchestrator] [--kind <kind>] [--under %pane] [--session name]` | spawn an agent in tmux (needs `$TMUX` or `--session`); `brief` is a file path or `-` for stdin. 0.4: `--role orchestrator` starts a sub-orchestrator (only the main orchestrator's pane may; else exit 3, `depth`). The parent is the pane it runs in, `$TMUX_PANE`, when that is a pane id (else none); there is no `--parent` option, and a `$TMUX_PANE` that tmux no longer lists is "no parent". The server reads that pane's role and depth from tmux's tags. 0.5 (W9): `--kind coder\|reviewer\|tester\|designer\|scout\|writer\|agent` is the label on the agent's row (§3, spawn "Kind"); anything else is exit 2 (`--kind must be one of coder, reviewer, tester, designer, scout, writer, agent`), and so is `--kind` with `--role orchestrator` (`--kind is for agents: a sub-orchestrator always shows sub-orchestrator`), before anything runs; without it nika picks one from the model's role. The output gains a `kind: <word>` line after `session:` when the answer carries a kind (an agent; a sub-orchestrator has none, so no line). Its help line reads `--kind <kind>      coder \| reviewer \| tester \| designer \| scout \| writer \| agent: the label on its row (default: from the model's role)`. 0.5.4 (P1): the output has a `placement: <word>` line (`beside`, `under`, `tiled`, `window` or `session`, §3 spawn "Placement") and, when an explicit `--under` pane had no room, `note: that pane had no room, nika placed it by the setting` |
 | `nika orchestrate [dir]` | create or reuse the project's tmux session and start the orchestrator pane |
 | `nika projects list\|add <dir>\|remove <key>` | project registry |
 | `nika rules preview\|apply [dir] [--yes] [--overwrite-foreign] [--gitignore]` | preview prints the diffs; apply asks for confirmation unless `--yes` |
@@ -2417,8 +2710,10 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | resume the orchestrator (0.4) | the orchestrator argv above (the same `-e` pairs) with `--resume <UUID>` instead of `--session-id <UUID>`; the UUID is the stored pick |
 | tags of a spawn | `tmux -u list-panes -a -F #{pane_id}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-depth}\t#{@nika-parent}\t#{session_name}\t#{window_name}` (one fresh listing per spawn; the names are last because they are free text; a pane with `pane_dead` `1`, one that remain-on-exit keeps after claude exited, is skipped, so it is never live, never counts toward a cap or the duplicate-name check and is never a parent: a dead parent reads like a gone one) → (1) the requested parent's role and depth (`POST /spawn`, "Nesting"), and (2) the live set: the panes with `@nika-role` = `agent` or `sub-orchestrator` whose `@nika-agent` is `<key>/<name>` for the project's key, for the duplicate-name check and the two caps. A tag is parsed strictly (exactly one `/`, `PROJECT_KEY` before it, `AGENT_NAME` after it; a depth is exactly `1`, `2` or `3`; a parent is a `PANE_ID`); anything else is agent-writable noise and is ignored, never trusted |
 | find orchestrator pane | `tmux -u list-panes -a -F #{pane_id}\t#{pane_current_command}\t#{pane_dead}\t#{@nika-role}\t#{@nika-agent}\t#{session_name}\t#{window_name}` (`-a` = every session, 0.4; only tmux's "no server running" answer (`NO_TMUX_SERVER`) means none, any other listing failure is `502 tmux_failed` and nothing is started (0.5); a pane whose `pane_dead` is not exactly `0` is skipped: `1` is remain-on-exit keeping a dead pane with its tags and a claude-like command, and any other value is unreadable) → the pane with `@nika-role` = `orchestrator` whose command is claude (`claude`, `node` or a version string) and which is the project's main one: tagged `<key>/orchestrator` in any session, or a 0.3 pane with no `@nika-agent` tag in the project's session, window named exactly `orchestrator`. One in the window named `orchestrator` of the project's session wins, else a tagged pane in any other window or session; agent and sub-orchestrator panes, and a tag of another project, never match |
-| spawn beside | `tmux -u split-window -h -t =<session>: -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
-| spawn under last | `tmux -u split-window -v -t <lastPane> -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` |
+| placement: read the session (0.5.4, ADR 0021) | `tmux -u list-panes -s -t =<session> -F #{pane_id}\t#{window_id}\t#{window_index}\t#{window_active}\t#{window_panes}\t#{window_zoomed_flag}\t#{window_width}\t#{window_height}\t#{pane_width}\t#{pane_height}\t#{pane_dead}\t#{pane_active}\t#{@nika-role}\t#{@nika-agent}\t#{@nika-fit}` (`PLACE_FORMAT` in `src/place.js`: exactly 15 fields; the tags a user or an agent can write come last; one call per spawn into a session that exists, before any file is written; the text is read as one piece of evidence, see §3 "Placement"; `@nika-fit` is read as set or not, its value is never used) |
+| spawn beside / under / tiled | `tmux -u split-window -h\|-v -t %n -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>`: `%n` is a pane of that listing (`PANE_ID`) that nika's own `list-panes -a` read also lists in the same session; `-h` for `beside`, `-v` for `under` and for a split below a named pane in a window of agents; for the other `tiled` splits `-h` when the biggest pane is at least twice as wide as high, else `-v`; the old `-t =<session>:` target is gone |
+| spawn in a new window (0.5.4) | `tmux -u new-window -d -t =<session>: -n agents -c <projectDir> -P -F #{pane_id} -- <nikaBin…> _run-agent <key> <name>` (`-d` keeps the user's current window; `agents` is a constant without `#`; `<projectDir>` through `tmuxLiteral`); the pane is tagged as a split-window one |
+| re-tile a window of agents (0.5.4) | `tmux -u list-panes -t @W -F <PLACE_FORMAT>` right before and once after, and `tmux -u select-layout -t @W tiled` between them: only on a window `@W` (`WINDOW_ID`, from tmux's listing) whose every pane is this project's `agent` or `sub-orchestrator`, whose rows add up to `#{window_panes}`, that is not zoomed and has no `@nika-fit`, and that holds the new pane; the second listing is only logged. No other placement call resizes, moves, swaps or kills a pane |
 | pane title | `tmux -u select-pane -t %n -T [%n] <name>` |
 | capture | `tmux -u capture-pane -p -e -N -t %n` (the visible rows only: nika reads no tmux scrollback of a pane, W3, ADR 0018) |
 | pane size + cursor | `tmux -u display-message -p -t %n -F #{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}\t#{alternate_on}` (0.5, W3: the sixth field is the capture's `alt`; run together with the capture, in the same `Promise.all`) |
@@ -2436,7 +2731,6 @@ multi-argument shell-commands (tmux execs them directly, no `sh -c`, T6).
 | fit: layout back | `tmux -u select-layout -t @W -- <layout>` (the saved layout with the 3.8 `,"a":…` and `,"l":…` markers removed, so focus does not move; only when the layout is still the one nika left; also, 0.5 F15, the give of a squeezed window: the layout read inside the lock right before the squeeze, from tmux's own output, never from a request; no new argv shape) |
 | fit: focus back | `tmux -u select-pane -t %A` (the pane that was active before the zoom; also in the restore of a refit after an agent pane exits, not after a split) |
 | fit: untag | `tmux -u set-option -wu -t @W @nika-fit` (only in a release that read the tag back as nika's nonce) |
-| spawn into a fitted window (0.5) | `tmux -u display-message -p -t <=session:\|%n> -F #{window_id}` before the `split-window` of an existing session, only while the fit holds a window; the `-t` value is the split's own target; the answer must match `WINDOW_ID`, then the fit gives that window back (`releaseWindow`). The split's argv is unchanged. Best effort: a failure logs the step and its code and the spawn goes on. This is the app's own spawn only: a spawn from the CLI is another process and splits into the fitted window without it, and since 0.5 (F2) the watch fits that window again (a refit, §3 "When the server gives the window back by itself") |
 
 The fit's `@W` is a window id (`WINDOW_ID`, `^@\d{1,6}$`) and `%P`, `%A` are pane ids (`PANE_ID`), all read from tmux's own listing in the
 same call and never from a request; the request supplies only `<C>` and `<R>` as integers checked at the route (and again in
@@ -2477,8 +2771,9 @@ Session targets always carry the trailing colon (`=<session>:`) where tmux expec
   - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=<PCT>`, always (a string of digits and at most one dot, 4 decimals, above 0 and at most 100):
     `PCT = ceil4(100 x target / (W - 20000))` when `target <= limit`, else `100`, which Claude Code caps at `W - 33000`, the same number
     (so a value inherited from the environment can never stay in force).
-  Claude Code's rule is `min(floor((W - 20000) x PCT / 100), W - 33000)` (20000 reserved output, 13000 summary buffer); the window must be set
-  explicitly or proactive compaction is off. Examples (`W`, `P` → PCT, compacts at): 200k, 80 → 88.8889, 160k; 200k, 95 → 100, 167k;
+  Claude Code's rule is `min(floor((W - 20000) x PCT / 100), W - 33000)` (20000 reserved output, 13000 summary buffer). nika sets both variables on every launch, so
+  the window is always explicit; an unset window is not "off" in Claude Code 2.1.328, which then compacts from a default window (about 980k effective on a 1M model), so a
+  PCT alone would apply to that default (ADR 0014, amendment 2026-11-19; only the `auto` source turns proactive compaction off). Examples (`W`, `P` → PCT, compacts at): 200k, 80 → 88.8889, 160k; 200k, 95 → 100, 167k;
   1M, 80 → 81.6327, 800k; 400k on a 1M model, 80 → 84.2106, 320k; 400k, 95 → 100, 367k. The orchestrator gets them as the two tmux `-e`
   pairs (§8); an agent or sub-orchestrator through the `env` option of the `spawn()` that starts claude (no shell). With the variables
   set, `/autocompact` inside the session is locked to the environment (spike S2).
@@ -2524,22 +2819,27 @@ checked by the router before `mirror` / `keys` are called; those modules still v
 |---|---|
 | `src/exec.js` | `makeExec()` — adds `opts.input` (string/Buffer written to the child's stdin, then closed) |
 | `src/text.js` | `cleanBlock(s, max)` — like `clean()` but keeps `\n` `\t` |
-| `src/collect/history.js` | `readHistory(sessionId, { before, limit }, { claudeDir, cache }) → { status, body }` (an `Agent` / `Task` call entry may carry `subagent`); `readSubagentHistory(sessionId, agentId, { before, limit }, { claudeDir, cache }) → { status, body }` (0.5, W8: the same page from `agent-<agentId>.jsonl`; `appio.js` passes both in `deps`); both read through one module-level limiter (4 reads in flight); `createLimiter(max)` |
+| `src/collect/history.js` | `readHistory(sessionId, { before, limit }, { claudeDir, cache }) → { status, body }` (an `Agent` / `Task` call entry may carry `subagent`); `readSubagentHistory(sessionId, agentId, { before, limit }, { claudeDir, cache }) → { status, body }` (0.5, W8: the same page from `agent-<agentId>.jsonl`; `appio.js` passes both in `deps`); both read through one module-level limiter (4 reads in flight; `createLimiter(max)` lives in `src/limiter.js` since 0.5.4, a leaf module the attachment store shares) |
 | `src/collect/subagents.js` | (0.5, W8) every function takes the transcript index entry `{ path, dir, … }`, never a request value: `subagentDir(transcript) → string \| null` (`<dir>/<session>/subagents`, only when both folders are real directories); `subagentTranscripts(transcript) → Map<agentId, path>` (the folder's listing: names `agent-<SUBAGENT_ID>.jsonl`, the path built from the listed name; empty when the folder is missing or not real); `readSubagents(transcript) → [{ id, type, description, model, toolUseId, finished, lastActivity }]` (the metas, ≤ 64 KB each, 8 at a time, read again on every call; `toolUseId` a valid id or `null`; `model` falls back to `pickedEffortModel`). `src/model.js` maps these into the snapshot's `subagents` one field at a time, so `toolUseId` never reaches a response |
 | `src/collect/plugins.js` | `listPlugins(claudeDir) → string[]` (keys of `plugins` in `<claudeDir>/plugins/installed_plugins.json`, read through `fsafe` ≤ 1 MB; sorted, ≤ 200, each `PLUGIN_NAME`; `[]` when missing or invalid) |
 | `src/mirror.js` | `parseCapture(text, cols) → rows` (pure); `createMirror({ exec, tmuxBin, now }) → { capture(pane, ifNoneMatch) → { status, body, etag } }` |
 | `src/keys.js` | `createKeys({ exec, tmuxBin, now, sleep }) → { send(pane, { text, paste, keys, send? }, { recheck? }) → { status, body } }`; `recheck()` is an async `null \| { status, body }` run before each text chunk after the first (the route passes it for `send: true`); `badSend(body)` is the 400 for a `send` that is not `true` |
-| `src/attachments.js` | `createAttachments({ env, now, loadKeepDays, setTimer, clearTimer, log }) → { save({ pane, key, name, data }), saveBytes({ pane, key, name, bytes }), lookup(pane, id), remove(pane, id), markSent(ids), prune({ need }), start(), stop() }`: `save`, `saveBytes` resolve `{ status, body }` (`save` is the upload route's, `saveBytes` the file chooser's: the same admission, sniff, caps and write); `lookup` → `{ id, path, type, size }` or `null`; `remove` → boolean; `start()` prunes at once and every 24 h (the timer is unref'd). Pure helpers `sniff(buf, name)`, `checkUploadBody(body)` and `isSecretName(name)`; constants `UPLOAD_CAP`, `MAX_BYTES`, `PER_MESSAGE`, `ID`, `PATH_OK`. The records of issued ids live in memory only (the 500 newest): after a restart an old id is `attachment-gone` |
+| `src/attachments.js` | `createAttachments({ env, now, loadKeepDays, setTimer, clearTimer, log }) → { save({ pane, key, name, data }), saveBytes({ pane, key, name, bytes }), lookup(pane, id), remove(pane, id), markSent(ids), prune({ need }), start(), stop() }`: `save`, `saveBytes` resolve `{ status, body }` (`save` is the upload route's, `saveBytes` the file chooser's: the same admission, sniff, caps and write); `lookup` → `{ id, path, type, size }` or `null`; `remove` → boolean; `start()` prunes at once and every 24 h (the timer is unref'd). Pure helpers `sniff(buf, name)`, `checkUploadBody(body)` and `isSecretName(name)`; constants `UPLOAD_CAP`, `MAX_BYTES`, `PER_MESSAGE`, `TRAYS_MAX`, `KEPT_CAP`, `ID`, `PATH_OK`. 0.5.4 (AT, LT), the tray store: `bindTray(pane, claim)` (binds the pane's tray to the project key and the Claude, dropping one of another owner), `listTray(pane, claim)` → `{ files, gone }`, `hasTray(pane)`, `keepText(pane, claim, { text, shell })`, `readText(pane, claim)`, `hasText(pane)`, `dropPanes(isGone)` (the pane sweep of the status timer), `readImage(pane, id)`; pure `checkKeptBody(body)` and `keptTextOk(text)`. The trays are memory only (6 unsent files and one kept text per pane, 64 trays) The records of issued ids live in memory only (the 500 newest): after a restart an old id is `attachment-gone` |
 | `src/attach-send.js` | `createAttachSend({ mirror, keys, store, lock, keyGap, vimOf, plainOf, sleep, log }) → { send(pane, { ids, base }) → { status, body } }` and `checkAttachBody(body)` (the 400 shape check shared with the route); `lock` and `keyGap` are the session controller's `withPaneLock` and `keyGap` |
-| `src/dialog.js` | pure: `dialogOnScreen(rows)`, `readDialogScreen(rows, cols) → null \| { unreadable, kind } \| S`, `identityOf(S)`, `sigOf(S)`, `otherAllowed(S)`, `dialogCapture(rows, cols)` (the capture's `dialog` field) and the constants (`TEXT_MAX` 300, `STEPS_MAX` 24, `MULTI_OTHER`, `PLAN_PICK`, `PLAIN_TEXT`). `answerDialog(pane, body)` and `checkDialogBody(body)` live in `src/session-control.js` |
+| `src/dialog.js` | pure: `dialogOnScreen(rows)`, `readDialogScreen(rows, cols) → null \| { unreadable, kind } \| S`, `identityOf(S)`, `sigOf(S)`, `otherAllowed(S)`, `dialogCapture(rows, cols)` (the capture's `dialog` field) and the constants (`TEXT_MAX` 300, `STEPS_MAX` 24, `MULTI_OTHER`, `PLAN_PICK`, `PLAIN_TEXT`). 0.5.4 (QP, QPF): `viewOf(S, note?)` (the `view` of a question step with a preview: sha256 over the `sig`, the focus, the preview rows, `hidden`, `fallback` and the note text), `notesOpen(rows)` (the footer alone: `n to add notes` and `ctrl+g to edit in`), `stripOf(rows, cols)` now also gives `notes` and `editing` for a preview step; the reader gives a preview step `preview`, `notes` and (server only, never in the capture) `noteRoom`. `answerDialog(pane, body)` and `checkDialogBody(body)` live in `src/session-control.js`; `autoCompact(pane)` too (the typed `/compact`, no route calls it) |
 | `src/survey.js` | pure, ASCII (0.5, F14): `surveyOf(capture, edit) → null \| { state: 'ready', kind: 'rating', sig, options } \| { state: 'terminal', reason }` (`capture` is `{ rows, cursor, cols }`, `edit` is `{ vim, insert }`; never throws), `SURVEY_UNDO_MS` = 4000. The controller's `answerSurvey(pane, { n, sig })` and the exported `checkSurveyBody(body)` live in `src/session-control.js`; `boxInput` moved to `src/draft.js` (re-exported by `src/session-control.js`) and `src/draft.js` gained `surveyBox(rows, cursor, cols)` (the box reader with only the survey gate skipped). |
 | `src/scroll.js` | `createScroll({ mirror, keys, lock, keyGap, now, sleep }) → { scroll(pane, body) → { status, body } }`; pure `checkScrollBody(body)`, `scrollKeys(body)` (the fixed table), `scrollGate(capture)` (the 409 code or `null`) and `pillShown(rows)` (re-exported from `src/mode.js`); constants `SCROLL_RATE` (10) and `MAX_PAGES` (8) |
-| `src/fit.js` | `createFit({ exec, tmuxBin, now, stateDir, lock, log, schedule, sleep }) → { hold(id, { cols, rows, open }), release(id), releaseWindow(w), releaseAll(), recover(), size() }`: `hold` and `release` return `{ status, body }`, `releaseWindow(@W)` → boolean (for spawn), `releaseAll()` → number (bounded by `RELEASE_ALL_MS`, 3 s), `recover()` → `{ released, dropped }` (same bound), `size()` → leases held; `checkFitBody(body)` → `{ value } \| { error }` is shared with the route; `lock(pane, fn)` is `withPaneLock` of `createSessionControl`. `createAppApi` builds one and sets `ctx.fit`; `appio.js` calls `recover()` before `ready` and `releaseAll()` in `finish()` after the server stopped taking requests; `spawnAgent` reads `ctx.fit` |
+| `src/fit.js` | `createFit({ exec, tmuxBin, now, stateDir, lock, log, schedule, sleep }) → { hold(id, { cols, rows, open, focus }), release(id), releaseAll(), recover(), setMode(m), mode(), size() }`: `hold` and `release` return `{ status, body }`, `setMode(m)` (0.5.4, P2) sets the Fit mode, one of `FIT_MODES` in `src/ids.js` (anything else, and the mode already set, does nothing; `off` gives every lease back) and `mode()` → the mode in force (memory only, never in a lease file or a request), `releaseAll()` → number (bounded by `RELEASE_ALL_MS`, 3 s), `recover()` → `{ released, dropped }` (same bound), `size()` → leases held; `checkFitBody(body)` → `{ value } \| { error }` is shared with the route; `lock(pane, fn)` is `withPaneLock` of `createSessionControl`. `createAppApi` builds one and sets `ctx.fit`; `appio.js` calls `recover()` before `ready` and `releaseAll()` in `finish()` after the server stopped taking requests; `spawnAgent` does not use it since 0.5.4 (a spawn never splits into a fitted window, ADR 0021; `releaseWindow` is gone) |
 | `src/rules.js` | `async rulesState(project) → { state, settingsIgnored, git }`; `preview(project, ctx) → { status, body }`; `apply(project, { hash, overwriteForeign, gitignore }, ctx) → { status, body }` |
 | `src/diff.js` | `unifiedDiff(oldText, newText, path) → string` |
 | `src/spawn.js` | `spawnAgent(req, ctx) → { status, body }`; `runAgent(key, name, ctx) → exit code`; `deniedTools(role, commands) → string[]` (the `--disallowedTools` of a role) |
 | `src/orchestrate.js` (helpers) | `tagPane(ctx, pane, role, agentTag?, depth?, parent?)` sets `@nika-role`, `@nika-agent` = `<key>/<name>` (`<key>/orchestrator` for the orchestrator), and (0.4) `@nika-depth` for a depth of 1 to 3 and `@nika-parent` for a pane id; `launchArgv(config, project, { sessionId, resume })` → claude's flags after the binary (the one place the orchestrator argv is built) |
 | `src/orchestrate.js` | `startOrchestrator(projectKey, ctx) → { status, body }` (`ctx.findSession(id)` looks a saved orchestrator up in the transcript index); `pickState(project, id, hit)` (the one reading of a saved id, shared by the list, the PUT and Start; another project's session is `gone`), `claudePane(agent)`, `inProject(group, project)` |
-| `src/model.js` | `findSession(id, { config, exec, now, cache }) → { agent, group } \| null` (a session of any age; throws `EINDEX` when it is not found and the index could not be read); `findSessions(ids, { config, now, cache }) → Map id → { agent, group }` (index only: one walk for all ids, no registry, ps or tmux, so every hit reads as not running; throws `EINDEX` when an id is missing and the index could not be read) |
+| `src/model.js` | `findSession(id, { config, exec, now, cache }) → { agent, group } \| null` (a session of any age; throws `EINDEX` when it is not found and the index could not be read); `findSessions(ids, { config, now, cache }) → Map id → { agent, group }` (index only: one walk for all ids, no registry, ps or tmux, so every hit reads as not running; throws `EINDEX` when an id is missing and the index could not be read); `findGroups(keys, { config, now, cache }) → Map key → group` (0.5.4, RM and SF: index only, one walk for all the keys, the folders whose sessions are older than the snapshot included; throws `EINDEX` with the folders it did find in `found`), `findGroup(key, o)` is `findGroups` of one key |
+| `src/limiter.js` | (0.5.4, SF) `createLimiter(max)` — runs at most `max` async tasks at once, the rest in FIFO order, a slot released even when a task throws; a leaf module that imports nothing, shared by the history collector and the attachment store |
+| `src/place.js` | (0.5.4, P1, SF; ADR 0021) pure: where a spawned pane goes. `place({ rows, key, parent, under, last, placement, parents })` → `{ op: 'split', target, dir, tile, placement, moved? }` or `{ op: 'window', placement: 'window', moved? }`; `parsePlaceRows`, `readPlaceListing`, `isStrictPaneListing`, `parentTags` (the `@nika-parent` tags of the same `list-panes -a` read), `isAgentsWindow`, `tiledGrid`, `tileFits`; constants `MIN_COLS` 80, `MIN_ROWS` 15, `AGENTS_WINDOW`. It runs no tmux command; `spawn.js` does |
+| `src/hidden.js` | (0.5.4, RM; ADR 0022) `hidden.json` in nika's state dir: `readHidden`, `listHidden`, `hideSession`, `hideGroup`, `unhideSession`, `unhideGroup`, `hiddenGeneration()`; constants `HIDDEN_FILE`, `MAX_ENTRIES` 500, `MAX_AGE_MS` 90 days. Read through `fsafe`, written through `fwrite`, one write after the other; ids and keys only, no name and no path |
+| `src/hidden-routes.js` | (0.5.4, RM) `hiddenRoutes({ ctx, cap, snapshot })` → the routes of "Removed items" as api-app's `{ method, re, cap, handler }` list |
+| `src/autocompact.js` | (0.5.4, AC; ADR 0014 amendment) the sweeper of the typed `/compact`: pure `decide(entry, reading, now)`, `createAutoCompact({ eligibility, isEligible, compact, touchedAt, now, log })` → `{ tick(), noteFor(id, e), stop() }`; constants `WAIT_MS` 60000, `QUIET_MS` 60000, `FLOOR_MS` 600000, `MAX_FAILS` 3, `NOT_NOW_MS` 30000. In memory only; the typing is the controller's `autoCompact(pane)` |
 | `src/appio.js` | `serveApp({ config, env, stdin, stdout, stderr }) → Promise<number>` (handshake, listen, status loop, picker; resolves with the exit code 0/1/2) |
 | `src/api-app.js` | `createAppApi({ secret, ctx, deps }) → (req, res, url, port) → Promise<boolean>` (true when it handled the request) |

@@ -310,6 +310,7 @@ export function endOutcome({ status, code, ended, reason } = {}) {
     if (code === 'input-unreadable') return no("nika can't find Claude's input box, so it didn't type /exit. Close any menu in the terminal (Esc), then try again.", 'warn');
     if (code === 'not-at-prompt') return no("Claude's input didn't take /exit; nothing was submitted.");
     if (code === 'busy-switching') return no(BUSY);
+    if (code === 'notes-open') return no("Claude's notes field is open in the terminal. Close it there, then end the session.", 'warn'); // 0.5.4 (QP): an Escape in the notes field was never seen to be safe
     if (code === 'survey-undo') return no(SURVEY_UNDO_LINE, 'warn'); // a wait of 4 s, then End works again: the look of the other "try again" refusals
   }
   if (status === 429) return no(RATE);

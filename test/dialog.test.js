@@ -7,11 +7,11 @@ import fs from 'node:fs';
 import * as dialog from '../src/dialog.js';
 import {
   REASONS, TABS_MAX, NUMBER_MAX, HEADER_MAX, QUESTION_MAX, LABEL_MAX, DESC_MAX, ANSWER_MAX, TEXT_MAX, STEPS_MAX, MULTI_OTHER, PLAN_PICK,
-  PLAIN_TEXT, PLAN_TEXT_LABEL, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed, dialogCapture, stripOf,
+  PLAIN_TEXT, PLAN_TEXT_LABEL, dialogOnScreen, readDialogScreen, identityOf, sigOf, otherAllowed, dialogCapture, stripOf, viewOf, notesOpen,
 } from '../src/dialog.js';
 import { promptFromRows, modeFromRows, lastNonBlank, bypassWindow, isDialogEnd } from '../src/mode.js';
 import { readDraft, promptSig } from '../src/session-control.js';
-import { parseDraft } from '../src/draft.js';
+import { parseDraft, width } from '../src/draft.js';
 import { parseCapture } from '../src/mirror.js';
 import { boxRows, subagentRows, span, taskRows, taskScreen, taskMisfits, ansiOf } from './helpers.js';
 
@@ -92,9 +92,11 @@ function askParts(o = {}) {
   };
 }
 
+const WARN_TEXTS = { old: '\u26a0 You have not answered all questions', new: '\u26a0 Some questions are unanswered' };
+
 /** The review step (S3 E, T0c 8.3). `v328`: the Claude Code 2.1.328 shape, with no `Ready to submit your answers?` row (QP1; synthetic, drawn from the described layout). */
 function reviewParts(o = {}) {
-  const { cols = COLS, tabs = ['Project', 'Tools'], answered = [0, 1], warn = false, focus = 1, bracket = false, mark = 'bg', current = 'submit', v328 = false } = o;
+  const { cols = COLS, tabs = ['Project', 'Tools'], answered = [0, 1], warn = false, focus = 1, bracket = false, mark = 'bg', current = 'submit', v328 = false, warnText = 'old' } = o;
   const pairs = o.pairs ?? [{ q: 'Which project should I open?', a: 'web-shop' }, { q: 'Which checks should I run?', a: 'lint, my custom check' }];
   return {
     above: ['⏺ Reviewing.', ''],
@@ -103,7 +105,7 @@ function reviewParts(o = {}) {
     gap1: [''],
     heading: [[span('Review your answers', { b: true, fg: 231 })]],
     gap2: [''],
-    warn: warn ? [[span('⚠ You have not answered all questions', { fg: 220 })], ''] : [],
+    warn: warn ? [[span(WARN_TEXTS[warnText] ?? warnText, { fg: 220 })], ''] : [], // `warnText`: 'old' (2.1.326), 'new' (2.1.329/2.1.330, LC-QPB) or a literal row text
     pairs: pairs.flatMap((p) => [[span(` ● ${p.q}`)], [span(`   → ${p.a}`, { fg: 114 })]]),
     gap3: [''],
     ready: v328 ? [] : [[span('Ready to submit your answers?', DIM)]],
@@ -187,6 +189,83 @@ const reason = (rows, cols = COLS) => read(rows, cols)?.unreadable;
 const text = (s) => s.map((sp) => sp.t).join('');
 const rowAt = (rows, pred) => rows.findIndex((r) => pred(text(r)));
 
+// ---- 0.5.4, QP: a question step with a preview (Claude Code 2.1.328). The shape follows the live check LC-QP (design-053-qp section 3); every text is invented. ----
+// ASCII source: every symbol is an escape.
+const PV = { tl: '\u250c', tr: '\u2510', bl: '\u2514', br: '\u2518', v: '\u2502', h: '\u2500', lt: '\u251c', rt: '\u2524', cut: '\u2702' };
+const MID = '\u00b7';
+const UPDN = '\u2191/\u2193';
+const PV_FALLBACK = `(can't show the full preview ${MID} compare the labels and descriptions instead)`;
+const pvFooter = (editing = false) => `Enter to select ${MID} ${UPDN} to navigate ${MID} n to add notes ${MID} Tab to switch questions${editing ? ` ${MID} ctrl+g to edit in Vim` : ''} ${MID} Esc to cancel`;
+/** Greedy word wrap at `cols` cells (Claude wraps its footer at the pane width). */
+function wrapAt(text, cols) {
+  const out = [];
+  let cur = '';
+  for (const word of text.split(' ')) {
+    if (cur === '') cur = word;
+    else if (width(cur) + 1 + width(word) <= cols) cur += ` ${word}`;
+    else { out.push(cur); cur = word; }
+  }
+  out.push(cur);
+  return out;
+}
+/**
+ * The parts of a preview step, top to bottom: the rule, the strip, the question, the options with the box beside them (its top border on option 1's row, at column X,
+ * W wide), the divider (one row, or two when `divider` is 2), the bottom border, the Notes row at X, a rule, the Chat row, a blank row, the footer (wrapped at `cols` unless
+ * `footer` gives its rows) and, when `named`, the labelled rule row that ends the dialog. `rows` are the preview's lines (the box's inner text); `note` null is Claude's hint,
+ * '' the empty field, else the note; `noteRows` gives the Notes row and its wrapped rows whole. `chat` puts the pointer on Chat as well (the option keeps its own).
+ */
+function previewParts(o = {}) {
+  const {
+    cols = 119, X = 34, tabs = ['Fruit', 'Shape', 'Size'], current = 1, answered = [], labels = ['Oval', 'Box', 'Star'], ticks = [], focus = 1, chat = false,
+    rows = ['( oval )', '', '  long and round'], hidden = 0, divider = 1, fallback = false, note = null, noteRows = null, editing = false, footer = null, named = true,
+    question = 'Pick a shape', above = ['\u23fa I have a question first.', ''],
+  } = o;
+  const W = o.W ?? (fallback ? width(PV_FALLBACK) + 4 : 44); // the fallback line is one row, so its box is as wide as that line needs
+  const k = labels.length;
+  const box = [PV.tl + PV.h.repeat(W - 2) + PV.tr];
+  for (const t of fallback ? [PV_FALLBACK] : rows) {
+    if (width(t) > W - 4) throw new Error(`fixture: the preview row "${t}" is wider than the box (${W - 4} cells)`); // Claude wraps inside the box; a fixture must not overflow it
+    box.push(`${PV.v} ${t}${' '.repeat(W - 4 - width(t))} ${PV.v}`);
+  }
+  if (hidden > 0 && !fallback) {
+    const head = `${PV.lt}${PV.h.repeat(3)} ${PV.cut} ${PV.h.repeat(3)}`;
+    const word = `${hidden} ${hidden === 1 ? 'line' : 'lines'} hidden`;
+    if (divider === 2) box.push(`${head} ${word.split(' ').slice(0, 2).join(' ')}`, `hidden ${PV.rt}`);
+    else box.push(`${head} ${word} ${PV.h.repeat(Math.max(1, W - 1 - width(`${head} ${word} `)))}${PV.rt}`.replace(/ ?$/, ''));
+  }
+  box.push(PV.bl + PV.h.repeat(W - 2) + PV.br);
+  const body = [];
+  for (let i = 0; i < Math.max(k, box.length); i += 1) {
+    const left = i < k ? `${ptr(focus === i + 1)} ${i + 1}. ${labels[i]}${ticks.includes(i + 1) ? ' \u2714' : ''}` : '';
+    const right = box[i] ?? '';
+    if (i >= k) body.push(right === '' ? '' : `${' '.repeat(X)}${right}`);
+    else body.push([span(ptr(focus === i + 1), ACC), span(` ${i + 1}.`, DIM), span(` ${labels[i]}${ticks.includes(i + 1) ? ' \u2714' : ''}`), span(' '.repeat(Math.max(0, X - width(left)))), span(right, DIM)]);
+  }
+  const noteText = note === null ? 'press n to add notes' : note === '' ? 'Add notes on this design\u2026' : note;
+  const nrows = noteRows ?? [`Notes: ${noteText}`];
+  return {
+    above,
+    top: [[span('\u2500'.repeat(cols), DIM)]],
+    strip: [strip({ tabs, current, answered, submit: tabs.length > 1 })],
+    gap1: [''],
+    question: [[span(question, { b: true, fg: 231 })]],
+    gap2: [''],
+    body,
+    gap3: [''],
+    notes: nrows.map((t, j) => `${' '.repeat(j === 0 ? X : X + 7)}${t}`),
+    gap4: [''],
+    rule: [[span('\u2500'.repeat(cols), DIM)]],
+    chat: [`${chat ? '\u276f' : ' '} Chat about this`],
+    gap5: [''],
+    footer: (footer ?? wrapAt(pvFooter(editing), cols)).map((f) => [span(f, DIM)]),
+    tail: named ? [[span(`${'\u2500'.repeat(Math.max(2, cols - 10))} demo \u2500`, DIM)]] : [],
+  };
+}
+/** The three widths of the live check: 119 columns (one footer row), 80 (two rows, a one-row divider) and 52 (a narrow box, a two-row divider, a wrapped Notes row, two footer rows). */
+const PV_WIDE = { cols: 119 };
+const PV_80 = { cols: 80, hidden: 4 };
+const PV_52 = { cols: 52, X: 29, W: 18, hidden: 10, divider: 2, rows: ['+-------------', '---+', '|'], noteRows: ['Notes: press n to add', 'notes'] };
+
 describe('constants', () => {
   test('(+) hold the design values', () => {
     assert.deepEqual([TABS_MAX, NUMBER_MAX, HEADER_MAX, QUESTION_MAX, LABEL_MAX, DESC_MAX, ANSWER_MAX, TEXT_MAX, STEPS_MAX], [8, 9, 40, 500, 200, 500, 500, 300, 24]);
@@ -203,7 +282,7 @@ describe('constants', () => {
   test('(−) nothing else is exported by accident', () => {
     assert.deepEqual(Object.keys(dialog).sort(), [
       'ANSWER_MAX', 'DESC_MAX', 'HEADER_MAX', 'LABEL_MAX', 'MULTI_OTHER', 'NUMBER_MAX', 'PLAIN_TEXT', 'PLAN_PICK', 'PLAN_TEXT_LABEL', 'QUESTION_MAX', 'REASONS',
-      'STEPS_MAX', 'TABS_MAX', 'TEXT_MAX', 'dialogCapture', 'dialogOnScreen', 'identityOf', 'otherAllowed', 'readDialogScreen', 'sigOf', 'stripOf',
+      'STEPS_MAX', 'TABS_MAX', 'TEXT_MAX', 'dialogCapture', 'dialogOnScreen', 'identityOf', 'notesOpen', 'otherAllowed', 'readDialogScreen', 'sigOf', 'stripOf', 'viewOf',
     ]);
   });
 });
@@ -453,6 +532,43 @@ describe('readDialogScreen: the review step', () => {
     assert.deepEqual([none.at, none.warn, none.pairs], ['review', true, []]);
   });
 
+  // 0.5.4, QPF F1a: Claude 2.1.329/2.1.330 (LC-QPB) word the Review's warning `Some questions are unanswered` and draw no Ready row.
+  const TABS4 = ['Project', 'Tools', 'Mode', 'Name'];
+  const PAIRS3 = [{ q: 'Which project should I open?', a: 'web-shop' }, { q: 'Which checks should I run?', a: 'lint' }, { q: 'Which mode should I use?', a: 'fast' }];
+  const partial = (o = {}) => reviewParts({ v328: true, warn: true, warnText: 'new', tabs: TABS4, answered: [0, 1, 2], pairs: PAIRS3, ...o });
+
+  test('(+) F1a: the 2.1.329/2.1.330 partial Review (new warning, no Ready row, one question left out) reads, with one sig for either warning text', () => {
+    const S = read(rowsFrom(partial()));
+    assert.equal(S.unreadable, undefined);
+    assert.deepEqual([S.at, S.warn, S.pairs.length, S.tabs.map((t) => t.answered)], ['review', true, 3, [true, true, true, false]]);
+    const old = read(rowsFrom(partial({ warnText: 'old' })));
+    assert.deepEqual(S, old, 'the same reading as with the 2.1.326 text');
+    assert.equal(sigOf(S), sigOf(old));
+    assert.deepEqual(dialogCapture(rowsFrom(partial()), COLS), dialogCapture(rowsFrom(partial({ warnText: 'old' })), COLS), 'the capture the page gets is the same');
+  });
+
+  test('(+) F1a: the new warning with nothing answered reads: a warning, no pairs', () => {
+    const S = read(rowsFrom(partial({ answered: [], pairs: [] })));
+    assert.deepEqual([S.at, S.warn, S.pairs], ['review', true, []]);
+  });
+
+  test('(\u2212) F1a: the new warning together with a Ready row (the 2.1.326 shape) is `layout`: its shape with that row was never seen', () => {
+    assert.equal(reason(rowsFrom(partial({ v328: false }))), 'layout');
+    assert.equal(read(rowsFrom(partial({ v328: false, warnText: 'old' }))).at, 'review', 'the old text with the Ready row still reads');
+  });
+
+  test('(\u2212) F1a: a near miss of the new warning is `layout` (a trailing dot, a singular, no warning sign, a different case, a trailing word)', () => {
+    for (const warnText of ['\u26a0 Some questions are unanswered.', '\u26a0 Some question is unanswered', 'Some questions are unanswered', '\u26a0 some questions are unanswered', '\u26a0 Some questions are unanswered yet']) {
+      assert.equal(reason(rowsFrom(partial({ warnText }))), 'layout', warnText);
+    }
+  });
+
+  test('(\u2212) F1a: the new warning while every question is answered, or with a pair missing, is `layout` (the warning and the pairs must agree with the strip)', () => {
+    assert.equal(reason(rowsFrom(partial({ answered: [0, 1, 2, 3], pairs: [...PAIRS3, { q: 'What should the report be called?', a: 'weekly' }] }))), 'layout');
+    assert.equal(reason(rowsFrom(partial({ pairs: PAIRS3.slice(0, 2) }))), 'layout');
+    assert.equal(reason(rowsFrom(partial({ warn: false }))), 'layout', 'a question left open and no warning');
+  });
+
   test('(+) the 2.1.328 Review: a wrapped question or answer still joins its pair, and a bar before a question row is still taken out', () => {
     const rows = rowsFrom(reviewParts({ v328: true }));
     rows.splice(rowAt(rows, (t) => t.includes('\u2192 web-shop')) + 1, 0, [span('     storefront and payments')]);
@@ -676,7 +792,15 @@ describe('dialogOnScreen', () => {
     const fakes = [footerText(), '←  ☐ Fake  ✔ Submit  →', '─'.repeat(COLS), 'ctrl+g to edit in Vim · <plans>/x.md', 'Ready to code?', 'Review your answers'];
     const withoutTop = ({ top, ...rest }) => rest; // the cut (0.5.1 E) moves down with the rows above; nothing else may change
     assert.deepEqual(withoutTop(read(ask({ above: fakes }))), withoutTop(plain));
-    assert.deepEqual(withoutTop(read(rowsFrom(planParts({ above: fakes })))), withoutTop(read(rowsFrom(planParts()))));
+    // 0.5.4 SF (B1 open question 4): planParts ignores `above`, so the old plan half compared two identical screens. The plan gets its own lookalike list: no `Ready to code?`
+    // row (the plan's own title; a second one above it makes the plan refuse as `layout`, by design), and the fakes go in through the parts' `above`.
+    const planFakes = fakes.filter((f) => f !== 'Ready to code?');
+    assert.notEqual(planFakes.length, fakes.length);
+    const planPlain = read(rowsFrom(planParts()));
+    const planFaked = read(rowsFrom({ ...planParts(), above: planFakes }));
+    assert.notEqual(planPlain, null, 'the plan reads');
+    assert.deepEqual(withoutTop(planFaked), withoutTop(planPlain));
+    assert.equal(planFaked.top, planPlain.top + planFakes.length - 2, 'moved by the rows added above (the default has two)');
     assert.equal(read(ask({ above: fakes })).top, plain.top + fakes.length - 2, 'moved by the rows added above (the default has two)');
   });
 
@@ -739,6 +863,17 @@ describe('identity and sig (design W1 2.4)', () => {
     assert.equal(JSON.parse(identityOf(all[0]))[0], 'ask');
     assert.equal(JSON.parse(identityOf(all[2]))[0], 'plan');
     assert.deepEqual(JSON.parse(identityOf(all[0]))[1].slice(0, 3), ['question', ['Project', 'Tools'], 0]);
+  });
+
+  test('(+) the sig of every step without a preview keeps the value it had at 0.5.3 (HEAD of the QP build): the preview marker is on preview steps only', () => {
+    const pinned = {
+      question: [ask(), '5a9df54a8c7b5ef8'],
+      multi: [ask({ tabs: ['Tools', 'Project'], multi: true, options: CHECKS }), '4bb596a5a352e885'],
+      one: [ask({ tabs: ['Project'] }), '08f7eb2dfe99fee2'],
+      review: [rowsFrom(reviewParts()), 'fd92069bce804954'],
+      plan: [rowsFrom(planParts()), 'e5cec1b227b8a3e7'],
+    };
+    assert.deepEqual(Object.fromEntries(Object.entries(pinned).map(([name, [rows]]) => [name, sig(rows)])), Object.fromEntries(Object.entries(pinned).map(([name, [, value]]) => [name, value])));
   });
 
   test('(−) the sig does not depend on the pane height (more rows above), padding, trailing blank rows, a subagent list or a no-break space', () => {
@@ -806,11 +941,66 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
     assert.equal(reason(rows), 'cut');
   });
 
-  test('(−) cut: the plan lacks a dashed rule or the prompt row', () => {
+  test('(−) cut: the plan lacks a dashed rule (more rows can show it); layout: both rules are on screen and the prompt row is missing or unknown (0.5.4, QPF, F3c)', () => {
     assert.equal(reason(rowsFrom({ ...planParts(), d1: [] })), 'cut');
     assert.equal(reason(rowsFrom({ ...planParts(), d2: [] })), 'cut');
-    assert.equal(reason(rowsFrom({ ...planParts(), prompt: [] })), 'cut');
-    assert.equal(reason(rowsFrom({ ...planParts(), prompt: ['   Claude has written up a plan and is ready to execute. Would you like to p…'] })), 'cut', 'a prompt row ending in an ellipsis is "no prompt row": plans are not split (F16)');
+    // QPF F3c: with both dashed rules on screen the plan is not cut off at the top, so growing the pane cannot help: a missing prompt row, or one that ends in an ellipsis, is `layout` (it was `cut`)
+    assert.equal(reason(rowsFrom({ ...planParts(), prompt: [] })), 'layout');
+    assert.equal(reason(rowsFrom({ ...planParts(), prompt: ['   Claude has written up a plan and is ready to execute. Would you like to p…'] })), 'layout', 'a prompt row ending in an ellipsis is "no prompt row": plans are not split (F16)');
+  });
+
+  // 0.5.4, QPF F3: at 85 columns Claude wraps the plan's prompt over two rows (LC-QPB m-6/m-7). Such a plan is `wide` (it may have been cut at the edge), never `cut`: growing the pane cannot help.
+  const P1 = '   Claude has written up a plan and is ready to execute. Would you like to';
+  const WRAP2 = [P1, '   proceed?'];
+  const WRAP3 = ['   Claude has written up a plan and is ready', '   to execute. Would you like', '   to proceed?'];
+  const wrapped = (prompt, o = {}) => ({ ...planParts({ cols: 85, ...o }), prompt: prompt.map((t) => [span(t, DIM)]) });
+  const topOff = (parts) => ({ ...parts, intro: [], d1: [] }); // the plan's opening dashed rule and its intro are above the first row on screen
+  const LONG_PATH = `<plans>/${'demo-api-plan-'.repeat(8)}.md`;
+  const footer2 = [[span('   ctrl+g to edit in Vim \u00b7', DIM)], [span(`   ${LONG_PATH}`.slice(0, 85), DIM)]];
+
+  test('(+) F3: a plan whose prompt wraps over 2 or 3 rows is `wide`, with both dashed rules on screen and with the top off screen (not `cut`, so no grow)', () => {
+    for (const prompt of [WRAP2, WRAP3]) {
+      assert.deepEqual(read(rowsFrom(wrapped(prompt)), 85), { unreadable: 'wide', kind: 'plan' }, `${prompt.length} rows`);
+      assert.deepEqual(read(rowsFrom(topOff(wrapped(prompt))), 85), { unreadable: 'wide', kind: 'plan' }, `${prompt.length} rows, top off screen`);
+      assert.deepEqual(dialogCapture(rowsFrom(topOff(wrapped(prompt))), 85), { state: 'unreadable', kind: 'plan', reason: 'wide' });
+    }
+    assert.equal(dialogOnScreen(rowsFrom(wrapped(WRAP2))), true);
+  });
+
+  test('(\u2212) F3: a wrapped prompt that does not join to the prompt is not proven: `cut` with the top off screen (as before), `layout` with both dashed rules on screen (F3c)', () => {
+    const cases = {
+      'a word changed': [P1, '   continue?'],
+      'a row missing': [P1],
+      'a blank row between the rule and the rows': ['', ...WRAP2],
+      'a blank row between the two rows': [P1, '', '   proceed?'],
+      'the rows at indent 2': ['  Claude has written up a plan and is ready to execute. Would you like to', '  proceed?'],
+      'the rows at indent 4': ['    Claude has written up a plan and is ready to execute. Would you like to', '    proceed?'],
+      'the second row at indent 5': [P1, '     proceed?'],
+      'four rows': ['   Claude has written up a plan', '   and is ready to execute.', '   Would you like', '   to proceed?'],
+      'rows that start the prompt twice': [P1, '   proceed? proceed?'],
+    };
+    for (const [name, prompt] of Object.entries(cases)) {
+      assert.equal(reason(rowsFrom(topOff(wrapped(prompt))), 85), 'cut', `${name}, top off screen`);
+      assert.equal(reason(rowsFrom(wrapped(prompt)), 85), 'layout', `${name}, both rules on screen`);
+    }
+  });
+
+  test('(+) F3: a plan that fits (one prompt row) still reads at 120 columns, and its top off screen is still `cut`', () => {
+    assert.equal(read(rowsFrom(planParts())).kind, 'plan');
+    assert.equal(read(rowsFrom(planParts())).unreadable, undefined);
+    assert.equal(reason(rowsFrom(topOff(planParts()))), 'cut');
+  });
+
+  // F3b (owner ruling OQ2): a plan whose footer already wraps (the plan file's path is wider than the pane) is `wide` at any height, so it is never `cut` and never grows.
+  test('(+) F3b: a plan with a wrapped footer (the path on a second row) and its top off screen is `wide`, not `cut`', () => {
+    const base = { ...planParts({ cols: 85 }), footer: footer2 };
+    assert.deepEqual(read(rowsFrom(topOff(base)), 85), { unreadable: 'wide', kind: 'plan' });
+    assert.deepEqual(read(rowsFrom(base), 85), { unreadable: 'wide', kind: 'plan' }, 'with both rules on screen it was wide already');
+  });
+
+  test('(\u2212) F3b: a plan with one footer row and its top off screen is still `cut` (it grows), at 85 and at 106 columns', () => {
+    assert.equal(reason(rowsFrom(topOff(planParts({ cols: 85 }))), 85), 'cut', 'no wrapped prompt, one footer row');
+    assert.equal(reason(rowsFrom({ ...topOff(planParts({ cols: 106 })), footer: [[span('   ctrl+g to edit in Vim \u00b7 <plans>/demo-api.md', DIM)]] }), 106), 'cut');
   });
 
   test('(−) wide: a description row, or any region row, as wide as the pane (it may be cut there)', () => {
@@ -830,16 +1020,17 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
     assert.equal(reason(ask({ cols: 40, options: wrapped, tabs: ['Project'] }), 40), 'wide', 'T0b 3.5: the label continuation at indent 5 looks like a description');
   });
 
-  test('(−) wide: a footer wrapped onto two or three rows is never read (orchestrator ruling 1)', () => {
-    const two = askParts({ cols: 70, footer: ['Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim', '· Esc to cancel'], focus: 4 });
+  test('(\u2212) a footer wrapped onto two or three rows is read only when each row but the last was too full to take the next word (0.5.4, QP; was: never read, orchestrator ruling 1)', () => {
+    const two = askParts({ cols: 70, footer: ['Enter to select \u00b7 Tab/Arrow keys to navigate \u00b7 ctrl+g to edit in Vim', '\u00b7 Esc to cancel'], focus: 4 });
     const S2 = read(rowsFrom({ ...two, footer: [two.footer[0], two.footer[1]] }), 70);
-    assert.equal(S2.unreadable, 'wide');
+    assert.equal(S2.unreadable, undefined, 'the first row is 68 cells: the next word (1 cell) does not fit in a 70-column pane, so Claude wrapped it');
     assert.equal(S2.kind, 'ask');
-    const three = askParts({ cols: 40, tabs: ['Project'], footer: ['-- INSERT -- · Enter to select ·', '↑/↓ to navigate · ctrl+g to', 'edit in Vim'], focus: 4 });
-    assert.equal(reason(rowsFrom(three), 40), 'wide');
+    assert.equal(reason(rowsFrom(two), 90), 'layout', 'the same two rows in a 90-column pane were split by hand: Claude would have kept the first word on the first row');
+    const three = askParts({ cols: 40, tabs: ['Project'], footer: ['-- INSERT -- \u00b7 Enter to select \u00b7', '\u2191/\u2193 to navigate \u00b7 ctrl+g to', 'edit in Vim'], focus: 4 });
+    assert.equal(reason(rowsFrom(three), 40), 'layout', 'the first row (32 cells) has room for the next word, so the split is no wrap');
     assert.equal(dialogOnScreen(rowsFrom(three)), true, 'still a dialog on screen');
-    const t0b = askParts({ cols: 70, focus: 4, footer: ['-- INSERT -- · Enter to select ·', 'Tab/Arrow keys to navigate · ctrl+g to', 'edit in Vim'] });
-    assert.equal(reason(rowsFrom(t0b), 70), 'wide', 'the INSERT footer of T0b 3.5, three rows');
+    const t0b = askParts({ cols: 70, focus: 4, footer: ['-- INSERT -- \u00b7 Enter to select \u00b7', 'Tab/Arrow keys to navigate \u00b7 ctrl+g to', 'edit in Vim'] });
+    assert.equal(reason(rowsFrom(t0b), 70), 'layout', 'the INSERT footer of T0b 3.5, three rows, in a pane wide enough for the whole footer');
     assert.equal(read(rowsFrom(t0b), 70).kind, 'ask');
   });
 
@@ -1051,12 +1242,15 @@ describe('unreadable: every rule of design 2.3 has a fixture', () => {
     const cutAndWide = ask({ cols: 70, tabs: ['Project', 'To…'], footer: ['Enter to select · Tab/Arrow keys to navigate', '· Esc to cancel'] });
     assert.equal(reason(cutAndWide, 70), 'clipped');
     assert.equal(reason(rowsFrom({ ...askParts({ cols: 70, tabs: ['Project', 'To…'] }), top: [''] }), 70), 'cut');
-    // RV16 M1 (round 1): a clipped top beats a wrapped footer (`wide`): the page grows only on `cut`, so this decides whether a narrow panel grows
+    // RV16 M1 (round 1): a clipped top beats `wide`: the page grows only on `cut`, so this decides whether a narrow panel grows. 0.5.4 (QP): a footer split by hand is
+    // `layout` now (a wrapped one is read), so a pane narrower than the minimum is the `wide` cause here.
     const wrapped = ['Enter to select · Tab/Arrow keys to navigate', '· Esc to cancel'];
-    assert.equal(reason(ask({ cols: 70, footer: wrapped }), 70), 'wide', 'the wrapped footer alone');
+    assert.equal(reason(ask({ cols: 70, footer: wrapped }), 70), 'layout', 'the hand-split footer alone (was wide)');
     assert.equal(reason(rowsFrom({ ...askParts({ cols: 70, footer: wrapped }), top: [''] }), 70), 'cut', 'with the top clipped too');
-    const wideAndTab = ask({ cols: 70, mark: 'none', footer: ['Enter to select · Tab/Arrow keys to navigate', '· Esc to cancel'] });
-    assert.equal(reason(wideAndTab, 70), 'wide');
+    assert.equal(reason(ask({ cols: 19 }), 19), 'wide', 'a pane narrower than the minimum');
+    assert.equal(reason(rowsFrom({ ...askParts({ cols: 19 }), top: [''] }), 19), 'cut', 'a clipped top beats a pane that is too narrow');
+    const wideAndTab = ask({ cols: 19, mark: 'none' });
+    assert.equal(reason(wideAndTab, 19), 'wide');
     assert.equal(reason(ask({ mark: 'none', options: [OPTS[0], { ...OPTS[1], label: 'acme-api' }] })), 'tab');
   });
 
@@ -1221,6 +1415,403 @@ describe('dialogCapture: top (0.5.1 E)', () => {
     const c = dialogCapture(ask({ question: 'Allow bypass?' }), COLS);
     assert.equal(c.bypass, true);
     assert.ok(Number.isInteger(c.top), 'the page, not the server, decides to withhold a crop from a bypass dialog');
+  });
+});
+
+// ---- 0.5.4, QP (O1): the question footer of Claude Code 2.1.328 (notes and tab hints) and the rows Claude wraps it over ------------------------------
+describe('the question footer of Claude Code 2.1.328 and its wrapped rows (0.5.4, QP, O1)', () => {
+  const pv = (o, shape) => rowsFrom(previewParts(o), shape);
+  const cases = { 'one footer row at 119 columns': PV_WIDE, 'two footer rows at 80 columns': PV_80, 'two footer rows at 52 columns': PV_52 };
+  const strip119 = (rows) => stripOf(rows, 119);
+  const swOnly = `Enter to select ${MID} ${UPDN} to navigate ${MID} Tab to switch questions ${MID} Esc to cancel`;
+  const notesWithTabNav = `Enter to select ${MID} Tab/Arrow keys to navigate ${MID} n to add notes ${MID} Esc to cancel`;
+  const insertWithNotes = `-- INSERT -- ${MID} Enter to select ${MID} ${UPDN} to navigate ${MID} n to add notes ${MID} Tab to switch questions`;
+
+  test('(+) a preview step is a dialog on screen at 119, 80 and 52 columns: its strip reads, and no permission prompt parses', () => {
+    for (const [name, o] of Object.entries(cases)) {
+      const rows = pv(o);
+      assert.equal(dialogOnScreen(rows), true, name);
+      assert.equal(promptFromRows(rows), null, name);
+      assert.equal(dialogCapture(rows, o.cols)?.kind, 'ask', name);
+      const T = stripOf(rows, o.cols);
+      assert.deepEqual({ at: T.at, n: T.n, headers: T.headers, answered: T.answered }, { at: 1, n: 3, headers: ['Fruit', 'Shape', 'Size'], answered: [false, false, false] }, name);
+    }
+  });
+
+  test('(+) the strip follows the current tab and the answered marks on a preview step, and a one-row footer needs no blank row of its own', () => {
+    const T = stripOf(pv({ ...PV_80, current: 2, answered: [0, 1] }), 80);
+    assert.deepEqual([T.at, T.answered], [2, [true, true, false]]);
+    assert.deepEqual(stripOf(pv({ ...PV_WIDE, current: 0, tabs: ['Fruit', 'Shape'] }), 119).headers, ['Fruit', 'Shape']);
+  });
+
+  test('(+) the footer of an open notes field wraps at 80 columns: the tail row alone reads like a plan footer, but the dialog is an ask', () => {
+    for (const named of [true, false]) {
+      const rows = pv({ ...PV_80, editing: true, named });
+      assert.equal(read(rows, 80).kind, 'ask', `named ${named}`);
+      assert.equal(dialogOnScreen(rows), true);
+      assert.equal(stripOf(rows, 80).at, 1);
+    }
+    assert.match(text(pv({ ...PV_80, editing: true, named: false }).at(-1)), /^ctrl\+g to edit in Vim /, 'the fixture\'s last row is the tail row');
+  });
+
+  test('(+) a subagent list, or the labelled rule row that ends the dialog of a named session, hangs under the wrapped footer and is cut', () => {
+    for (const [name, o] of Object.entries(cases)) {
+      assert.equal(dialogOnScreen(pv({ ...o, named: true })), true, `${name}: the labelled rule row`);
+      assert.equal(dialogOnScreen(pv({ ...o, named: false }, { tree: 2 })), true, `${name}: a subagent list`);
+      assert.equal(stripOf(pv({ ...o, named: false }, { tree: 2 }), o.cols)?.at, 1, name);
+    }
+  });
+
+  test('(+) a plain step\'s footer that Claude really wrapped (the first row is full) is a proven wrap: it reads, and nothing else changes', () => {
+    const wrapped = askParts({ cols: 70, footer: ['Enter to select \u00b7 Tab/Arrow keys to navigate \u00b7 ctrl+g to edit in Vim', '\u00b7 Esc to cancel'], focus: 4 });
+    const S = read(rowsFrom(wrapped), 70);
+    assert.equal(S.unreadable, undefined, 'this footer was `wide` before 0.5.4');
+    assert.equal(S.focus, 4);
+    assert.equal(stripOf(rowsFrom(wrapped), 70).at, 0);
+  });
+
+  test('(\u2212) a gap row inside the footer, an indented row of it, or a footer right under the Chat row is no dialog end: no strip, no read, no dialog on screen', () => {
+    const [a, b] = wrapAt(pvFooter(), 80);
+    const gap = pv({ ...PV_80, footer: [a, '', b] });
+    const indented = pv({ ...PV_80, footer: [a, `  ${b}`] });
+    const indentedFirst = pv({ ...PV_80, footer: [` ${a}`, b] });
+    const touching = rowsFrom({ ...previewParts(PV_80), gap5: [] });
+    for (const [name, rows] of Object.entries({ gap, indented, indentedFirst, touching })) {
+      assert.equal(stripOf(rows, 80), null, name);
+      assert.equal(dialogCapture(rows, 80), null, name);
+      assert.equal(dialogOnScreen(rows), false, name);
+    }
+  });
+
+  test('(\u2212) four footer rows are more than Claude wraps a footer over: not a dialog end', () => {
+    const four = ['Enter to select \u00b7', `${UPDN} to navigate \u00b7`, 'n to add notes \u00b7 Tab to switch', 'questions \u00b7 Esc to cancel'];
+    assert.equal(dialogOnScreen(pv({ ...PV_80, footer: four })), false);
+  });
+
+  test('(\u2212) a 2-row footer that would have fitted on one row was not wrapped by Claude: layout on a plain step, no strip on either', () => {
+    const fits = askParts({ footer: ['Enter to select \u00b7 Tab/Arrow keys to navigate', '\u00b7 Esc to cancel'] });
+    assert.equal(reason(rowsFrom(fits)), 'layout', 'it was `wide` before 0.5.4');
+    assert.equal(stripOf(rowsFrom(fits), COLS), null);
+    const pvFits = pv({ ...PV_WIDE, footer: [`Enter to select ${MID} ${UPDN} to navigate ${MID} n to add notes`, `${MID} Tab to switch questions ${MID} Esc to cancel`] });
+    assert.equal(dialogOnScreen(pvFits), true, 'still a dialog on screen');
+    assert.equal(strip119(pvFits), null);
+    const three = askParts({ cols: 40, tabs: ['Project'], footer: ['-- INSERT -- \u00b7 Enter to select \u00b7', '\u2191/\u2193 to navigate \u00b7 ctrl+g to', 'edit in Vim'], focus: 4 });
+    assert.equal(reason(rowsFrom(three), 40), 'layout', 'three rows split where one would hold more: not a wrap');
+    assert.equal(dialogOnScreen(rowsFrom(three)), true);
+  });
+
+  test('(\u2212) the wrap proof is the row plus a space plus the next row\'s first word against the pane width: one cell short of proof is layout, at proof it reads', () => {
+    const row1 = 'Enter to select \u00b7 Tab/Arrow keys to navigate \u00b7 ctrl+g to edit in Vim';
+    const w1 = width(row1);
+    const at = (cols) => reason(rowsFrom(askParts({ cols, footer: [row1, '\u00b7 Esc to cancel'], focus: 4 }), { cols }), cols);
+    assert.equal(at(w1 + 1 + 1 + 1), 'layout', 'the first word would have fitted');
+    assert.equal(at(w1 + 1 + 1), undefined, 'row + space + word = cols - 1 + 1: the word did not fit');
+    assert.equal(at(w1 + 1), undefined);
+  });
+
+  test('(\u2212) a footer that disagrees with itself is no strip and not read: n to add notes with the plain-step navigation, Tab to switch questions with no notes, notes under INSERT', () => {
+    const one = (text) => pv({ ...PV_WIDE, footer: [text] });
+    assert.notEqual(strip119(one(pvFooter())), null, 'control: the consistent footer');
+    for (const [name, f] of Object.entries({ notesWithTabNav, swOnly, insertWithNotes })) {
+      assert.equal(strip119(one(f)), null, name);
+      assert.equal(dialogOnScreen(one(f)), true, `${name}: still a dialog on screen`);
+    }
+    // a plain step with the hint of a preview step is not read either: the footer's hints are one set
+    assert.equal(reason(rowsFrom(askParts({ footer: swOnly }))), 'layout', 'Tab to switch questions without n to add notes');
+    assert.equal(reason(rowsFrom(askParts({ footer: notesWithTabNav }))), 'layout', 'n to add notes with the navigation of a plain step');
+  });
+
+  test('(+) a row of a wrapped footer as wide as the pane (Claude fills the row up to the pane width) is no `wide`', () => {
+    const plain = 'Enter to select \u00b7 Tab/Arrow keys to navigate \u00b7 ctrl+g to edit in Vim \u00b7 Esc to cancel';
+    const hits = [];
+    for (let cols = 40; cols <= 110; cols += 1) {
+      const rows = wrapAt(plain, cols);
+      if (rows.length > 1 && rows.length <= 3 && width(rows[0]) === cols) hits.push([cols, rows]);
+    }
+    assert.ok(hits.length > 0, 'the fixture finds a pane width that the first footer row fills');
+    for (const [cols, footer] of hits) {
+      const S = read(rowsFrom(askParts({ cols, footer, focus: 4 })), cols);
+      assert.equal(S.unreadable, undefined, `cols ${cols}: ${footer[0]}`);
+    }
+  });
+
+  test('(\u2212) a footer row as wide as the pane is no longer `wide` only when it is a row of a wrapped footer; a one-row footer that fills the pane still is', () => {
+    const one = 'Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 ctrl+g to edit in Vim';
+    const cols = width(one);
+    const full = askParts({ cols, tabs: ['Project'], footer: [one], focus: 4 });
+    assert.equal(width(full.footer[0][0].t), cols, 'the fixture fills the pane');
+    assert.equal(reason(rowsFrom(full), cols), 'wide');
+  });
+});
+
+// ---- 0.5.4, QP: the reader of a question step with a preview, its capture fields and its `view` -------------------------------------------------------
+describe('the question step with a preview: reader, capture fields, sig and view (0.5.4, QP)', () => {
+  const rowsOf = (o = {}) => rowsFrom(previewParts(o));
+  const readPv = (o = {}) => read(rowsOf(o), o.cols ?? 119);
+  const edited = (o, pick, change) => rowsOf(o).map((r) => (pick(text(r)) ? lineOf(change(text(r))) : r));
+  const shown = (S) => ({ at: S.at, i: S.i, question: S.question, options: S.options.map((x) => x.label), focus: S.focus, preview: S.preview, notes: S.notes });
+  const BOX = ['( oval )', '', '  long and round'];
+
+  test('(+) full: the focused option, the box rows as drawn (trailing spaces cut, leading spaces kept), no hint of a note, at 119 columns', () => {
+    const S = readPv();
+    assert.equal(S.unreadable, undefined);
+    assert.deepEqual(shown(S), {
+      at: 'question', i: 1, question: 'Pick a shape', options: ['Oval', 'Box', 'Star'], focus: 1,
+      preview: { rows: BOX, hidden: 0, fallback: false }, notes: { text: null, editing: false },
+    });
+    assert.deepEqual([S.single, S.multi, S.textRow, S.chat, S.button, S.insert, S.bypass], [false, false, null, null, null, false, false]);
+    assert.equal(S.options.every((o) => o.description === null && o.ticked === false), true);
+  });
+
+  test('(+) the same step at 80 and at 52 columns (a wrapped footer, a 2-row divider, a wrapped Notes row, a narrow box)', () => {
+    const at80 = readPv(PV_80);
+    assert.deepEqual([at80.unreadable, at80.preview.hidden, at80.notes.text], [undefined, 4, null]);
+    const at52 = readPv(PV_52);
+    assert.equal(at52.unreadable, undefined);
+    assert.deepEqual(at52.preview, { rows: ['+-------------', '---+', '|'], hidden: 10, fallback: false });
+    assert.equal(at52.notes.text, null, 'the wrapped hint reads as the hint');
+  });
+
+  test('(+) hidden: a 1-row divider, a 2-row divider and "1 line hidden"', () => {
+    assert.equal(readPv({ hidden: 12 }).preview.hidden, 12);
+    assert.equal(readPv({ hidden: 12, divider: 2, cols: 52, X: 29, W: 18, rows: ['( oval )', '', ' long'], noteRows: ['Notes: press n to add', 'notes'] }).preview.hidden, 12);
+    assert.equal(readPv({ hidden: 1 }).preview.hidden, 1);
+    assert.equal(readPv({ hidden: 99999 }).preview.hidden, 99999);
+  });
+
+  // QP round 1 (review N3): a one-row divider has the box's width, as every inner row and the borders already do
+  const dividerAt = (rows) => text(rows.find((r) => text(r).includes('\u2702'))).slice(34); // the divider row from the box's column X on
+
+  test('(+) N3: the one-row divider the fixture draws is exactly as wide as the box, and it reads with the same hidden count', () => {
+    for (const [name, o] of [['119 columns', { hidden: 3 }], ['80 columns', PV_80], ['1 line', { hidden: 1 }], ['5 digits', { hidden: 99999 }]]) {
+      assert.equal(width(dividerAt(rowsOf(o))), o.W ?? 44, `${name}: the fixture's divider is W wide`);
+      const S = readPv(o);
+      assert.equal(S.unreadable, undefined, name);
+      assert.equal(S.preview.hidden, o.hidden, name);
+    }
+  });
+
+  test('(\u2212) N3: a one-row divider one cell narrower or one cell wider than the box is layout, as are the other divider faults', () => {
+    const trail = /\u2500+\u2524$/;
+    for (const [name, o] of [['119 columns', { hidden: 3 }], ['80 columns', PV_80]]) {
+      const narrower = edited(o, (t) => t.includes('\u2702'), (t) => t.replace(trail, (m) => m.slice(1)));
+      const wider = edited(o, (t) => t.includes('\u2702'), (t) => t.replace(trail, (m) => `\u2500${m}`));
+      assert.equal(width(dividerAt(narrower)), 43, `${name}: the fixture edit is one cell narrower`);
+      assert.equal(width(dividerAt(wider)), 45, `${name}: the fixture edit is one cell wider`);
+      assert.equal(read(narrower, o.cols ?? 119).unreadable, 'layout', `${name}: one cell narrower`);
+      assert.equal(read(wider, o.cols ?? 119).unreadable, 'layout', `${name}: one cell wider`);
+    }
+  });
+
+  test('(+) fallback: the box holds only the fixed line: fallback true, no rows, no hidden', () => {
+    const S = readPv({ fallback: true });
+    assert.deepEqual(S.preview, { rows: [], hidden: 0, fallback: true });
+    assert.equal(S.unreadable, undefined);
+  });
+
+  test('(+) the note: the hint is null, the placeholder with the editing footer is the empty string, typed text is the text, a wrapped note is joined with a space', () => {
+    assert.equal(readPv().notes.text, null);
+    assert.deepEqual(readPv({ note: '', editing: true }).notes, { text: '', editing: true });
+    assert.deepEqual(readPv({ note: 'make it round', editing: true }).notes, { text: 'make it round', editing: true });
+    assert.deepEqual(readPv({ note: 'make it round' }).notes, { text: 'make it round', editing: false }, 'a saved note, the field closed');
+    const wrapped = readPv({ noteRows: ['Notes: make it very round and', 'smooth'] });
+    assert.equal(wrapped.notes.text, 'make it very round and smooth');
+  });
+
+  test('(+) Chat focus: the pointer on Chat wins, and the option keeps its own pointer (the live capture); the box shows the last option', () => {
+    const S = readPv({ chat: true, focus: 3, rows: ['* star *'] });
+    assert.equal(S.focus, 'chat');
+    assert.deepEqual(S.preview.rows, ['* star *']);
+    assert.equal(readPv({ chat: true, focus: 1 }).focus, 'chat', 'whichever option held the pointer');
+  });
+
+  test('(+) 2 options and 7 options; a tick on an answered option', () => {
+    assert.deepEqual(readPv({ labels: ['One', 'Two'] }).options.map((o) => o.label), ['One', 'Two']);
+    const seven = readPv({ labels: ['A1', 'B2', 'C3', 'D4', 'E5', 'F6', 'G7'], focus: 7 });
+    assert.deepEqual([seven.unreadable, seven.options.length, seven.focus], [undefined, 7, 7]);
+    const ticked = readPv({ ticks: [2] });
+    assert.deepEqual(ticked.options.map((o) => o.ticked), [false, true, false]);
+  });
+
+  test('(+) a 120-row pane: a long preview (100 lines) and the span up to the footer still read', () => {
+    const rows = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`);
+    const S = readPv({ rows });
+    assert.equal(S.unreadable, undefined);
+    assert.equal(S.preview.rows.length, 100);
+  });
+
+  test('(\u2212) layout: a divider not directly above the bottom border, a box row with no right border, a box that does not open on option 1\'s row, a hint that disagrees with the footer', () => {
+    const swap = (rows) => { const d = rows.findIndex((r) => text(r).includes('\u2702')); [rows[d], rows[d + 1]] = [rows[d + 1], rows[d]]; return rows; };
+    assert.equal(read(swap(rowsOf({ hidden: 3 })), 119).unreadable, 'layout', 'divider moved off the border');
+    const noRight = edited({}, (t) => t.includes('long and round'), (t) => t.replace(/\u2502\s*$/, ' '));
+    assert.equal(read(noRight, 119).unreadable, 'layout', 'a box row without its right border');
+    const noTop = edited({}, (t) => t.includes('\u250c'), (t) => t.replace(/\u250c\u2500+\u2510/, ''));
+    assert.equal(read(noTop, 119).unreadable, 'layout', 'no box on option 1\'s row');
+    assert.equal(readPv({ note: '', editing: false }).unreadable, 'layout', 'the placeholder while the field is closed');
+    assert.equal(readPv({ editing: true }).unreadable, 'layout', 'the hint while the field is open');
+  });
+
+  test('(\u2212) layout: two pointers among the options, a checkbox, a description row, 8 options, an option row below a box-only row', () => {
+    const two = edited({}, (t) => /^ {2}2\. Box/.test(t), (t) => t.replace(/^ {2}2\./, '\u276f 2.'));
+    assert.equal(read(two, 119).unreadable, 'layout');
+    const box = edited({}, (t) => /^\u276f 1\. Oval/.test(t), (t) => t.replace(/1\. Oval {4}/, '1. [ ] Oval')); // the box stays at its column
+    assert.equal(read(box, 119).unreadable, 'layout');
+    const desc = edited({}, (t) => /^ {2}3\. Star/.test(t), (t) => `${t}`).flatMap((r, j, all) => (j === all.findIndex((q) => /^ {2}3\. Star/.test(text(q))) ? [r, lineOf('     Describes the star.')] : [r]));
+    assert.equal(read(desc, 119).unreadable, 'layout', 'a description row');
+    assert.equal(readPv({ labels: ['A1', 'B2', 'C3', 'D4', 'E5', 'F6', 'G7', 'H8'] }).unreadable, 'layout', 'eight options');
+  });
+
+  test('(\u2212) layout: each border is checked on its own (a right border that is another character, a left one, a row wider than the box), and so is each part of the tail', () => {
+    const at = (needle, change, o = {}) => read(edited(o, (t) => t.includes(needle), change), o.cols ?? 119).unreadable;
+    assert.equal(at('long and round', (t) => t.replace(/\u2502$/, '|')), 'layout', 'a right border that is another character, at the box width');
+    assert.equal(at('long and round', (t) => `${t.slice(0, 34)}|${t.slice(35)}`), 'layout', 'a left border that is another character');
+    assert.equal(at('long and round', (t) => t.replace(/\u2502$/, 'ab\u2502')), 'layout', 'both borders and the padding cells are right, but the row is wider than the box (text would be lost)');
+    assert.equal(at('Notes:', (t) => t.replace(/^ {34}/, ' '.repeat(32))), 'layout', 'the Notes row is not at the box column');
+    assert.equal(at('notes', (t) => t.replace(/^ {36}notes/, ' '.repeat(34) + 'notes'), PV_52), 'layout', 'a wrapped Notes row that is not at X + 7');
+    assert.equal(at('long and round', (t) => `   x ${t.slice(5)}`), 'layout', 'something beside the box that is no option');
+    assert.equal(at('2. Box', (t) => t.replace('2. Box', '3. Box')), 'numbers', 'option numbers with a gap');
+    const rows = rowsOf();
+    const rule = rows.findLastIndex((r) => /^\u2500{20,}$/.test(text(r)));
+    assert.equal(read(rows.map((r, j) => (j === rule ? lineOf('-'.repeat(119)) : r)), 119).unreadable, 'layout', 'a row that is no rule above Chat');
+    assert.equal(read(rowsFrom({ ...previewParts(), gap5: ['stray row'] }), 119).unreadable, 'layout', 'a row between Chat and the footer');
+  });
+
+  test('(\u2212) layout: a preview row over 200 characters, more than 120 rows, a note over 300 characters, a gap or another row in the tail', () => {
+    assert.equal(readPv({ cols: 300, X: 34, W: 250, rows: ['x'.repeat(201)] }).unreadable, 'layout');
+    assert.equal(readPv({ rows: Array.from({ length: 121 }, (_, i) => `l${i}`) }).unreadable, 'layout');
+    assert.equal(readPv({ noteRows: ['Notes: ' + 'a'.repeat(60), ...['b', 'c', 'd', 'e', 'f'].map((c) => c.repeat(60))], editing: true }).unreadable, 'layout', 'a note of 301 characters or more');
+    const noGap = rowsFrom({ ...previewParts(), gap4: [] });
+    assert.equal(read(noGap, 119).unreadable, 'layout', 'no blank row between Notes and the rule');
+    const extra = rowsFrom({ ...previewParts(), gap5: ['', ''] });
+    assert.equal(read(extra, 119).unreadable, 'layout', 'two blank rows before the footer');
+  });
+
+  test('(+) the box may reach the pane\'s right edge, and so may a wrapped Notes row with another row below it; a last Notes row that reaches it is `wide`', () => {
+    assert.equal(readPv({ cols: 80, X: 34, W: 46, rows: ['( oval )'] }).unreadable, undefined, 'box rows are as wide as the pane');
+    const wrapped = ['Notes: ' + 'a'.repeat(39), 'tail']; // 34 + 7 + 39 = 80 cells
+    assert.equal(readPv({ cols: 80, X: 34, W: 40, noteRows: wrapped }).unreadable, undefined, 'the first row is 80 cells wide, the next row continues it');
+    assert.equal(readPv({ cols: 80, X: 34, W: 40, noteRows: [wrapped[0]] }).unreadable, 'wide', 'alone, it may have been cut at the pane\'s edge');
+  });
+
+  test('(\u2212) a box wider than the pane is layout', () => {
+    assert.equal(readPv({ cols: 60, X: 34, W: 44 }).unreadable, 'layout');
+  });
+
+  test('(+) bypass in the preview rows or in the note is read as bypass (the route refuses with terminal-only)', () => {
+    assert.equal(readPv({ rows: ['bypass permissions'] }).bypass, true);
+    assert.equal(readPv({ note: 'no bypass please', editing: true }).bypass, true);
+    assert.equal(readPv().bypass, false);
+  });
+
+  test('(+) sig: the same on every focus, preview, hidden and note state of one step, and different from the plain step of the same text; a different option list changes it', () => {
+    const base = sigOf(readPv());
+    for (const o of [{ focus: 2, rows: ['[ box ]'] }, { hidden: 5 }, { fallback: true }, { note: 'hi', editing: true }, { chat: true, focus: 3 }]) assert.equal(sigOf(readPv(o)), base, JSON.stringify(o));
+    const S = readPv();
+    const plain = { ...S };
+    delete plain.preview;
+    assert.notEqual(identityOf(S), identityOf(plain), 'a preview step is not a plain step');
+    assert.notEqual(sigOf(readPv({ labels: ['Oval', 'Box'] })), base);
+  });
+
+  test('(+) view: 16 hex that changes with the rows, hidden, fallback, focus and the note, and not with colours', () => {
+    const view = (o) => dialogCapture(rowsOf(o), o.cols ?? 119).preview.view;
+    const base = view({});
+    assert.match(base, /^[0-9a-f]{16}$/);
+    for (const o of [{ rows: ['( oval )', '', '  long and roun'] }, { hidden: 2 }, { fallback: true }, { focus: 2 }, { chat: true, focus: 1 }, { note: 'x', editing: true }, { note: 'x' }]) assert.notEqual(view(o), base, JSON.stringify(o));
+    assert.notEqual(view({ labels: ['Oval', 'Box'] }), base, 'another option list is another step: the sig is in the view');
+    assert.equal(view({}), base, 'the same screen, the same view');
+    const recoloured = rowsOf().map((r) => r.map((sp) => ({ ...sp, s: { ...sp.s, fg: 196, b: true } }))); // the current tab's background and reverse video stay: the strip needs them
+    assert.equal(dialogCapture(recoloured, 119).preview.view, base, 'colours are not in the view');
+  });
+
+  test('(+) the capture of a preview step: focus, preview with its view, notes; a plain step has none of the three', () => {
+    const c = dialogCapture(rowsOf(), 119);
+    assert.equal(c.state, 'ready');
+    assert.deepEqual([c.at, c.current, c.final, c.multi, c.other, c.typed], ['question', 1, false, false, false, null]);
+    assert.deepEqual([c.focus, c.notes, c.preview.rows, c.preview.hidden, c.preview.fallback], [1, { text: null, editing: false }, BOX, 0, false]);
+    assert.deepEqual(c.options.map((o) => [o.n, o.label, o.description, o.checked]), [[1, 'Oval', null, false], [2, 'Box', null, false], [3, 'Star', null, false]]);
+    const plain = dialogCapture(ask(), COLS);
+    for (const k of ['focus', 'preview', 'notes']) assert.equal(k in plain, false, k);
+    assert.equal(dialogCapture(readPv({ chat: true, focus: 2 }) && rowsOf({ chat: true, focus: 2 }), 119).focus, 'chat');
+  });
+
+  test('(\u2212) a step with a preview and one tab only, or a strip without Submit, is unreadable layout (not captured: the form needs several tabs)', () => {
+    assert.equal(readPv({ tabs: ['Shape'], current: 0 }).unreadable, 'layout');
+  });
+
+  test('(+) stripOf on a preview step: notes true, editing from the footer, and `input` stays false even with the editor hint; a plain step keeps its fields', () => {
+    const T = stripOf(rowsOf(), 119);
+    assert.deepEqual([T.input, T.notes, T.editing], [false, true, false]);
+    const E = stripOf(rowsOf({ note: '', editing: true }), 119);
+    assert.deepEqual([E.input, E.notes, E.editing], [false, true, true]);
+    const plain = stripOf(ask({ tabs: ['Project', 'Tools', 'Scope'] }), COLS);
+    assert.equal('notes' in plain, false);
+    assert.equal('editing' in plain, false);
+  });
+
+  test('(+) notesOpen: true only on a step with a preview whose footer has the editor hint, readable or not; false on a closed field, a plain step with its editor hint, no dialog', () => {
+    assert.equal(notesOpen(rowsOf({ note: '', editing: true })), true);
+    assert.equal(notesOpen(rowsOf({ note: '', editing: true, cols: 80 })), true, 'a wrapped footer');
+    assert.equal(notesOpen(rowsOf({ note: '', editing: true, labels: ['Oval\u2026', 'Box'] })), true, 'a step nika cannot read whole');
+    assert.equal(notesOpen(rowsOf()), false);
+    assert.equal(notesOpen(ask({ tabs: ['Project', 'Tools', 'Scope'], focus: 4 })), false, 'a plain step\'s text row has the editor hint too');
+    assert.equal(notesOpen([lineOf('hello')]), false);
+    assert.equal(notesOpen(null), false);
+  });
+
+  test('(\u2212) the reader never throws on a broken preview step', () => {
+    const rows = rowsOf();
+    for (let cut = 1; cut < rows.length; cut += 1) {
+      assert.doesNotThrow(() => { readDialogScreen(rows.slice(0, cut), 119); dialogCapture(rows.slice(0, cut), 119); stripOf(rows.slice(0, cut), 119); }, `first ${cut} rows`);
+    }
+  });
+});
+
+// ---- 0.5.4, QPF F2: `noteRoom`, whether Claude's open notes field would fit the pane (the closed Notes column plus 32 cells, the width of `Notes: Add notes on this design...`, stays under the width) ----
+describe('the question step with a preview: noteRoom (0.5.4, QPF, F2)', () => {
+  const readPv = (o = {}) => read(rowsFrom(previewParts(o)), o.cols ?? 119);
+  const NARROW = { X: 34, W: 30 }; // a box that fits the narrowest panes below
+  const capture = (o) => dialogCapture(rowsFrom(previewParts(o)), o.cols ?? 119);
+
+  test('(+) true when the open field would end at the last column or before: X + 32 === cols - 1 (X 34, 67 columns), and at 80, 106 and 119 columns', () => {
+    assert.equal(readPv({ cols: 67, ...NARROW }).noteRoom, true);
+    for (const o of [PV_80, { cols: 106 }, PV_WIDE]) assert.equal(readPv(o).noteRoom, true, `${o.cols} columns`);
+  });
+
+  test('(\u2212) false when it would reach the width: X + 32 === cols (X 34, 66 columns), and at the 52-column shape (X 29)', () => {
+    const edge = readPv({ cols: 66, ...NARROW });
+    assert.equal(edge.unreadable, undefined, 'the closed step itself reads');
+    assert.equal(edge.noteRoom, false);
+    const narrow = readPv(PV_52);
+    assert.equal(narrow.unreadable, undefined);
+    assert.equal(narrow.noteRoom, false);
+    const sixty = readPv({ cols: 62, X: 34, W: 26 });
+    assert.deepEqual([sixty.unreadable, sixty.noteRoom], [undefined, false]);
+  });
+
+  test('(+) it is the reader\'s own bound: the open, empty field at the width is `wide`; one cell less is read (X 34: 67 columns reads, 66 does not)', () => {
+    const open = (cols) => read(rowsFrom(previewParts({ cols, ...NARROW, note: '', editing: true })), cols);
+    assert.equal(open(67).unreadable, undefined, '66 cells end at the last column but one: Claude drew the whole placeholder, so it reads');
+    assert.equal(open(67).notes.text, '');
+    assert.equal(open(66).unreadable, 'wide', 'the row reaches the width: it may have been cut');
+  });
+
+  test('(\u2212) the capture of a preview step has no noteRoom key; the sig and the view do not depend on it (two screens that differ only in the width, one with room and one without)', () => {
+    const wide = readPv({ cols: 119 });
+    const tight = readPv({ cols: 66, ...NARROW });
+    assert.deepEqual([wide.noteRoom, tight.noteRoom], [true, false]);
+    assert.equal(sigOf(wide), sigOf(tight));
+    assert.equal(viewOf(wide), viewOf(tight));
+    assert.equal(JSON.stringify(identityOf(wide)), JSON.stringify(identityOf(tight)));
+    for (const o of [{ cols: 119 }, { cols: 66, ...NARROW }]) {
+      assert.equal(JSON.stringify(capture(o)).includes('noteRoom'), false);
+      assert.deepEqual(Object.keys(readPv(o).notes), ['text', 'editing'], 'it is not part of `notes`');
+    }
+  });
+
+  test('(\u2212) a step without a preview has no noteRoom, and an unreadable preview step has no step to carry it', () => {
+    assert.equal('noteRoom' in read(ask()), false);
+    assert.equal(readPv({ cols: 119, W: 200 }).unreadable !== undefined, true);
   });
 });
 

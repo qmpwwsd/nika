@@ -21,7 +21,7 @@ values must not be steerable from a request, a tag or a file.
 
 ## Decision
 - **App tier only, always on.** `PUT /api/app/pane/:id/fit { cols, rows, open }` and `DELETE …/fit`, new module `src/fit.js`, no
-  setting. The request carries only the panel size (integers, 40–400 × 10–200) and `open`; every tmux target and stored value
+  setting *(0.5.4: there is one now, `fit.mode`, and `off` holds no lease; see "Fit modes" at the end)*. The request carries only the panel size (integers, 40–400 × 10–200) and `open`; every tmux target and stored value
   (`@W`, `%P`, pane count, zoom flag, sizes, the `window-size` option, the layout) is read from tmux's own listing in the same call.
 - **Zoom always, resize only when it cannot squeeze.** A window with several panes is zoomed on the mirrored pane (only when
   nobody has zoomed it; the flag and the active pane are read first, so no blind toggle). It is resized to the panel only when the
@@ -69,7 +69,9 @@ values must not be steerable from a request, a tag or a file.
   answer 409 `busy-switching`. One acquire, renew or release runs at a time per window.
 - **Spawn gives the window back first** (owner decision Q3). A split into a fitted window would unzoom it and put the new pane
   into a nika-sized window, so `spawnAgent` reads the window id of its split target (`display-message -p -t <target> -F
-  '#{window_id}'`) and calls `releaseWindow` before the `split-window`; the page fits again on its next beat.
+  '#{window_id}'`) and calls `releaseWindow` before the `split-window`; the page fits again on its next beat. *(0.5.4: gone. A spawn
+  never splits a window that is zoomed or that carries `@nika-fit`, so `releaseFitted` and `fit.releaseWindow` were removed; the new
+  agent goes to the agents window instead. See ADR 0021, which replaces this decision, and the "Fit modes" amendment below.)*
 - **Quit and start.** `finish()` stops taking requests, then `releaseAll()` (bounded by 3 s); `start()` runs `recover()` (bounded by
   3 s) before `ready`, which gives back what a crash left, from the lease files. (Fix before 0.5.0: the shell sends SIGTERM 2 s after
   stdin closes, and `finish()` used to remove the server's SIGTERM listener first, so the restore could be cut at 2 s. `finish()` now keeps a
@@ -94,7 +96,7 @@ values must not be steerable from a request, a tag or a file.
 - **Re-asserting after the user changed the window.** The user just undid nika's zoom; zooming again 5 s later is fighting them (Q6).
   Rejected: stay off until the window is opened again.
 - **Refusing a spawn into a fitted window, or splitting with `-Z`.** The first blocks the orchestrator's main action; the second
-  leaves a nika-sized window with an extra pane. Rejected (Q3): release first.
+  leaves a nika-sized window with an extra pane. Rejected (Q3): release first. *(0.5.4: replaced by ADR 0021, a spawn never splits a fitted window.)*
 - **Putting the fit on the capture route.** The capture's ETag and cache (250 ms then, 100 ms since F10) stay untouched (the draft sync relies on them), a
   beat has to run while the mirror is hidden, and the capture must never change tmux. Rejected: two routes.
 - **A settings switch.** Draft sync has none either; the chip tells the user when nika holds a window. Not built.
@@ -111,7 +113,7 @@ values must not be steerable from a request, a tag or a file.
   exact); anything further off is still a mismatch (`blocked / changed`), and the page keeps asking for the panel's rows.
 - The page and the control lock now depend on each other: the draft sync must re-push after a 409 `busy-switching` (it does, about
   300 ms later).
-- Rules 3, 4, 11 and 12 gain the fit: new tmux argv shapes (and the spawn read of the window id), new reads, the lease files and
+- Rules 3, 4, 11 and 12 gain the fit: new tmux argv shapes (and the spawn read of the window id, *gone in 0.5.4, ADR 0021*), new reads, the lease files and
   `removeOwnFile`. `src/ids.js` holds `WINDOW_ID` and `FIT_NONCE`.
 - Verified live on tmux 3.8 (spike S10 and the release's live checks) and, through the fit group of `scripts/linux-verify.sh`, by
   the `linux-verify` CI job on the Linux runner's tmux (ubuntu-latest ships tmux 3.6a): a 3-pane window and a single pane fitted and
@@ -179,7 +181,7 @@ side only, in `src/fit.js`; **no new route, body field, file key, tmux command o
   was active before nika's zoom.
 - **The user's table.** Split by the orchestrator's `nika spawn`, an agent's claude ending, a sub-orchestrator's agents: fitted again within
   about a second. The user's own split, unzoom, focus change, resize or kill: off, as before (Fit again, F1). A user split in the same
-  second as a spawn: off (the user's pane is untagged). `docs/design/spec.md` §9.13 has the table.
+  second as a spawn: off (the user's pane is untagged). *(0.5.4: a spawn no longer splits a fitted window, ADR 0021; the rest of this row stands.)* `docs/design/spec.md` §9.13 has the table.
 - **Alternatives rejected.** *Re-base the lease instead of release + acquire* (update `panes`, zoom again): the restore's saved layout and
   window size would need recomputing at a fitted size; release + acquire reuses the two tested paths. *Let the page's next beat acquire after a
   release without a mark* (no refit in the watch): the window sits restored for up to 5 s and then jumps back, two visible jumps instead of one
@@ -634,3 +636,36 @@ The live check LC18 (R4b) attached a real tmux client after a question had opene
 **Alternatives.** *Measure the box as it is and correct after the panel closes (FX2 alone):* it does nothing for a panel that cannot close because the pane is too small, and the pane keeps the short size meanwhile. *Hold the rows for as long as a panel is up (Q4, option B):* safer for a tall dialog, but the mirror overflows a window that really got smaller. *A window `resize` listener for the height:* a second commit trigger; the column observer reaches the same place with `remeasure` as the only decision. *Lay the panel over the terminal box:* the rows under the panel would be unreadable; the panel takes its place in the flow instead.
 
 **Consequences.** (1) A shorter window lowers the rows by its own change only; a taller one grows them. (2) A banner that appears under a panel is a height-only change and is ignored, as F10 already does for every other panel. (3) The close commit reads the hidden rows (K) from the frame drawn at that moment, as FX2 does: if Claude has not drawn its input box yet, K is 0 and the ask drops by K until the next commit point. (4) The path with no free frame can still show finding 4 until the panel closes once. (5) The layout is CSS on a flex column that the page's rig cannot lay out: the Node tests prove the attribute, the guard and the sizes asked; the look is checked live (LC23, not yet run). (6) Rule text: constraint 12's Fit paragraph (`rules/project-rules.md`) gains the clause that the size asked under a panel is the one the panel had without it, written by the orchestrator and approved by the owner with the PR. `docs/design/spec.md` §9.13 ("The box without the panel") and §9.19 and `docs/contracts/api-app.md` ("A steady size") carry the details.
+
+## Amendment 2026-11-19 (0.5.4, P2): Fit modes (auto, fill, terminal, off)
+
+**Context.** Fit had one behaviour, and its terminal-aware parts (F4, F9, F15) decided by themselves when the window you click into gets the size. People want to choose: some want the panel always filled, some never want nika to resize a tmux window, some want nika to leave tmux alone. One global setting with four values answers all three. **The server enforces it and the page follows. No new tmux command, argv shape, lease-file key, route or request key.** The mode only picks among behaviours rule 12 and this ADR already allow.
+
+**Decision.**
+- **The setting.** `fit: { mode }` in nika's `config.json`: `auto` (the default; an absent key means `auto`), `fill`, `terminal` or `off` (`FIT_MODES` in `src/ids.js`, checked by the store). An unknown value loads as `auto` with the warning `fit.mode invalid, default used`; an unknown inner key is dropped with a warning; a settings `PUT` with a bad value is 400 `invalid` and changes nothing. It is global (every project), set under Settings → Session window, and `GET` and `PUT /api/app/settings` carry it. A downgrade to a build without it drops the key as unknown, which is `auto`, the safe side. The browser tier reads nothing new.
+- **The mode never comes from a request.** The fit body keeps its four keys (`cols`, `rows`, `open`, `focus`) and `checkFitBody` still refuses any other. The app tier calls `fit.setMode` at start (before `recover()`), after a settings save has succeeded, and on a fit `PUT` with `open: true` (it re-reads `config.json` first, so a hand edit is seen when a session window opens). The mode is memory only: it is never written to a lease file.
+- **What each mode does.** The controller overrides two inputs, nothing else: `focusOf(lease)` (the page's `focus` in `auto`, always true in `fill`, always false in `terminal`) and `shown(row)` (a client is attached in `auto` and `fill`; every window counts as shown in `terminal`). Every place that read a lease's focus or a window's client count reads these two.
+  - **`auto`:** all of this ADR, unchanged.
+  - **`fill`:** every request counts as focused. The window is sized to the panel whenever the page holds it: a terminal's presence, a blur and F15's squeeze no longer stop it, and the terminal shows dots around the pane while a session window is open. A focus take after something else moved the size still counts toward the 12-per-minute cap, which `fill` rarely reaches because it has no focus switches.
+  - **`terminal`:** every window counts as one a terminal shows, and no request as focused. nika zooms the pane of a window that has several panes and nobody zoomed (the F4 terminal form), never runs `resize-window`, and gives back in place, within about 1 s, a size it set before the switch. The lease, the tag and the file stay, because nika must know what to give back. The page scales the text.
+  - **`off`:** no lease. Every fit request is answered `{ fit: { state: 'off', reason: null, mode: 'off' } }` with no tmux call. A lease this pane still holds is released like a `DELETE`'s, with no mark and no note, so leaving `off` never leaves a window blocked. The start-up `recover()` still runs in every mode, because it only gives back what an earlier run left.
+- **A change while leases are held.** Any mode to `off`: every lease is released at once (queued), and in `off` the 1 s watch only releases, so a lease that outlives the switch is never run as `auto` (review M1). `auto` or `fill` to `terminal`: memory only; the watch sees `focusOf` false and `shown` true and gives back a resized window (GIVE) or keeps the terminal form for an unresized one. To `fill`: the watch sees focus and takes (TAKE). `fill` or `terminal` to `auto`: the page's own focus decides again. `off` to anything: nothing is held; the next request of a page (within 5 s) acquires.
+- **The mode is read right before each tmux change.** A lock wait can last up to 5 s and a switch can come in it. The acquire, the refit, the give and a resizing renew read the mode in the same step as the tmux call, with no `await` between them (review M2): a switch to `off` never tags, zooms or resizes afterwards, a switch to `terminal` never resizes, and a fit cut short by `off` puts the window back exactly, with no mark.
+- **Every fit answer names the mode.** `chipView` reads it; a missing or unknown value is `auto`, so an older server and a newer page work together. Three new chip looks, each with its own colour token, icon and words: `fill` (`--fit-fill`, `i-fit-pin`, "Fit · always fills"), `term-set` (`--fit-set`, `i-term-pin`, "Fit · terminal's size (set)") and `off-set` (`--fit-off`, `i-fit-off`, "Fit · off in Settings"), plus one copy variant, `zoomed:fill`, on today's zoomed look. The pin dot marks "set in Settings". `off-set` is solid on a grey ground and `blocked` stays dashed, so the two never look alike. The popover of a set look says "Change it in nika's Settings, under Session window." and has no button, because nothing on the page can change the mode. Auto's looks are unchanged.
+- **The page follows within one heartbeat.** It keeps its planner and its 5 s beat in every mode; `off` costs a request and no tmux call. A new chip key redraws the chip. Room (F10), hidden rows (F11) and grow (F16) run only in `auto` and `fill`; FX2 and FX3 are skipped while the state is `off` or the mode is `terminal`; a grow that is already running ends at the switch and does not send its way back (SF-1). The text scale (at most 1×, at least 0.4×) holds in every mode, `off` included (the owner's decision of 2026-11-18, P2 Q6, as recommended).
+- **A spawn no longer touches Fit.** `releaseFitted` and `fit.releaseWindow` are gone; a spawn never splits a fitted or zoomed window (ADR 0021).
+- **Rule text.** Rule 4 names `fit.mode` among the keys nika reads from its own `config.json`; rule 12's Fit paragraph opens with "Fit mode (0.5.4)" (both landed with the server commit).
+
+**Alternatives.**
+- *The mode in the request body:* a request must never carry a value that changes what nika does to tmux; the exact-keys check would have to be loosened, and T66 would need a new row.
+- *`terminal` holds no lease and changes nothing in tmux* (P2 Q5, alternative; the owner chose the zoom on 2026-11-18): then the pane of a multi-pane window would not be zoomed, and the mirror would show a pane smaller than its window. Built as the F4 terminal form instead; the zoom is the one visible difference from `off`.
+- *`off` at 1× with a cut-off mirror* (P2 Q6, alternative; the owner chose to scale the text on 2026-11-18): rejected for the reason `blocked` already scales the text.
+
+**Consequences.**
+1. A forged `fill` (`config.json` sits in an agent-writable directory, rule 9) makes the terminal show dots while a session window is open, until the chip is seen and the setting changed (T66). A file edit takes effect only at app start, after a settings save, or on a fit request with `open: true`.
+2. In `terminal` your terminal shows Claude's pane zoomed too, until the session window closes.
+3. In `fill` with a client attached and the page blurred, the chip's title changes to the "dots" variant with no announcement (live check LC-P2, observation).
+4. A null layout read after a switch to `off` is fail-closed: nothing is applied and no line is logged.
+5. The three chip colours are 0.013 to 0.035 OKLab from some `--m-*` colours (accepted: every look also has its own icon and words).
+6. Found in the live check and fixed before release: after a question closed in `terminal` or `off`, a later switch back to `auto` asked the stale grown size again (a grow that ends now retargets the planner's base, with no request, whatever the mode), the pin dots touched the corner bracket at 14 px (now a small dot with a clear gap), and the Settings card icons sat high against their titles (one CSS rule).
+7. `docs/design/spec.md` (§9.22), `docs/contracts/api-app.md` and `docs/security.md` (T66) carry the details.

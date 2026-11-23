@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { stateDir } from '../src/paths.js';
 import { updateSettings } from '../src/store.js';
 import {
-  UPLOAD_CAP, MAX_BYTES, PER_MESSAGE, ID, PATH_OK, sniff, checkUploadBody, isSecretName, createAttachments,
+  UPLOAD_CAP, MAX_BYTES, PER_MESSAGE, TRAYS_MAX, ID, PATH_OK, sniff, checkUploadBody, isSecretName, createAttachments,
+  KEPT_CAP, keptTextOk, checkKeptBody,
 } from '../src/attachments.js';
 
 // A stored path must match PATH_OK (and stay under 200 characters), so the temp root has to be a short plain path; os.tmpdir() may not be.
@@ -81,11 +82,17 @@ function plant(env, clock, { key = KEY, name, age = 0, size = 1 } = {}) {
 const leftovers = (env, key = KEY) => (fs.existsSync(keyDir(env, key)) ? fs.readdirSync(keyDir(env, key)).sort() : null);
 const onlyCodes = (logs) => logs.every((l) => /^nika: attachments: [A-Z0-9_]{1,20}$/.test(l));
 
+// 0.5.4, AT: the tray of a pane (synthetic owner: a made-up pid and a made-up session label, never a real id)
+const OWNER = { pid: 4101, session: 'sess-one' };
+const bindT = (att, over = {}) => att.bindTray(PANE, { key: KEY, owner: OWNER, ...over });
+const listT = (att, over = {}) => att.listTray(PANE, { key: KEY, owner: OWNER, ...over });
+
 describe('constants', () => {
   test('(+) the values the routes and the page share', () => {
     assert.equal(UPLOAD_CAP, 12 * MIB);
     assert.equal(MAX_BYTES, 8 * MIB);
     assert.equal(PER_MESSAGE, 6);
+    assert.equal(TRAYS_MAX, 64);
     assert.ok(ID.test('0123456789abcdef'));
     assert.ok(PATH_OK.test('/a/b-c_d.e+f/0123456789abcdef.png'));
   });
@@ -348,8 +355,8 @@ describe('isSecretName and the credential-file refusal (rule 4, the owner\'s "do
     }
     assert.equal(fs.existsSync(stateDir(env)), false);
     assert.deepEqual(logs, []);
-    for (const name of ['netrc', '.netrc.bak', 'credentials.txt', 'my-credentials', 'npmrc', '.pgpass2', 'git-credentials']) {
-      assert.equal((await att.save({ pane: PANE, key: KEY, name, data: b64(Buffer.from('synthetic\n')) })).status, 200, name);
+    for (const [i, name] of ['netrc', '.netrc.bak', 'credentials.txt', 'my-credentials', 'npmrc', '.pgpass2', 'git-credentials'].entries()) {
+      assert.equal((await att.save({ pane: `%${60 + i}`, key: KEY, name, data: b64(Buffer.from('synthetic\n')) })).status, 200, name); // a pane each: a tray holds six
     }
   });
 
@@ -390,8 +397,8 @@ describe('save', () => {
     const { att, env } = make();
     const want = [[PNG, 'a', 'png', 'png'], [JPEG, 'a.png', 'jpeg', 'jpg'], [GIF89, 'a', 'gif', 'gif'], [WEBP, 'a', 'webp', 'webp'], [PDF, 'a.txt', 'pdf', 'pdf'],
       [Buffer.from('print(1)\n'), 'job.PY', 'text', 'py'], [Buffer.from('plain'), 'a.env', 'text', 'txt'], [Buffer.from('x'), '', 'text', 'txt']];
-    for (const [buf, name, type, ext] of want) {
-      const b = await saved(att, buf, name);
+    for (const [i, [buf, name, type, ext]] of want.entries()) {
+      const b = await saved(att, buf, name, { pane: `%${50 + i}` }); // a pane each: a tray holds six
       assert.equal(b.type, type);
       assert.ok(fs.existsSync(path.join(keyDir(env), `${b.id}.${ext}`)), `${name} -> ${ext}`);
     }
@@ -546,12 +553,13 @@ describe('save', () => {
 
   test('(−) the 31st upload within a minute is 429; a minute after the first it works again', async () => {
     const { att, clock } = make();
-    for (let i = 0; i < 30; i += 1) assert.equal((await upload(att, Buffer.from(`n${i}`))).status, 200, `upload ${i}`);
-    assert.equal((await upload(att, Buffer.from('n30'))).status, 429);
+    const on = (i) => ({ pane: `%${100 + i}` }); // a pane each: a tray holds six
+    for (let i = 0; i < 30; i += 1) assert.equal((await upload(att, Buffer.from(`n${i}`), 'file', on(i))).status, 200, `upload ${i}`);
+    assert.equal((await upload(att, Buffer.from('n30'), 'file', on(30))).status, 429);
     clock.t += 59_000;
-    assert.equal((await upload(att, Buffer.from('n30'))).status, 429, 'still inside the minute');
+    assert.equal((await upload(att, Buffer.from('n30'), 'file', on(30))).status, 429, 'still inside the minute');
     clock.t += 2_000;
-    assert.equal((await upload(att, Buffer.from('n30'))).status, 200);
+    assert.equal((await upload(att, Buffer.from('n30'), 'file', on(30))).status, 200);
   });
 
   test('(−) uploads that fail a check still count toward the 30 a minute', async () => {
@@ -641,9 +649,9 @@ describe('saveBytes', () => {
 
   test('(−) the 30-a-minute limit counts both doors: 15 + 15 pass, the 31st is 429, and a failed check counts too', async () => {
     const { att } = make();
-    for (let i = 0; i < 15; i += 1) {
-      assert.equal((await upload(att, Buffer.from(`u${i}`))).status, 200);
-      assert.equal((await put(att, Buffer.from(`b${i}`))).status, 200);
+    for (let i = 0; i < 15; i += 1) { // a pane for each save: a tray holds six
+      assert.equal((await upload(att, Buffer.from(`u${i}`), 'file', { pane: `%${100 + i}` })).status, 200);
+      assert.equal((await put(att, Buffer.from(`b${i}`), 'file', { pane: `%${200 + i}` })).status, 200);
     }
     assert.equal((await put(att, Buffer.from('b15'))).status, 429);
     assert.equal((await upload(att, Buffer.from('u15'))).status, 429);
@@ -1363,6 +1371,26 @@ describe('logging (T38)', () => {
     mock.restoreAll();
     assert.deepEqual(writes, ['nika: attachments: EMODE\n']);
   });
+
+  test('(+) S13 (0.5.4, AT): listTray, bindTray and dropPanes log a code only: no name, id or path, whatever failed', async () => {
+    const { att, env, logs } = make();
+    const a = await saved(att, PNG, 'secret-name.png');
+    const b = await saved(att, JPEG, 'secret-two.jpg');
+    const c = await saved(att, GIF89, 'secret-three.gif');
+    const swapped = path.join(keyDir(env), `${a.id}.png`);
+    fs.rmSync(swapped);
+    fs.symlinkSync(path.join(root, 'outside-s13'), swapped); // listTray: a code
+    fs.linkSync(path.join(keyDir(env), `${b.id}.jpg`), path.join(root, 'second-link-s13')); // listTray and dropPanes: a code
+    await listT(att); // a: ELOOP, b: ENLINK
+    await bindT(att, { owner: { pid: 1, session: 'sess-other' } }); // another Claude: the tray is dropped
+    const d = await saved(att, PDF, 'secret-four.pdf');
+    fs.linkSync(path.join(keyDir(env), `${d.id}.pdf`), path.join(root, 'second-link-s13b'));
+    await att.dropPanes(() => true); // d: ENLINK, the removal is refused
+    assert.ok(logs.length >= 3, `the scenario must log, or it proves nothing: ${logs.join('|')}`);
+    assert.ok(onlyCodes(logs), logs.join('|'));
+    const wire = logs.join('\n');
+    for (const leak of ['secret-', a.id, b.id, c.id, d.id, root, stateDir(env), 'attachments/']) assert.ok(!wire.includes(leak), leak);
+  });
 });
 
 describe('review fixes (W2-T1, round 1)', () => {
@@ -1521,5 +1549,1087 @@ describe('review fixes (W2-T1, round 1)', () => {
     assert.deepEqual(odd, ['\u2212']);
     for (const line of self.split('\n').filter((l) => !asciiOnly(l))) assert.match(line, /^\s*(?:test|describe)\(/, line);
     assert.ok(!/Keep this file ASCII/.test(self.split('\n').slice(0, 4).join('\n')), 'the header must not claim what the titles break');
+  });
+});
+
+describe('tray (0.5.4, AT): the unsent files of a pane, kept in memory for the return', () => {
+  const ids = (l) => l.files.map((f) => f.id);
+  const SPARE = '0123456789abcdef'; // a well-formed id nika never issued
+  /** Makes a stored file 8 days old (keepDays is 7), so the next prune takes it and its record. */
+  const age = (env, id, ext) => {
+    const t = new Date(Date.now() - 8 * DAY);
+    fs.utimesSync(path.join(keyDir(env), `${id}.${ext}`), t, t);
+  };
+  /** One old file (gone after a prune) and one live file on the pane, listed once so the old one is marked gone. */
+  async function withGone() {
+    const m = make();
+    const old = await saved(m.att, PNG, 'old.png');
+    age(m.env, old.id, 'png');
+    await m.att.prune(); // the old file and its record go
+    const live = await saved(m.att, JPEG, 'live.jpg');
+    const first = await listT(m.att);
+    assert.deepEqual(first, { files: [{ id: live.id, name: 'live.jpg', type: 'jpeg', size: JPEG.length }], gone: ['old.png'] });
+    return { ...m, old, live };
+  }
+
+  test('(+) S1: save twice, then listTray gives both files in the order stored, as exactly { id, name, type, size }', async () => {
+    const { att } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const b = await saved(att, JPEG, 'b.jpg');
+    assert.deepEqual(await listT(att), {
+      files: [
+        { id: a.id, name: 'a.png', type: 'png', size: PNG.length },
+        { id: b.id, name: 'b.jpg', type: 'jpeg', size: JPEG.length },
+      ],
+      gone: [],
+    });
+  });
+
+  test('(−) S1: another pane\'s listTray is empty and makes no tray; a malformed pane or key lists nothing', async () => {
+    const { att } = make();
+    await saved(att, PNG, 'a.png');
+    assert.deepEqual(await att.listTray('%8', { key: KEY, owner: OWNER }), { files: [], gone: [] });
+    assert.equal(att.hasTray('%8'), false);
+    assert.equal(att.hasTray(PANE), true);
+    for (const [pane, claim] of [['nope', { key: KEY, owner: OWNER }], [PANE, { key: 'nope', owner: OWNER }], [PANE, null], [undefined, undefined]]) {
+      assert.deepEqual(await att.listTray(pane, claim), { files: [], gone: [] });
+    }
+    assert.equal(att.hasTray(PANE), true, 'junk arguments drop nothing');
+  });
+
+  test('(+) S2: saveBytes (the file chooser door) lands in the same tray as save', async () => {
+    const { att } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const r = await att.saveBytes({ pane: PANE, key: KEY, name: 'c.pdf', bytes: PDF });
+    assert.equal(r.status, 200);
+    const l = await listT(att);
+    assert.deepEqual(l.files.map((f) => [f.id, f.name, f.type, f.size]), [[a.id, 'a.png', 'png', PNG.length], [r.body.id, 'c.pdf', 'pdf', PDF.length]]);
+  });
+
+  test('(+) S3: the label is the last path part through clean(): a.png stays, ../x/y.png and x\\y.png give y.png, controls become spaces, empty gives file', async () => {
+    const cases = [
+      ['a.png', 'a.png'], ['../x/y.png', 'y.png'], ['x\\y.png', 'y.png'], ['..\\..\\z.png', 'z.png'], ['a\u0007b.png', 'a b.png'],
+      ['x\u202ey.png', 'x y.png'], ['dir/', 'file'], ['   ', 'file'], ['', 'file'], ['  spaced   out.png ', 'spaced out.png'],
+    ];
+    const { att } = make();
+    for (const [i, [name, label]] of cases.entries()) {
+      const pane = `%${40 + i}`;
+      await saved(att, PNG, name, { pane });
+      assert.deepEqual((await att.listTray(pane, { key: KEY, owner: null })).files.map((f) => f.name), [label], JSON.stringify(name));
+    }
+  });
+
+  test('(−) S3: the name never reaches the disk: no file name under the state dir and no file\'s bytes contain it', async () => {
+    const { att, env } = make();
+    await saved(att, PNG, 'secret-name.png');
+    await saved(att, PDF, '../deep/secret-two.pdf');
+    await listT(att);
+    const all = fs.readdirSync(stateDir(env), { recursive: true });
+    assert.ok(all.length > 0);
+    for (const rel of all) {
+      assert.ok(!/secret-(?:name|two)/.test(rel), rel);
+      const full = path.join(stateDir(env), rel);
+      if (fs.statSync(full).isFile()) assert.ok(!/secret-(?:name|two)/.test(fs.readFileSync(full, 'latin1')), rel);
+    }
+  });
+
+  test('(+) S4: a file past keepDays is listed as gone, a retry lists it again, and the next save clears the note', async () => {
+    const { att, old, live, logs } = await withGone();
+    assert.deepEqual((await listT(att)).gone, ['old.png'], 'a retry after an abort, or a second page, sees it again');
+    assert.deepEqual(logs, [], 'an expired file is normal: nothing is logged, at the first list or at the retry');
+    const next = await saved(att, GIF89, 'next.gif');
+    assert.deepEqual(await listT(att), {
+      files: [
+        { id: live.id, name: 'live.jpg', type: 'jpeg', size: JPEG.length },
+        { id: next.id, name: 'next.gif', type: 'gif', size: GIF89.length },
+      ],
+      gone: [],
+    });
+    assert.ok(old.id);
+  });
+
+  test('(+) S4: remove (any id) and markSent clear the note too', async () => {
+    const viaRemove = await withGone();
+    assert.equal(await viaRemove.att.remove(PANE, SPARE), false);
+    assert.deepEqual(await listT(viaRemove.att), { files: [{ id: viaRemove.live.id, name: 'live.jpg', type: 'jpeg', size: JPEG.length }], gone: [] });
+    const viaSent = await withGone();
+    viaSent.att.markSent([viaSent.live.id]);
+    assert.deepEqual(await listT(viaSent.att), { files: [], gone: [] });
+  });
+
+  test('(+) S4: gone items never count toward the six: one gone and five live items still take a sixth live save', async () => {
+    const { att, env } = make();
+    const old = await saved(att, PNG, 'old.png');
+    age(env, old.id, 'png');
+    await att.prune();
+    for (let i = 0; i < 5; i++) await saved(att, PNG, `n${i}.png`);
+    assert.deepEqual((await listT(att)).gone, ['old.png']);
+    const six = await upload(att, JPEG, 'six.jpg');
+    assert.equal(six.status, 200, JSON.stringify(six.body));
+    const l = await listT(att);
+    assert.deepEqual(l.files.map((f) => f.name), ['n0.png', 'n1.png', 'n2.png', 'n3.png', 'n4.png', 'six.jpg']);
+    assert.deepEqual(l.gone, [], 'the save cleared the note, so live plus gone stay at six or fewer');
+    assert.equal((await upload(att, JPEG, 'seven.jpg')).status, 409);
+  });
+
+  test('(−) S4: a sent id is neither listed nor gone; a removed id is neither', async () => {
+    const { att } = make();
+    const a = await saved(att, PNG, 'a.png');
+    att.markSent([a.id]);
+    assert.deepEqual(await listT(att), { files: [], gone: [] });
+    const b = await saved(att, PNG, 'b.png');
+    assert.equal(await att.remove(PANE, b.id), true);
+    assert.deepEqual(await listT(att), { files: [], gone: [] });
+  });
+
+  test('(+) S5: a file deleted behind nika\'s back is listed as gone, and ENOENT is not logged', async () => {
+    const { att, env, logs } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const b = await saved(att, JPEG, 'b.jpg');
+    fs.rmSync(path.join(keyDir(env), `${a.id}.png`));
+    assert.deepEqual(await listT(att), { files: [{ id: b.id, name: 'b.jpg', type: 'jpeg', size: JPEG.length }], gone: ['a.png'] });
+    assert.deepEqual(logs, []);
+    assert.equal(await att.lookup(PANE, a.id), null, 'and the send no longer finds it');
+  });
+
+  test('(−) S5: a file swapped for a symlink, hard-linked, or resized is gone; nothing is followed or removed; another error is logged as a code only', async () => {
+    const { att, env, logs } = make();
+    const outside = path.join(root, 'outside-s5');
+    fs.writeFileSync(outside, 'keep');
+    const swap = await saved(att, PNG, 'swapped.png');
+    const swapFile = path.join(keyDir(env), `${swap.id}.png`);
+    fs.rmSync(swapFile);
+    fs.symlinkSync(outside, swapFile);
+    const linked = await saved(att, JPEG, 'linked.jpg');
+    fs.linkSync(path.join(keyDir(env), `${linked.id}.jpg`), path.join(root, 'second-link-s5'));
+    const grown = await saved(att, GIF89, 'grown.gif');
+    fs.appendFileSync(path.join(keyDir(env), `${grown.id}.gif`), 'x');
+    const l = await listT(att);
+    assert.deepEqual(l, { files: [], gone: ['swapped.png', 'linked.jpg', 'grown.gif'] });
+    assert.ok(fs.lstatSync(swapFile).isSymbolicLink(), 'the link was not removed');
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'keep', 'and not followed');
+    assert.ok(fs.existsSync(path.join(keyDir(env), `${linked.id}.jpg`)) && fs.existsSync(path.join(keyDir(env), `${grown.id}.gif`)), 'no file was touched');
+    assert.equal(await att.remove(PANE, grown.id), false, 'a gone item\'s record is forgotten, so even a remove finds nothing to delete');
+    assert.ok(fs.existsSync(path.join(keyDir(env), `${grown.id}.gif`)));
+    assert.equal(logs.length, 2, 'the link and the second link are logged, the resize is not an error');
+    assert.ok(onlyCodes(logs), logs.join('|'));
+  });
+
+  test('(−) S5: a folder on the way turned into a symlink makes the file gone, and the moved file stays', async () => {
+    const { att, env } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const moved = `${keyDir(env)}-moved`;
+    fs.renameSync(keyDir(env), moved);
+    fs.symlinkSync(moved, keyDir(env));
+    assert.deepEqual(await listT(att), { files: [], gone: ['a.png'] });
+    assert.ok(fs.existsSync(path.join(moved, `${a.id}.png`)));
+  });
+
+  test('(+) S6: bindTray with the same key and owner keeps the items; a tray without an owner adopts the first one', async () => {
+    const same = make();
+    await bindT(same.att);
+    const a = await saved(same.att, PNG, 'a.png');
+    await bindT(same.att);
+    assert.deepEqual(ids(await listT(same.att)), [a.id]);
+    // made by a direct save (no owner), adopted by the bind: proven by a later, different owner dropping it
+    const adopt = make();
+    await saved(adopt.att, PNG, 'x.png');
+    await bindT(adopt.att);
+    await bindT(adopt.att, { owner: { pid: 9, session: 'sess-two' } });
+    assert.deepEqual(await listT(adopt.att, { owner: { pid: 9, session: 'sess-two' } }), { files: [], gone: [] });
+    assert.deepEqual(leftovers(adopt.env), []);
+  });
+
+  test('(+) S6: a /compact-shaped owner (other pid, same session) and a /clear-shaped one (same pid, other session) keep the items, and the tray follows the chain', async () => {
+    const { att, env } = make();
+    await bindT(att);
+    const a = await saved(att, PNG, 'a.png');
+    await bindT(att, { owner: { pid: 4202, session: 'sess-one' } }); // /compact: the child's pid, the pane's session
+    await bindT(att, { owner: { pid: 4202, session: 'sess-two' } }); // /clear: the same pid, a new session
+    await bindT(att, { owner: { pid: 4303, session: 'sess-two' } }); // /compact again: shares nothing with the first owner
+    assert.deepEqual(ids(await listT(att, { owner: { pid: 4303, session: 'sess-two' } })), [a.id]);
+    assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)));
+  });
+
+  test('(+) S6: the same chain seen only through listTray (page opens, no upload or bind between them): /compact, /clear and /compact again each keep the file, and the tray follows', async () => {
+    const { att, env } = make();
+    await bindT(att, { owner: { pid: 4101, session: 'sess-one' } });
+    const a = await saved(att, PNG, 'a.png');
+    const steps = [
+      [{ pid: 4202, session: 'sess-one' }, '/compact: the child pid, the pane session'],
+      [{ pid: 4202, session: 'sess-two' }, '/clear: the same pid, a new session'],
+      [{ pid: 4303, session: 'sess-two' }, '/compact again: shares nothing with the first owner'],
+    ];
+    for (const [owner, why] of steps) {
+      assert.deepEqual(ids(await listT(att, { owner })), [a.id], `${why}: the file is still listed`);
+    }
+    assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)), 'after the last open the file is still on disk');
+  });
+
+  test('(−) S6: another Claude (other pid and other session) or another project (other key) drops the tray and deletes its unsent files', async () => {
+    for (const over of [{ owner: { pid: 9, session: 'sess-two' } }, { key: KEY2 }]) {
+      const { att, env } = make();
+      await bindT(att);
+      const a = await saved(att, PNG, 'a.png');
+      const sent = await saved(att, JPEG, 'b.jpg');
+      att.markSent([sent.id]);
+      await bindT(att, over);
+      assert.deepEqual(leftovers(env), [`${sent.id}.jpg`], `${JSON.stringify(over)}: the unsent file is gone, the sent one is Claude's`);
+      assert.equal(await att.lookup(PANE, a.id), null);
+      assert.deepEqual(await listT(att, over), { files: [], gone: [] });
+    }
+  });
+
+  test('(−) S6: bindTray with no known owner keeps the tray\'s owner', async () => {
+    const { att, env } = make();
+    await bindT(att);
+    await saved(att, PNG, 'a.png');
+    await bindT(att, { owner: null });
+    assert.deepEqual(await listT(att, { owner: { pid: 9, session: 'sess-two' } }), { files: [], gone: [] }, 'the first owner is still the owner');
+    assert.deepEqual(leftovers(env), []);
+  });
+
+  test('(−) S6: a malformed claim is ignored: no tray, nothing dropped, no throw', async () => {
+    const { att, env } = make();
+    const a = await saved(att, PNG, 'a.png');
+    await att.bindTray('nope', { key: KEY, owner: OWNER });
+    await att.bindTray(PANE, { key: 'nope', owner: OWNER });
+    await att.bindTray(PANE, null);
+    await att.bindTray(undefined, undefined);
+    assert.equal(att.hasTray('nope'), false);
+    assert.deepEqual(ids(await listT(att)), [a.id]);
+    assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)));
+  });
+
+  test('(−) S4: two saves started together at five live files: one lands and the other is 429 busy, so the tray never holds seven; the next one is 409 tray-full', async () => {
+    const { att } = make();
+    for (let i = 0; i < 5; i += 1) await saved(att, PNG, `f${i}.png`);
+    const send = (name) => att.save({ pane: PANE, key: KEY, name, data: b64(PNG) });
+    const both = await Promise.all([send('a.png'), send('b.png')]);
+    assert.deepEqual(both.map((r) => r.status).sort(), [200, 429]);
+    assert.equal((await listT(att)).files.length, 6);
+    assert.deepEqual((await send('c.png')).body.error, 'tray-full');
+    assert.equal((await listT(att)).files.length, 6);
+  });
+
+  test('(−) S6: a key or a pane that only prints like a valid one (an array, an object) is refused by bindTray and listTray: nothing is made, dropped or deleted', async () => {
+    const { att, env } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const asKey = { toString: () => KEY }; // prints as the project key, is not a string
+    await att.bindTray('%99', { key: [KEY], owner: OWNER });
+    await att.bindTray('%99', { key: asKey, owner: OWNER });
+    assert.equal(att.hasTray('%99'), false, 'no tray under a key that is not a string');
+    assert.deepEqual(await att.listTray(PANE, { key: [KEY], owner: OWNER }), { files: [], gone: [] });
+    assert.deepEqual(await att.listTray(PANE, { key: asKey, owner: OWNER }), { files: [], gone: [] });
+    assert.deepEqual(ids(await listT(att)), [a.id], 'the tray was not dropped by those lists');
+    assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)), 'and its file is still there');
+    for (const pane of [['%98'], { toString: () => '%97' }]) await att.bindTray(pane, { key: KEY, owner: OWNER }); // prints as a pane id, is not a string
+    const seen = [];
+    await att.dropPanes((p) => { seen.push(p); return false; });
+    assert.deepEqual(seen, [PANE], 'the only tray is the one for the pane that was stored');
+  });
+
+  test('(+) S7: listTray with another pid and another session drops the tray and deletes the files before it lists anything', async () => {
+    const { att, env } = make();
+    await bindT(att);
+    const a = await saved(att, PNG, 'a.png');
+    assert.deepEqual(await listT(att, { owner: { pid: 9, session: 'sess-two' } }), { files: [], gone: [] });
+    assert.deepEqual(leftovers(env), []);
+    assert.equal(await att.lookup(PANE, a.id), null);
+    assert.equal(att.hasTray(PANE), false);
+    const other = make();
+    await bindT(other.att);
+    await saved(other.att, PNG, 'a.png');
+    assert.deepEqual(await listT(other.att, { key: KEY2 }), { files: [], gone: [] }, 'another key drops it too');
+    assert.deepEqual(leftovers(other.env), []);
+  });
+
+  test('(−) S7: an unknown side never drops; the same session with another pid, or the same pid with another session, does not drop', async () => {
+    const owners = [
+      null, 'junk', { pid: 'x', session: 7 }, // an owner that does not parse is no owner
+      { pid: 77, session: 'sess-one' }, { pid: 4101, session: 'sess-x' }, { pid: null, session: 'sess-one' }, { pid: 4101, session: null },
+    ];
+    for (const owner of owners) {
+      const { att, env } = make();
+      await bindT(att);
+      const a = await saved(att, PNG, 'a.png');
+      assert.deepEqual(ids(await listT(att, { owner })), [a.id], JSON.stringify(owner));
+      assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)));
+    }
+    const kept = make(); // a list with no known owner leaves the tray's owner as it is
+    await bindT(kept.att);
+    await saved(kept.att, PNG, 'k.png');
+    await listT(kept.att, { owner: null });
+    assert.deepEqual(await listT(kept.att, { owner: { pid: 9, session: 'sess-two' } }), { files: [], gone: [] });
+    const noOwner = make(); // the tray has no owner yet (a direct save)
+    const b = await saved(noOwner.att, PNG, 'b.png');
+    assert.deepEqual(ids(await listT(noOwner.att, { owner: { pid: 9, session: 'sess-two' } })), [b.id]);
+    assert.deepEqual(await listT(noOwner.att), { files: [], gone: [] }, 'and that first list made it the owner: the next, different one drops the tray');
+  });
+
+  test('(−) S7: an owner whose pid or session is not valid (0, negative, fractional, text, infinite; empty, array, object) is no owner: it never drops the tray', async () => {
+    const junk = [
+      { session: '' }, { session: ['sess-one'] }, { session: { length: 3 } }, { pid: 0 }, { pid: -3 }, { pid: 1.5 }, { pid: '4101' },
+      { pid: Infinity }, { pid: 0, session: '' }, { pid: NaN, session: null },
+    ];
+    for (const owner of junk) {
+      const { att, env } = make();
+      await bindT(att);
+      const a = await saved(att, PNG, 'a.png');
+      assert.deepEqual(ids(await listT(att, { owner })), [a.id], String(JSON.stringify(owner)));
+      assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)));
+    }
+  });
+
+  test('(+) S7: a half-known owner never overwrites a known part: bind or list with { null, sess-a }, or { pid, null }, then /clear (same pid) or /compact (same session) keeps the files', async () => {
+    const full = { pid: 4101, session: 'sess-a' };
+    const cases = [
+      // [how the half-known owner arrives, the half-known owner, the later owner that still shares the part kept, why]
+      [bindT, { pid: null, session: 'sess-a' }, { pid: 4101, session: 'sess-b' }, '/clear after a bind that knew only the session'],
+      [listT, { pid: null, session: 'sess-a' }, { pid: 4101, session: 'sess-b' }, '/clear after a list that knew only the session'],
+      [bindT, { pid: 4101, session: null }, { pid: 4102, session: 'sess-a' }, '/compact after a bind that knew only the pid'],
+      [listT, { pid: 4101, session: null }, { pid: 4102, session: 'sess-a' }, '/compact after a list that knew only the pid'],
+    ];
+    for (const [door, half, later, why] of cases) {
+      const { att, env } = make();
+      await bindT(att, { owner: full });
+      const a = await saved(att, PNG, 'a.png');
+      await door(att, { owner: half });
+      assert.deepEqual(ids(await listT(att, { owner: later })), [a.id], why);
+      assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)), why);
+    }
+  });
+
+  test('(+) S7: a tray with no owner (a direct save) adopts a half-known owner by bind or by list, and the next different Claude drops it', async () => {
+    for (const half of [{ pid: null, session: 'sess-a' }, { pid: 4101, session: null }]) {
+      for (const door of [bindT, listT]) {
+        const { att, env } = make();
+        const a = await saved(att, PNG, 'a.png'); // the store made the tray itself: no owner yet
+        await door(att, { owner: half });
+        assert.deepEqual(ids(await listT(att, { owner: { pid: 9, session: 'sess-z' } })), [], `${JSON.stringify(half)}: the half it knew is the owner now`);
+        assert.equal(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)), false);
+      }
+    }
+  });
+
+  test('(−) S7: an owner that differs on a known side still drops the tray, whether it knows one part or both', async () => {
+    const full = { pid: 4101, session: 'sess-a' };
+    for (const owner of [{ pid: null, session: 'sess-b' }, { pid: 4102, session: null }, { pid: 4102, session: 'sess-b' }]) {
+      for (const door of [bindT, listT]) {
+        const { att, env } = make();
+        await bindT(att, { owner: full });
+        const a = await saved(att, PNG, 'a.png');
+        await door(att, { owner });
+        assert.equal(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)), false, JSON.stringify(owner));
+        assert.deepEqual(await listT(att, { owner }), { files: [], gone: [] }, JSON.stringify(owner));
+      }
+    }
+  });
+
+  test('(+) S7: "null equals null" is not a match: no shared pid or session value means a different Claude', async () => {
+    for (const [mine, theirs] of [
+      [{ pid: 1, session: null }, { pid: 2, session: null }],
+      [{ pid: null, session: 'sess-a' }, { pid: null, session: 'sess-b' }],
+      [{ pid: 1, session: 'sess-a' }, { pid: 2, session: 'sess-b' }],
+    ]) {
+      const { att, env } = make();
+      await bindT(att, { owner: mine });
+      await saved(att, PNG, 'a.png');
+      assert.deepEqual(await listT(att, { owner: theirs }), { files: [], gone: [] }, JSON.stringify([mine, theirs]));
+      assert.deepEqual(leftovers(env), []);
+    }
+  });
+
+  test('(+) S14: hasTray is true after a save', async () => {
+    const { att } = make();
+    await saved(att, PNG, 'a.png');
+    assert.equal(att.hasTray(PANE), true);
+  });
+
+  test('(−) S14: a tray with no items (bound, nothing saved) is gone after a list', async () => {
+    const { att } = make();
+    await bindT(att);
+    assert.equal(att.hasTray(PANE), true);
+    assert.deepEqual(await listT(att), { files: [], gone: [] });
+    assert.equal(att.hasTray(PANE), false);
+  });
+
+  test('(−) S14: hasTray is false for a pane never used, after the last item is removed or sent, and after dropPanes', async () => {
+    const { att } = make();
+    assert.equal(att.hasTray(PANE), false);
+    assert.equal(att.hasTray('nope'), false);
+    assert.equal(att.hasTray(undefined), false);
+    const a = await saved(att, PNG, 'a.png');
+    await att.remove(PANE, a.id);
+    assert.equal(att.hasTray(PANE), false);
+    const b = await saved(att, PNG, 'b.png');
+    att.markSent([b.id]);
+    assert.equal(att.hasTray(PANE), false);
+    await saved(att, PNG, 'c.png');
+    assert.equal(att.hasTray(PANE), true);
+    await att.dropPanes((p) => p === PANE);
+    assert.equal(att.hasTray(PANE), false);
+  });
+
+  test('(+) S8: six saves pass; the 7th is 409 tray-full, writes no file and uses no rate slot (24 more saves still pass in the minute)', async () => {
+    const { att, env } = make();
+    for (let i = 0; i < PER_MESSAGE; i++) await saved(att, PNG, `f${i}.png`);
+    const r = await upload(att, PNG, 'seven.png');
+    assert.deepEqual(r, { status: 409, body: { error: 'tray-full', message: 'tray full' } });
+    assert.equal(leftovers(env).length, PER_MESSAGE, 'no file was written');
+    for (let p = 0; p < 4; p++) for (let i = 0; i < 6; i++) await saved(att, PNG, `p${p}-${i}.png`, { pane: `%${20 + p}` });
+    const thirtyFirst = await upload(att, PNG, 'x.png', { pane: '%30' });
+    assert.equal(thirtyFirst.status, 429, 'the limit is 30 a minute, so the refused 7th used none of it');
+  });
+
+  test('(−) S8: a removal frees a place; pane B and another project are not blocked by pane A\'s full tray; the chooser door is refused too', async () => {
+    const { att } = make();
+    const first = await saved(att, PNG, 'f0.png');
+    for (let i = 1; i < PER_MESSAGE; i++) await saved(att, PNG, `f${i}.png`);
+    assert.equal((await upload(att, PNG, 'seven.png')).status, 409);
+    const viaChooser = await att.saveBytes({ pane: PANE, key: KEY, name: 'seven.png', bytes: PNG });
+    assert.deepEqual(viaChooser, { status: 409, body: { error: 'tray-full', message: 'tray full' } });
+    assert.equal((await upload(att, PNG, 'b.png', { pane: '%8' })).status, 200);
+    assert.equal(await att.remove(PANE, first.id), true);
+    assert.equal((await upload(att, PNG, 'seven.png')).status, 200);
+    assert.equal((await upload(att, PNG, 'eight.png')).status, 409, 'and it is full again');
+    assert.equal((await upload(att, PNG, 'other-key.png', { key: KEY2 })).status, 200, 'a tray of another key does not block');
+  });
+
+  test('(+) S8: a save under another key starts a new tray for it; the old tray\'s memory is forgotten and its files stay', async () => {
+    const { att, env } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const r = await upload(att, JPEG, 'k2.jpg', { key: KEY2 });
+    assert.equal(r.status, 200);
+    assert.deepEqual(await listT(att, { key: KEY2 }), { files: [{ id: r.body.id, name: 'k2.jpg', type: 'jpeg', size: JPEG.length }], gone: [] });
+    assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)));
+  });
+
+  test('(+) S9: remove forgets the item even when the removal is refused (a second link); it is neither listed nor gone', async () => {
+    const { att, env } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const b = await saved(att, JPEG, 'b.jpg');
+    fs.linkSync(path.join(keyDir(env), `${a.id}.png`), path.join(root, 'second-link-s9'));
+    assert.equal(await att.remove(PANE, a.id), false);
+    assert.deepEqual(await listT(att), { files: [{ id: b.id, name: 'b.jpg', type: 'jpeg', size: JPEG.length }], gone: [] });
+    assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)), 'the file stays for pruning');
+  });
+
+  test('(−) S9: another pane\'s remove, an unknown id and a sent id leave this pane\'s items alone', async () => {
+    const { att } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const b = await saved(att, JPEG, 'b.jpg');
+    assert.equal(await att.remove('%8', a.id), false);
+    assert.equal(await att.remove(PANE, SPARE), false);
+    assert.deepEqual(ids(await listT(att)), [a.id, b.id]);
+  });
+
+  test('(−) S9: an item removed while the list checks the files is not listed, and not gone either', async () => {
+    const { att } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const b = await saved(att, JPEG, 'b.jpg');
+    const listing = listT(att);
+    const removal = att.remove(PANE, a.id); // runs while the list waits for its first file check
+    assert.deepEqual([await removal, ids(await listing)], [true, [b.id]]);
+    assert.deepEqual((await listT(att)).gone, []);
+  });
+
+  test('(−) S7: a tray dropped while the list checks the files lists nothing', async () => {
+    const { att } = make();
+    await bindT(att);
+    await saved(att, PNG, 'a.png');
+    await saved(att, JPEG, 'b.jpg');
+    const listing = listT(att);
+    await bindT(att, { owner: { pid: 9, session: 'sess-two' } }); // another Claude takes the pane meanwhile
+    assert.deepEqual(await listing, { files: [], gone: [] });
+  });
+
+  test('(+) S10: markSent forgets the items; the sent files stay on disk for Claude', async () => {
+    const { att, env } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const b = await saved(att, JPEG, 'b.jpg');
+    const c = await saved(att, GIF89, 'c.gif');
+    att.markSent([a.id, b.id]);
+    assert.deepEqual(ids(await listT(att)), [c.id]);
+    assert.deepEqual(leftovers(env), [`${a.id}.png`, `${b.id}.jpg`, `${c.id}.gif`].sort());
+  });
+
+  test('(−) S10: markSent with unknown ids or junk forgets nothing', async () => {
+    const { att } = make();
+    const a = await saved(att, PNG, 'a.png');
+    att.markSent([SPARE, 7, null, {}]);
+    att.markSent(undefined);
+    assert.deepEqual(ids(await listT(att)), [a.id]);
+  });
+
+  test('(+) S11: dropPanes deletes the unsent files of the panes the predicate names, forgets their trays and returns how many', async () => {
+    const { att, env } = make();
+    await saved(att, PNG, 'a.png');
+    const sent = await saved(att, JPEG, 'sent.jpg');
+    att.markSent([sent.id]);
+    const other = await saved(att, GIF89, 'o.gif', { pane: '%8' });
+    assert.equal(await att.dropPanes((p) => p === PANE), 1);
+    assert.deepEqual(leftovers(env), [`${other.id}.gif`, `${sent.id}.jpg`].sort(), 'only the unsent file of the named pane went');
+    assert.equal(att.hasTray(PANE), false);
+    assert.equal(att.hasTray('%8'), true);
+    assert.deepEqual(ids(await att.listTray('%8', { key: KEY, owner: null })), [other.id]);
+  });
+
+  test('(−) S11: a predicate that names no pane drops nothing; a refused removal or a throwing predicate still resolves, with a code in the log', async () => {
+    const { att, env, logs } = make();
+    const a = await saved(att, PNG, 'a.png');
+    assert.equal(await att.dropPanes(() => false), 0);
+    assert.equal(await att.dropPanes(undefined), 0);
+    assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)));
+    fs.linkSync(path.join(keyDir(env), `${a.id}.png`), path.join(root, 'second-link-s11'));
+    assert.equal(await att.dropPanes(() => true), 1, 'the tray is forgotten although the removal was refused');
+    assert.deepEqual(logs, ['nika: attachments: ENLINK']);
+    await saved(att, PNG, 'b.png');
+    assert.equal(await att.dropPanes(() => { throw new Error('boom'); }), 0);
+    assert.equal(att.hasTray(PANE), true);
+    assert.deepEqual(logs.slice(1), ['nika: attachments: ERR']);
+  });
+
+  /** One save on each of `n` panes (%1 to %n), a minute apart every 20 saves so the rate limit never trips. */
+  async function trays(n) {
+    const m = make();
+    for (let i = 1; i <= n; i++) {
+      if (i % 20 === 0) m.clock.t += 61_000;
+      await saved(m.att, PNG, `p${i}.png`, { pane: `%${i}` });
+    }
+    return m;
+  }
+
+  test('(−) S11: a file sent while the drop is still deleting the tray is Claude\'s now and stays', async () => {
+    const { att, env } = make();
+    const a = await saved(att, PNG, 'a.png');
+    const b = await saved(att, JPEG, 'b.jpg');
+    const dropping = att.dropPanes(() => true); // deletes a first, and waits
+    att.markSent([b.id]); // the Enter lands meanwhile
+    assert.equal(await dropping, 1);
+    assert.deepEqual(leftovers(env), [`${b.id}.jpg`]);
+    assert.ok(a.id);
+  });
+
+  test('(+) S12: the 65th tray forgets the oldest from memory only; its files stay on disk', async () => {
+    const { att, env } = await trays(TRAYS_MAX + 1);
+    assert.equal(att.hasTray('%1'), false);
+    assert.equal(att.hasTray('%2'), true);
+    assert.equal(att.hasTray(`%${TRAYS_MAX + 1}`), true);
+    assert.equal(leftovers(env).length, TRAYS_MAX + 1, 'the forgotten tray\'s file is still there');
+  });
+
+  test('(−) S12: a tray replaced by a save under another key becomes the newest, so it is not the next one forgotten', async () => {
+    const { att } = await trays(TRAYS_MAX);
+    await saved(att, JPEG, 'k2.jpg', { pane: '%2', key: KEY2 }); // %2 starts a new tray (the key changed); no tray is forgotten for it
+    assert.equal(att.hasTray('%1'), true);
+    await saved(att, PNG, 'extra.png', { pane: `%${TRAYS_MAX + 1}` });
+    assert.deepEqual(['%1', '%2', '%3'].map((p) => att.hasTray(p)), [false, true, true], 'the oldest is %1 now, not %2');
+  });
+
+  test('(−) S12: 64 trays forget nothing, and a save on the forgotten pane starts a new tray at the cost of the next oldest', async () => {
+    const { att } = await trays(TRAYS_MAX);
+    assert.equal(att.hasTray('%1'), true);
+    assert.equal(att.hasTray(`%${TRAYS_MAX}`), true);
+    await saved(att, PNG, 'extra.png', { pane: `%${TRAYS_MAX + 1}` });
+    assert.equal(att.hasTray('%1'), false);
+    await saved(att, JPEG, 'back.jpg', { pane: '%1' });
+    assert.equal(att.hasTray('%1'), true);
+    assert.equal(att.hasTray('%2'), false);
+    assert.deepEqual((await att.listTray('%1', { key: KEY, owner: null })).files.map((f) => f.name), ['back.jpg']);
+  });
+});
+
+// ---- 0.5.4 LT: the unsent text of a pane, kept in the same memory tray ------------------------------------------------------------
+describe('kept text (0.5.4, LT)', () => {
+  const textT = (att, value, over = {}, pane = PANE) => att.keepText(pane, { key: KEY, owner: OWNER, ...over }, value);
+  const readT = (att, over = {}, pane = PANE) => att.readText(pane, { key: KEY, owner: OWNER, ...over });
+  const MARK = 'zq7-marker-lt-text'; // synthetic text no log line or file may ever hold
+  const euros = (n) => '\u20ac'.repeat(n); // 3 bytes each
+  const FILL = Array.from({ length: TRAYS_MAX - 1 }, (_, i) => `%${201 + i}`);
+
+  /**
+   * Is there a tray left in the Map after `act`, empty or not? Probed by the 64-tray eviction: 63 other trays go in first, `act` runs,
+   * then one more tray is made; the oldest of the 63 is forgotten only when `act` left a tray behind.
+   */
+  async function trayLeft(att, act) {
+    for (const p of FILL) assert.equal(await textT(att, { text: `t${p}`, shell: false }, {}, p), true);
+    await act();
+    assert.equal(await textT(att, { text: 'probe', shell: false }, {}, '%300'), true);
+    return (await readT(att, {}, FILL[0])) === null;
+  }
+
+  describe('keepText and readText', () => {
+    test('(+) K1: keepText then readText gives an equal copy with the Shell flag; changing the copy changes nothing', async () => {
+      const { att } = make();
+      assert.equal(await textT(att, { text: 'first line\n\tsecond  ', shell: true }), true);
+      const a = await readT(att);
+      assert.deepEqual(a, { text: 'first line\n\tsecond  ', shell: true });
+      a.text = 'changed';
+      a.shell = false;
+      assert.deepEqual(await readT(att), { text: 'first line\n\tsecond  ', shell: true }, 'the store kept its own copy');
+      assert.equal(await textT(att, { text: 'newer', shell: false }), true);
+      assert.deepEqual(await readT(att), { text: 'newer', shell: false }, 'the last write wins');
+    });
+
+    test('(+) K1: the text a caller passes is copied in: changing the passed object afterwards changes nothing', async () => {
+      const { att } = make();
+      const value = { text: 'as given', shell: false };
+      await textT(att, value);
+      value.text = 'mutated';
+      value.shell = true;
+      assert.deepEqual(await readT(att), { text: 'as given', shell: false });
+    });
+
+    test('(−) K1: another pane reads null; a pane never used reads null and makes no tray', async () => {
+      const { att } = make();
+      await textT(att, { text: 'mine', shell: false });
+      assert.equal(await readT(att, {}, '%8'), null);
+      assert.equal(att.hasText('%8'), false);
+      const probe = make();
+      assert.equal(await trayLeft(probe.att, () => readT(probe.att, {}, '%8')), false, 'a read of a pane never used leaves no tray');
+    });
+
+    test('(−) K1: a read of a tray that holds chips and no text is null and keeps the chips', async () => {
+      const { att } = make();
+      await bindT(att);
+      const a = await saved(att, PNG, 'a.png');
+      assert.equal(await readT(att), null);
+      assert.equal(att.hasText(PANE), false);
+      assert.deepEqual((await listT(att)).files.map((f) => f.id), [a.id]);
+    });
+
+    test('(+) K2: keepText with null clears: readText is null and a text-only tray is deleted from the Map', async () => {
+      const { att } = make();
+      await textT(att, { text: 'to clear', shell: false });
+      assert.equal(await textT(att, null), false);
+      assert.equal(await readT(att), null);
+      assert.equal(att.hasText(PANE), false);
+      const probe = make();
+      assert.equal(await trayLeft(probe.att, async () => {
+        await textT(probe.att, { text: 'to clear', shell: false });
+        await textT(probe.att, null);
+      }), false, 'the cleared text-only tray is gone, not an empty one taking a slot');
+    });
+
+    test('(−) K2: a clear with no tray answers false and makes none; a clear on a tray with chips keeps the chips', async () => {
+      const { att } = make();
+      assert.equal(await textT(att, null), false);
+      const probe = make();
+      assert.equal(await trayLeft(probe.att, () => textT(probe.att, null)), false, 'a clear makes no tray');
+      await bindT(att);
+      const a = await saved(att, PNG, 'a.png');
+      await textT(att, { text: 'with a chip', shell: false });
+      assert.equal(await textT(att, null), false);
+      assert.equal(await readT(att), null);
+      assert.deepEqual((await listT(att)).files.map((f) => f.id), [a.id], 'listTray still lists the chip');
+    });
+
+    test('(+) K3: the same owner keeps; a null owner adopts one; a /compact-shaped owner and a /clear-shaped one keep', async () => {
+      const { att } = make();
+      await textT(att, { text: 'kept', shell: false }, { owner: null });
+      assert.equal((await readT(att, { owner: { pid: 4101, session: 'sess-one' } })).text, 'kept', 'an unknown owner never differs, and the next one is adopted');
+      assert.equal((await readT(att, { owner: { pid: 4202, session: 'sess-one' } })).text, 'kept', '/compact: other pid, same session');
+      assert.equal((await readT(att, { owner: { pid: 4202, session: 'sess-two' } })).text, 'kept', '/clear: same pid, other session');
+      assert.equal((await readT(att, { owner: { pid: 4303, session: 'sess-two' } })).text, 'kept', '/compact again');
+      assert.equal((await readT(att, { owner: null })).text, 'kept', 'a claim with no owner never differs');
+    });
+
+    test('(−) K3: another Claude (other pid and other session) or another project (other key) reads null, and the tray\'s unsent files are deleted from disk', async () => {
+      for (const over of [{ owner: { pid: 9, session: 'sess-other' } }, { key: KEY2 }]) {
+        const { att, env } = make();
+        await bindT(att);
+        const a = await saved(att, PNG, 'a.png');
+        await textT(att, { text: 'kept', shell: false });
+        assert.equal(await readT(att, over), null, JSON.stringify(over));
+        assert.equal(att.hasText(PANE), false);
+        assert.deepEqual(leftovers(env), [], `${JSON.stringify(over)}: the unsent file is gone with the tray`);
+        assert.equal(await att.lookup(PANE, a.id), null);
+      }
+    });
+
+    test('(−) K3: keepText with a differing owner or key drops the old tray (files deleted) and keeps the new text in a new tray', async () => {
+      for (const over of [{ owner: { pid: 9, session: 'sess-other' } }, { key: KEY2 }]) {
+        const { att, env } = make();
+        await bindT(att);
+        await saved(att, PNG, 'a.png');
+        await textT(att, { text: 'old text', shell: false });
+        assert.equal(await textT(att, { text: 'new text', shell: true }, over), true, JSON.stringify(over));
+        assert.deepEqual(leftovers(env), [], 'the old tray\'s unsent file was deleted');
+        assert.deepEqual(await readT(att, over), { text: 'new text', shell: true }, 'the new text lives in a new tray');
+        assert.deepEqual((await listT(att, over)).files, [], 'the new tray holds no chips');
+      }
+    });
+
+    test('(−) K3: keepText with null and a differing owner drops the old tray (files deleted) and answers false', async () => {
+      const { att, env } = make();
+      await bindT(att);
+      await saved(att, PNG, 'a.png');
+      await textT(att, { text: 'old text', shell: false });
+      assert.equal(await textT(att, null, { owner: { pid: 9, session: 'sess-other' } }), false);
+      assert.deepEqual(leftovers(env), []);
+      assert.equal(att.hasText(PANE), false);
+      assert.equal(await readT(att), null, 'nothing is left for the old Claude either');
+    });
+
+    test('(−) K6: two keeps for different projects that meet while the old tray is being dropped: the one that lost the race stores nothing in the other project\'s tray', async () => {
+      const { att } = make();
+      await bindT(att, { key: KEY });
+      await saved(att, PNG, 'a.png'); // the old tray has a file: dropping it awaits the delete, and the second keep gets in meanwhile
+      const [first, second] = await Promise.all([
+        textT(att, { text: 'for project two', shell: false }, { key: KEY2, owner: { pid: 7001, session: 'sess-x' } }),
+        textT(att, { text: 'for project three', shell: false }, { key: 'c3c3c3c3c3c3c3c3', owner: { pid: 7001, session: 'sess-x' } }),
+      ]);
+      assert.deepEqual([first, second].sort(), [false, true], 'exactly one of the two stored its text');
+      const winner = second ? 'c3c3c3c3c3c3c3c3' : KEY2;
+      const loser = second ? KEY2 : 'c3c3c3c3c3c3c3c3';
+      assert.deepEqual(await readT(att, { key: winner, owner: { pid: 7001, session: 'sess-x' } }), { text: second ? 'for project three' : 'for project two', shell: false });
+      assert.equal(att.hasText(PANE), true);
+      assert.equal(await readT(att, { key: loser, owner: { pid: 7001, session: 'sess-x' } }), null, 'the other project reads nothing of it');
+    });
+
+    test('(+) K3 (owner doors): a half-known owner never overwrites a known part, at each new door alone (keep, clear, read)', async () => {
+      const full = { pid: 4101, session: 'sess-a' };
+      const doors = {
+        keep: (att, owner) => textT(att, { text: 'kept', shell: false }, { owner }),
+        clear: (att, owner) => textT(att, null, { owner }),
+        read: (att, owner) => readT(att, { owner }),
+      };
+      const halves = [
+        [{ pid: null, session: 'sess-a' }, { pid: 4101, session: 'sess-b' }, '/clear after a half that knew only the session'],
+        [{ pid: 4101, session: null }, { pid: 4102, session: 'sess-a' }, '/compact after a half that knew only the pid'],
+      ];
+      for (const [name, door] of Object.entries(doors)) {
+        for (const [half, later, why] of halves) {
+          const { att } = make();
+          await bindT(att, { owner: full });
+          const a = await saved(att, PNG, 'a.png');
+          await textT(att, { text: 'kept', shell: false }, { owner: full });
+          await door(att, half);
+          const listed = await listT(att, { owner: later });
+          assert.deepEqual(listed.files.map((f) => f.id), [a.id], `${name}: ${why}: the tray was not dropped`);
+        }
+      }
+    });
+
+    test('(+) K3 (owner doors): a door that sees the missing half of the owner adopts it, so a later owner that shares only that half still matches (keep, clear, read)', async () => {
+      const doors = {
+        keep: (att, owner) => textT(att, { text: 'kept', shell: false }, { owner }),
+        clear: (att, owner) => textT(att, null, { owner }),
+        read: (att, owner) => readT(att, { owner }),
+      };
+      for (const [name, door] of Object.entries(doors)) {
+        const { att } = make();
+        await bindT(att, { owner: { pid: 4101, session: null } });
+        const a = await saved(att, PNG, 'a.png');
+        await door(att, { pid: 4101, session: 'sess-a' }); // the door learns the session
+        const listed = await listT(att, { owner: { pid: 9999, session: 'sess-a' } }); // another pid, the same session
+        assert.deepEqual(listed.files.map((f) => f.id), [a.id], `${name}: the session was adopted, so the tray matches by it`);
+      }
+    });
+
+    test('(+) K3 (owner doors): the chain /compact, /clear, /compact seen only through one door keeps the text and the file (keep, clear, read)', async () => {
+      const steps = [{ pid: 4202, session: 'sess-one' }, { pid: 4202, session: 'sess-two' }, { pid: 4303, session: 'sess-two' }];
+      const doors = {
+        keep: (att, owner) => textT(att, { text: 'kept', shell: false }, { owner }),
+        clear: (att, owner) => textT(att, null, { owner }),
+        read: (att, owner) => readT(att, { owner }),
+      };
+      for (const [name, door] of Object.entries(doors)) {
+        const { att, env } = make();
+        await bindT(att, { owner: { pid: 4101, session: 'sess-one' } });
+        const a = await saved(att, PNG, 'a.png');
+        await textT(att, { text: 'kept', shell: false }, { owner: { pid: 4101, session: 'sess-one' } });
+        for (const owner of steps) {
+          await door(att, owner);
+          assert.deepEqual((await listT(att, { owner })).files.map((f) => f.id), [a.id], `${name}: ${JSON.stringify(owner)}: the chip is still listed`);
+        }
+        assert.ok(fs.existsSync(path.join(keyDir(env), `${a.id}.png`)), `${name}: the file is still on disk`);
+      }
+    });
+
+    test('(−) K3 (owner doors): an owner that differs on a known side still drops the tray at each door, whether it knows one part or both', async () => {
+      const full = { pid: 4101, session: 'sess-a' };
+      const others = [{ pid: 9, session: 'sess-z' }, { pid: 9, session: null }, { pid: null, session: 'sess-z' }];
+      const doors = {
+        keep: (att, owner) => textT(att, { text: 'new', shell: false }, { owner }),
+        clear: (att, owner) => textT(att, null, { owner }),
+        read: (att, owner) => readT(att, { owner }),
+      };
+      for (const [name, door] of Object.entries(doors)) {
+        for (const owner of others) {
+          const { att, env } = make();
+          await bindT(att, { owner: full });
+          await saved(att, PNG, 'a.png');
+          await textT(att, { text: 'old', shell: false }, { owner: full });
+          await door(att, owner);
+          assert.deepEqual(leftovers(env), [], `${name} ${JSON.stringify(owner)}: the old tray and its file went`);
+          assert.deepEqual((await listT(att, { owner: full })).files, [], `${name} ${JSON.stringify(owner)}: no chip is left to list`);
+        }
+      }
+    });
+
+    test('(+) K4: removing or sending the last chip, or a note that ends, keeps a tray that still holds text', async () => {
+      const { att } = make();
+      await bindT(att);
+      const a = await saved(att, PNG, 'a.png');
+      const b = await saved(att, JPEG, 'b.jpg');
+      await textT(att, { text: 'text and chips', shell: false });
+      await att.remove(PANE, a.id);
+      assert.deepEqual(await readT(att), { text: 'text and chips', shell: false }, 'removing a chip keeps the text');
+      att.markSent([b.id]);
+      assert.deepEqual(await readT(att), { text: 'text and chips', shell: false }, 'sending the last chip keeps the text');
+      assert.deepEqual(await listT(att), { files: [], gone: [] }, 'a text-only tray lists empty');
+      assert.deepEqual(await readT(att), { text: 'text and chips', shell: false }, 'and listTray does not delete it');
+      await att.remove(PANE, 'ffffffffffffffff'); // the end of the "not restored" note: any id works
+      assert.deepEqual(await readT(att), { text: 'text and chips', shell: false }, 'release keeps it too');
+    });
+
+    test('(+) K4: a gone chip (its file is missing) leaves the text alone, and the next save clears only the note', async () => {
+      const { att, env } = make();
+      await bindT(att);
+      const a = await saved(att, PNG, 'a.png');
+      await textT(att, { text: 'text', shell: false });
+      fs.rmSync(path.join(keyDir(env), `${a.id}.png`));
+      assert.deepEqual((await listT(att)).gone, ['a.png']);
+      await saved(att, JPEG, 'b.jpg');
+      assert.deepEqual(await readT(att), { text: 'text', shell: false });
+    });
+
+    test('(−) K4: a save under another key starts a new tray without the old tray\'s text', async () => {
+      const { att } = make();
+      await textT(att, { text: 'project one text', shell: false });
+      await saved(att, PNG, 'other.png', { key: KEY2 });
+      assert.equal(await readT(att, { key: KEY }), null, 'the old project\'s text did not follow the pane');
+      assert.equal(att.hasText(PANE), false);
+    });
+
+    test('(−) K4: dropPanes takes the text with the tray; the 65th tray made by a text save forgets the oldest, whose text is gone and whose files stay on disk', async () => {
+      const { att, env } = make();
+      await bindT(att);
+      await saved(att, PNG, 'a.png');
+      await textT(att, { text: 'oldest', shell: false });
+      for (const p of [...FILL, '%300']) await textT(att, { text: `t${p}`, shell: false }, {}, p); // 63 more make 64; the 65th forgets the oldest
+      assert.equal(att.hasText(PANE), false, 'the 65th tray forgot the oldest one');
+      assert.equal(await readT(att), null);
+      assert.equal(leftovers(env).length, 1, 'its file stays on disk for pruning');
+      assert.equal((await readT(att, {}, FILL[0])).text, `t${FILL[0]}`, 'the others are still there');
+      assert.equal(await att.dropPanes((p) => p === FILL[0]), 1);
+      assert.equal(att.hasText(FILL[0]), false);
+      assert.equal(await readT(att, {}, FILL[0]), null);
+      assert.equal(att.hasText(FILL[1]), true, 'only the named pane went');
+    });
+
+    test('(+) K5: hasText is true after a keep; hasTray stays false for a text-only tray, is true with a chip, and is still true for a bound tray that holds neither (AT\'s S14)', async () => {
+      const { att } = make();
+      assert.equal(att.hasText(PANE), false, 'a pane never used');
+      await textT(att, { text: 'text only', shell: false });
+      assert.equal(att.hasText(PANE), true);
+      assert.equal(att.hasTray(PANE), false, 'a text-only tray is no tray of chips: AT\'s GET answers 200 empty for a null claim');
+      await saved(att, PNG, 'a.png');
+      assert.equal(att.hasTray(PANE), true);
+      assert.equal(att.hasText(PANE), true);
+      const bound = make();
+      await bindT(bound.att);
+      assert.equal(bound.att.hasTray(PANE), true, 'a tray that was bound and holds neither a chip nor a text is a tray, as before LT');
+      assert.equal(bound.att.hasText(PANE), false);
+    });
+
+    test('(−) K5: hasText is false after a clear, after dropPanes, for junk panes; hasTray is true while a chip is gone, false after the chip leaves', async () => {
+      const { att, env } = make();
+      await textT(att, { text: 'x', shell: false });
+      await textT(att, null);
+      assert.equal(att.hasText(PANE), false);
+      await textT(att, { text: 'x', shell: false });
+      await att.dropPanes(() => true);
+      assert.equal(att.hasText(PANE), false);
+      for (const junk of [undefined, null, 7, 'nope', '%1;x', {}]) assert.equal(att.hasText(junk), false, String(junk));
+      await bindT(att);
+      const a = await saved(att, PNG, 'a.png');
+      await textT(att, { text: 'x', shell: false });
+      fs.rmSync(path.join(keyDir(env), `${a.id}.png`));
+      await listT(att); // the chip is marked gone and keeps its place
+      assert.equal(att.hasTray(PANE), true, 'a gone chip still makes the tray one of chips');
+      await att.remove(PANE, a.id);
+      assert.equal(att.hasTray(PANE), false, 'the text stays, the chips are gone');
+      assert.equal(att.hasText(PANE), true);
+    });
+
+    test('(+) K6: exactly 16 384 bytes are kept; U+200D, U+202E, tab, inner newlines, trailing spaces and a valid pair are kept byte for byte', async () => {
+      const { att } = make();
+      const edge = euros(5461) + 'a';
+      assert.equal(Buffer.byteLength(edge), 16384);
+      assert.equal(await textT(att, { text: edge, shell: false }), true);
+      assert.equal((await readT(att)).text, edge);
+      const odd = 'a\u200db\u202ec\td\ne  \n\n\ud83d\ude00f   ';
+      assert.equal(await textT(att, { text: odd, shell: true }), true);
+      assert.deepEqual(await readT(att), { text: odd, shell: true });
+    });
+
+    test('(−) K6: 16 385 bytes, a bell, ESC, CR, DEL, a C1 control, NUL, a lone surrogate, an empty text, a non-string and a non-boolean shell are refused: false, nothing stored, no throw', async () => {
+      const { att, logs } = make();
+      await textT(att, { text: 'the good text', shell: false });
+      const bad = [
+        { text: euros(5461) + 'ab', shell: false }, { text: 'a\u0007b', shell: false }, { text: 'a\u001bb', shell: false }, { text: 'a\rb', shell: false },
+        { text: 'a\u007fb', shell: false }, { text: 'a\u0085b', shell: false }, { text: 'a\u0000b', shell: false }, { text: 'a\ud800b', shell: false },
+        { text: 'a\udc00b', shell: false }, { text: '', shell: false }, { text: 5, shell: false }, { text: null, shell: false }, { text: ['x'], shell: false },
+        { text: 'x', shell: 'true' }, { text: 'x', shell: 1 }, { text: 'x', shell: undefined }, { text: 'x' }, { shell: true }, 'plain', 5, undefined, [], true,
+      ];
+      for (const value of bad) {
+        assert.equal(await textT(att, value), false, JSON.stringify(value));
+        assert.deepEqual(await readT(att), { text: 'the good text', shell: false }, `${JSON.stringify(value)} stored nothing`);
+      }
+      assert.ok(onlyCodes(logs), logs.join('|'));
+      assert.ok(logs.length >= bad.length, 'every refusal is one code line');
+    });
+
+    test('(−) K6: a bad text twice in a row is refused both times (no stateful regex), and a good one still goes in between', async () => {
+      const { att } = make();
+      for (let i = 0; i < 4; i += 1) {
+        assert.equal(await textT(att, { text: 'a\u0007', shell: false }), false, `call ${i + 1}`);
+        assert.equal(await textT(att, { text: `ok ${i}`, shell: false }), true);
+      }
+    });
+
+    test('(−) K6: a pane id or a claim that is not valid keeps nothing, drops nothing and never throws; a claim whose owner throws is refused with one code line', async () => {
+      const { att, env, logs } = make();
+      await bindT(att);
+      const chip = await saved(att, PNG, 'a.png');
+      await textT(att, { text: 'already here', shell: false });
+      for (const [pane, claim] of [['nope', { key: KEY, owner: null }], ['%7;x', { key: KEY, owner: null }], [undefined, { key: KEY, owner: null }], [PANE, { key: 'short', owner: null }],
+        [PANE, { key: undefined }], [PANE, null], [PANE, undefined], [PANE, 'x']]) {
+        assert.equal(await att.keepText(pane, claim, { text: 'x', shell: false }), false, JSON.stringify([pane, claim]));
+        assert.equal(await att.readText(pane, claim), null);
+        assert.equal(await att.keepText(pane, claim, null), false);
+      }
+      assert.deepEqual(await readT(att), { text: 'already here', shell: false }, 'junk arguments drop and change nothing');
+      assert.ok(fs.existsSync(path.join(keyDir(env), `${chip.id}.png`)), 'the chip\'s file is still there');
+      assert.deepEqual(logs.filter((l) => !/BAD_TEXT|ERR/.test(l)), [], 'only codes');
+      const boom = { key: KEY, get owner() { throw new Error('owner getter fails'); } };
+      const before = logs.length;
+      assert.equal(await att.keepText(PANE, boom, { text: 'x', shell: false }), false, 'never rejects');
+      assert.equal(logs.length - before, 1, 'one code line: the unreadable owner is refused before any tray is touched');
+      assert.deepEqual(await readT(att), { text: 'already here', shell: false }, 'nothing was stored');
+      assert.equal(await att.readText(PANE, boom), null);
+      assert.equal(await att.keepText(PANE, boom, null), false);
+      assert.deepEqual(await readT(att), { text: 'already here', shell: false }, 'a throwing claim cleared nothing either');
+    });
+
+    test('(−) K6: when binding fails and the pane\'s old tray (another project) is still there, the new project\'s text is not stored in it', async () => {
+      const { att } = make();
+      await textT(att, { text: 'project one', shell: false });
+      const boom = { key: KEY2, get owner() { throw new Error('owner getter fails'); } };
+      assert.equal(await att.keepText(PANE, boom, { text: 'project two', shell: false }), false);
+      assert.deepEqual(await readT(att), { text: 'project one', shell: false }, 'the old project\'s tray holds the old project\'s text only');
+    });
+
+    test('(+) K6: hasText answers for a text kept by a claim whose key is the tray\'s, and readText returns it only for that key', async () => {
+      const { att } = make();
+      await textT(att, { text: 'for one project', shell: false });
+      assert.equal((await readT(att)).text, 'for one project');
+      assert.equal(await readT(att, { key: KEY2 }), null);
+      assert.equal(att.hasText(PANE), false, 'the other key dropped the tray');
+    });
+
+    test('(+) K7: a marker text through keep, read, clear, a bad value and dropPanes leaves no 8-character slice of it in any log line', async () => {
+      const { att, logs } = make();
+      await textT(att, { text: MARK, shell: false });
+      await readT(att);
+      await textT(att, { text: `${MARK}\u0007`, shell: false }); // a bad value: a code line
+      await textT(att, { text: MARK, shell: true }, { owner: { pid: 9, session: 'sess-other' } });
+      await textT(att, null);
+      await textT(att, { text: MARK, shell: false });
+      await att.dropPanes(() => true);
+      assert.ok(logs.length >= 1, 'the scenario must log, or it proves nothing');
+      const wire = logs.join('\n');
+      for (let i = 0; i + 8 <= MARK.length; i += 1) assert.ok(!wire.includes(MARK.slice(i, i + 8)), MARK.slice(i, i + 8));
+      assert.ok(onlyCodes(logs), logs.join('|'));
+    });
+
+    test('(−) K7: a store error under keepText or readText is logged as a code only, never the text', async () => {
+      const { att, env, logs } = make();
+      await bindT(att);
+      const a = await saved(att, PNG, 'secret-name.png');
+      fs.linkSync(path.join(keyDir(env), `${a.id}.png`), path.join(root, 'second-link-k7')); // the removal of this unsent file is refused: ENLINK
+      await textT(att, { text: MARK, shell: false });
+      await readT(att, { owner: { pid: 9, session: 'sess-other' } }); // another Claude: dropTray tries the removal
+      assert.ok(logs.length >= 1, 'the refusal is logged');
+      assert.ok(onlyCodes(logs), logs.join('|'));
+      const wire = logs.join('\n');
+      for (const leak of [MARK.slice(0, 8), 'secret-name', a.id, root]) assert.ok(!wire.includes(leak), leak);
+    });
+
+    test('(+) K8: the text never reaches disk: no file under the state or config dirs holds its bytes', async () => {
+      const { att, env } = make();
+      await bindT(att);
+      await saved(att, PNG, 'a.png');
+      await textT(att, { text: `${MARK} line\nsecond ${MARK}`, shell: true });
+      await textT(att, { text: `${MARK} newer`, shell: false });
+      await readT(att);
+      await att.prune();
+      const walk = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)])) : []);
+      const files = [...walk(env.XDG_STATE_HOME), ...walk(env.NIKA_CONFIG_DIR)];
+      assert.ok(files.length >= 1, 'there is a file to look at (the attachment)');
+      for (const f of files) assert.ok(!fs.readFileSync(f).includes(Buffer.from(MARK)), f);
+      assert.deepEqual(files.filter((f) => !f.includes(`${path.sep}attachments${path.sep}`)), [], 'nothing outside the attachments folder was written');
+    });
+  });
+
+  describe('keptTextOk, checkKeptBody and KEPT_CAP', () => {
+    const MESSAGES = new Set(['body must be { text, shell }', 'shell must be true or false', 'text must be at most 16 KB without control characters other than newline and tab']);
+
+    test('(+) keptTextOk takes plain text, newlines, tabs, joiners, bidi marks, trailing spaces, a valid pair and exactly 16 384 bytes', () => {
+      for (const t of ['a', 'two\nlines', 'a\ttab', 'a\u200db', 'a\u202eb', 'ends  ', '\ud83d\ude00', euros(5461) + 'a', ' ', '\n']) assert.equal(keptTextOk(t), true, JSON.stringify(t.slice(0, 20)));
+    });
+
+    test('(−) keptTextOk refuses an empty text, a non-string, 16 385 bytes, C0 but tab and newline, CR, DEL, C1 and a lone surrogate; twice in a row alike', () => {
+      for (const t of ['', null, undefined, 5, [], {}, euros(5461) + 'ab', euros(5462), 'a\u0000', 'a\u0007', 'a\u001b', 'a\r', 'a\u007f', 'a\u0085', 'a\u009f', 'a\ud800', 'a\udc00', 'a\ud800\ud800']) {
+        assert.equal(keptTextOk(t), false, JSON.stringify(typeof t === 'string' ? t.slice(0, 12) : t));
+        assert.equal(keptTextOk(t), false, 'the second call answers the same');
+      }
+    });
+
+    test('(+) checkKeptBody takes { text, shell } with a keepable text, and { text: "", shell } as the clear', () => {
+      assert.equal(checkKeptBody({ text: 'x', shell: false }), null);
+      assert.equal(checkKeptBody({ text: 'two\nlines\tand tab', shell: true }), null);
+      assert.equal(checkKeptBody({ text: euros(5461) + 'a', shell: false }), null);
+      assert.equal(checkKeptBody({ text: '', shell: false }), null, 'a clear');
+      assert.equal(checkKeptBody({ text: '', shell: true }), null);
+    });
+
+    test('(−) checkKeptBody answers 400 invalid with one fixed message that never holds the text, for every wrong body', () => {
+      const secret = `${MARK}-in-body`;
+      const bodies = [
+        null, undefined, 'x', 5, [], {}, { text: 'x' }, { shell: true }, { text: secret, shell: false, extra: 1 }, { text: secret, shell: 'true' }, { text: secret, shell: 1 },
+        { text: secret, extra: 1 }, { shell: true, other: 1 }, { text: secret, shell: null }, { text: 5, shell: false }, { text: null, shell: false }, { text: [secret], shell: false }, { text: `${secret}\u0007`, shell: false },
+        { text: `${secret}\r`, shell: false }, { text: `${secret}\u001b`, shell: false }, { text: `${secret}\u007f`, shell: false }, { text: `${secret}\u0085`, shell: false },
+        { text: `${secret}\ud800`, shell: false }, { text: secret + euros(5462), shell: false }, { text: '', shell: 'no' },
+      ];
+      for (const body of bodies) {
+        const r = checkKeptBody(body);
+        assert.equal(r?.status, 400, JSON.stringify(body)?.slice(0, 60));
+        assert.equal(r.body.error, 'invalid');
+        assert.ok(MESSAGES.has(r.body.message), `a fixed message: ${r.body.message}`);
+        assert.ok(!JSON.stringify(r).includes(MARK), 'the answer never echoes the text');
+      }
+      assert.equal(checkKeptBody({ text: 'x', shell: 'no' }).body.message, 'shell must be true or false');
+      assert.equal(checkKeptBody({ text: 'a\u0007', shell: false }).body.message, 'text must be at most 16 KB without control characters other than newline and tab');
+      assert.equal(checkKeptBody({ text: 'x' }).body.message, 'body must be { text, shell }');
+      assert.equal(checkKeptBody({ shell: true }).body.message, 'body must be { text, shell }');
+      assert.equal(checkKeptBody({ text: 'x', extra: 1 }).body.message, 'body must be { text, shell }', 'two keys, but no shell');
+      assert.equal(checkKeptBody({ shell: true, other: 1 }).body.message, 'body must be { text, shell }', 'two keys, but no text');
+      assert.equal(checkKeptBody([]).body.message, 'body must be { text, shell }');
+      // an array that carries both fields as own properties has exactly two keys and both names, so only the array check refuses it
+      assert.equal(checkKeptBody(Object.assign([], { text: 'x', shell: false })).body.message, 'body must be { text, shell }');
+    });
+
+    test('(+) KEPT_CAP leaves room for 16 KB of JSON-escaped text; (−) it is bigger than the keys route\'s 20 KB cap', () => {
+      assert.equal(KEPT_CAP, 34 * 1024);
+      const body = JSON.stringify({ text: '"'.repeat(16384), shell: false });
+      assert.ok(Buffer.byteLength(body) > 20 * 1024, 'a sendable text that CAP.keys would refuse');
+      assert.ok(Buffer.byteLength(body) < KEPT_CAP);
+      const worst = JSON.stringify({ text: '\\'.repeat(16384), shell: true });
+      assert.ok(Buffer.byteLength(worst) < KEPT_CAP);
+    });
   });
 });

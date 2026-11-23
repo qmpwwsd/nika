@@ -961,6 +961,7 @@ describe('session.js hooks (noteScreen, renderMode, sendComposer), run in a vm',
     const ctx = {
       paneId: '%12', SW: { parts: [{}], busy: null }, W, A: { kind: 'idle', name: 'builder-1', attention: '', ...over.A }, switcherState: () => ({ reason: '' }),
       renderTag() {}, renderSegments() {}, renderWhy() {}, renderQuick() {}, renderAttn() {}, renderPrompt() {}, panelsChanged() {}, DF: null,
+      growing: () => false, // 0.5.4 QPF F6 (requirement change): renderMode reads growing() before it asks whether there is a form, to remember what the form was told
       SV: over.SV === undefined ? { render: (a) => calls.push(norm(a)) } : over.SV,
     };
     return { calls, W, render: mk(['function renderMode()'], ctx).renderMode };
@@ -991,7 +992,7 @@ describe('session.js hooks (noteScreen, renderMode, sendComposer), run in a vm',
     const log = { problems: [], gate: 0, jobs: 0 };
     const ta = { value: 'hello', disabled: false };
     const ctx = {
-      sending: false, composer: () => ta, SV: note === undefined ? null : { sendNote: () => note },
+      sending: false, composer: () => ta, DS: { restoring: () => false }, SV: note === undefined ? null : { sendNote: () => note }, // DS: 0.5.4 LT, Send asks whether the kept text is being brought back
       showProblem: (m, k) => log.problems.push([m, k]),
       sendGate: () => { log.gate += 1; throw new Error('past the survey gate'); },
       W: { promptOpen: false, prompt: null, pane: 'ok' }, A: { kind: 'idle' }, DF: null, hasAnswerButtons: () => false,

@@ -1,6 +1,6 @@
 // Shared state and widgets for the main page (dashboard, project view, settings). Every data string reaches the
 // page through h() / textContent. Nothing here talks to the server; api.js does.
-import { h, icon, placeMenuX, clearMenuPlacement, ago } from './dom.js';
+import { h, icon, placeMenuX, clearMenuPlacement, ago, agoWords } from './dom.js';
 import { STATUS_ORDER } from './dash-model.js';
 import { isMac } from './shortcuts.js';
 
@@ -32,6 +32,7 @@ export const state = {
   models: null, // app tier: /api/app/models (the catalog array), null until loaded
   plugins: null, // app tier: installed plugin names (/api/app/plugins), null until loaded; the project card flags saved ones that are gone
   modes: { map: {}, misses: 0 }, // app tier: latest /api/app/modes answer by pane id (public/modes.js modesAfter)
+  compacted: {}, // app tier (0.5.4 AC): the notes of a typed /compact by pane id, from the same answer (public/modes.js parseCompacted); kept and cleared with modes
   appError: null, // app tier: the private server refused us (403)
   appCopyUi: { busy: false, error: null, hidden: false }, // app tier, macOS: the Add to Applications notice (spec 3.14); hidden = "Not now" this launch
   open: new Set(), // disclosure ids the user toggled ("!id" = closed on purpose)
@@ -65,7 +66,7 @@ export function save(key, value) {
 // ago() and timeEl() live in dom.js now (0.5.1 H: the session window needs them too); the page code keeps importing them from here.
 export { ago, timeEl } from './dom.js';
 export function tickTimes() {
-  for (const t of $$('time[data-ts]')) t.textContent = ago(Number(t.dataset.ts));
+  for (const t of $$('time[data-ts]')) t.textContent = (t.dataset.words === '1' ? agoWords : ago)(Number(t.dataset.ts)); // data-words: timeWordsEl(ms), "3 min ago"
 }
 
 /* ---------- live region and toasts ---------- */

@@ -473,6 +473,79 @@ describe('transcripts: context usage (0.4, R1)', () => {
     assert.equal(t.usage, null);
     assert.equal(t.model, 'claude-sonnet-5-5'); // the existing head fall-back for the other fields still works
   });
+
+  // 0.5.4 (AC, test 1 and 2): after a compaction the size is the boundary's postTokens, not the stale pre-compact reply.
+  const boundary = (post, extra = {}) => ({
+    type: 'system',
+    subtype: 'compact_boundary',
+    content: 'Conversation compacted',
+    compactMetadata: post === undefined ? { trigger: 'manual', preTokens: 331000 } : { trigger: 'manual', preTokens: 331000, postTokens: post, ...extra },
+  });
+  const BIG = { input_tokens: 331000 };
+  const pad = { type: 'attachment', pad: 'p'.repeat(1000) };
+
+  test('(+) 0.5.4 test 1: a compact_boundary after the last assistant entry gives its postTokens, with that entry\'s model', async () => {
+    const t = await read([{ type: 'user', cwd: '/u' }, asst(BIG, 'claude-opus-5-5'), boundary(42000), { type: 'user', isCompactSummary: true, message: { content: 'summary' } }], 'bnd1');
+    assert.deepEqual(t.usage, { tokens: 42000, model: 'claude-opus-5-5' });
+  });
+
+  test('(+) 0.5.4 test 1: a synthetic assistant entry after the boundary is skipped; a real one after it wins again', async () => {
+    const zero = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+    assert.deepEqual((await read([asst(BIG), boundary(42000), asst(zero, '<synthetic>')], 'bnd2')).usage, { tokens: 42000, model: 'claude-sonnet-5-5' });
+    assert.deepEqual((await read([asst(BIG), boundary(42000), asst(U)], 'bnd3')).usage, { tokens: 2310, model: 'claude-sonnet-5-5' });
+  });
+
+  test('(+) 0.5.4 test 1: postTokens 0 and exactly 10,000,000 are accepted', async () => {
+    assert.deepEqual((await read([asst(BIG), boundary(0)], 'bnd4')).usage, { tokens: 0, model: 'claude-sonnet-5-5' });
+    assert.deepEqual((await read([asst(BIG), boundary(10_000_000)], 'bnd5')).usage, { tokens: 10_000_000, model: 'claude-sonnet-5-5' });
+  });
+
+  test('(+) 0.5.4 test 1: a boundary with no assistant entry in the tail takes the transcript\'s own model (the head\'s)', async () => {
+    const t = await read([asst(BIG, 'claude-opus-5-5'), ...Array.from({ length: 700 }, () => pad), boundary(42000)], 'bnd6');
+    assert.deepEqual(t.usage, { tokens: 42000, model: 'claude-opus-5-5' });
+    assert.equal(t.bytesRead < fs.statSync(path.join(fx.root, 'usage', 'bnd6.jsonl')).size, true); // it is the tail case
+  });
+
+  test('(\u2212) 0.5.4 test 1: that model is kept only when it is a MODEL_ID; else null (the tokens stay)', async () => {
+    const t = await read([asst(BIG, 'not a model'), ...Array.from({ length: 700 }, () => pad), boundary(42000)], 'bnd7');
+    assert.deepEqual(t.usage, { tokens: 42000, model: null });
+    const w = await read([asst(BIG, 'not a model'), boundary(42000)], 'bnd8');
+    assert.deepEqual(w.usage, { tokens: 42000, model: null });
+  });
+
+  test('(\u2212) 0.5.4 test 1: a bad postTokens is no size, and it does not fall back to the stale reply before it', async () => {
+    const bad = ['x', -1, 10_000_001, 1.5, null, true, [5], {}];
+    for (const [i, post] of bad.entries()) assert.equal((await read([asst(BIG), boundary(post)], `bndbad${i}`)).usage, null, JSON.stringify(post));
+    assert.equal((await read([asst(BIG), boundary(undefined)], 'bndmiss')).usage, null);
+    assert.equal((await read([asst(BIG), { type: 'system', subtype: 'compact_boundary' }], 'bndnometa')).usage, null);
+    assert.equal((await read([asst(BIG), { type: 'system', subtype: 'compact_boundary', compactMetadata: 'many' }], 'bndstrmeta')).usage, null);
+  });
+
+  test('(\u2212) 0.5.4 test 1: a boundary BEFORE the assistant entry changes nothing; the result never carries a boundary key', async () => {
+    const t = await read([boundary(42000), asst(U)], 'bndbefore');
+    assert.deepEqual(t.usage, { tokens: 2310, model: 'claude-sonnet-5-5' });
+    for (const lines of [[asst(BIG), boundary(42000)], [asst(BIG), ...Array.from({ length: 700 }, () => pad), boundary(42000)]]) {
+      const r = await read(lines, `bndkeys${lines.length}`);
+      assert.deepEqual(Object.keys(r.usage).sort(), ['model', 'tokens']);
+    }
+  });
+
+  test('(+) 0.5.4 test 2: of the boundary only postTokens is read (extra fields, text and preTokens change nothing)', async () => {
+    const e = boundary(42000, { preTokens: 999, text: 'x'.repeat(50), extra: { a: 1 } });
+    e.content = 'a long summary text that is never kept';
+    e.preTokens = 5;
+    const t = await read([asst(BIG), e], 'bndextra');
+    assert.deepEqual(t.usage, { tokens: 42000, model: 'claude-sonnet-5-5' });
+  });
+
+  test('(\u2212) 0.5.4 test 2: a system entry with another subtype, or another type with that subtype, is skipped', async () => {
+    const other = { type: 'system', subtype: 'turn_duration', compactMetadata: { postTokens: 7 } };
+    assert.deepEqual((await read([asst(U), other], 'bndother1')).usage, { tokens: 2310, model: 'claude-sonnet-5-5' });
+    const wrongType = { type: 'user', subtype: 'compact_boundary', compactMetadata: { postTokens: 7 } };
+    assert.deepEqual((await read([asst(U), wrongType], 'bndother2')).usage, { tokens: 2310, model: 'claude-sonnet-5-5' });
+    const noSub = { type: 'system', compactMetadata: { postTokens: 7 } };
+    assert.deepEqual((await read([asst(U), noSub], 'bndother3')).usage, { tokens: 2310, model: 'claude-sonnet-5-5' });
+  });
 });
 
 describe('subagents', () => {

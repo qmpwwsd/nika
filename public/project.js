@@ -6,12 +6,13 @@ import { h, icon } from './dom.js';
 import {
   $, state, hooks, RX, save, toast, announce, errText, copyText, setBusy, fieldError, openDialog, rulesEl, sessionHref, menuEl, closeMenu, syncRadioCards,
 } from './ui.js';
-import { parseModes, modesAfter, settingModeEl, MODE_META } from './modes.js';
+import { parseModes, parseCompacted, modesAfter, settingModeEl, MODE_META } from './modes.js';
 import { copyBanner, copyErrorText, copyToast } from './app-copy.js';
 import {
   CUSTOM, MODEL_ID, MODEL_HINT, ROLES, ROLE_LABEL, modelLabel, fillModelSelect, fillRoleOverride, effectiveRoleModels,
 } from './models-ui.js';
-import { buildGroups, agentNodes, swap, interacting, render } from './app.js';
+import { buildGroups, agentNodes, swap, interacting, render, refresh } from './app.js';
+import { removeGroup, removedLineEl } from './removed.js';
 import {
   DETECTED_MAX, sidebarModel, orchState, savedPick, otherRunning, roleTag, spawnLimits, effectiveAgents, resetEndedState, KINDS, KIND_TEXT, ROLE_KIND, kindFromModel,
 } from './dash-model.js';
@@ -78,14 +79,17 @@ function pollModes() {
   const ctl = new AbortController(); // AbortSignal.timeout() is missing in older macOS web views
   const timer = setTimeout(() => ctl.abort(), 4000);
   appFetch('/api/app/modes', { signal: ctl.signal })
-    .then((r) => (r.status === 200 ? parseModes(r.body) : null))
+    .then((r) => (r.status === 200 ? r.body : null))
     .catch(() => null)
-    .then((map) => {
+    .then((body) => {
       clearTimeout(timer);
       modesBusy = false;
-      const before = JSON.stringify(state.modes.map);
+      const map = parseModes(body);
+      const before = JSON.stringify([state.modes.map, state.compacted]);
       state.modes = modesAfter(state.modes, map);
-      if (JSON.stringify(state.modes.map) !== before) render();
+      // the notes come with the modes and follow the same rule: one failed poll keeps them, the next clears them (0.5.4 AC)
+      state.compacted = map ? parseCompacted(body) : state.modes.misses > 1 ? {} : state.compacted;
+      if (JSON.stringify([state.modes.map, state.compacted]) !== before) render();
     });
 }
 
@@ -459,7 +463,9 @@ function act(label, iconName, run, { primary = false, fk, reason = null, title =
 /** primary: true = "Start orchestrator" is the primary button, 'spawn' = "Spawn agent" is. `sub`: add Spawn sub-orchestrator (the project page's header only). */
 function groupActions(g, { primary = false, sub = false } = {}) {
   if (!g.project) {
-    return [h('button', { type: 'button', class: 'btn', 'data-fk': `add:${g.key}`, title: 'Add project', onclick: () => addProject() }, icon('plus'), h('span', { class: 'lbl', text: 'Add project' }))]; // the label is hidden below 900 px: the title is the tooltip
+    const add = h('button', { type: 'button', class: 'btn', 'data-fk': `add:${g.key}`, title: 'Add project', onclick: () => addProject() }, icon('plus'), h('span', { class: 'lbl', text: 'Add project' })); // the label is hidden below 900 px: the title is the tooltip
+    // 0.5.4 RM: a detected folder (not a nika project) can be taken off the list; the "(unknown)" folder has no root and stays
+    return g.root ? [add, menuEl(`More actions for ${g.label}`, [{ text: 'Remove from the list', fk: `rm:${g.key}`, run: () => removeGroup(g, { refresh }) }], `gm:${g.key}`)] : [add];
   }
   const st = orchState(g.project, g);
   const key = g.project.key;
@@ -500,7 +506,7 @@ function renderProject(force) {
   const key = state.route.key;
   const p = state.projects?.find((x) => x.key === key) ?? null;
   const g = buildGroups().find((x) => x.project?.key === key) ?? null;
-  const sig = JSON.stringify([p, g?.agents, state.modes.map, state.settings, state.plugins, state.models, state.me?.tmux, state.me?.claude, state.error, state.showEndedProject, [...state.open], [...state.expanded], key]);
+  const sig = JSON.stringify([p, g?.agents, g?.hidden, state.modes.map, state.compacted, state.settings, state.plugins, state.models, state.me?.tmux, state.me?.claude, state.error, state.showEndedProject, [...state.open], [...state.expanded], key]);
   if (!force && (sig === projSig || interacting())) return;
   projSig = sig;
   const body = $('#proj-body');
@@ -537,7 +543,7 @@ function renderProject(force) {
       { text: 'Remove from nika…', run: () => confirmRemove(p) },
     ], 'proj-menu'),
   ]);
-  swap($('#proj-agents'), [...(orchState(p, g).kind === 'gone' ? [goneAlert(p, pick)] : []), ...agentNodes(g, '', `pv:${key}`, { showEnded: state.showEndedProject === true })]);
+  swap($('#proj-agents'), [...(orchState(p, g).kind === 'gone' ? [goneAlert(p, pick)] : []), ...agentNodes(g, '', `pv:${key}`, { showEnded: state.showEndedProject === true }), removedLineEl(g.hidden, { where: 'project', refresh })]);
   placeSetup(p, g);
 }
 
@@ -1294,6 +1300,7 @@ function openSpawn(g, { parent = null, role = 'agent' } = {}) {
   $('#sp-place').replaceChildren(...[
     h('label', { class: 'check' }, h('input', { type: 'radio', name: 'sp-place', value: 'settings' }), `${PLACE_LABEL[mode] ?? 'Beside'} (${ownPlace ? 'set for this project' : 'from Settings'})`),
     under ? h('label', { class: 'check' }, h('input', { type: 'radio', name: 'sp-place', value: 'under' }), `Under ${under.name} (${under.pane.id})`) : null,
+    under ? h('p', { class: 'help', text: 'If that pane has no room, nika places the agent by the setting and says where.' }) : null,
   ].filter(Boolean)); // replaceChildren would turn null into the text "null"
   const want = pref.place === 'under' && under ? 'under' : 'settings';
   $(`input[name="sp-place"][value="${want}"]`).checked = true;
@@ -1393,7 +1400,11 @@ async function submitSpawn(e) {
     dlg.close();
     const href = sessionHref({ session: r.body.sessionId, pane: r.body.pane, project: g.project.key });
     const who = parent ? ` under ${trunc(parent.name, 40)}` : '';
-    toast(`Spawned ${role === 'orchestrator' ? 'sub-orchestrator ' : ''}${name}${who} in pane ${r.body.pane}`, href ? { action: { label: 'Open session', run: () => { location.href = href; } } } : {});
+    // where nika put the pane (0.5.4): the agents window when it went there, else a plain pane; a word the page does not know reads as a plain pane
+    const at = r.body.placement === 'tiled' ? ` in the tmux window "agents" (pane ${r.body.pane})`
+      : r.body.placement === 'window' ? ` in a new tmux window "agents" (pane ${r.body.pane})` : ` in pane ${r.body.pane}`;
+    const moved = r.body.moved === 'under' ? '. That pane had no room.' : '';
+    toast(`Spawned ${role === 'orchestrator' ? 'sub-orchestrator ' : ''}${name}${who}${at}${moved}`, href ? { action: { label: 'Open session', run: () => { location.href = href; } } } : {});
     await pollApp();
     render(true);
     return;

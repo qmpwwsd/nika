@@ -2,11 +2,11 @@
 // O5 adds ctxView to this file. Pure functions, run in Node.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { fmtTokens, compactPreview, ctxView } from '../public/ctx.js';
+import { fmtTokens, compactPreview, ctxView, clockOf, cleanNote } from '../public/ctx.js';
 import { compactLaunch } from '../src/compact.js';
 
 const ON = (pct, window) => ({ enabled: true, pct, window });
-const OFF_LINE = "Off. Sessions nika starts keep Claude Code's own setting.";
+const OFF_LINE = "Off. nika sets nothing and types no /compact; Claude Code's own setting applies."; // 0.5.4 AC, test 39
 
 describe('fmtTokens', () => {
   test('(+) under 1000 as is, then one decimal under 10k, then whole thousands, then millions; always rounded down', () => {
@@ -188,5 +188,132 @@ describe('ctxView: the context meter of a row and of the session header (design 
     assert.equal(v.text, `50${NB}%`); // the server's pct, not tokens / window (= 0 %)
     assert.deepEqual(Object.keys(v).sort(), ['long', 'lvl', 'of', 'q', 'sr', 'text', 'title']);
     assert.equal(/[<>&"]/.test(Object.values(v).filter((x) => typeof x === 'string').join('')), false);
+  });
+});
+
+// ---- 0.5.4 AC: the typed /compact (design 6.2 to 6.4; tests 35, 36, 39) ----------------------------------------------------------------------
+
+describe('ctxView: the typed word (0.5.4 AC, test 35)', () => {
+  const NB = '\u00a0';
+  const ctx = (over = {}) => ({ tokens: 312000, window: 400000, compactAt: 320000, pct: 78, compaction: 'typed', ...over });
+
+  test('(+) typed: the title says nika types /compact at the point, and sr carries the same clause', () => {
+    const v = ctxView(ctx());
+    assert.equal(v.title, 'Context: 312k of 400k tokens (nika types /compact at 320k)');
+    assert.equal(v.sr, `Context 78${NB}% used, 312k of 400k tokens, nika types /compact at 320k`);
+  });
+
+  test('(+) typed: the clause comes before ", nearly full"; on, off and none keep their words', () => {
+    assert.equal(ctxView(ctx({ pct: 86 })).sr, `Context 86${NB}% used, 312k of 400k tokens, nika types /compact at 320k, nearly full`);
+    assert.equal(ctxView(ctx({ compaction: 'on' })).title, 'Context: 312k of 400k tokens (compacts at 320k)');
+    assert.equal(ctxView(ctx({ compaction: 'off', compactAt: null, window: 1000000 })).title, "Context: 312k of 1M tokens (the model's window; auto-compact is off)");
+    assert.equal(ctxView(ctx({ compaction: 'none', compactAt: null })).title, 'Context: 312k of 400k tokens');
+  });
+
+  test('(\u2212) typed with a bad compactAt says nothing about it, as on does today', () => {
+    for (const compactAt of [null, undefined, 0, -1, NaN, Infinity, '320000']) {
+      const v = ctxView(ctx({ compactAt }));
+      assert.equal(v.title, 'Context: 312k of 400k tokens', String(compactAt));
+      assert.equal(v.sr, `Context 78${NB}% used, 312k of 400k tokens`, String(compactAt));
+    }
+  });
+});
+
+describe('clockOf and cleanNote (0.5.4 AC, tests 35 and 36)', () => {
+  test('(+) clockOf: local 24 h HH:MM, zero padded, from new Date(ms)', () => {
+    const at = (h, m) => new Date(2026, 10, 20, h, m, 30).getTime();
+    assert.equal(clockOf(at(14, 2)), '14:02');
+    assert.equal(clockOf(at(4, 5)), '04:05');
+    assert.equal(clockOf(at(0, 0)), '00:00');
+    assert.equal(clockOf(at(23, 59)), '23:59');
+    assert.equal(clockOf(at(12, 30)), '12:30');
+  });
+
+  test('(\u2212) clockOf: anything that is not a time on the calendar gives null', () => {
+    for (const bad of [NaN, Infinity, -Infinity, '1700000000000', null, undefined, {}, 8.64e15 + 1, 9e15]) assert.equal(clockOf(bad), null, String(bad));
+  });
+
+  const good = { state: 'typed', at: 1760000000000, tokens: 331000 };
+
+  test('(+) cleanNote: the three fields and nothing else; a copy comes back, in the wire order', () => {
+    for (const state of ['typed', 'compacted', 'stopped']) {
+      const got = cleanNote({ ...good, state });
+      assert.deepEqual(got, { ...good, state });
+      assert.deepEqual(Object.keys(got), ['state', 'at', 'tokens']);
+    }
+    assert.notEqual(cleanNote(good), good, 'a copy, not the input');
+    assert.deepEqual(cleanNote({ ...good, tokens: 0 }), { ...good, tokens: 0 });
+    assert.deepEqual(cleanNote({ ...good, tokens: 10000000 }), { ...good, tokens: 10000000 });
+  });
+
+  test('(\u2212) cleanNote: a bad state, time or size, a missing or an extra field, or no object at all gives null', () => {
+    const bads = [null, undefined, 'typed', 7, [], [good], () => good,
+      { ...good, state: 'done' }, { ...good, state: 'Typed' }, { ...good, state: undefined }, { ...good, state: ['typed'] },
+      { ...good, at: '1760000000000' }, { ...good, at: 1.5 }, { ...good, at: -1 }, { ...good, at: NaN }, { ...good, at: 2 ** 53 }, { ...good, at: 9e15 }, { ...good, at: null },
+      { ...good, tokens: -1 }, { ...good, tokens: 10000001 }, { ...good, tokens: 1.5 }, { ...good, tokens: '331000' }, { ...good, tokens: NaN }, { ...good, tokens: null },
+      { state: 'typed', at: good.at }, { state: 'typed', tokens: 1 }, { at: good.at, tokens: 1 }, {},
+      { ...good, extra: 1 }, { ...good, session: '11111111' }, { ...good, text: 'x' }];
+    for (const b of bads) assert.equal(cleanNote(b), null, JSON.stringify(b));
+  });
+});
+
+describe('ctxView: the note clause (0.5.4 AC, test 36)', () => {
+  const NB = '\u00a0';
+  const ctx = (over = {}) => ({ tokens: 312000, window: 400000, compactAt: 320000, pct: 78, compaction: 'typed', ...over });
+  const AT = new Date(2026, 10, 20, 14, 2, 10).getTime(); // 14:02 on any machine
+  const note = (state, over = {}) => ({ state, at: AT, tokens: 331000, ...over });
+  const DOT = '\u00b7';
+
+  test('(+) typed: " \u00b7 nika typed /compact at 14:02, at 331k" on the title and ", ..." on sr', () => {
+    const v = ctxView(ctx(), note('typed'));
+    assert.equal(v.title, `Context: 312k of 400k tokens (nika types /compact at 320k) ${DOT} nika typed /compact at 14:02, at 331k`);
+    assert.equal(v.sr, `Context 78${NB}% used, 312k of 400k tokens, nika types /compact at 320k, nika typed /compact at 14:02, at 331k`);
+  });
+
+  test('(+) compacted: "nika compacted this session at 14:02, at 331k"', () => {
+    const v = ctxView(ctx(), note('compacted'));
+    assert.equal(v.title, `Context: 312k of 400k tokens (nika types /compact at 320k) ${DOT} nika compacted this session at 14:02, at 331k`);
+    assert.equal(v.sr, `Context 78${NB}% used, 312k of 400k tokens, nika types /compact at 320k, nika compacted this session at 14:02, at 331k`);
+  });
+
+  test('(+) stopped: "nika stopped typing /compact here after 3 failed tries", no time and no size', () => {
+    const v = ctxView(ctx(), note('stopped'));
+    assert.equal(v.title, `Context: 312k of 400k tokens (nika types /compact at 320k) ${DOT} nika stopped typing /compact here after 3 failed tries`);
+    assert.equal(v.sr, `Context 78${NB}% used, 312k of 400k tokens, nika types /compact at 320k, nika stopped typing /compact here after 3 failed tries`);
+  });
+
+  test('(+) the clause is last in sr, after ", nearly full"; it also rides on the on, off, none, nowin and unknown readings', () => {
+    assert.equal(ctxView(ctx({ pct: 86 }), note('typed')).sr, `Context 86${NB}% used, 312k of 400k tokens, nika types /compact at 320k, nearly full, nika typed /compact at 14:02, at 331k`);
+    assert.equal(ctxView(ctx({ compaction: 'on' }), note('typed')).title, `Context: 312k of 400k tokens (compacts at 320k) ${DOT} nika typed /compact at 14:02, at 331k`);
+    assert.equal(ctxView(ctx({ compaction: 'none', compactAt: null }), note('stopped')).title, `Context: 312k of 400k tokens ${DOT} nika stopped typing /compact here after 3 failed tries`);
+    assert.equal(ctxView(ctx({ window: null, pct: null }), note('typed')).title, `Context: 312k tokens; the window is not known yet ${DOT} nika typed /compact at 14:02, at 331k`);
+    assert.equal(ctxView(null, note('typed')).sr, 'Context unknown, nika typed /compact at 14:02, at 331k');
+  });
+
+  test('(+) the time is clockOf(note.at) and the size fmtTokens(note.tokens): midnight, a small size and a million', () => {
+    const midnight = new Date(2026, 10, 20, 0, 7, 0).getTime();
+    assert.equal(ctxView(ctx(), note('typed', { at: midnight, tokens: 850 })).title.endsWith('nika typed /compact at 00:07, at 850'), true);
+    assert.equal(ctxView(ctx(), note('compacted', { tokens: 1000000 })).title.endsWith('at 14:02, at 1M'), true);
+  });
+
+  test('(\u2212) no note, or a malformed one: the view is exactly what it was, and the view keeps its seven keys', () => {
+    const plain = ctxView(ctx());
+    assert.deepEqual(ctxView(ctx(), null), plain);
+    assert.deepEqual(ctxView(ctx(), undefined), plain);
+    for (const bad of ['typed', 7, [], { state: 'typed' }, note('done'), note('typed', { at: '1' }), note('typed', { tokens: -1 }), { ...note('typed'), extra: 1 }, note('typed', { at: 9e15 })]) {
+      assert.deepEqual(ctxView(ctx(), bad), plain, JSON.stringify(bad));
+    }
+    assert.deepEqual(Object.keys(ctxView(ctx(), note('typed'))).sort(), ['long', 'lvl', 'of', 'q', 'sr', 'text', 'title']);
+    assert.equal(/[<>&"]/.test(ctxView(ctx(), note('typed')).title), false);
+  });
+});
+
+describe('the Settings OFF line (0.5.4 AC, test 39)', () => {
+  test('(+) off says nika sets nothing and types no /compact, whatever the other two hold', () => {
+    for (const window of [200000, 400000, 1000000, 'model']) assert.equal(compactPreview({ enabled: false, pct: 80, window }), "Off. nika sets nothing and types no /compact; Claude Code's own setting applies.", String(window));
+  });
+
+  test('(\u2212) the old wording is gone', () => {
+    assert.notEqual(compactPreview({ enabled: false, pct: 80, window: 400000 }), "Off. Sessions nika starts keep Claude Code's own setting.");
   });
 });

@@ -87,7 +87,7 @@ function treeRig({ isApp = true, open = [], expanded = [], rowItems = null } = {
     isApp, state, hooks: rowItems ? { rowItems: (...args) => { seen.push(args); return rowItems; } } : {}, ORDER: STATUS_ORDER, ROW_CAP: 12,
     endedPlan, statusOf, treeRows, hasTree, parentOf, roleTag, roleTagEl, ctxEl, h, icon, menuEl, sessionHref, SHAPE,
     subagentView, subagentHref, subagentItemEl, labelEl, agentLabelView,
-    rowMode: () => null, canEndRow: () => false, reasonOf: () => 'Needs you', endedText: () => 'Ended',
+    rowMode: () => null, rowNote: () => null, canEndRow: () => false, reasonOf: () => 'Needs you', endedText: () => 'Ended',
     statusEl: () => new El('span'), modeEl: () => new El('span'), modelEl: () => new El('span'), timeEl: () => new El('span'),
     copyText: () => {}, showReport: () => {}, focusPane: () => {}, endSession: () => {},
     render: (force) => renders.push(force), document: { getSelection: () => ({ isCollapsed: true }), activeElement: null }, location: {},
@@ -1083,6 +1083,24 @@ describe('the spawn sheet: the request and the toasts (design 3)', () => {
     assert.equal(r.node('#dlg-spawn').open, false);
     assert.ok(r.calls.some((c) => c.method === 'GET' && c.url === '/api/app/projects'), 'the list is polled');
     assert.deepEqual(r.renders, [true]);
+  });
+
+  test('(+) 0.5.4 P1: the toast says where the pane went: beside, under and session keep "in pane"; tiled and window name the tmux window; moved adds a sentence', async () => {
+    const say = async (body, over = {}) => (await run({ reply: { status: 200, body: { sessionId: NEW, pane: '%9', ...body } }, ...over })).last().msg;
+    for (const placement of ['beside', 'under', 'session']) assert.equal(await say({ placement }), 'Spawned builder-3 in pane %9', placement);
+    assert.equal(await say({ placement: 'tiled' }), 'Spawned builder-3 in the tmux window "agents" (pane %9)');
+    assert.equal(await say({ placement: 'window' }), 'Spawned builder-3 in a new tmux window "agents" (pane %9)');
+    assert.equal(await say({ placement: 'beside', moved: 'under' }), 'Spawned builder-3 in pane %9. That pane had no room.');
+    assert.equal(await say({ placement: 'window', moved: 'under' }), 'Spawned builder-3 in a new tmux window "agents" (pane %9). That pane had no room.');
+    assert.equal(await say({ placement: 'tiled' }, { parent: mainRow() }), 'Spawned builder-3 under planner in the tmux window "agents" (pane %9)');
+    assert.equal(await say({ placement: 'window' }, { parent: mainRow(), role: 'orchestrator' }), 'Spawned sub-orchestrator lead-1 under planner in a new tmux window "agents" (pane %9)');
+  });
+
+  test('(\u2212) 0.5.4 P1: a placement the page does not know, and a moved that is not the word under, change nothing in the toast', async () => {
+    const say = async (body) => (await run({ reply: { status: 200, body: { sessionId: NEW, pane: '%9', ...body } } })).last().msg;
+    for (const placement of ['sideways', '', 5, null, {}, ['window'], 'WINDOW', 'window\nx']) assert.equal(await say({ placement }), 'Spawned builder-3 in pane %9', JSON.stringify(placement));
+    for (const moved of [true, 1, 'over', '', null, {}]) assert.equal(await say({ placement: 'beside', moved }), 'Spawned builder-3 in pane %9', JSON.stringify(moved));
+    assert.equal(await say({}), 'Spawned builder-3 in pane %9', 'an answer from a server that does not say');
   });
 
   test('(+) success under a parent: "Spawned builder-3 under planner in pane %9"', async () => {

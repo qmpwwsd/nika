@@ -32,7 +32,7 @@ describe('collect', () => {
     assert.equal(a.modelLabel, 'Sonnet 5.5');
     assert.equal(a.worktree, 'repo-wt');
     assert.equal(a.gitBranch, 'feat/x');
-    assert.deepEqual(a.pane, { id: '%5', session: 'work', title: '[%5] build-7-1', command: 'zsh' });
+    assert.deepEqual(a.pane, { id: '%5', session: 'work', windowIndex: '1', title: '[%5] build-7-1', command: 'zsh' }); // 0.5.4 P1: the window index joins the pane (was without windowIndex)
     assert.equal(a.bridgeUrl, 'https://claude.ai/code/session_01AbCdEf');
     assert.deepEqual(a.report, { name: 'build-7-1', status: 'STATUS: RUNNING 7.1 build', rc: null, hasFile: true, sessionId: SID.busy });
     assert.equal(a.resumeCmd, `cd ${shellQuote(fx.wt)} && claude --resume ${SID.busy}`);
@@ -329,7 +329,7 @@ describe('collect', () => {
 describe('collect: key, role, attention (0.2 UI fields)', () => {
   const AGENT_KEYS = ['attention', 'bridgeUrl', 'children', 'context', 'cwd', 'depth', 'gitBranch', 'hostId', 'id', 'label', 'lastActivity', 'lastPrompt', 'live', 'model', 'modelLabel', 'name', 'pane',
     'parent', 'pid', 'report', 'resumeCmd', 'role', 'startedAt', 'state', 'subagents', 'title', 'version', 'worktree'];
-  const GROUP_KEYS = ['agents', 'counts', 'key', 'label', 'lastActivity', 'root'];
+  const GROUP_KEYS = ['agents', 'counts', 'hidden', 'key', 'label', 'lastActivity', 'root']; // 0.5.4 (RM): every group carries the number of rows left out (design-053-rm 4.2)
   const PANES = (role5, role6) => [`%5\twork\t1\t[%5] build-7-1\tzsh\t${role5}`, `%6\twork\t2\tMacBook.local\tclaude\t${role6}`];
 
   test('(+) every group has key = keyFor(repo root): 16 hex, one per group, worktrees share the repo key', async () => {
@@ -653,7 +653,7 @@ describe('collect: context (0.4 O5, contract C6)', () => {
    * One pass over a fresh machine: `last` = [session id, tokens, model] lines appended to the transcripts, `compaction` = the
    * setting in nika's own config.json (null: no file), `roles` = the nika role tag of the panes %5 (SID.busy) and %6 (SID.idle).
    */
-  async function run({ last = [], compaction = SETTING, roles = ['', ''], config = (c) => c, sinceMs = 7 * DAY } = {}) {
+  async function run({ last = [], compaction = SETTING, roles = ['', ''], config = (c) => c, sinceMs = 7 * DAY, typed = false, tmuxLines = null } = {}) {
     const fx2 = makeFixture();
     try {
       const where = { [SID.busy]: fx2.wt, [SID.idle]: fx2.repo, [SID.dead]: fx2.repo, [SID.ended]: fx2.repo };
@@ -665,7 +665,7 @@ describe('collect: context (0.4 O5, contract C6)', () => {
         fs.mkdirSync(path.join(cfgRoot, 'nika'), { recursive: true });
         fs.writeFileSync(path.join(cfgRoot, 'nika', 'config.json'), JSON.stringify({ compaction }), { mode: 0o600 });
       }
-      const s = await collect({ config: config({ ...fx2.config, env: { NIKA_CONFIG_DIR: cfgRoot } }), exec: fakeExec({ tmuxLines: PANES(...roles) }), now: NOW, sinceMs });
+      const s = await collect({ config: config({ ...fx2.config, env: { NIKA_CONFIG_DIR: cfgRoot } }), exec: fakeExec({ tmuxLines: tmuxLines ?? PANES(...roles) }), now: NOW, sinceMs, typed });
       return (id) => s.snapshot.groups.flatMap((g) => g.agents).find((a) => a.id === id);
     } finally {
       cleanup(fx2);
@@ -754,6 +754,59 @@ describe('collect: context (0.4 O5, contract C6)', () => {
       const get = await run({ last, compaction, roles: ['agent', ''] });
       assert.deepEqual(get(SID.busy).context, { tokens: 100000, window: 400000, compactAt: 320000, pct: 25, compaction: 'on' }, JSON.stringify(compaction));
     }
+  });
+
+  // 0.5.4 (AC, test 3): the word `typed` is a live session nika did not start, in a pane nika can type into, on the app tier only.
+  describe('typed (0.5.4, AC)', () => {
+    const IDLE = [[SID.idle, 312000, 'claude-sonnet-5-5']];
+    const PANE6 = (command, dead = '0', role = '') => [`%5\twork\t1\t[%5] build-7-1\tzsh`, `%6\twork\t2\tMacBook.local\t${command}\t${role}\t\t\t\t${dead}`];
+
+    test('(+) typed: a live session in a listed, running claude pane without a nika role reads "typed", with the setting\'s point', async () => {
+      const get = await run({ last: IDLE, typed: true });
+      assert.deepEqual(get(SID.idle).context, { tokens: 312000, window: 400000, compactAt: 320000, pct: 78, compaction: 'typed' });
+    });
+
+    test('(+) typed: the point follows the model (160k on a 200k model), and the pane command may be node or a version number', async () => {
+      const small = await run({ last: [[SID.idle, 100000, 'claude-sonnet-4-6']], typed: true });
+      assert.deepEqual([small(SID.idle).context.compaction, small(SID.idle).context.window, small(SID.idle).context.compactAt], ['typed', 200000, 160000]);
+      for (const command of ['node', '2.1.328']) {
+        const get = await run({ last: IDLE, typed: true, tmuxLines: PANE6(command) });
+        assert.equal(get(SID.idle).context.compaction, 'typed', command);
+      }
+    });
+
+    test('(+) typed does not change a session nika started: it still reads "on"', async () => {
+      const get = await run({ last: IDLE, typed: true, roles: ['', 'agent'] });
+      assert.deepEqual([get(SID.idle).context.compaction, get(SID.idle).context.compactAt], ['on', 320000]);
+    });
+
+    test('(\u2212) without the typed flag (the browser tier, nika status) the same session reads "none" with no point', async () => {
+      for (const opts of [{}, { typed: false }]) {
+        const get = await run({ last: IDLE, ...opts });
+        assert.deepEqual(get(SID.idle).context, { tokens: 312000, window: 400000, compactAt: null, pct: 78, compaction: 'none' });
+      }
+    });
+
+    test('(\u2212) typed needs a pane nika can type into: a dead pane, a shell, an unknown pane or an ended session read "none"', async () => {
+      const dead = await run({ last: IDLE, typed: true, tmuxLines: PANE6('claude', '1') });
+      assert.deepEqual([dead(SID.idle).context.compaction, dead(SID.idle).context.compactAt], ['none', null], 'dead pane');
+      const shell = await run({ last: IDLE, typed: true, tmuxLines: PANE6('zsh') });
+      assert.equal(shell(SID.idle).context.compaction, 'none', 'zsh');
+      const lookalike = await run({ last: IDLE, typed: true, tmuxLines: PANE6('claudex') });
+      assert.equal(lookalike(SID.idle).context.compaction, 'none', 'claudex');
+      const gone = await run({ last: IDLE, typed: true, tmuxLines: [] });
+      assert.deepEqual([gone(SID.idle).context.compaction, gone(SID.idle).context.compactAt], ['none', null], 'pane not listed');
+      const ended = await run({ last: [[SID.dead, 312000, 'claude-sonnet-5-5']], typed: true });
+      assert.equal(ended(SID.dead).live, false);
+      assert.deepEqual([ended(SID.dead).context.compaction, ended(SID.dead).context.compactAt], ['none', null], 'ended');
+    });
+
+    test('(\u2212) the setting off reads "off" even with the typed flag; a session with no model id has no window or point', async () => {
+      const off = await run({ last: IDLE, typed: true, compaction: { ...SETTING, enabled: false } });
+      assert.deepEqual(off(SID.idle).context, { tokens: 312000, window: 1000000, compactAt: null, pct: 31.2, compaction: 'off' });
+      const nowin = await run({ last: [[SID.idle, 124000, 'not a model id']], typed: true });
+      assert.deepEqual(nowin(SID.idle).context, { tokens: 124000, window: null, compactAt: null, pct: null, compaction: 'typed' });
+    });
   });
 
   test('(−) a config without env (tests, 0.1 callers) reads no file and uses the defaults', async () => {
@@ -961,7 +1014,7 @@ describe('collect: a background session and the pane that shows it (0.5, W12)', 
     const a = row(CHILD);
     assert.equal(a.hostId, HOST);
     assert.deepEqual([a.live, a.state, a.pid, a.attention], [true, 'busy', 202, null], 'the child\'s own state, not the host\'s idle');
-    assert.deepEqual(a.pane, { id: '%9', session: 'work', title: 'acme-api', command: 'claude' });
+    assert.deepEqual(a.pane, { id: '%9', session: 'work', windowIndex: '4', title: 'acme-api', command: 'claude' }); // 0.5.4 P1: was without windowIndex
     assert.equal(a.role, 'orchestrator');
     assert.equal(a.name, 'acme-api');
     assert.equal(a.context, null, 'the child has no transcript here');
@@ -1107,5 +1160,33 @@ describe('collect: a background session and the pane that shows it (0.5, W12)', 
     const { row } = await scene({ child: { tmux: 'work:@5.%10' }, tmuxLines: ['%9\twork\t4\tacme-api\tclaude\torchestrator', '%10\twork\t5\tchild\tclaude\tagent\t\t2\t%9'] });
     assert.deepEqual([row(CHILD).pane.id, row(CHILD).role, row(CHILD).hostId], ['%10', 'agent', null]);
     assert.deepEqual([row(HOST).pane.id, row(HOST).role], ['%9', 'orchestrator']);
+  });
+});
+
+describe('collect: the pane carries its tmux window index (0.5.4, P1)', () => {
+  const lines = (index) => [`%5\twork\t${index}\t[%5] build-7-1\tzsh`, '%6\twork\t2\tidle-pane\tclaude', '%7\twork\t3\t[%7] lazygit pane\tlazygit'];
+  const paneOf = async (index) => byId(await snap(7 * DAY, fakeExec({ tmuxLines: lines(index) })), SID.busy).pane;
+
+  test('(+) a valid index reaches the snapshot as the string tmux printed, and the pane keeps exactly these five keys', async () => {
+    const s = await snap();
+    assert.equal(byId(s, SID.busy).pane.windowIndex, '1');
+    assert.equal(byId(s, SID.idle).pane.windowIndex, '2');
+    assert.deepEqual(Object.keys(byId(s, SID.busy).pane).sort(), ['command', 'id', 'session', 'title', 'windowIndex']);
+    for (const index of ['0', '7', '42', '999999', '000007']) assert.equal((await paneOf(index)).windowIndex, index, index);
+  });
+
+  test('(\u2212) an index that is not 1 to 6 ASCII digits is null, and the rest of the pane is unchanged', async () => {
+    for (const index of ['x', '1;2', '1234567', '', '-1', ' 1', '1 ', '1.5', '0x1', '\u0663', '1\u200b', 'split', '%5']) {
+      const pane = await paneOf(index);
+      assert.equal(pane.windowIndex, null, JSON.stringify(index));
+      assert.deepEqual([pane.id, pane.session, pane.command], ['%5', 'work', 'zsh'], JSON.stringify(index));
+    }
+  });
+
+  test('(\u2212) a listing row that stops before the window index, and one with a forged extra tab in the session name, give null, never a piece of another field', async () => {
+    const short = byId(await snap(7 * DAY, fakeExec({ tmuxLines: ['%5\twork', '%6\twork\t2\tidle-pane\tclaude'] })), SID.busy);
+    assert.deepEqual([short.pane.id, short.pane.windowIndex], ['%5', null]);
+    const forged = byId(await snap(7 * DAY, fakeExec({ tmuxLines: ['%5\twork\tsh\t1\t[%5] build-7-1\tzsh', '%6\twork\t2\tidle-pane\tclaude'] })), SID.busy);
+    assert.equal(forged.pane.windowIndex, null, 'the forged tab moves "sh" into the window field: not digits, so null');
   });
 });

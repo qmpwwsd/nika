@@ -38,7 +38,7 @@ All mock data is synthetic (`demo-api`, `builder-1`, `~/projects/…`, repeated-
 | Project | name (repo dir basename), `PROJECT_KEY` internally, never a path in a URL | `GET /api/app/projects` |
 | Agent (Claude session) | agent name (or "untitled session"), status, model, pane `%n`, branch | `/api/agents` groups + registry |
 | Rules state | `none · nika · outdated · foreign` | `projects[].rules.state` |
-| Settings | defaults for every project: config keys (models, remoteControl, permissionMode, panePlacement, limits, rules template). Read only here: `perProject` | `GET/PUT /api/app/settings` |
+| Settings | defaults for every project: config keys (models, remoteControl, permissionMode, panePlacement, limits, rules template, and since 0.5.4 `fit.mode`, §9.22). Read only here: `perProject` | `GET/PUT /api/app/settings` |
 | Project setup (0.3.4) | one project's own settings: its plugins (0.4 adds models) | `GET/PUT /api/app/projects/:key/config` |
 | Environment | tmux present, claude present, version | `/api/app/me` + `/api/agents` errors |
 
@@ -661,7 +661,7 @@ attention note or prompt panel (§9.5) · message box · mode row ("Mode" + swit
 | echo | not shown: a screen-reader-only (`.sr-only`) polite live region in the notes row, so a screen reader still hears: "Sent 23 characters + Enter to %12", "Sent Esc to %12", "Sent Shift-Tab to %12", one line per arrow run ("Sent 3 × Down to %12", "Sent 5 arrow keys to %12") |
 | permission prompt | attention note above: "reviewer-2 asks to run a command. Use ↑ ↓ and Enter to choose, or Esc to refuse." |
 
-Notes row: the argument hint, the shell hint, the draft note (0.5, §9.12) and the problem line, in that order; the row wraps and takes no height while all four are empty. **(built amendment 2026-11-13 (0.4.0, F7); the draft note 2026-11-14 (0.5))**
+Notes row: the argument hint, the shell hint, the draft note (0.5, §9.12) and the problem line (**0.5.4:** an icon and a word per kind, "Warning:" or "Error:", §9.26), in that order; the row wraps and takes no height while all four are empty. **(built amendment 2026-11-13 (0.4.0, F7); the draft note 2026-11-14 (0.5))**
 The hint row with the key tips ("Esc ^C ⇧Tab go to Claude", "⌃⇧Tab moves focus back", "⌘/ all shortcuts") and the visible "Sent … to %12" echo is
 gone (owner decision 2026-11-13): the keys are in the Keyboard shortcuts window (§4.6) and in the message box's accessible name (§4.2), and the
 echo keeps only its screen-reader job. Nothing else in the row changed. The `.hintline` rules and the composer-width and height
@@ -676,7 +676,7 @@ every other allow-listed key. The prompt gates the Shift-Tab and Enter chips had
 
 ### 3.12 Menus, tabs, skeletons
 
-- Row menu ("⋯"): disclosure button (`aria-expanded`, `aria-controls`) + list of buttons; Esc closes and returns focus; one open at a time; items: Copy resume command, Show report, Open in claude.ai ↗, Focus pane %n in tmux.
+- Row menu ("⋯"): disclosure button (`aria-expanded`, `aria-controls`) + list of buttons; Esc closes and returns focus; one open at a time; items: Copy resume command, Show report, Open in claude.ai ↗, Focus pane %n in tmux (**0.5.4:** "Focus pane %n (window i) in tmux" when tmux gave the window's index, §9.23; and, in the app tier for a row no pane holds, a last group with **Remove from the list**, §9.24).
 - **(0.4)** `menuEl` items may carry `fk` (`data-fk`), `group: true` (`li.grp`: a rule above the item) and `reason` (the item is `aria-disabled="true"` with the reason as its `title`; it stays focusable, a click shows the reason as an error toast and runs nothing). The app tier adds the orchestrator items of §3.16 between "Focus pane" and "End session…", each group set off by a rule.
 - **Where an open menu goes (0.5; the stylesheet anchors a menu to its button's right edge).** Horizontally a menu stays right-aligned when it fits between the edges of the
   space it may use; else it grows to the right from its button's left edge; else it is narrowed to that space and its items wrap. The space is the window less 8 px on each
@@ -819,7 +819,7 @@ A project remembers one orchestrator by session id (`perProject.<key>.orchestrat
 
 The browser tier shows main and sub only (they come from tmux tags); it never shows saved, which needs the project's pick.
 
-**Row menu** (app tier, registered projects only): Copy resume command · Show report · Open in claude.ai ↗ · Focus pane · *rule* · Set as orchestrator · Resume as orchestrator · Stop using as orchestrator · *rule* · Spawn agent under <name>… · Spawn sub-orchestrator under <name>… · *rule* · End session…
+**Row menu** (app tier, registered projects only): Copy resume command · Show report · Open in claude.ai ↗ · Focus pane · *rule* · Set as orchestrator · Resume as orchestrator · Stop using as orchestrator · *rule* · Spawn agent under <name>… · Spawn sub-orchestrator under <name>… · *rule* · End session… · *rule* · Remove from the list (0.5.4, RM, §9.24: only a row no pane holds; "Focus pane" reads "Focus pane %n (window i)" when the index is known, §9.23)
 
 | Row | Set | Resume | Stop using | Spawn agent under | Spawn sub-orchestrator under |
 |---|---|---|---|---|---|
@@ -917,9 +917,14 @@ Compacts a session's conversation before it gets too long.
 [ (•)] Auto-compact at  [−][ 80 ][+] % of [400k            v]    [▣ On]
 Compacts at about 320k tokens (about 160k on 200k-window models).
 On a model with a 200k window, Claude can't compact later than about 83 %, so a higher % acts as about 83 % on those models.
-Applies only to sessions nika starts: the orchestrator, a resumed orchestrator and spawned agents, from their next start.
-Running sessions and sessions you start yourself keep Claude Code's own setting.
+Sessions nika starts get this point from their next start. In any other Claude session nika shows, nika types /compact when the session
+has waited 60 seconds past this point and you have not typed in nika for it: once each time it grows past the point, at most every 10 minutes.
+nika can't type into a session in a plain terminal or another tmux server, types nothing while only the browser dashboard runs, and can't compact
+a session that keeps working: Claude does that itself, or nika at its next wait. Compact in the session window works at any time.
 ```
+
+**(0.5.4, AC.)** The wireframe's last paragraph (`#set-compact-help`) is the text above since 0.5.4; the 0.4 text ("Applies only to sessions nika starts: the orchestrator, a resumed orchestrator and spawned
+agents, from their next start. Running sessions and sessions you start yourself keep Claude Code's own setting.") is gone, because the app now types /compact for the other sessions (§9.25).
 
 **Controls**, in order, in `div.inline.compact-row`: the switch `input#set-compact[role=switch]` (`data-fk=compact-on`, described by
 `set-compact-result` and `set-compact-help`); `label[for=set-compact]` "Auto-compact at"; `span.stepper` with `−` (`data-step=-5`,
@@ -943,7 +948,7 @@ percent P and a window W the amount is `min(floor(W x P / 100), W - 33000)`, rou
 | 400k | "Compacts at about {X400} tokens (about {X200} on 200k-window models)." |
 | 1M | "Compacts at about {X1M} tokens on 1M-window models (about {X200} on 200k-window models)." |
 | Model's full window | "Compacts at {P} % of each model's window: about {X1M} tokens on 1M-window models, about {X200} on 200k-window models." |
-| off | "Off. Sessions nika starts keep Claude Code's own setting." |
+| off | "Off. nika sets nothing and types no /compact; Claude Code's own setting applies." (0.5.4, AC; before: "Off. Sessions nika starts keep Claude Code's own setting.") |
 | invalid number | the line is hidden; the error shows |
 
 80 % of 400k reads "about 320k tokens (about 160k on 200k-window models)"; 90 % of 400k reads "about 360k tokens (about 167k on 200k-window
@@ -989,12 +994,14 @@ Bar: `span.ctx-bar[data-q="0".."10"][aria-hidden] > i`, `q = min(10, round(pct /
 | `compaction` | Title | Screen-reader text |
 |---|---|---|
 | `on` | "Context: 312k of 400k tokens (compacts at 320k)" | "Context 78 % used, 312k of 400k tokens, compacts at 320k" |
+| `typed` (0.5.4, AC: a session nika did not start, the app types /compact at the point) | "Context: 312k of 400k tokens (nika types /compact at 320k)" | "Context 78 % used, 312k of 400k tokens, nika types /compact at 320k" |
 | `off` | "Context: 312k of 1M tokens (the model's window; auto-compact is off)" | "Context 31 % used, 312k of 1M tokens, auto-compact off" |
 | `none` (nika did not start it, or it ended) | "Context: 312k of 400k tokens" | "Context 78 % used, 312k of 400k tokens" |
 | `unknown` | "Context: no usage yet" | "Context unknown" |
 | `nowin` | "Context: 124k tokens; the window is not known yet" | "Context 124k tokens, window unknown" |
 
-`full` adds ", nearly full" to the screen-reader text. A bad `compactAt` on `on` reads as `none`.
+`full` adds ", nearly full" to the screen-reader text. A bad `compactAt` on `on` or `typed` reads as `none`. **(0.5.4, AC.)** In the app tier a valid note of a typed /compact adds one sentence to the title
+(after " · ") and to the screen-reader text (after ", "), see §9.25.
 
 **Rows.** Grids per container width (§9.9): the 64 px column sits after the model; at ≤ 860 px (app tier ≤ 1010 px) it is 56 px with the bar hidden; at ≤ 600 px it stays on
 line 1 beside the age. `.c-ctx { display: flex; justify-content: flex-end; }`; `.ctx` stacks the number over the bar. Ended rows: `--text-muted`
@@ -1534,7 +1541,7 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 | Long branch | chip max 22ch, ellipsis, full in `title` |
 | Long prompt | one line with ellipsis in rows; 2 lines (`line-clamp`) in cards/tiles; full in the session header tooltip and the transcript |
 | 50+ agents | ended folded per project; live rows never capped, the Ended section draws 12 rows then "Show N more ended agents"; Mod+F filter by name, prompt or branch; sidebar shows only attention counts; announcements grouped; C caps lanes at 6 tiles and turns tails off for tiles beyond the first 12 on screen |
-| Very long transcript entry | text > 12 lines clamps with "Show all N lines"; tool output in a `<pre>` (max-height 22em, scroll); entries > 32 KB arrive with `truncated: true` → "This entry is over 32 KB; nika shows the first part only."; history pages of 50 with "Load older" (keeps scroll position) |
+| Very long transcript entry | text > 12 lines clamps with "Show all N lines"; tool output in a `<pre>` (max-height 22em, scroll); entries > 32 KB arrive with `truncated: true` → "This entry is over 32 KB; nika shows the first part only."; **(0.5.4, SF)** the first entry of a history page that the server shortened because a very long line pushed earlier entries out (`cut: true`) shows a line above its header, `p.hx-trunc` (`--idle`, bold, small): "Earlier parts of this message are not shown."; history pages of 50 with "Load older" (keeps scroll position) |
 | 200-column terminal | rendered at full width with horizontal scroll; header shows "200 × 50"; jump-to-live also scrolls to column 0 |
 | Wide characters (CJK, emoji) | rendered as text; column math must count terminal cells (wide = 2), see Risks |
 | Missing pane (no tmux, plain terminal session) | no session mirror: the session screen shows the transcript only and a note "This session is not in tmux, so nika can show its transcript but cannot mirror or type into it." |
@@ -1559,7 +1566,7 @@ B: centred column max 760 px; drawer pushes ≥ 1180 px and overlays below. C: l
 | **(0.4)** No usage yet in the transcript tail (a new session, or the last assistant entry is beyond the tail window) | the context meter reads "–" (`unknown`) |
 | **(0.4)** A model nika does not know | the server counts it as 200k, so the meter shows a per cent against 200k; `nowin` means only that no model id was seen |
 | **(0.4)** Context over 100 % (a window smaller than the context) | the number is shown as is and the bar is full |
-| **(0.4)** Auto-compact off, or a session nika did not start | the same meter against the model's window (off) or the setting's window (`none`); the title says which, and says nothing about compacting for `none` |
+| **(0.4)** Auto-compact off, or a session nika did not start | the same meter against the model's window (off) or the setting's window (`none`); the title says which, and says nothing about compacting for `none`. **(0.5.4, AC)** A session nika did not start reads `typed` in the app tier ("nika types /compact at 320k"); `none` stays for an ended session, a pane the app cannot type into, the browser tier and `nika status` |
 | **(0.4)** Older server (no `context` field) | every row shows "–" |
 
 ---
@@ -1947,6 +1954,8 @@ Confirm dialog, 440 px (§3.6), opened from the quick-actions row, the dashboard
 | failed (`ended: false`) | alert at the top of the body (`role="alert"`, `--danger-soft`, warn icon, 600): **"Claude didn't exit; use Stop or the terminal."**; with `reason: "keys"` (a key send failed, a rate limit say): **"nika couldn't send the keys; try again."**; focus moves to the alert; the footer has only Close |
 | refused or error | same alert slot, fixed copy (never the server's text); footer Close. 409 `not-idle`: "Claude didn't stop after Esc; use the terminal." · 409 `mode-unknown`: "Claude's screen isn't at the prompt; use the terminal." · 409 `input-not-empty`: "Claude's input has a draft, so nika didn't type /exit. Send or clear it in the terminal, then try again." · 409 `input-unreadable`: "nika can't find Claude's input box, so it didn't type /exit. Close any menu in the terminal (Esc), then try again." (both drawn as a warning alert, `data-kind="warn"`, **built amendment 2026-11-09 (0.3.4)**; the other refusals stay `danger`) · 409 `not-at-prompt`: "Claude's input didn't take /exit; nothing was submitted." · 409 `busy-switching`: "Another action is running on this session." · 404: "The session is gone." · 5xx, network error: "nika couldn't reach tmux." |
 
+**(0.5.4, QP.)** One more refusal, in the same alert slot (a warning): 409 `notes-open`, "Claude's notes field is open in the terminal. Close it there, then end the session." (End never presses Escape in an open notes field; §9.26.)
+
 "Copy resume command" lives in the dashboard row menu (§3.12). The session header has no menu in 0.3, so it is not added there; the body names the row-menu item as is.
 
 **(0.3 build, 2026-11-09)** The dialog's **End session** button is `.btn.danger.fill` (danger, filled: `--danger` fill, `--surface` text, §2.8.2), defined once in `public/tokens.css` for both pages. The quick-actions **End session…** button and the Clear dialog's **Clear conversation** stay plain Danger (§3.1).
@@ -2038,7 +2047,8 @@ words of the panel's kind); the input-box cut above is unchanged and stays what 
 | Kind | Icon | Colour | Words | When |
 |---|---|---|---|---|
 | paused | `i-pause` | `--idle` on `--idle-soft` | **Sync paused:** Claude's input holds <reason>. Edit or clear it in the terminal. | the screen's draft is unreadable; nothing is pulled or pushed, and nika never writes over it |
-| long | `i-info` | `--text` on `--surface-3` | **Not mirrored:** Long text goes to Claude when you send it. | unsent text that does not fit Claude's box, or that the server refused as too long |
+| long | `i-info` | `--text` on `--surface-3` | **Not mirrored:** This text goes to Claude when you send it. (0.5.4, LT; before: "Long text goes to Claude when you send it.") | unsent text that does not fit Claude's box, that holds a control character other than newline and tab, or that the server refused; since 0.5.4 nika keeps it (up to 16 KB) in its memory while the app runs and puts it back when the session window opens again, without copying it into Claude's input while that holds other text (§9.27). Also shown for a short text the sync is blocked on, and for text the page put back over Claude's other text (it waits for the user's first edit, and for Send) |
+| over | `i-warn` | `--danger` on `--danger-soft` | **Not kept:** Over 16 KB: Send can't send it, and nika can't keep it if you leave. Shorten it or send it in parts. (0.5.4, LT) | the unsent text is over 16 KB (Send's paste limit); it wins over the other kinds, also while a dialog shows or Claude's input is unreadable, is recomputed at every step and goes when the text is 16 KB or less |
 | hold | `i-dialog` | `--attn` on `--attn-soft` | **On hold:** A prompt is open or Stop is running. Your text goes into Claude's input when that is over. | the last write was refused with 409 `not-idle` (a permission prompt or dialog is open, or a Stop or End interrupt runs); tried again every 3 s. The note survives a later refusal that says nothing about the prompt (409 `busy-switching`, 429): the page keeps it and tries again (0.5, final review) |
 | cursor | `i-window` | `--fit-other` on `--fit-other-soft` | **Cursor:** Claude is working and the cursor in its input is not at the end. Move it to the end in the terminal, or wait: your text goes in when Claude waits. | the last write was refused with 409 `cursor-not-at-end`: Claude is not idle, its cursor is on an earlier row of its box, and only `Escape` could clear that (it would interrupt the turn); tried again every 3 s. Like the hold note it survives a `busy-switching` or 429 answer (0.5, final review) |
 | queued | `i-send` | `--busy` on `--busy-soft` | **Queued:** Claude takes your message at its next step. | both boxes are empty and in sync and Claude's box shows its queued-messages placeholder (`draft.queued`, `api-app.md`): Claude holds a message nika sent while it works. Never together with the suggest note (Claude's queued placeholder is no suggestion) |
@@ -2143,6 +2153,7 @@ message reads "Sent 23 characters + Enter to %12" ("Sent a shell command (23 cha
 | 409 `not-idle` | "Stop is running, so nika did not press Enter. Send again in a moment. Your text is kept." |
 | 409 `draft-changed` | "Claude's input changed before Enter. nika shows what it holds now. Nothing was sent." |
 | 409 `screen-unclear` | "nika can't tell what Claude is showing, so it did not press Enter. Use the terminal. Your text is kept." |
+| 409 `screen-unclear`, after this Send put its text into Claude's input (the synced push, or the keys typed) (0.5.4) | "Your text is in Claude's input. Press Enter in the terminal to send it." A Send that typed nothing (only the Enter) keeps the line above. |
 | 409 `suggestion-shown` | "Claude's input is empty and shows a suggestion, so nika did not press Enter. Nothing was sent." |
 | 409 `input-unreadable`, `mode-unknown` | "nika can't read Claude's input box right now (a menu may be open). Nothing was sent. Your text is kept." |
 | 409 `busy-switching` | "Another action is running on this session. Try again in a moment. Your text is kept." |
@@ -2222,6 +2233,9 @@ wraps (`flex-wrap`) when the chip does not fit, so the window never scrolls side
 | `blocked` | `i-off` | `--text-muted` / none / dashed `--line-strong` | Fit · off | the reason below; "nika is not fitting this tmux window" for a reason the page does not know |
 | `other` | `i-window` | `--fit-other` / `--fit-other-soft` / `--fit-other-line` | Fit · another window | Another nika window shows a pane of this tmux window |
 | `terminal` (0.5, F4) | `i-term` | `--fit-term` / `--fit-term-soft` / `--fit-term-line` | Fit · your terminal's size | A terminal shows this tmux window and this window does not have focus, so nika leaves the size to the terminal and scales the text to this panel (three titles, below) |
+
+**(0.5.4, P2.)** The table above is Fit's Auto mode. Settings can pick another mode (§9.22), and the chip then names it: three more looks
+(`fill`, `term-set`, `off-set`), each with its own icon, colour and words, are in §9.22. They never reuse "Fit · off", which stays the `blocked` chip.
 
 The words of the `blocked` chip are always "Fit · off"; the reason is its `title`, picked from a fixed table (the page never shows
 a string of the server):
@@ -2341,10 +2355,10 @@ with an action shows heading, why, hint, Close and the action; pending shows "Fi
 
 **With the rest of the window.** A resize re-wraps Claude's input box, so the server changes the tmux window under the pane's control
 lock: a draft push that meets a fit step gets 409 `busy-switching` and the draft sync pushes again about 300 ms later (§9.12). The
-next capture after a resize carries the new size, rows and `draft.box`, so the cut strip follows (since F10 captures that nika's own resize leaves half drawn are not applied for up to 1.2 s, so the cut strip keeps its last good state, and the draft sync's write and Send's steps wait for that hold before they ask; the server's checks are unchanged). Spawning an agent from the app's sheet
-into a tmux window that is fitted gives the window back first, and the page fits it again, with the new pane count, on its next beat. An
-agent that the orchestrator starts with `nika spawn` splits into the fitted window on its own (another process, no release first), and
-since F2 the watch fits the window again within about a second.
+next capture after a resize carries the new size, rows and `draft.box`, so the cut strip follows (since F10 captures that nika's own resize leaves half drawn are not applied for up to 1.2 s, so the cut strip keeps its last good state, and the draft sync's write and Send's steps wait for that hold before they ask; the server's checks are unchanged). **(0.5.4, P1.)** A spawn never splits into a tmux window that a session window fits: placement (§9.23) sends the new agent to the agents
+window while a session window fits the orchestrator's window, so nothing is released before a split any more. (Before 0.5.4 a spawn from the
+app's sheet gave a fitted window back first and the page fitted it again on its next beat, and an agent that the orchestrator started with
+`nika spawn` split into the fitted window on its own; the watch of F2 fitted it again within about a second.)
 
 **When nika's own agents come and go (0.5, F2; owner decisions 2026-11-15).** An orchestrator starts agents and its agents end, all in the
 window that is fitted, so a fit that turned itself off at the first split would be off most of the time. The server therefore tells nika's
@@ -2353,8 +2367,8 @@ own panes from the user's by the pane tag `@nika-role` that the spawn sets (`age
 
 | Event (window fitted for the orchestrator's pane) | Before F2 | Now |
 |---|---|---|
-| The orchestrator runs `nika spawn …` (CLI; split beside it) | restored, chip "Fit · off", off until the session window reopens | restored and fitted again within about a second; chip unchanged (or "zoomed" on the next beat, when the panel is smaller than the window with the new pane) |
-| Spawn from the app's sheet into that window | released before the split, fitted again on the next beat | same (unchanged) |
+| The orchestrator runs `nika spawn …` (CLI; split beside it) | restored, chip "Fit · off", off until the session window reopens | restored and fitted again within about a second; chip unchanged (or "zoomed" on the next beat, when the panel is smaller than the window with the new pane). **(0.5.4, P1)** The agent no longer splits into that window: it goes to the agents window (§9.23) |
+| Spawn from the app's sheet into that window | released before the split, fitted again on the next beat | **(0.5.4, P1)** no split into that window: the agent goes to the agents window (§9.23), the fit stays |
 | An agent's claude ends and its pane closes | off (pane count changed) | fitted again |
 | A sub-orchestrator's agents split beside it (its own session window) | off | fitted again |
 | The user splits, unzooms, switches pane, resizes, closes a pane of their own | off | off (unchanged; Fit again in the panel) |
@@ -2511,7 +2525,7 @@ The logic with no DOM is `growStep` in `public/fit-ui.js` (`GROW_*` constants); 
 | fully on screen but unreadable for another reason (`clipped`, `wide`, `numbers`, `tab`, `layout`, `survey`) | stays tall, no more steps; the banner after Reading, as before |
 | the next tab or the review (still a question) | stays tall; a cut-off step again waits 0.8 s, then steps from the current rows |
 | the question is answered, declined or answered in the terminal, or a plan or a prompt replaces it, for 1 s | the page asks the panel's size again; the redraw hold keeps the last frame until Claude's input box is back; one fade of the mirror. A gap between two tabs shorter than 1 s changes nothing |
-| a text of the question ends in `…` (`clipped`), or a plan approval is cut off | nothing is grown: the banner, as before (more rows cannot show a shortened text; a plan is often longer than any size) |
+| a text of the question ends in `…` (`clipped`) | nothing is grown: the banner, as before (more rows cannot show a shortened text). **(0.5.4)** A cut-off plan approval is grown now, see below |
 | this window loses focus and a terminal shows the window (`terminal`), the window is zoomed without focus (`zoomed`), Fit is off (`blocked`), another nika window has it (`other`) | parked: no step, the clocks wait; the banner after Reading. When the fit comes back, the next take or commit already carries the grown rows |
 | a terminal shows the window and this window has focus (the dots of F4) | grows as for `fitted`; the terminal shows part of a window taller than itself until the question closes or you click into the terminal (how tmux pans it is not verified) |
 | Fit again, a new panel size, the app's zoom, the transcript toggle | the size asked is the larger of the panel's size and the grow's rows while the question is open; a question the page gave up on gets one new try when the base size changed |
@@ -2522,6 +2536,11 @@ Bounds: at most four steps (from 10 rows: 22, 44, 88, 120) and one size-back per
 from a page that holds the lease, not a take, so the 12 takes a minute do not count it. The form panel appearing changes only the box's height, which is never a commit (F10). Not built: growing for a plan approval, asking for the exact rows a dialog needs (the
 cut-off part is gone, so the page cannot count them), shrinking the text to show the whole grown pane, sizing back as soon as the form is read (answering takes a fresh capture and needs the question whole), a server change.
 Contract: `api-app.md` ("A cut-off question"); decisions: ADR 0017 and ADR 0015, both with an F16 amendment.
+
+**(0.5.4, O2 and QP.)** The grow now also runs (1) for a **plan approval** that is cut off at the top (`reason: cut`; "Not built: growing for a plan approval" above is lifted), and (2) for a question step whose **preview** shows Claude's "N lines hidden" divider
+(§9.26: the tag reads `Showing more lines` while it runs). The conditions are as before: only while the chip reads `fitted` in Fit Auto or Always fill (§9.22; in Terminal and Off nothing resizes, so the step shows `N lines hidden`), at most 120 rows, back one second after the dialog closes,
+and parked (the banner, or the `hidden` tag) when 120 rows do not show it. A plan counts as a dialog for that one-second close, so a pane grown for a cut plan stays grown while any plan is open, and a question that turns into a plan within one second keeps the grown size.
+A plan whose prompt wraps (85 columns or fewer) or whose footer path row does not fit is not readable and is not grown (§9.26).
 
 **The panel's size after a commit taken under a panel (0.5, FX2; found in the live check LC17 K2, 2026-11-17; page side only).** A window `focus` is a commit point (F9), and
 the question form, the permission prompt's buttons, the feedback survey and the attention note take height from the terminal box. A focus taken while one of them was
@@ -2613,7 +2632,8 @@ more." (warning, 4 s). Uploads go one at a time; a 429 is tried once more after 
 
 Removing: the × on a ready chip deletes the file at once; on an uploading chip it marks the file to be deleted when the upload answers;
 a failed chip just goes. Focus moves to the next chip's remove button, else the previous one, else the message box. Announced "Removed
-<name>." Closing the window deletes the files of ready chips (`pagehide`, `keepalive`); a page that only goes into the back/forward cache keeps its chips and their files (`event.persisted`), and a page that never returns leaves its files to the expiry.
+<name>." **(0.5.4, AT.)** Leaving or closing the window deletes nothing (before 0.5.4 `pagehide` sent a `DELETE` with `keepalive`): the chips of an unsent message are kept in the app's memory and come back when the session window opens again (§9.27); the files of a message that
+is never sent wait for the expiry, or until the person removes the chip, the session ends, or another Claude takes the pane.
 
 **Why a file failed** (fixed copy picked by status and code; the server's words never show):
 
@@ -2622,6 +2642,7 @@ a failed chip just goes. Focus moves to the next chip's remove button, else the 
 | over 8 MB (page check or 413) | "Too big · max 8 MB" | — |
 | not PNG, JPEG, GIF, WebP, PDF or UTF-8 text (415) | "Not supported" | "<name>: use PNG, JPEG, GIF, WebP, PDF or UTF-8 text." |
 | empty (400) | "Empty file" | — |
+| 409 `tray-full` (0.5.4, AT: a second page of the same session added six) | "Too many" | "Up to 6 attachments per message." |
 | 409 `no-project` | "Try again" | "nika can't tell this session's project yet. Try again in a moment." |
 | 409 `path-unusable` | "Can't store" | "nika's attachments folder has a path Claude can't take (a space or a special character). Set XDG_STATE_HOME to a plain path." |
 | 409 `folder-unsafe` | "Can't store" | "nika's attachments folder isn't safe to write to (a link, or another owner). Nothing was saved." |
@@ -2759,7 +2780,7 @@ the new view in from half the conversation's height in its direction (it shows t
 cover the sliding rows. Claude's task list pinned **above** its input box (the list, one blank row, the box's top rule; since GT, LC18 Finding 2) stays too: the capture's `draft.box.tasks` names its header row and the page ends the frame it compares there, so the list neither votes in the match nor slides (with it counted, 14 of 23 rows voted the shift, 0.61 against the 0.8 share, and the arm rebased: the view jumped); the conversation above it slides. A page that gets no `tasks` (an older server, no list, a list that does not match exactly) compares and slides as before. Checked live (LC19, 2026-11-17, Claude Code 2.1.326, a three-task list): wheel, Page Up, Page Down, Home and End each glided, and the list's rows did not move in any frame. The rows box clips (`overflow: clip`), so a slide never changes the mirror's scroll area, "Paused while you scroll" or the pin to the bottom. A second jump during a slide continues from where the rows are, so a
 trackpad flick reads as one motion; requests sent before the first frame is drawn each get their own slide. Only a frame that comes within 0.7 s of a scroll request (renewed by the route's answer) can slide. Any other write to the pane
 (a key, Send, a command, a dialog or survey answer, Stop, a mode switch, a draft write, End) ends the pending slide, as does nika's own resize, a gone pane and a refused or lost scroll request, so output that streams in, Claude's return to
-the bottom after Send and nika's resizes never slide; the capture poll, the fit heartbeat and further scroll requests do not end it. Down and End slide only while Claude's view is scrolled up, and a down slide ends when a frame shows
+the bottom after Send and nika's resizes never slide; the capture poll, the fit heartbeat, a save of the unsent text (0.5.4, LT) and further scroll requests do not end it. Down and End slide only while Claude's view is scrolled up, and a down slide ends when a frame shows
 Claude's view at its bottom. A frame that is not a pure shift (a re-render, a dialog that opened) is drawn at once, as before. Nothing is armed or computed with `prefers-reduced-motion: reduce`, and the stylesheet has `animation: none`
 for it as a second guard. No announcement, colour, icon or setting is added; the existing "Scrolled up in Claude's view" and "Back at the live bottom" announcements are unchanged. The logic with no DOM is `public/glide.js` (`frameOf`,
 `findShift`, `createGlideArm`, `paneWriteDisarms`, `glideFrom`, `matrixY`); the wiring is `startGlide`, `endGlide` and the arm calls in `public/session.js`. One visual to know: the new frame is drawn at once and the rows slide in from where the
@@ -2811,11 +2832,11 @@ nodes, so typed text and focus survive the 250 ms captures. The attention note a
 | Part | What it is |
 |---|---|
 | Header `.ask-h` | state chip (below) · kind tag (`i-dialog` "Question", or `i-m-plan` "Plan approval" in `--m-plan`) · the attention reason (`.ask-reason`) |
-| Retry row `p.dlg-note.dlg-retry` (**0.5.2, R4**) | after the header and the terminal-only and kept-unreadable notes; hidden until the route has refused an answer with 409 `dialog-focus` or `dialog-touched`: `i-info`, "Once the terminal is back as it was, nika can try again." and a **Try again** button (`button.btn`), which wraps under the text when the form is narrow. What the button does: below, "Try again" |
-| Steps `ol.dlg-tabs` (`aria-label="Steps"`, shown for two or more tabs; **0.5.1, D**) | one `li > button.dlg-tab[type=button]` per tab of Claude's strip, and one "Review": the header, `i-check` when answered or an empty ring, `.sr-only` ", answered" / ", not answered" (the visible header comes first in the accessible name, WCAG 2.5.3), `aria-current="step"` on the current one. Plain buttons in an ordered list, not an ARIA tablist and no roving tabindex: each is one Tab stop. Each has `aria-describedby="dlg-steps-desc"`, a `.sr-only` line "Opens this step in Claude's dialog. Nothing is answered." The current step, and every step while a request runs, after a move, while the form is locked, kept-unreadable or terminal-only, is `aria-disabled="true"` (never `disabled`, so it keeps its name and its focus; a click on it does nothing). `min-height: 24px` (WCAG 2.5.8), focus ring `2px solid var(--focus)`. Answered: `--busy` text, check icon and the word; not answered: ring and the word; current: `--accent` edge and `--accent-soft` fill, bold, and `aria-current`. The strip wraps and shows at **every** width; the old line "Question 2 of 4 · Tools" is in the DOM only (it feeds the announcement) and is hidden at every width |
+| Retry row `p.dlg-note.dlg-retry` (**0.5.2, R4**) | after the header and the terminal-only and kept-unreadable notes; hidden until the route has refused an answer with 409 `dialog-focus` or `dialog-touched` (**0.5.4:** also `dialog-unread` and `notes-open`, §9.26): `i-info`, "Once the terminal is back as it was, nika can try again." and a **Try again** button (`button.btn`), which wraps under the text when the form is narrow. What the button does: below, "Try again" |
+| Steps `ol.dlg-tabs` (`aria-label="Steps"`, shown for two or more tabs; **0.5.1, D**) | one `li > button.dlg-tab[type=button]` per tab of Claude's strip, and one "Review": the header, `i-check` when answered or an empty ring, `.sr-only` ", answered" / ", not answered" (the visible header comes first in the accessible name, WCAG 2.5.3), `aria-current="step"` on the current one. Plain buttons in an ordered list, not an ARIA tablist and no roving tabindex: each is one Tab stop. Each has `aria-describedby="dlg-steps-desc"`, a `.sr-only` line "Opens this step in Claude's dialog. Nothing is answered." The current step, and every step while a request runs, after a move, while the form is locked, kept-unreadable or terminal-only, is `aria-disabled="true"` (never `disabled`, so it keeps its name and its focus; a click on it does nothing). `min-height: 24px` (WCAG 2.5.8), focus ring `2px solid var(--focus)`. Answered: `--busy` text, check icon and the word; not answered: ring and the word; current: `--accent` edge and `--accent-soft` fill, bold, and `aria-current`. The strip wraps and shows at **every** width; the old line "Question 2 of 4 · Tools" is gone since 0.5.4 (it was in the DOM only and hidden at every width) |
 | Question | `fieldset > legend.ask-q` (600, `tabindex="-1"`) |
 | Option rows `label.ch` | a radio (single-select) or a checkbox (multi-select) · `kbd` with Claude's number · the label · the description (`--fs-small`, `--text-muted`). A description over 180 characters is clamped to 3 lines with a **More** / **Less** button (`button.btn.link.dlg-more`, `aria-expanded`, `aria-controls` the description). Checked: `--accent-soft` fill, `--accent` edge. **A long option is one card (0.5.1, A):** the card is a `div.dlg-opt` (`--line-strong` border, `--surface` fill, `--surface-2` on hover, the checked look above, all on the card, whose `data-on` follows the pick) that holds the option's label, which has no look of its own, and under it **More** / **Less** in the card's bottom-right corner, inside the border. The button stays outside the label (a button inside a label is nested interactive content), so a click on it opens or closes the text and never picks the option. A short option is still one label that is the card. While the form cannot take an answer the card dims once (60 %), not twice Every option starts as Claude shows it (0.5.1, D): a multi-select box as Claude ticks it, and on a single-select question the option Claude has marked as the answer is pre-selected. Unsent input (a changed pick or Other text) is kept per question while you look at other steps, in memory only, for at most 8 questions; it is dropped when the dialog closes or its tab headers change, and a question whose answer was just sent keeps nothing |
-| Other | `label.ch` "Other" with a text field (`maxlength="300"`, placeholder "Type your answer", `aria-label` "Other answer"); typing selects it. A counter "n/300" from 250 characters. A first digit shows the warn line "Start with a word: Claude can read a first digit as an option." and Send then moves the focus back to the field instead of sending. Where the capture says `other: false` (a multi-select question that is not on the last tab) the row is a `.pbtn-off` line "Other answers: use the terminal". **Typed text (0.5.1, D):** when Claude's own text row holds text (the capture's `typed`), the field shows that text **pre-filled and read-only** under the note "To change typed text, use the terminal." (`aria-describedby`); nika never edits Claude's text row. On a single-select question the row is selected only when that text is Claude's answer, and picking another option replaces the answer; on a multi-select question the Other box stays ticked and locked and every request carries the same text |
+| Other | `label.ch` "Other" with a text field (`maxlength="300"`, placeholder "Type your answer", `aria-label` "Other answer"); typing selects it. A counter "n/300" from 250 characters. A first digit shows the warn line "Start with a word: Claude can read a first digit as an option." and Send then moves the focus back to the field instead of sending. Where the capture says `other: false` (a multi-select question that is not on the last tab) the row is a `.pbtn-off` line "Other answers: use the terminal". **Typed text (0.5.1, D):** when Claude's own text row holds text (the capture's `typed`), the field shows that text **pre-filled and read-only** under the note "To change typed text, use the terminal." (`aria-describedby`); nika never edits Claude's text row. On a single-select question the row is selected only when that text is Claude's answer, and picking another option replaces the answer; on a multi-select question the Other box stays ticked and locked and every request carries the same text **(0.5.4, QP)** On a step without a preview a `.pbtn-off` row "Chat about this: use the terminal" follows the Other row (nothing is sent); a step with a preview has the Chat button instead, §9.26. |
 | Answered step (0.5.1, D) | A tab Claude marks answered shows the note "Already answered. Answer again to change it, or choose another step." (`i-info`, `.dlg-note`) above the options. The state is the usual "Needs you" and the buttons are live: picking another option and pressing the form's answer button answers it again, exactly like a new answer; Claude then goes to the **next** step (to Review after the last question), not back to Review. A multi-select that is changed is sent as today |
 | Buttons (question) | **Send answer** (`.btn.primary`) when the answer ends the dialog (`final`: one tab, single-select), else **Answer**; **Decline** (`.btn.ghost`, `title` "Presses Esc in the pane: Claude stops and waits for you"). Enter in the Other field is the primary button, never a newline (Shift+Enter and an IME's Enter excepted). The primary is aria-disabled until the choice is valid (one pick, or a typed answer; a multi-select needs at least one pick or text) |
 | Review | heading "Review your answers" (`h3.ask-q`, `tabindex="-1"`) and the strip above for two or more questions. **(0.5.2, R3; owner request 2026-11-17: "need to do better design of the Review step".)** A count line `p.dlg-rv-n`: `i-check` in `--busy` and "3 of 3 answered" when every question is answered, `i-warn` in `--idle` and "2 of 3 answered · 1 not answered" when not. Then `ol.dlg-rv` (`aria-label="Your answers"`, at most 760 px wide, 6 px between cards): **one card `li.dlg-rv-row` per question, in the order of Claude's tabs** (`--line-strong` border, `--r-md`, `--surface`): a header line (`p.dlg-rv-h`: `i-check` and the tab's header in `--busy`, `.sr-only` ", answered"), the question (muted, `--fs-small`, clamped to 2 lines, the whole text in `title`), the answer (600, after an `.sr-only` "Answer: ") and a **Change** button. A question not answered is a dashed `--idle-line` card on `--idle-soft`, with `i-warn`, the header in `--idle`, `.sr-only` ", not answered", "Not answered" in place of question and answer, and an **Answer** button. The button (`button.btn.dlg-rv-chg[data-step]`; accessible name "Change answer 2: Project" or "Answer question 3: Scope", `aria-describedby="dlg-steps-desc"`) is a step button: it asks Claude to move its dialog to that question and answers nothing, it is `aria-disabled` whenever the strip's buttons are, and nika does **not** take Claude back to the review after the new answer (owner decision Q3, 2026-11-17: no automatic moves; the strip's Review step is one click away). The footer `div.dlg-btns.dlg-rv-btns` (**Submit answers**, primary, and **Decline**) is sticky at the bottom of the form, so Submit stays in view while many long answers scroll. At a composer width of 360 px or less (`@container composer`) a card is one column and the button sits under the text; wider, the button is at the card's end. A locked or busy review dims the cards like a locked question. **Mapping.** Claude's review lists the answered questions only, so nika gives the k-th answered tab the k-th pair, and trusts that only when the pairs are as many as the answered tabs and Claude's warning is on exactly when a tab is open. Otherwise the cards are the pairs alone: Claude's own warn row (`i-warn`, `--idle`) "You have not answered all questions" when it warns, no count, no header and no button. A dialog with one question has no button either (a move needs two questions and the route refuses it for one). The old `dl.dlg-review` list (0.5.1, B: one column at every width) is gone; the card list is one column at every width too |
@@ -2858,7 +2879,7 @@ text. With `sent > 0` the line gains " nika had pressed <n> key(s) in the pane b
 | Response | Message | Form after |
 |---|---|---|
 | 409 `no-dialog` | "The question is gone." | re-enabled |
-| 409 `dialog-changed` | "The question changed; check the session." | locked until a new `sig` |
+| 409 `dialog-changed` | "The question changed; check the session." (**0.5.4:** now only a readable other step; a dialog nika cannot read is `dialog-unread`, §9.26) | locked until a new `sig` |
 | 409 `dialog-touched` | "This question was changed in the terminal. Change it back there and press Try again, or finish it there." | locked, with the Try again row (0.5.2, R4); Try again or a new `sig` unlocks |
 | 409 `dialog-focus` | "Claude's selection was moved in the terminal. Move it back there and press Try again, or finish it there." | locked, with the Try again row (0.5.2, R4); Try again or a new `sig` unlocks |
 | 409 `text-mode` | "nika can't type your answer: Claude's text field isn't ready for typing. Type it in the terminal." | locked |
@@ -2878,7 +2899,7 @@ text. With `sent > 0` the line gains " nika had pressed <n> key(s) in the pane b
 A step move (`{ sig, tab }`) uses the same table: `no-dialog`, `dialog-changed`, `dialog-touched`, `dialog-focus`, `not-taken`, `busy-switching`, `not-idle`, `terminal-only`, `invalid`, 429, 404
 and 5xx all show the line of their row, and `sent > 0` adds the same sentence about pressed keys. Only `text-focus` and the 200 `moved` are new.
 
-**Try again (0.5.2, R4; owner decision Q2, 2026-11-17).** After 409 `dialog-focus` or `dialog-touched` the refusal and the lock are as before (the route sent nothing and says so), and the form now shows the retry row
+**Try again (0.5.2, R4; owner decision Q2, 2026-11-17).** After 409 `dialog-focus` or `dialog-touched` (0.5.4: and `dialog-unread` and `notes-open`, §9.26) the refusal and the lock are as before (the route sent nothing and says so), and the form now shows the retry row
 under its header. **Try again** unlocks the form (chip "Needs you", `data-inert="false"`, options, steps, Change, Submit and Decline live), clears the problem line, moves focus to the form's heading (the plan's note for a plan
 approval) and says, polite, "The form takes answers again." **It sends nothing.** The user then answers again; the route re-checks the focus and the text before every key, so if Claude's dialog is still off it refuses again and the
 row comes back, and nothing is retried by itself. The lock still ends on its own with a new `sig` or no dialog (a rebuild drops the row). The button is single-use, and it works on a form of the same `sig` only. Only those two codes
@@ -3224,6 +3245,361 @@ the form keeps Decline or Reject (Esc), the survey keeps "0 Dismiss"; no keyboar
 was inside the bar, it moves to the panel's own root (`#ask-q`, `#dialog-form` or `#survey-panel`, each `tabindex="-1"`), never to a button, so a held Enter answers
 nothing unseen. The toolbar leaves the accessibility tree while hidden; the panel announces itself as before. No new copy; the reason lines "Answer the prompt first…"
 and "Answer the question above first." are never visible while the bar is hidden and stay for the banner case.
+
+### 9.22 Fit mode: Settings, the chip and its panel (0.5.4, P2)
+
+**(0.5.4.)** Fit (§9.13) is Auto unless Settings say otherwise. One setting, `fit.mode`, for every project, has four values; the session window
+learns of a change within 5 seconds (the next beat) and the chip follows. The page sends the same body in every mode (`{ cols, rows, open, focus }`, no `mode`);
+the answer carries `mode` (a missing or unknown value reads as `auto`, so an older server and a newer page still work). Contract: `api-app.md`;
+decision: ADR 0017 (the 2026-11-19 amendment on Fit modes, 0.5.4).
+
+| Mode (Settings name) | What nika does | The chip says |
+|---|---|---|
+| `auto` (Auto) | §9.13 as before: fills the panel when it can; when a terminal shows the same tmux window, the window you click into gets the size | the table of §9.13 |
+| `fill` (Always fill the panel) | sizes the tmux window to the panel while a session window is open, also while you work in your terminal (it counts as focused all the time); the terminal shows dots around it and other panes in that window shrink. The room ask (F10) and the grow (F16) work as in Auto | "Fit · always fills" |
+| `terminal` (Your terminal's size) | never resizes a tmux window (a size set before the switch is given back in place within about a second); nika zooms Claude's pane when the window has others and scales the text to the panel | "Fit · terminal's size (set)" |
+| `off` (Off) | nika changes nothing in tmux; leases held are released when the mode becomes Off; the session window shows the pane at its own size with the text scaled down when it is larger than the panel (never below 0.4×). The server answers `state: off` with no pane | "Fit · off in Settings" |
+
+In `terminal` and `off` nothing resizes, so there is no room ask and no grow: a grow that a switch to `terminal` or `off` ends sends no request on its way
+back, and the next ask carries the panel's size again. A running room ask or grow ends on the same switch (the dialog's `growing` tag leaves within one
+render, §9.26).
+
+**Settings → Session window** (`section#s-fit`, `h2` "Session window", an index link "Session window" after "Panes and limits"; intro "How a session window fits Claude's pane
+to its panel. For every project."). A `fieldset` (legend "Fit Claude's pane") of four `.radio-card`s, `name="fit"`, each with the icon the chip look of that mode uses
+and the same Save bar as the other sections. Help `#set-fit-help`: "Open session windows follow a change within 5 seconds. When a session window closes, nika puts back what it changed in tmux."
+
+| Card (icon · name) | Description |
+|---|---|
+| `i-fit` · Auto | "Fills the panel when it can. When your terminal shows the same tmux window, the window you click into gets the size." |
+| `i-fit-pin` · Always fill the panel | "Sizes the tmux window to the panel while a session window is open, also while you work in your terminal. Your terminal shows dots around it, and other panes in that window shrink." |
+| `i-term-pin` · Your terminal's size | "Never resizes a tmux window. nika zooms Claude's pane when the window has others and scales the text to the panel." |
+| `i-fit-off` · Off | "nika changes nothing in tmux. The session window shows the pane at its own size, with the text scaled down when it is larger than the panel." |
+
+The icon sits on the card title's first line (16 px icon beside 13 px text; `.radio-card b .ic` aligns it). The three non-Auto icons are drawn as the Auto
+icon with a mark (`i-fit-pin` and `i-term-pin` a small dot inset in the corner, `i-fit-off` a diagonal), the same drawing in both pages' sprites, and the dot keeps at least 1 px
+of gap at 14 px, so a pin reads at chip size and in the card.
+
+**The chip, by key.** `chipView(body)` picks a key from the answer's `state`, `mode` and `reason`; a (state, mode) pair with no row here keeps Auto's key and look
+(so an answer the server sends for one request around a switch never leaves the chip empty). Each look is the chip's `data-k`; the shape, size and wrapping are §9.13's.
+
+| Key | Look (`data-k`) | Icon | Text · fill · edge | Words | Title (hover) |
+|---|---|---|---|---|---|
+| `fitted:fill` | `fill` | `i-fit-pin` | `--fit-fill` · `--fit-fill-soft` · `--fit-fill-line` | Fit · always fills | "Settings say always fill: nika sizes the tmux window to this panel while this session window is open, also when it does not have focus" |
+| `fitted:fill-terminal` (a terminal shows the window too) | `fill` | `i-fit-pin` | as above | Fit · always fills | "Settings say always fill: nika sizes the tmux window to this panel while this session window is open. Your terminal shows dots around it until you close this window or change the setting" |
+| `zoomed:fill` (the layout could not be kept) | `zoomed` | `i-zoom` | `--idle` · `--idle-soft` · `--idle-line` | Fit · zoomed, text scaled | "nika could not keep this window's layout to put back later, so it only zoomed the pane and scales the text" |
+| `terminal:setting` | `term-set` | `i-term-pin` | `--fit-set` · `--fit-set-soft` · `--fit-set-line` | Fit · terminal's size (set) | "Settings say your terminal's size: nika never resizes this tmux window and scales the text to this panel" |
+| `terminal:setting-zoom` (several panes: nika zoomed the pane) | `term-set` | `i-term-pin` | as above | Fit · terminal's size (set) | "Settings say your terminal's size: nika only zoomed this pane and never resizes the tmux window. Your terminal shows the pane zoomed too until this session window closes" |
+| `off:` | `off-set` | `i-fit-off` | `--fit-off` · `--fit-off-soft` · `--fit-off-line` | Fit · off in Settings | "Settings turn Fit off: nika changes nothing in tmux and scales the text to this panel" |
+
+The announced name (polite, once per change) is "<label>. <title>" with the label "Fit: always fills the panel", "Fit: your terminal's size, from Settings" or "Fit: off in Settings"
+(`zoomed:fill` keeps "Fit: zoomed, text scaled"); the label is also the panel's heading. The three looks are told apart from every other chip by icon, words and colour:
+"Fit · off in Settings" (`--fit-off`, `i-fit-off`, a solid soft fill) is not "Fit · off" (`blocked`: `--text-muted`, `i-off`, a dashed edge, no fill). `blocked` and `other`
+keep their Auto looks and reasons in `fill` and `terminal` mode; in `off` there is no lease, so neither shows.
+
+| Look | Light (text / fill / edge) | Dark (text / fill / edge) |
+|---|---|---|
+| `fill` | `#0b6b5c` / `#dcf3ee` / `#3a8f80` | `#5fd0bb` / `#10302a` / `#2f8f7e` |
+| `term-set` | `#5b45b0` / `#ece8fa` / `#8475cc` | `#b9adf6` / `#251f40` / `#8a7dd6` |
+| `off-set` | `#4a5160` / `#eceef2` / `#747c8a` | `#b8bfcc` / `#262a33` / `#828b9b` |
+
+The tokens are in all three theme blocks of `public/tokens.css` (the dark ones equal). Text meets 4.5:1 and the edge 3:1 on the chip's fills in both themes; the three looks sit
+0.013 to 0.035 away (OKLab) from some `--m-*` mode colours, which is accepted because every chip has its own icon and words as well.
+
+**The panel behind the chip** (`#fit-pop`, §9.13): the heading is the label, then the title (`why`), then a hint, an optional command and an optional button, picked by the chip's key
+from a fixed table and never from a string of the server.
+
+| Key | Hint | Button |
+|---|---|---|
+| `fitted:fill`, `fitted:fill-terminal`, `terminal:setting`, `terminal:setting-zoom`, `off:` | "Change it in nika's Settings, under Session window." (nothing on this page changes the mode, and the session window has no Settings link, so no button) | none |
+| `zoomed:fill` | "Fit again tries once more." | **Fit again** ("Fitting…" while it runs) |
+
+`fitted:fill` and `fitted:fill-terminal` also take Auto's room line (F10: "Claude's input box and footer did not fit this panel's rows, so nika gave the pane more rows and scaled the text.
+Fit again tries full-size text.", with **Fit again**) and grow line (F16: "Claude's question is taller than this panel, so nika gave the pane more rows while it is open.
+Scroll the terminal up to see all of it; the size goes back when the question closes."), as `fitted:` does. A panel that is closed is redrawn on every change like an open one, so a
+"Fitting…" never waits there for the next time it opens (0.5.4, SF).
+
+**Edge cases.** A mode switched while the window is open: any mode to `off` releases at once and the chip shows `off:` on the next request; `auto` or `fill` to `terminal` gives a resized
+window back (or only views it); `auto` or `terminal` to `fill` takes the size; `off` to anything acquires on the next beat. A hand edit of the config that is not saved through
+Settings is read when a session window opens or Fit again is pressed. An unknown mode in an answer reads as `auto`. Narrow widths: the chip wraps with the header like every other look.
+
+### 9.23 Where new agents open (0.5.4, P1)
+
+**(0.5.4.)** A new agent never makes a pane smaller than 80 columns by 15 rows. `nika spawn`, the app's spawn sheet and an orchestrator's agents share one rule (`src/place.js`, pure):
+the first of these that fits, with the parent pane's window as home.
+
+1. **An explicit "Under <name> (%n)"** from the spawn sheet: below that pane while both halves keep 15 rows; in an agents window it is tiled instead. If that pane has no room, the rule goes on and the
+   spawn says so (below).
+2. **Under the last agent** (the setting): below the newest agent pane while both keep 15 rows.
+3. **Beside** (the setting's other value, and the way on where Under the last agent finds no last agent pane): split the widest agent pane of the home window sideways while both halves keep 80 columns; when
+   none can be split, the orchestrator's own pane, which shrinks once to at least 80 columns. A spawn from "you" (no parent pane) may split the window's active pane the same way.
+4. **An agents window** (tmux window named `agents`) of the same tmux session that has room, the one with the fewest panes first; nika tiles it (`select-layout tiled`) after the split.
+5. **A new agents window.** Your current tmux window stays where it is and the orchestrator's pane is never moved.
+
+An agents window holds agents only (every pane tagged `agent` or `sub-orchestrator` for this project) and is never zoomed or fitted. While a session window fits the orchestrator's tmux window,
+new agents go to the agents window (§9.13). A tree is kept apart: an agents window is tiled into only by a spawn whose parent is every pane's parent in it (read from the `@nika-parent` tags of one
+`list-panes` call), a window that holds a sub-orchestrator is open only to that sub-orchestrator's agents, and `under-last` follows the last spawned pane only inside the same tree.
+In a 200 × 50 window the first agent opens beside the orchestrator and the second goes to an agents window (up to six agents fit there); in a window of 160 columns or fewer, every agent goes to an agents window.
+
+**Settings → Panes and limits → "Where new agent panes open"** (`fieldset`, `name="place"`, two `.radio-card`s; a project's page can set its own under New agents):
+
+| Card | Description |
+|---|---|
+| Beside | "Next to its orchestrator while both panes keep at least 80 columns. Otherwise in a tmux window named agents." |
+| Under the last agent | "Below the newest agent pane while both keep at least 15 rows. Otherwise in a tmux window named agents." |
+
+Help `#set-place-help`: "A new agent never makes a pane smaller than 80 × 15. An agents window holds agents only: nika re-tiles it as agents come and opens another when it is full. While a session window fits the
+orchestrator's tmux window, new agents go to the agents window." The spawn sheet's "Under <name> (%n)" field has the help "If that pane has no room, nika places the agent by the setting and says where."
+
+**Where the answer says it went** (the spawn toast, `role="status"`, with **Open session**; a word the page does not know reads as a plain pane):
+
+| Placement | Toast ends |
+|---|---|
+| beside, under, session | `Spawned <name> in pane %12` |
+| tiled into an agents window | `Spawned <name> in the tmux window "agents" (pane %12)` |
+| a new agents window | `Spawned <name> in a new tmux window "agents" (pane %12)` |
+| the explicit "Under" pane had no room (any of the above) | the line above plus `. That pane had no room.` |
+
+A spawn with a parent adds ` under <parent>` after the name (the parent's name is cut at 40 characters), and a sub-orchestrator reads `Spawned sub-orchestrator <name> under <parent> in …`; the toast ends as the table says. The row menu entry reads **Focus pane %12 (window 1) in tmux** when tmux gave a window index (1 to 6
+digits), else **Focus pane %12 in tmux**; `nika status` writes the pane as `1:%12` and `nika spawn` prints `placement:` (and a `note:` when the explicit pane had no room).
+
+### 9.24 Remove from the list, Show removed, Undo (0.5.4, RM)
+
+**(0.5.4, app tier.)** A detected folder or a session that no pane holds can be taken off nika's lists. It is only **hidden**: nothing is deleted, no process is touched, a
+removed session still opens by its link, and nika's control decisions (which panes it may type into, spawn limits) still use the full list. The hiding lives in `hidden.json` in nika's own
+state folder; the browser tier reads it (so its lists match) and never writes it. Contract: `api-app.md` (`/api/app/session/:id/remove|unhide`, `/api/app/groups/:key/remove|unhide`,
+`GET /api/app/hidden`); decision: ADR 0022. The removed state has its own colour, icon and words: `--rm` (light `#6e4630`, dark `#c9b08f`), `--rm-soft` (`#f5ebe4` / `#2f2820`) and `--rm-line`
+(`#a07258` / `#9c8264`), the icon `i-eye-off`, the words "removed" and "Removed".
+
+**Where it is offered.**
+
+| Where | Entry | When |
+|---|---|---|
+| A session row's `⋯` menu (every list that draws rows: the dashboard groups, Waiting on you, Ended sections, the project page) | **Remove from the list**, the first item of a new group (a rule above it) | app tier and the row is not live in a tmux pane nika sees (`!(live && pane)`): ended rows and "stuck" rows (live, no pane). A row with a pane has End session instead |
+| A detected folder's header (a folder that is not a nika project and has a path) | a `⋯` menu "More actions for <label>" after **Add project**, with **Remove from the list** | app tier |
+
+**Feedback** (all through the toast; the server's own message is never shown, the status and code pick one fixed text):
+
+| Moment | Toast | Kind |
+|---|---|---|
+| A request over 400 ms | "Removing from the list…" with a spinner, until it ends | info |
+| Session removed | "Removed <name, 40 characters> from the list." with **Undo**, 10 s | info |
+| Folder removed | "Removed <label, 40 characters> from the list (4 sessions)." with **Undo**, 10 s ("(1 session)"; no brackets when the count is missing) | info |
+| Undo done | "Back in the list." | info |
+| Undo failed | "Couldn't undo. Use Show removed to bring it back." | error |
+| 404 | "It's no longer in nika's list." and the list is read again | info |
+| 409 `in-tmux` | "This session runs in tmux. End it first." | error |
+| 409 `registered` | "This folder is a nika project now. Remove it on its project page." | error |
+| 500 `write_failed` | "Couldn't save the change. Nothing was removed." | error |
+| 503 `index_unavailable` | "nika can't read its list of sessions right now. Nothing was removed." | error |
+| no answer, or any other answer | "Couldn't reach nika. Nothing was removed." | error |
+
+The Undo toast stays 10 s (WCAG 2.2.1: Show removed is the second way back). One request per row or folder at a time: a second click while one is out sends nothing. After a successful Remove the list refreshes
+and the focus goes to the folder's heading while that folder still shows, else to the heading of the screen (the dashboard or the project page).
+
+**The count line** (`p.rm-line`, under the lists): `i-eye-off` in `--rm`, then text, then the **Show** button (`aria-label` "Show N removed"), hidden when N is below 1. The dashboard reads "N removed from the list", a
+project page "N removed from this project's list"; the browser tier reads "N removed from the list in the nika app" with no icon and no button (it cannot show or undo).
+
+**The Show removed dialog** (`dialog#dlg-removed`, width `min(560px, 100vw - 32px)`, opened by **Show**): heading `#rm-h` "Removed from the list" (`tabindex="-1"`) and, always under it, `#rm-d`:
+"Removed items are only hidden from nika's lists. Nothing was deleted, and sessions that still run keep running." Then two sections, **Folders** first and **Sessions**, each newest first (an `h3` in `--rm`
+and a list with the section's name), at most 100 rows each and then "and N more (oldest)". A row (`li.rm-item`, `--rm-soft` fill, `--rm-line` edge) holds the name (one line, ellipsis, the full name in `title`),
+for a folder its path (muted, monospace, wrapping) and for a session its project label, "Removed 3 min ago" ("just now", "2 h ago", "4 d ago"; it keeps ticking after the page refreshes), and **Show again**
+(`aria-label` "Show <name> again"). A folder whose sessions nika cannot find any more is named "Folder with no recent sessions" (nika finds an older folder with one index-only read, so this is rare);
+a session without a name shows the first 8 characters of its id.
+
+| State | Looks |
+|---|---|
+| Loading | "Loading…" with a spinner (`role="status"`), the body `aria-busy` |
+| Empty | "Nothing is removed from the list." |
+| Load error | an alert (`i-warn`, `--danger`) "Couldn't load the removed items." with **Try again**; the focus goes to the alert |
+| Show again in flight | that row's button reads "Showing…" and is disabled |
+| Show again done | the toast "Back in the list."; the dialog reads the list again and redraws (a row nika dropped meanwhile goes too); the focus goes to the next row's **Show again** that is still listed, else to `#rm-h` |
+| Show again failed | the toast "Couldn't show it again. Nothing changed." (error); the row stays |
+
+An Undo that happens while the dialog is open reads the list again too. The focus starts on the heading `#rm-h` when it opens; Esc, the ✕ (`aria-label` "Close") and the footer **Close** close it, and the focus returns to **Show**.
+
+**What brings a removed item back.** Undo and Show again, at once. A removed folder also reappears with only its new rows when a session starts in it; its old rows stay removed (the count line still counts them), except a
+removed session that runs in a tmux pane nika sees, which shows while it runs there. A folder that is added as a nika project shows again. Entries expire after 90 days, and nika keeps at most 500. A folder
+of any age can be removed (nika finds its sessions even when the 7-day list does not hold them).
+
+### 9.25 Typed /compact: the session line, the meter and the Settings sentence (0.5.4, AC)
+
+**(0.5.4, app tier.)** For a Claude session that nika did not start, the Auto-compact setting (§3.18) cannot reach Claude's own environment, so the app types `/compact` for it: when the session has waited
+60 seconds past the compact point and you have not typed in nika's message box for 60 seconds, once each time the context grows past the point and at most every 10 minutes. It types nothing
+while only the browser dashboard runs, and not into a session in a plain terminal or another tmux server. The page shows what it did in three places; each state has its own colour, icon and words.
+
+**The session line** (`span#sess-ac.sess-ac` in the header's `.sess-meta`, right after the context meter; hidden when there is no note; not focusable, nothing to press). The icon is `aria-hidden`; `.ac-long` carries the
+full sentence for a screen reader at every width, `.ac-short` (aria-hidden) is the narrow text.
+
+| State (`data-st`) | Icon | Colour | Long text | Short text (narrow) |
+|---|---|---|---|---|
+| `typed` | `i-clock` | `--fit-other` | "nika typed /compact at 14:02, at 331k" | "/compact 14:02" |
+| `compacted` | `i-compact` | `--text-muted` | "nika compacted this session at 14:02, at 331k" | "Compacted 14:02" |
+| `stopped` | `i-warn` | `--idle` | "nika stopped typing /compact here after 3 failed tries; it tries again after nika restarts" | "/compact stopped" |
+
+The time is the local 24-hour `HH:MM` (zero padded, the same text on every machine), the number the context size at that moment (`331k`, written as the meter writes it). At 1000 px and below (the
+breakpoint `.hide-narrow` uses) the long text is drawn off screen and the short text shows; above it the reverse. The line wraps with `.sess-meta`, never scrolling the page sideways. The line follows every capture;
+the polite region says the long sentence once, when the state changes to `typed` or `stopped` (`compacted` follows from `typed` and is not said). A note that is not exactly the three fields
+(`state`, `at`, `tokens`) with a state of those three, a time the calendar has and a token count from 0 to 10 million reads as no note.
+
+**The meter's title and screen-reader text** (§3.19; the dashboard and project rows and the session header; app tier only) gain the same sentence after " · " (title) or ", " (screen-reader text), the
+same sentence as the line's long text, except that for `stopped` it is only "nika stopped typing /compact here after 3 failed tries" (the "; it tries again after nika restarts" is the line's alone): "Context: 312k of 400k tokens (nika types /compact at 320k) · nika typed /compact at 14:02, at 331k". The `compaction` value `typed` (the app types at the point) has its own row in §3.19.
+
+**Settings** (§3.18). The help `#set-compact-help` reads: "Sessions nika starts get this point from their next start. In any other Claude session nika shows, nika types /compact when the session has waited 60 seconds past this point and
+you have not typed in nika for it: once each time it grows past the point, at most every 10 minutes. nika can't type into a session in a plain terminal or another tmux server, types nothing while only the browser dashboard runs, and can't compact
+a session that keeps working: Claude does that itself, or nika at its next wait. Compact in the session window works at any time." With the setting off the result line reads "Off. nika sets nothing and types no /compact; Claude Code's own setting applies."
+The on/off chip of the row is unchanged.
+
+### 9.26 Question steps with a preview, notes and Chat about this (0.5.4, QP and QPF)
+
+**(0.5.4, app tier.)** Claude (2.1.328 and later) can draw a question step with a side preview: each option has a block of text, and the one that has Claude's focus is shown. The form of §9.16 reads
+such a step, keeps Claude's focus and the page's pick together, and offers a note and Chat about this. Contract: `api-app.md` (the capture's `dialog.focus`, `dialog.preview`, `dialog.notes`; the dialog route's bodies and 409s);
+how Claude draws the step: `claude-tui.md` §13; decisions: ADR 0015 (amendments of 0.5.4). Everything below is `public/dialog-form.js` and `session.css`; every string from the screen is set as text.
+
+**The form on a preview step.** The §9.16 parts (header, retry row, steps strip, `fieldset` with the question) stay. In one column at every width, top to bottom:
+
+1. Option rows: one radio per option (`label.ch`, `kbd` with Claude's number, the label); no description (Claude draws none on a preview step). Picking a radio (click, Space, arrow keys) sets the page's pick; when it differs from
+   Claude's focus the page sends `{ sig, focus: n }`. One request is in flight at a time and picks during it are coalesced to the last. Answer is `aria-disabled` until a capture shows Claude's focus on the pick and no request is in flight.
+2. The **preview panel** (`figure.dlg-pv`): a caption (`figcaption.dlg-pv-h`) with the state tag and "Preview · <label of Claude's focused option>" (or "Preview · Chat about this has the focus in the terminal" when Claude's focus is on Chat and no radio is
+   checked), then `pre.dlg-pv-text` (`tabindex="0"`, `aria-label` "Preview of <label>"; `--surface` fill, 1 px `--line-strong` border, monospace `--fs-small`, `white-space: pre`, at most `min(40vh, 360px)` high, scrolling inside itself in both directions, the page never
+   scrolls sideways), then the state's note line (`p.dlg-note.dlg-pv-note`) when it has one. The `pre` is dimmed to 0.8 opacity while the form cannot take an answer, and stays readable.
+3. The **note part** (below).
+4. **Chat about this** (`button.btn.ghost.dlg-chat`, `i-text` icon). Its `title` is "Closes Claude's questions so you can talk them over with Claude instead. Answers you already gave may not reach Claude." On a question step without a preview (single- or multi-select) a `.pbtn-off` row
+   "Chat about this: use the terminal" stands under the Other row instead, and nothing is sent. Not on the Review or a plan approval. Chat is its own request (`{ sig, chat: true }`), has no confirm (as Decline has none) and cannot be undone: the form shows the
+   chip **Sent to chat** (`i-check`, as `answered`) and the polite line "Sent Chat about this to <name>.", and stays locked until the dialog is gone.
+5. **Answer** (`.btn.primary`; a preview step is never `final`) and **Decline**, as in §9.16. Answer's body is `{ sig, view, picks: [n] }` with the `view` of the capture that showed the pick (plus `note` when the field holds text).
+
+**The panel's state tag** (`span.dlg-pv-tag[data-s]`, the shape of `.dlg-chip`; one state at a time; the first that applies, in this order, wins):
+
+| State (`data-s`) | When | Text · fill | Icon | Words | Note line under the `pre` |
+|---|---|---|---|---|---|
+| `showing` | the page's pick differs from Claude's focus (a focus request in flight, or just answered with no capture yet) | `--text` · `--surface-2` | spinner | "Showing your pick" | none |
+| `growing` | Claude hides lines and the page is giving the pane more rows (§9.13, F16) | `--accent` · `--accent-soft` | spinner | "Showing more lines" | none |
+| `fallback` | Claude shows no preview at this size | `--text-muted` · none, dashed `--line-strong` edge | `i-info` | "No preview" | "Claude can't show this preview at this size: compare the labels instead." (the `pre` is not drawn) |
+| `hidden` | Claude hid N lines and nothing is growing (Fit `terminal` or `off`, a parked grow, or the fit not `fitted`) | `--idle` · `--idle-soft` | `i-warn` | "N lines hidden" ("1 line hidden") | "N lines hidden: see the terminal. Claude left them out to fit the pane; a taller terminal shows them." |
+| `full` | nothing hidden, a real preview, the pick is Claude's focus | `--busy` · `--busy-soft` | `i-check` | "Full preview" | none |
+
+N is an integer the server counted, never text from the screen. Each pair is one an existing element already uses (`full` = the `answered` chip, `hidden` = `.dlg-warn`, `growing` = the `answering` chip, `fallback` = the `terminal` chip, `showing` = the `moving` chip), so the
+contrast of §9.16 holds in both themes. The form's own chip (Reading, Needs you, Terminal only, Answering, Moving, Answered, Not answered) is unchanged; in Terminal only (bypass) the panel is shown, the radios are read-only and no focus request is sent.
+A preview of 36 or more lines gets Claude's own fallback line, so it reads `fallback`. In Fit Auto and Fill, `growing` also covers a preview whose divider says "N lines hidden" (the grow of F16 asks for more rows, at most 120, back one second after the dialog closes);
+a switch of Fit to Terminal or Off ends the grow and the tag shows `hidden` within one render.
+
+**The note part** (a step that shows no note yet, and not in Terminal only):
+
+| State | Looks |
+|---|---|
+| Closed | `button.btn.link.dlg-note-add` "Add a note", `aria-expanded="false"`, `aria-controls` the field |
+| Open | the label "Note for Claude (optional)" (`.dlg-note-l`), a text field (`maxlength="300"`, a counter "n/300" from 250, Enter = Answer) and, when the note starts with a digit, the warn row `p.dlg-warn` (`i-warn`, `--idle`): "Start with a word: Claude can read a first digit as an option." The note goes with the next Answer; there is no save request |
+| A note already on screen (typed in the terminal) | a read-only line `p.dlg-note.dlg-note-on` (`i-text`, `--text`, a 3 px `--line-strong` left edge): "Note: <text>"; the answer keeps it |
+| Claude's notes field is open in the terminal | nothing is shown of it; the form locks with the `notes-open` line and the Try again row (below) |
+
+Escape in Claude's notes field closes it and keeps the note; nika never sends it. A held note comes back into its field only when the step is built again after a drop, never into a field Claude already shows open.
+
+**New lines for answers** (`L409`; the same problem line and Try again row as §9.16; "lock" keeps the form off until the step changes or Try again):
+
+| Code | Line | After |
+|---|---|---|
+| `dialog-unread` | "nika can't read Claude's dialog right now, so it stopped. Check the terminal, then press Try again." | locked, Try again |
+| `preview-changed` | "The preview changed before nika pressed Enter, so nothing was selected. Check it and answer again." | live |
+| `notes-open` | "Claude's notes field is open in the terminal. Close it there, then press Try again." | locked, Try again |
+| `note-mismatch` | "Your note didn't arrive exactly as typed, so nika stopped before pressing Enter. Fix it in the terminal." | locked |
+| `note-mode` | "nika can only type a note once it knows Claude's input is not in vim mode. Answer without the note, or add it in the terminal." | live; the note stays in the field |
+| `note-room` | "Claude's notes field doesn't fit this pane's width, so nika typed nothing. Answer without the note, make the pane wider, or add the note in the terminal." | live; the note stays in the field |
+
+`dialog-changed` ("The question changed; check the session.") now means only a readable other step; a dialog nika cannot read is `dialog-unread`. A new step (another `sig`) builds a fresh form and clears the problem line.
+`note-room` is refused before any key is pressed, when Claude's open notes field (its `Notes:` column plus 32 cells) would not fit the pane's width. After any other refusal of an answer that carried a note, the page either holds the note
+(no key was pressed: 400, 409 and 429 with no `sent`) or takes it off the form (a key may have been pressed, or the request failed in a way that may have): the line gets the sentence "Your note may already be in Claude's notes field, so nika took it off this form. Check the terminal." at its end, and the next
+Answer posts no `note`, so `n` is never typed into a field Claude may already have open. When that refusal leaves Claude's notes field open on screen (`notes-open`) and the note field is empty, the line is "Claude's notes field is open in the terminal. Close it there, then press Try again." followed by that sentence
+(it is left off while a newer note stands in the field, because it would be untrue then).
+
+**The problem line has a look per kind** (`#problem-line`, 0.5.4: the owner rule that a warning and an error differ by more than colour). A warning shows `i-warn` and the word "Warning:" in `--idle`; an error shows `i-error` and "Error:" in `--danger`; the message follows in the same colour, bold, and wraps.
+`role="alert"` stays on the message, so a screen reader hears the message alone (AA holds: `--idle` 6.33:1 light and 8.54:1 dark, `--danger` 6.57:1 and 6.90:1, on `--surface`). What the user can fix from here (a 400, 409 or 429 refusal, a plain "try again") is a warning; what they cannot (a 404 "gone", a 5xx or no answer from the server) is an error, as `problemKind` has always sorted them.
+
+**When the dialog cannot be read, and after a drop.** A form the last request answered (any 200 but a focus move, or an already-answered 409), moved, or whose focus move no capture has confirmed is *stale*: when the screen then reads unreadable the form is dropped and the page goes through "Reading Claude's question…"
+(`i-info` line, chip "Reading" with `i-clock`) for up to 2 s and then the attention banner, as for a dialog that was never read; a live form that merely cannot be read for a moment stays with its `kept` note. Focus: if it was inside the form when it dropped, it goes to the form's root (`#dialog-form`, `tabindex="-1"`);
+when the next step builds, a focus that is in the root goes to **that step's heading**, never into the note field; a user who moved the focus elsewhere keeps it there; when the banner takes over, a focus in the form goes to the message box. A note typed before a drop that followed an unconfirmed focus move is kept and comes back,
+in an opened field, when that step is built again; the field is not focused, so typing needs a click into it. A plan whose prompt wraps (85 columns or fewer) or whose footer path row does not fit (below about 109 columns) reads Reading, then the banner, and the grow does not run.
+
+**A Review that is only partly answered** (QPF, Claude 2.1.329 and 2.1.330). Claude draws "⚠ Some questions are unanswered" in the Review, with no Ready row, and leaves the unanswered question out. The form reads this Review instead of falling back to the banner: it shows the count line of
+§9.16 when the answers map to the steps (`i-warn` in `--idle` and "3 of 4 answered · 1 not answered"), else the warn row `p.dlg-warn` (`i-warn`, `--idle`) "You have not answered all questions", and the answered pairs; Submit still ends the dialog. During a step change the page shows
+Reading or the new step, never the answered step with every control off.
+
+**Known limits.**
+
+- If Claude's focus moves while you type a note, the form follows it; check the selected option before you press Enter. (Enter in the note field answers the option Claude's focus is on, which can differ from the pick the user made until the page has followed.)
+- A note that wraps on a step whose preview is cut can make Claude hide one more preview line; nika then stops before Enter (`preview-changed`) and the note stays in Claude's notes field: finish in the terminal. The form then locks with `notes-open`.
+- A pick queued behind a request in flight is dropped with the form when the form drops; keys typed during Reading are lost.
+- Claude's tool result for Chat says the questions were declined; answers already given may not reach Claude.
+
+### 9.27 Unsent attachments and unsent text survive leaving a session (0.5.4, AT and LT)
+
+**(0.5.4, app tier.)** Before 0.5.4 a person who left a session window (Back, another session, the tray menu) lost the chips of an unsent message (closing the window deleted their files) and any text nika does not copy into Claude's input.
+Now both are kept in the **app's memory** (one tray per tmux pane, bound to the pane's project and to the Claude in it, at most 64 trays) and come back when the session window opens again. Memory only: they do not survive an app restart (the files of a chip wait for the
+"Keep attachments for N days" expiry). A tray goes when the session ends (its pane is gone or dead), when another Claude or project takes the pane, or when it is sent. Nothing is kept on the browser tier. Contract: `api-app.md` (`GET …/attachments`,
+`GET` and `PUT …/kept-draft`); decision: ADR 0016 (two amendments of 0.5.4). The page no longer sends a `DELETE` for the chips at `pagehide`; a window that is only hidden and shown again never left, so its chips and text are still there, and a page back from the
+back/forward cache (`pageshow` with `persisted`) reconciles with the server's copy without duplicating anything.
+
+#### Attachments (AT)
+
+On boot the page asks for the pane's tray and draws a **restored chip** with the same `build`/`paint` as an uploaded ready chip (§9.14: icon, name, size, remove ×); its label is the server's, the last part of the name cleaned to 255 characters, so it can read
+differently from the chip before the leave. Removing it deletes the file as before.
+
+| State | Looks | Colour · icon · words |
+|---|---|---|
+| Restoring (usually under 100 ms, at most about 8 s) | nothing is drawn; if the person adds, picks or sends meanwhile, the warn problem line says so and nothing happens | warn line (`i-warn`, `--idle`, "Warning:"): "nika is bringing back the attachments you added before. Try again in a moment." (4 s) |
+| Restored | the chips; the polite region says "Restored 2 attachments from before." ("Restored 1 attachment from before.") | the ready chip of §9.14 |
+| Copy gone (the file expired or was removed since) | the chip is left out; a note under the tray, `div.att-gone[role="status"]`, until the next add, remove or send | its own state: `--att-gone` (icon and the bold label), `--att-gone-soft` fill, `--att-gone-line` edge, `--text` for the rest; icon `i-file-off`; label **Not restored:** |
+| Restore failed (after one retry) | the warn problem line (8 s) | "nika couldn't bring back the attachments you added before. Leave this session and open it again to try once more." |
+| The tray is full (409 `tray-full`, a second page added six) | the new chip fails | failed chip (`i-warn`, meta in `--danger`), meta "Too many"; line "Up to 6 attachments per message." |
+
+The Not restored line, for one file: "<name>: nika no longer has its copy (attachments are kept for a few days). Add it again if you still need it."; for several: "<N> attachments: nika no longer has their copies (attachments are kept for a few days). Add them again if you still need them." One name is
+told (clipped with an ellipsis when long); two or more are counted, not listed. The icon sits at the left (`flex: none`) and the text wraps; the note matches `.attn-note`'s layout in the one-column composer. The announce is one sentence of up to two parts, "Restored N attachment(s) from before." then "Not restored: …", one space between,
+and a gone-only restore says it too; a `pageshow` that still finds gone files says it again.
+
+| Token | Light (text / fill / edge) | Dark (text / fill / edge) |
+|---|---|---|
+| `--att-gone`, `--att-gone-soft`, `--att-gone-line` | `#77529c` / `#f4effa` / `#9576b6` | `#bc8eeb` / `#2e2439` / `#8f70b0` |
+
+Violet, in all three theme blocks of `tokens.css` (the dark ones equal). Text meets 4.5:1 (4.87:1 light, 4.83:1 dark, the minimum over the surfaces it sits on) and the edge 3:1; the nearest other colour is `--fit-set` (0.071 light and 0.075 dark in OKLab), above the palette's 0.05 floor.
+The icon `i-file-off` is the `i-file` drawing with the diagonal the other "off" icons use (the session page's sprite).
+
+#### Unsent text (LT)
+
+What is kept: the text in the message box (and its Shell flag) that the draft sync does not copy into Claude's input: past the sync's envelope, holding a control character other than newline and tab, refused with 400, waiting (no readable box, a paused sync,
+a held or failing write), or put back by the page itself. Up to 16 KB (Send's paste limit); a text over that is not kept and has the **Not kept:** note (§9.12). It is saved 500 ms after the last change and at once when the page leaves (`pagehide`), and cleared when it is sent, emptied,
+shortened until the sync pushes it, or when the terminal wins a refused write.
+
+On return the page puts the text back into an **empty box the person has not typed in**, caret at the end, with Shell as it was; the paste chip shows as for any multi-line text. A page that comes back from the back/forward cache with a box that still holds the copy it saved takes the server's copy if that differs;
+a box holding text the page never saved keeps it. The put-back text is never copied into Claude's input while that holds other text: it waits for the person's first edit, and for Send. After the first edit the normal rules apply again.
+
+| On return, Claude's input | Box | Note |
+|---|---|---|
+| empty, the text is long | the kept text | Not mirrored |
+| empty, the text now fits | the kept text | none after the push (it is pushed like any edit) |
+| other text, typed in the terminal while away | the kept text (the terminal's text is not pulled over it) | Not mirrored |
+| unreadable | the kept text | Sync paused |
+| no box (a prompt or dialog is open) | the kept text | none; the push waits |
+
+**Lines** (the warn problem line, "Warning:", `i-warn`, `--idle`; no new colour or icon, since the put-back text is today's Not mirrored text):
+
+| Moment | Line | Time |
+|---|---|---|
+| Send or Tab while the text is being brought back | "nika is bringing back the text you had not sent. Try again in a moment." (nothing is sent, the text stays; Tab on a suggestion is refused with the same line) | 4 s |
+| Brought back | polite announce only: "Restored the text you had not sent." | — |
+| The restore failed (or 3 capture re-tries found nothing) | "nika couldn't bring back the text you had not sent. Leave this session and open it again to try once more." | 8 s |
+| The person typed before the restore could put it back | "You started typing before nika could bring back the text you had not sent, so it was not put back." | 8 s |
+| Two writes failed | "nika couldn't keep the text you have not sent. It is lost if you leave this session before you send it." (once) | 8 s |
+| No project for the session | "nika can't keep unsent text for this session because it can't tell the session's project. It is lost if you leave before you send it." | 8 s |
+
+A restore that finds nothing yet (a GET-only 404) asks again on up to 3 later captures about 2 s apart, then ends as a failure. A back/forward return is a first try, never a re-try; one that arrives while a restore runs takes the server's copy once that restore ends. A restore request is bounded to 3 s.
+A save of the unsent text never ends a pending scroll slide (§9.15).
+
+**Known limits** (0.5.4):
+
+- While a restore is unanswered and until the first edit after it fails, typed text is kept only after one more edit, Claude's input is not pulled, and a `pagehide` there sends nothing (F-3).
+- Typing in the pending window (about 2 s, up to about 6 s) can replace Claude's input text that the box does not show (F-5); a later release may hold the push until the chain ends.
+- With two pages of the same pane, a returning page whose box holds text it never saved keeps its box and its save replaces the other page's copy, with no line (also: a keep write in flight across a Send whose clear fails can delete another page's copy with no line).
+- A GET that hangs holds Send and Tab for up to 3 s per re-try; while a capture re-try is pending (at most about 3 × 2 s plus the GETs) edits are held and a leave keeps nothing.
+- An app restart loses both the chips' tray and the kept text.
 
 ### 8.8 WebView support
 

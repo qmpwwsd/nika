@@ -56,6 +56,14 @@
   --fit-other: #0f68a2; --fit-other-soft: #ddf2ff; --fit-other-line: #3786c3;
   /* the fit chip, state `terminal` (F4): a plum no status and no permission mode uses; checked in test/session-ui.test.js (text 4.5:1 on its fill and the surfaces, edge 3:1, 0.05 OKLab from every other chip and status colour) */
   --fit-term: #8b3f6b; --fit-term-soft: #f8e8f1; --fit-term-line: #b96a98;
+  /* 0.5.4 P2 (design-052d 2.4): the three chips that name the Fit mode set in Settings; fill is a teal, set (the terminal's size) a violet, off a grey with its own solid edge; checked in test/session-ui.test.js (text 4.5:1, edge 3:1) */
+  --fit-fill: #0b6b5c; --fit-fill-soft: #dcf3ee; --fit-fill-line: #3a8f80;
+  --fit-set: #5b45b0; --fit-set-soft: #ece8fa; --fit-set-line: #8475cc;
+  --fit-off: #4a5160; --fit-off-soft: #eceef2; --fit-off-line: #747c8a;
+  /* 0.5.4 RM (design-053-rm 6.2): the removed state of the lists (Remove from the list, the removed line, the Show removed dialog); a brown no status, permission mode or Fit chip uses; checked in test/removed-ui.test.js (text 4.5:1, edge 3:1, 0.05 OKLab from every other colour) */
+  --rm: #6e4630; --rm-soft: #f5ebe4; --rm-line: #a07258;
+  /* 0.5.4 AT (design-054-at 4): the "Not restored" note of the attachment tray (a copy nika no longer has); a violet no status, permission mode or Fit chip uses; checked in test/session-ui.test.js (text 4.5:1, edge 3:1, 0.05 OKLab from every other colour) */
+  --att-gone: #77529c; --att-gone-soft: #f4effa; --att-gone-line: #9576b6;
   --shell: var(--text); --on-shell: var(--surface);
 }
 
@@ -88,6 +96,11 @@
     --m-default: #a9c3e6; --m-default-soft: #1e2a3a; --m-default-line: #5f7fa8;
     --fit-other: #4abce9; --fit-other-soft: #0e2a36; --fit-other-line: #1c8cb4;
     --fit-term: #d9a6c8; --fit-term-soft: #35222f; --fit-term-line: #a8789b;
+    --fit-fill: #5fd0bb; --fit-fill-soft: #10302a; --fit-fill-line: #2f8f7e;
+    --fit-set: #b9adf6; --fit-set-soft: #251f40; --fit-set-line: #8a7dd6;
+    --fit-off: #b8bfcc; --fit-off-soft: #262a33; --fit-off-line: #828b9b;
+    --rm: #c9b08f; --rm-soft: #2f2820; --rm-line: #9c8264;
+    --att-gone: #bc8eeb; --att-gone-soft: #2e2439; --att-gone-line: #8f70b0;
   }
 }
 
@@ -122,6 +135,11 @@
   --m-default: #a9c3e6; --m-default-soft: #1e2a3a; --m-default-line: #5f7fa8;
   --fit-other: #4abce9; --fit-other-soft: #0e2a36; --fit-other-line: #1c8cb4;
   --fit-term: #d9a6c8; --fit-term-soft: #35222f; --fit-term-line: #a8789b;
+  --fit-fill: #5fd0bb; --fit-fill-soft: #10302a; --fit-fill-line: #2f8f7e;
+  --fit-set: #b9adf6; --fit-set-soft: #251f40; --fit-set-line: #8a7dd6;
+  --fit-off: #b8bfcc; --fit-off-soft: #262a33; --fit-off-line: #828b9b;
+  --rm: #c9b08f; --rm-soft: #2f2820; --rm-line: #9c8264;
+  --att-gone: #bc8eeb; --att-gone-soft: #2e2439; --att-gone-line: #8f70b0;
 }
 
 /* permission modes (docs/design/spec.md 2.8.1, 2.8.5, 9.3): one class per mode sets the local trio the tag, the frame, the

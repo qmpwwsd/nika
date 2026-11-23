@@ -12,9 +12,12 @@ import {
   remeasure, askSize, frameReady, roomStep, refitFrom, createRedrawHold, HOLD_MS, HOLD_POLL_MS, ROOM_ROWS, REFIT_MS,
   HIDE_MAX, hiddenRows, fillSize, drawnScale,
   GROW_STEP_MIN, GROW_CAP, GROW_CONFIRM_MS, GROW_SETTLE_MS, GROW_WAIT_MS, GROW_CLOSE_MS, GROW_IDLE, growNext, cutQuestion, growAsk, scaleRows, growStep, growRebase, // F16
+  previewHidden, cutPlan, growWanted, // 0.5.4 QP (Q1 = A) and O2
   inked, // 0.5.2 R1
   panelFrame, // 0.5.2 R2
+  FIT_MODES, // 0.5.4 P2
 } from '../public/fit-ui.js';
+import { FIT_MODES as SERVER_FIT_MODES } from '../src/ids.js'; // 0.5.4 P2: the page's list is pinned to the server's
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const DOT = '·';
@@ -208,14 +211,14 @@ describe('F4: chipView, the state `terminal` (a terminal shows the tmux window, 
 
   test('(+) one pane: key "terminal:", icon "term", the words, the label, the title and the announcement', () => {
     assert.deepEqual(chipView(term(1)), {
-      key: 'terminal:', state: 'terminal', icon: 'term', text: TEXT, label: LABEL, title: TITLE_PLAIN, say: `${LABEL}. ${TITLE_PLAIN}`,
+      key: 'terminal:', state: 'terminal', look: 'terminal', mode: 'auto', icon: 'term', text: TEXT, label: LABEL, title: TITLE_PLAIN, say: `${LABEL}. ${TITLE_PLAIN}`, // 0.5.4 P2 (requirement change): look and mode
     });
   });
 
   test('(+) several panes that nika zoomed (userZoom false): key "terminal:zoom" and the title that says "only zoomed this pane"; the words, icon and label stay', () => {
     const v = chipView(term(3, false));
     assert.deepEqual(v, {
-      key: 'terminal:zoom', state: 'terminal', icon: 'term', text: TEXT, label: LABEL, title: TITLE_ZOOM, say: `${LABEL}. ${TITLE_ZOOM}`,
+      key: 'terminal:zoom', state: 'terminal', look: 'terminal', mode: 'auto', icon: 'term', text: TEXT, label: LABEL, title: TITLE_ZOOM, say: `${LABEL}. ${TITLE_ZOOM}`, // 0.5.4 P2 (requirement change): look and mode
     });
     assert.equal(chipView(term(2, false)).key, 'terminal:zoom', 'two panes are several');
   });
@@ -316,7 +319,7 @@ const OK = (state = 'fitted', reason = null) => ({ status: 200, body: { fit: { s
  * `focus: false` in the options and `noFocusIo: true` leave io.focused out altogether. log.quiet holds the `quiet` flag of each chip call that got one.
  * F10: io.sized is the optional sink for the pane size of each 200 answer (`noSized: true` leaves it out); log.order is the order of the chip and sized calls.
  */
-function rig({ again = true, focus = false, noFocusIo = false, noSized = false } = {}) {
+function rig({ again = true, focus = false, noFocusIo = false, noSized = false, ioExtra = {} } = {}) {
   const clk = clock();
   const log = { sent: [], released: 0, chips: [], again: [], quiet: [], sized: [], order: [] };
   const page = { focus, throws: false };
@@ -331,6 +334,7 @@ function rig({ again = true, focus = false, noFocusIo = false, noSized = false }
   if (!noSized) io.sized = (pane) => { log.order.push('sized'); log.sized.push(pane); }; // F10: the pane size of each 200 answer
   if (!noFocusIo) io.focused = () => { if (page.throws) throw new Error('focus unreadable'); return page.focus; };
   if (again) io.fitAgain = (e) => log.again.push(e); // F1: the optional sink for the user's Fit again; a rig without it proves it is optional
+  Object.assign(io, ioExtra); // 0.5.4 P2: optional sinks a test adds (io.mode)
   const planner = createFitPlanner(io);
   return {
     planner, clk, log, page,
@@ -402,6 +406,32 @@ describe('createFitPlanner: when a request goes out (design 8.2)', () => {
     r.planner.size(100, 30); // back to the answered size before the debounce ends
     await r.clk.advance(DEBOUNCE_MS);
     assert.equal(r.log.sent.length, 1, 'a change that was undone is not sent');
+  });
+
+  test('(+) 0.5.4 SF F-1: retarget remembers the size for the next request and sends nothing by itself; the next heartbeat carries it', async () => {
+    const r = rig();
+    r.planner.size(100, 60);
+    r.planner.start();
+    await r.answer(OK());
+    assert.deepEqual(r.log.sent.map((b) => b.rows), [60]);
+    r.planner.retarget(100, 30);
+    await r.clk.advance(DEBOUNCE_MS * 3);
+    assert.equal(r.log.sent.length, 1, 'no debounced request, no request now');
+    await r.clk.advance(BEAT_MS);
+    assert.deepEqual(r.log.sent.map((b) => b.rows), [60, 30], 'the heartbeat asks the retargeted rows');
+  });
+
+  test('(\u2212) 0.5.4 SF F-1: retarget with a size that is not valid keeps the size asked before, and a retarget before start() is what start() asks', async () => {
+    const r = rig();
+    r.planner.size(100, 60);
+    for (const [c, w] of [[0, 30], [100, 0], [100.5, 30], [100, '30'], [100, 99999], [undefined, undefined]]) r.planner.retarget(c, w);
+    r.planner.start();
+    await r.answer(OK());
+    assert.deepEqual(r.log.sent.map((b) => [b.cols, b.rows]), [[100, 60]]);
+    const q = rig();
+    q.planner.retarget(90, 25); // before start
+    q.planner.start();
+    assert.deepEqual(q.log.sent.map((b) => [b.cols, b.rows]), [[90, 25]]);
   });
 
   test('(+) one request in flight, the latest size wins: sizes that arrive meanwhile become one request after the answer', async () => {
@@ -1226,7 +1256,7 @@ describe('F9: chipView, `fitted` with reason `terminal` and `terminal` with reas
   test('(+) fitted + terminal: key "fitted:terminal", the fitted state, icon and words, the exact title; the announcement is label + title', () => {
     const v = chipView(body('fitted', 'terminal'));
     const plain = chipView(body('fitted', null));
-    assert.deepEqual(v, { key: 'fitted:terminal', state: 'fitted', icon: 'fit', text: `Fit ${DOT} fills the panel`, label: 'Fit: fills the panel', title: FITTED_TERMINAL, say: `Fit: fills the panel. ${FITTED_TERMINAL}` });
+    assert.deepEqual(v, { key: 'fitted:terminal', state: 'fitted', look: 'fitted', mode: 'auto', icon: 'fit', text: `Fit ${DOT} fills the panel`, label: 'Fit: fills the panel', title: FITTED_TERMINAL, say: `Fit: fills the panel. ${FITTED_TERMINAL}` });
     assert.deepEqual([v.state, v.icon, v.text, v.label], [plain.state, plain.icon, plain.text, plain.label], 'owner Q1: no new colour (data-k is the state), icon or words');
     assert.notEqual(v.key, plain.key, 'a different key: the chip is redrawn when one becomes the other');
   });
@@ -1235,7 +1265,7 @@ describe('F9: chipView, `fitted` with reason `terminal` and `terminal` with reas
     const plain = chipView(body('terminal', null, 1));
     for (const [panes, userZoom] of [[1, false], [3, false], [3, true], [undefined, false], ['3', false]]) {
       const v = chipView(body('terminal', 'switching', panes, userZoom));
-      assert.deepEqual(v, { key: 'terminal:switching', state: 'terminal', icon: 'term', text: `Fit ${DOT} your terminal's size`, label: "Fit: your terminal's size", title: SWITCHING, say: `Fit: your terminal's size. ${SWITCHING}` }, `${panes} ${userZoom}`);
+      assert.deepEqual(v, { key: 'terminal:switching', state: 'terminal', look: 'terminal', mode: 'auto', icon: 'term', text: `Fit ${DOT} your terminal's size`, label: "Fit: your terminal's size", title: SWITCHING, say: `Fit: your terminal's size. ${SWITCHING}` }, `${panes} ${userZoom}`);
     }
     assert.deepEqual([plain.state, plain.icon, plain.text, plain.label], ['terminal', 'term', `Fit ${DOT} your terminal's size`, "Fit: your terminal's size"]);
   });
@@ -3176,8 +3206,10 @@ describe('F16: growStep, one test per row of the transition table (design F16 4.
     assert.deepEqual(look(G, { now: 3000, dialog: null }).ask, { back: true });
   });
 
-  test('(+) a plan, a prompt or a dialog of no kind replacing the question counts as closed after a second', () => {
-    for (const dialog of [{ kind: 'plan', state: 'unreadable', reason: 'cut' }, { kind: 'plan', state: 'ready' }, { kind: null, state: 'unreadable', reason: 'layout' }, undefined]) {
+  // 0.5.4 O2 (requirement change, not a weakened test): a plan is a question on screen now (the grow also serves a plan cut at the top), so it no longer counts as closed;
+  // the plan cases moved to 'a plan on screen is a question on screen' in the 0.5.4 QP + O2 describe below. A prompt or a dialog of no kind still does.
+  test('(+) a prompt or a dialog of no kind replacing the question counts as closed after a second', () => {
+    for (const dialog of [{ kind: null, state: 'unreadable', reason: 'layout' }, undefined]) {
       const a = look(held(), { now: 1000, dialog });
       assert.equal(a.G.quietSince, 1000);
       assert.deepEqual(look(a.G, { now: 2000, dialog }).ask, { back: true });
@@ -3223,7 +3255,8 @@ describe('F16: frameReady, createRedrawHold and fitPanelView for the grow', () =
   const WHOLE = { state: 'ready', kind: 'ask', at: 'question', sig: '0123456789abcdef' };
 
   test('(+) cutBefore: a question that is whole at the size ends the hold, and so does any screen but a clipped question', () => {
-    for (const dialog of [WHOLE, null, undefined, { state: 'unreadable', kind: 'ask', reason: 'clipped' }, { state: 'unreadable', kind: 'ask', reason: 'wide' }, { state: 'unreadable', kind: 'plan', reason: 'cut' }]) {
+    // 0.5.4 O2 (requirement change, not a weakened test): a plan cut at the top is grown like a question, so it no longer ends the hold; it moved to the (\u2212) case below
+    for (const dialog of [WHOLE, null, undefined, { state: 'unreadable', kind: 'ask', reason: 'clipped' }, { state: 'unreadable', kind: 'ask', reason: 'wide' }, { state: 'unreadable', kind: 'plan', reason: 'clipped' }]) {
       assert.equal(frameReady({ body: body({ dialog }), draft: null, want, plainBefore: true, cutBefore: true }), true, JSON.stringify(dialog));
     }
     assert.equal(frameReady({ body: body({ prompt: { question: 'x', options: [] } }), draft: null, want, plainBefore: true, cutBefore: true }), true, 'a prompt');
@@ -3409,5 +3442,531 @@ describe('0.5.2 R2: panelFrame, the terminal box as it would be without nika\'s 
     const tiny = panelFrame(probe({ ih: 800 - 495 }), held);
     assert.equal(tiny.height, 5);
     assert.equal(tiny.rows, 10, 'the route\'s lowest row count');
+  });
+});
+
+// ---- 0.5.4 P2: the Fit mode on the page (design-052d 2.4; tests M-17 to M-19, the answers outside the key table = orchestrator ruling 1 and its update 3) ----
+// The words below are written out from design-052d 2.4 on purpose: the tests must not read them back from the code under test.
+describe('0.5.4 P2: chipView per mode (M-17, M-18, ruling 1)', () => {
+  const body = (state, reason = null, mode = undefined, panes = 3, userZoom = false) => ({ fit: { state, reason, pane: { cols: 120, rows: 39 }, panes, userZoom, ...(mode === undefined ? {} : { mode }) } });
+  const OFF_BODY = (mode = 'off') => ({ fit: { state: 'off', reason: null, mode } }); // the server answers off with no pane
+  const AUTO_KEYS = ['fitted:', 'fitted:terminal', 'zoomed:', 'blocked:', 'blocked:user-zoom', 'other:', 'terminal:', 'terminal:zoom', 'terminal:switching'];
+
+  const NEW = [
+    // [name, input, expected]
+    ['fitted:fill', body('fitted', null, 'fill'), {
+      key: 'fitted:fill', state: 'fitted', look: 'fill', icon: 'fit-pin', text: `Fit ${DOT} always fills`, label: 'Fit: always fills the panel', mode: 'fill',
+      title: 'Settings say always fill: nika sizes the tmux window to this panel while this session window is open, also when it does not have focus',
+    }],
+    ['fitted:fill-terminal', body('fitted', 'terminal', 'fill'), {
+      key: 'fitted:fill-terminal', state: 'fitted', look: 'fill', icon: 'fit-pin', text: `Fit ${DOT} always fills`, label: 'Fit: always fills the panel', mode: 'fill',
+      title: 'Settings say always fill: nika sizes the tmux window to this panel while this session window is open. Your terminal shows dots around it until you close this window or change the setting',
+    }],
+    ['zoomed:fill', body('zoomed', 'panel-smaller', 'fill'), {
+      key: 'zoomed:fill', state: 'zoomed', look: 'zoomed', icon: 'zoom', text: `Fit ${DOT} zoomed, text scaled`, label: 'Fit: zoomed, text scaled', mode: 'fill',
+      title: "nika could not keep this window's layout to put back later, so it only zoomed the pane and scales the text",
+    }],
+    ['terminal:setting', body('terminal', null, 'terminal', 1), {
+      key: 'terminal:setting', state: 'terminal', look: 'term-set', icon: 'term-pin', text: `Fit ${DOT} terminal's size (set)`, label: "Fit: your terminal's size, from Settings", mode: 'terminal',
+      title: "Settings say your terminal's size: nika never resizes this tmux window and scales the text to this panel",
+    }],
+    ['terminal:setting-zoom', body('terminal', null, 'terminal', 3, false), {
+      key: 'terminal:setting-zoom', state: 'terminal', look: 'term-set', icon: 'term-pin', text: `Fit ${DOT} terminal's size (set)`, label: "Fit: your terminal's size, from Settings", mode: 'terminal',
+      title: 'Settings say your terminal\'s size: nika only zoomed this pane and never resizes the tmux window. Your terminal shows the pane zoomed too until this session window closes',
+    }],
+    ['off:', OFF_BODY(), {
+      key: 'off:', state: 'off', look: 'off-set', icon: 'fit-off', text: `Fit ${DOT} off in Settings`, label: 'Fit: off in Settings', mode: 'off',
+      title: 'Settings turn Fit off: nika changes nothing in tmux and scales the text to this panel',
+    }],
+  ];
+
+  for (const [name, input, expected] of NEW) {
+    test(`(+) M-17 ${name}: key, state, look, icon, text, label, title and mode exactly as design 2.4; the announcement is label + title`, () => {
+      assert.deepEqual(chipView(input), { ...expected, say: `${expected.label}. ${expected.title}` });
+    });
+  }
+
+  test('(+) M-17 the six new keys, the nine Auto keys and their words are all different from each other', () => {
+    const keys = NEW.map(([, input]) => chipView(input).key);
+    assert.equal(new Set([...keys, ...AUTO_KEYS]).size, keys.length + AUTO_KEYS.length);
+    const texts = NEW.filter(([name]) => name !== 'zoomed:fill').map(([, input]) => chipView(input).text);
+    assert.equal(new Set(texts).size, 3, 'fill, terminal (set) and off each have their own words');
+    for (const t of texts) assert.notEqual(t, `Fit ${DOT} off`, 'the blocked chip keeps its own words');
+  });
+
+  test('(+) M-17 the three set modes have three different looks and icons, none of them a look or icon the older states use', () => {
+    const v = { fill: chipView(NEW[0][1]), term: chipView(NEW[3][1]), off: chipView(OFF_BODY()) };
+    assert.deepEqual([v.fill.look, v.term.look, v.off.look], ['fill', 'term-set', 'off-set']);
+    assert.deepEqual([v.fill.icon, v.term.icon, v.off.icon], ['fit-pin', 'term-pin', 'fit-off']);
+    const older = ['fitted', 'zoomed', 'blocked', 'other', 'terminal'];
+    for (const x of Object.values(v)) {
+      assert.ok(!older.includes(x.look), x.look);
+      assert.ok(!['fit', 'zoom', 'off', 'window', 'term'].includes(x.icon), x.icon);
+    }
+  });
+
+  test('(+) every Auto view has the look of its state and the mode auto (the chip of 0.5.3 is unchanged), with or without a mode in the answer', () => {
+    const cases = [body('fitted'), body('fitted', 'terminal'), body('zoomed', 'panel-smaller'), body('blocked', 'user-zoom'), body('blocked', null), body('other'), body('terminal', null, undefined, 1), body('terminal', null, undefined, 3), body('terminal', 'switching')];
+    for (const c of cases) {
+      for (const mode of [undefined, 'auto']) {
+        const input = mode === undefined ? c : { fit: { ...c.fit, mode } };
+        const v = chipView(input);
+        assert.equal(v.look, v.state, `${v.key} ${mode}`);
+        assert.equal(v.mode, 'auto');
+      }
+    }
+    assert.deepEqual(cases.map((c) => chipView(c).key), ['fitted:', 'fitted:terminal', 'zoomed:', 'blocked:user-zoom', 'blocked:', 'other:', 'terminal:', 'terminal:zoom', 'terminal:switching']);
+  });
+
+  test('(\u2212) M-18 a mode that is missing, of the wrong case or type, or not one of the four is Auto: the same view as an answer with mode auto', () => {
+    const hostile = [undefined, null, '', 'FILL', 'Fill', ' fill', 'fill ', 'fill\n', 'max', 'Auto', 'OFF', 42, 0, true, false, {}, [], ['fill'], '__proto__', 'constructor', 'toString', 'hasOwnProperty'];
+    const states = [body('fitted'), body('fitted', 'terminal'), body('zoomed', 'panel-smaller'), body('terminal', null, undefined, 1), body('terminal', null, undefined, 3), body('terminal', 'switching'), body('blocked', 'changed'), body('other')];
+    for (const s of states) {
+      const auto = chipView({ fit: { ...s.fit, mode: 'auto' } });
+      for (const mode of hostile) {
+        const input = { fit: { ...s.fit } };
+        if (mode !== undefined) input.fit.mode = mode;
+        assert.deepEqual(chipView(input), auto, `${s.fit.state}/${s.fit.reason} with mode ${JSON.stringify(mode)}`);
+      }
+    }
+  });
+
+  test('(\u2212) M-18 the state off has its own key whatever the mode says (a missing or odd mode, even auto), and a lookalike of off is no state', () => {
+    for (const mode of [undefined, 'auto', 'fill', 'terminal', 'off', 'max', 42, null]) {
+      const input = { fit: { state: 'off', reason: null, ...(mode === undefined ? {} : { mode }) } };
+      const v = chipView(input);
+      assert.equal(v.key, 'off:', JSON.stringify(mode));
+      assert.equal(v.look, 'off-set');
+      assert.equal(v.mode, FIT_MODES.has(mode) ? mode : 'auto');
+    }
+    for (const state of ['OFF', 'Off', ' off', 'off ', 'of', 'offline', '', 'blocked-off', 'off\n', null, undefined, 0, {}, []]) assert.equal(chipView({ fit: { state, reason: null, mode: 'off' } }), null, JSON.stringify(state));
+  });
+
+  test('(\u2212) M-18 a reason or a pane count in a hostile shape never reaches a sentence: the set rows ignore both', () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    for (const reason of [hostile, 'user-zoom', 42, {}, [], null, undefined, 'terminal', 'switching']) {
+      const f = chipView(body('fitted', reason, 'fill'));
+      assert.ok(['fitted:fill', 'fitted:fill-terminal'].includes(f.key), String(reason));
+      assert.doesNotMatch(JSON.stringify(f), /img src|onerror|alert/);
+      assert.equal(f.key, reason === 'terminal' ? 'fitted:fill-terminal' : 'fitted:fill', String(reason));
+    }
+    for (const [panes, userZoom] of [['3', false], [undefined, false], [null, false], [0, false], [1, false], [-3, false], [1.5, false], [hostile, false], [[3], false], [{}, false], [3, true]]) {
+      assert.equal(chipView({ fit: { state: 'terminal', reason: null, mode: 'terminal', panes, userZoom } }).key, 'terminal:setting', `${JSON.stringify(panes)} ${userZoom}`); // not body(): its default would turn undefined into 3
+    }
+    assert.equal(chipView(body('terminal', null, 'terminal', 2, false)).key, 'terminal:setting-zoom', 'two panes are several');
+    const withReason = chipView(body('terminal', 'switching', 'terminal', 1));
+    assert.equal(withReason.key, 'terminal:setting', 'a reason on terminal mode is ignored: focus plays no part there');
+  });
+
+  // ---- the answers outside design 2.4's key table (orchestrator ruling 1 and its update 3): today's Auto key and look for that state and reason ----
+  const autoOf = (state, reason, panes, userZoom) => chipView(body(state, reason, 'auto', panes, userZoom));
+  const sameAsAuto = (input, state, reason, panes = 3, userZoom = false) => {
+    const v = chipView(input);
+    const a = autoOf(state, reason, panes, userZoom);
+    assert.deepEqual({ ...v, mode: 'auto' }, a, `${state}/${reason}/${input.fit.mode}`);
+    assert.equal(v.mode, input.fit.mode, 'the view still says which mode the answer carried');
+    return v;
+  };
+
+  test('(+) ruling 1 pair: fitted with mode terminal (a heartbeat between the switch and the next tick) has the key and look of Auto: fitted: or fitted:terminal', () => {
+    assert.equal(sameAsAuto(body('fitted', null, 'terminal'), 'fitted', null).key, 'fitted:');
+    assert.equal(sameAsAuto(body('fitted', 'terminal', 'terminal'), 'fitted', 'terminal').key, 'fitted:terminal');
+    assert.equal(chipView(body('fitted', null, 'terminal')).look, 'fitted');
+  });
+
+  test('(+) ruling 1 pair: zoomed / panel-smaller with mode fill is design 2.4 row zoomed:fill (the look and words of zoomed, the layout sentence); the server sends this pair when it could not keep the layout (plan() makes zoomed only with panel-smaller)', () => {
+    const v = chipView(body('zoomed', 'panel-smaller', 'fill'));
+    const auto = autoOf('zoomed', 'panel-smaller');
+    assert.equal(v.key, 'zoomed:fill');
+    assert.deepEqual([v.state, v.look, v.icon, v.text, v.label], [auto.state, auto.look, auto.icon, auto.text, auto.label]);
+    assert.notEqual(v.title, auto.title);
+  });
+
+  test('(+) ruling 1 pair: terminal / switching with mode fill (the take cap) has the key and look of Auto: terminal:switching', () => {
+    assert.equal(sameAsAuto(body('terminal', 'switching', 'fill', 1), 'terminal', 'switching', 1).key, 'terminal:switching');
+    assert.equal(sameAsAuto(body('terminal', 'switching', 'fill', 3), 'terminal', 'switching', 3).key, 'terminal:switching');
+  });
+
+  test('(+) ruling 1 pair: fitted with mode off (until the next tick) has the key and look of Auto: fitted:', () => {
+    assert.equal(sameAsAuto(body('fitted', null, 'off'), 'fitted', null).key, 'fitted:');
+    assert.equal(sameAsAuto(body('fitted', 'terminal', 'off'), 'fitted', 'terminal').key, 'fitted:terminal');
+  });
+
+  test('(+) ruling 1 update 3: a lease\'s own state with mode off (a request that was in flight at the switch) has the key and look of Auto, for each state and reason', () => {
+    for (const [state, reason, panes] of [['fitted', null, 3], ['fitted', 'terminal', 3], ['zoomed', 'panel-smaller', 3], ['terminal', null, 1], ['terminal', null, 3], ['terminal', 'switching', 3], ['blocked', 'user-zoom', 3], ['other', null, 3]]) {
+      const v = sameAsAuto(body(state, reason, 'off', panes), state, reason, panes);
+      assert.ok(v.look !== 'off-set' && v.key !== 'off:', `${state}/${reason}`);
+    }
+  });
+
+  test('(+) ruling 1 update 3: a lease\'s own state with the mode just switched to has the key and look of Auto where design 2.4 has no row: terminal with fill, zoomed with terminal, fitted with terminal', () => {
+    assert.equal(sameAsAuto(body('terminal', null, 'fill', 1), 'terminal', null, 1).key, 'terminal:');
+    assert.equal(sameAsAuto(body('terminal', null, 'fill', 3), 'terminal', null, 3).key, 'terminal:zoom');
+    assert.equal(sameAsAuto(body('zoomed', 'panel-smaller', 'terminal'), 'zoomed', 'panel-smaller').key, 'zoomed:');
+    assert.equal(sameAsAuto(body('fitted', null, 'terminal'), 'fitted', null).key, 'fitted:');
+  });
+
+  test('(+) blocked and other keep today\'s key, look and sentences in every mode, as design 2.4 says', () => {
+    for (const mode of ['auto', 'fill', 'terminal', 'off']) {
+      for (const reason of ['user-zoom', 'size-option', 'foreign-tag', 'changed', 'user-change', null]) sameAsAuto(body('blocked', reason, mode), 'blocked', reason);
+      sameAsAuto(body('other', null, mode), 'other', null);
+    }
+  });
+
+  test('(\u2212) a (state, mode) sweep never throws and never gives an empty chip: every known state in every mode, with odd reasons and counts, has a key, look, icon, words, label, title and announcement', () => {
+    const LOOKS = ['fitted', 'zoomed', 'blocked', 'other', 'terminal', 'fill', 'term-set', 'off-set'];
+    const ICONS = ['fit', 'zoom', 'off', 'window', 'term', 'fit-pin', 'term-pin', 'fit-off'];
+    for (const state of ['fitted', 'zoomed', 'blocked', 'other', 'terminal', 'off']) {
+      for (const mode of ['auto', 'fill', 'terminal', 'off', undefined, 'x']) {
+        for (const reason of [null, undefined, 'terminal', 'switching', 'panel-smaller', 'user-zoom', 'zzz', 7, {}]) {
+          for (const panes of [undefined, 1, 3]) {
+            const input = { fit: { state, reason, panes, userZoom: false, ...(mode === undefined ? {} : { mode }) } };
+            const v = chipView(input);
+            assert.ok(v !== null, JSON.stringify(input));
+            for (const k of ['key', 'text', 'label', 'title', 'say']) assert.ok(typeof v[k] === 'string' && v[k].length > 0, `${k} ${JSON.stringify(input)}`);
+            assert.ok(LOOKS.includes(v.look), v.look);
+            assert.ok(ICONS.includes(v.icon), v.icon);
+            assert.ok(FIT_MODES.has(v.mode), v.mode);
+            assert.equal(v.say, `${v.label}. ${v.title}`);
+          }
+        }
+      }
+    }
+  });
+
+  test('(+) the page\'s FIT_MODES is the server\'s: the same four names (a drift guard; the page cannot import src/)', () => {
+    assert.deepEqual([...FIT_MODES].sort(), [...SERVER_FIT_MODES].sort());
+    assert.equal(FIT_MODES.size, 4);
+  });
+
+  test('(\u2212) the new words and sentences are ASCII with escapes in the source (fit-ui.js), and the chip view carries no string of the server', () => {
+    const src = readSrc('fit-ui.js');
+    assert.equal([...src].every((ch) => ch.codePointAt(0) < 128), true);
+    const v = chipView({ fit: { state: 'fitted', reason: 'terminal', mode: 'fill', pane: { cols: 1, rows: 1 }, extra: '<b>x</b>' } });
+    assert.doesNotMatch(JSON.stringify(v), /<b>/);
+  });
+});
+
+describe('0.5.4 P2: createFitPlanner tells the page the mode of every answer (io.mode) so the gates of the room and the grow stay exact', () => {
+  const FILL = (state = 'fitted', reason = null, mode = 'fill') => ({ status: 200, body: { fit: { state, reason, pane: { cols: 120, rows: 39 }, panes: 3, userZoom: false, mode } } });
+  const rigWith = (extra) => rig({ ioExtra: extra });
+
+  test('(+) io.mode gets the mode of a 200 fit answer before the chip is told, on every answer, also when the chip key does not change', async () => {
+    const modes = [];
+    const r = rigWith({ mode: (m) => modes.push([m, r.log.chips.length]) });
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer(OK('fitted', 'terminal'));
+    assert.deepEqual(modes, [['auto', 0]], 'told before the chip: no chip call had been made yet');
+    await r.clk.advance(BEAT_MS);
+    await r.answer(FILL('fitted', 'terminal', 'terminal')); // the same key fitted:terminal, but the mode changed (ruling 1: a heartbeat between the switch and the next tick)
+    assert.deepEqual(r.log.chips.map((v) => v.key), ['fitted:terminal'], 'no new chip call: the key is the same');
+    assert.deepEqual(modes, [['auto', 0], ['terminal', 1]], 'and the page still learns the mode');
+    await r.clk.advance(BEAT_MS);
+    await r.answer(FILL('terminal', null, 'terminal'));
+    assert.deepEqual(r.log.chips.map((v) => v.key), ['fitted:terminal', 'terminal:setting-zoom'], 'the helper answers 3 panes, so nika zoomed the pane');
+    assert.deepEqual(modes.map((x) => x[0]), ['auto', 'terminal', 'terminal']);
+  });
+
+  test('(+) the answer of mode off has no pane: the chip is told off:, io.sized is not called, and the page learns mode off', async () => {
+    const modes = [];
+    const r = rigWith({ mode: (m) => modes.push(m) });
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer({ status: 200, body: { fit: { state: 'off', reason: null, mode: 'off' } } });
+    assert.deepEqual(r.log.chips.map((v) => v.key), ['off:']);
+    assert.deepEqual(r.log.sized, [], 'no pane, no size');
+    assert.deepEqual(modes, ['off']);
+    await r.clk.advance(BEAT_MS);
+    assert.equal(r.log.sent.at(-1).open, false, 'open: true is not repeated: the 200 was answered');
+    await r.answer(OK('fitted'));
+    assert.deepEqual(r.log.chips.map((v) => v.key), ['off:', 'fitted:'], 'off -> auto: the chip follows');
+    assert.deepEqual(modes, ['off', 'auto']);
+  });
+
+  test('(\u2212) a refusal, a lost request, a 403 and a body that is not a fit answer tell the page no mode', async () => {
+    const modes = [];
+    const r = rigWith({ mode: (m) => modes.push(m) });
+    r.planner.size(100, 30);
+    r.planner.start();
+    await r.answer({ status: 502, body: { error: 'tmux_failed' } });
+    await r.clk.advance(BEAT_MS);
+    await r.answer({ status: 200, body: null });
+    await r.clk.advance(BEAT_MS);
+    await r.answer({ status: 200, body: { fit: { state: 'nonsense', reason: null, mode: 'fill' } } });
+    await r.clk.advance(BEAT_MS);
+    await r.fail();
+    await r.clk.advance(BEAT_MS);
+    await r.answer({ status: 403, body: { error: 'forbidden' } });
+    assert.deepEqual(modes, []);
+    assert.deepEqual(r.log.chips, []);
+  });
+
+  test('(\u2212) a mode sink that throws, and a planner without one, do not stop the chip or the heartbeat', async () => {
+    const throwing = rigWith({ mode: () => { throw new Error('page sink broke'); } });
+    throwing.planner.size(100, 30);
+    throwing.planner.start();
+    await throwing.answer(FILL());
+    assert.deepEqual(throwing.log.chips.map((v) => v.key), ['fitted:fill']);
+    await throwing.clk.advance(BEAT_MS);
+    assert.equal(throwing.log.sent.length, 2, 'the heartbeat goes on');
+    const none = rigWith({});
+    none.planner.size(100, 30);
+    none.planner.start();
+    await none.answer(FILL());
+    assert.deepEqual(none.log.chips.map((v) => v.key), ['fitted:fill']);
+  });
+});
+
+describe('0.5.4 P2: fitPanelView for the new keys (M-19)', () => {
+  const body = (state, reason = null, mode = undefined, panes = 3, userZoom = false) => ({ fit: { state, reason, pane: { cols: 120, rows: 39 }, panes, userZoom, ...(mode === undefined ? {} : { mode }) } });
+  const IDLE = { pending: false, note: false };
+  const SETTINGS_HINT = "Change it in nika's Settings, under Session window.";
+  const ROOM = "Claude's input box and footer did not fit this panel's rows, so nika gave the pane more rows and scaled the text. Fit again tries full-size text.";
+  const GROW = "Claude's question is taller than this panel, so nika gave the pane more rows while it is open. Scroll the terminal up to see all of it; the size goes back when the question closes.";
+  const OFF = { fit: { state: 'off', reason: null, mode: 'off' } };
+  const SETTINGS_ROWS = [
+    ['fitted:fill', body('fitted', null, 'fill')],
+    ['fitted:fill-terminal', body('fitted', 'terminal', 'fill')],
+    ['terminal:setting', body('terminal', null, 'terminal', 1)],
+    ['terminal:setting-zoom', body('terminal', null, 'terminal', 3)],
+    ['off:', OFF],
+  ];
+
+  for (const [key, input] of SETTINGS_ROWS) {
+    test(`(+) M-19 ${key}: heading and why are the chip's label and title, the hint points to Settings, there is no code and no action`, () => {
+      const view = chipView(input);
+      assert.equal(view.key, key);
+      assert.deepEqual(fitPanelView(view, IDLE), { heading: view.label, why: view.title, hint: SETTINGS_HINT, code: null, action: null, note: null });
+    });
+  }
+
+  test('(+) M-19 zoomed:fill: the hint "Fit again tries once more." and the action Fit again ("Fitting..." while pending)', () => {
+    const view = chipView(body('zoomed', 'panel-smaller', 'fill'));
+    assert.deepEqual(fitPanelView(view, IDLE), { heading: view.label, why: view.title, hint: 'Fit again tries once more.', code: null, action: { text: 'Fit again' }, note: null });
+    assert.deepEqual(fitPanelView(view, { pending: true, note: false }).action, { text: 'Fitting\u2026' });
+  });
+
+  test('(\u2212) M-19 no settings row has an action, whatever the ui says: nothing on this page can change the mode, so a button would only fail (the room line of fill has Fit again, tested below)', () => {
+    for (const [key, input] of SETTINGS_ROWS) {
+      for (const ui of [{ pending: true, note: false }, { pending: false, note: true }, { pending: false, note: false, grow: true }]) {
+        assert.equal(fitPanelView(chipView(input), ui).action, null, `${key} ${JSON.stringify(ui)}`);
+      }
+    }
+    for (const [key, input] of SETTINGS_ROWS.filter(([k]) => !k.startsWith('fitted:'))) {
+      assert.equal(fitPanelView(chipView(input), { pending: false, note: false, room: true }).action, null, key);
+    }
+  });
+
+  test('(+) the note line shows for the new rows too', () => {
+    for (const [, input] of [...SETTINGS_ROWS, ['zoomed:fill', body('zoomed', 'panel-smaller', 'fill')]]) {
+      assert.equal(fitPanelView(chipView(input), { pending: false, note: true }).note, 'nika could not fit the window just now. It tries again within 5 seconds.');
+    }
+  });
+
+  test('(+) F10/F16 in fill (design 2.1: the room and the grow run as today in fill): the room hint and Fit again, and the grow hint, replace the hint of fitted:fill and fitted:fill-terminal', () => {
+    for (const input of [body('fitted', null, 'fill'), body('fitted', 'terminal', 'fill')]) {
+      const view = chipView(input);
+      assert.deepEqual(fitPanelView(view, { ...IDLE, room: true }).hint, ROOM, view.key);
+      assert.deepEqual(fitPanelView(view, { ...IDLE, room: true }).action, { text: 'Fit again' }, view.key);
+      assert.equal(fitPanelView(view, { ...IDLE, grow: true }).hint, GROW, view.key);
+      assert.equal(fitPanelView(view, { ...IDLE, grow: true }).action, null, view.key);
+      assert.equal(fitPanelView(view, { ...IDLE, room: true, grow: true }).hint, GROW, 'the grow wins over the room, as for fitted:');
+    }
+  });
+
+  test('(\u2212) the room and the grow change nothing on a row where nothing is resized or where the chip is not fitted: terminal:setting*, off:, zoomed:fill', () => {
+    for (const input of [body('terminal', null, 'terminal', 1), body('terminal', null, 'terminal', 3), OFF, body('zoomed', 'panel-smaller', 'fill')]) {
+      const view = chipView(input);
+      const plain = fitPanelView(view, IDLE);
+      assert.deepEqual(fitPanelView(view, { ...IDLE, room: true, grow: true }), plain, view.key);
+    }
+  });
+
+  test('(\u2212) a key the table does not know has no hint and no action (a view built by hand)', () => {
+    const p = fitPanelView({ key: 'fitted:fill-hand', label: 'L', title: 'T' }, IDLE);
+    assert.deepEqual(p, { heading: 'L', why: 'T', hint: null, code: null, action: null, note: null });
+  });
+});
+
+// ---- 0.5.4 QP (owner answer Q1 = A) and O2: the grow also wants rows for a preview with hidden lines and for a plan cut at the top -----------------------
+
+describe('0.5.4 QP + O2: previewHidden, cutPlan and growWanted', () => {
+  const PV = (over = {}) => ({ state: 'ready', kind: 'ask', at: 'question', sig: '0123456789abcdef', preview: { rows: ['a'], hidden: 3, fallback: false, view: '0123456789abcdef' }, ...over });
+  const PLAN_CUT = { state: 'unreadable', kind: 'plan', reason: 'cut' };
+
+  test('(+) previewHidden: a ready question step whose preview has hidden lines and is not the fallback; one hidden line is enough', () => {
+    assert.equal(previewHidden(PV()), true);
+    assert.equal(previewHidden(PV({ preview: { rows: [], hidden: 1, fallback: false } })), true);
+    assert.equal(previewHidden(PV({ preview: { rows: [], hidden: 99999, fallback: false } })), true);
+  });
+
+  test('(\u2212) previewHidden: no hidden lines, the fallback, a review, an unreadable step, no preview, a count that is not a whole number above zero, and non-objects are not', () => {
+    assert.equal(previewHidden(PV({ preview: { rows: [], hidden: 0, fallback: false } })), false, 'hidden 0');
+    assert.equal(previewHidden(PV({ preview: { rows: [], hidden: 5, fallback: true } })), false, 'the fallback has nothing to grow for');
+    assert.equal(previewHidden(PV({ at: 'review' })), false, 'at review');
+    assert.equal(previewHidden(PV({ at: undefined })), false, 'no at');
+    assert.equal(previewHidden(PV({ state: 'unreadable', reason: 'cut' })), false, 'unreadable');
+    assert.equal(previewHidden(PV({ preview: undefined })), false, 'no preview');
+    assert.equal(previewHidden(PV({ preview: null })), false, 'null preview');
+    assert.equal(previewHidden(PV({ preview: { rows: [], hidden: 3 } })), false, 'fallback not exactly false');
+    for (const hidden of ['3', 2.5, NaN, Infinity, true, -1, null, undefined]) assert.equal(previewHidden(PV({ preview: { rows: [], hidden, fallback: false } })), false, String(hidden));
+    for (const v of [null, undefined, 'x', 7, true, []]) assert.equal(previewHidden(v), false, String(v));
+  });
+
+  test('(+) cutPlan: a plan that is unreadable because its top is clipped, raw or cleaned', () => {
+    assert.equal(cutPlan(PLAN_CUT), true);
+    assert.equal(cutPlan({ ...PLAN_CUT, extra: 1 }), true);
+  });
+
+  test('(\u2212) cutPlan: every other reason, a question, a ready plan, null and non-objects are not', () => {
+    for (const reason of ['clipped', 'wide', 'layout', 'numbers', 'tab', 'survey', undefined, 'Cut', 'cut ']) assert.equal(cutPlan({ ...PLAN_CUT, reason }), false, String(reason));
+    assert.equal(cutPlan({ ...PLAN_CUT, kind: 'ask' }), false, 'a question is cutQuestion\'s');
+    assert.equal(cutPlan({ ...PLAN_CUT, kind: null }), false);
+    assert.equal(cutPlan({ ...PLAN_CUT, state: 'ready' }), false);
+    for (const v of [null, undefined, 'cut', 7, true, []]) assert.equal(cutPlan(v), false, String(v));
+  });
+
+  test('(\u2212) 0.5.4 QPF F3: a plan that is unreadable as `wide` (a wrapped prompt or footer) or as `layout` (both dashed rules on screen, no prompt row) is not grown for', () => {
+    for (const reason of ['wide', 'layout']) {
+      assert.equal(growWanted({ ...PLAN_CUT, reason }), false, reason);
+      assert.equal(cutPlan({ ...PLAN_CUT, reason }), false, reason);
+    }
+    assert.equal(growWanted(PLAN_CUT), true, 'a cut plan still is');
+  });
+
+  test('(+) growWanted is the union: a cut question, a preview with hidden lines, a cut plan; (\u2212) nothing else', () => {
+    assert.equal(growWanted({ state: 'unreadable', kind: 'ask', reason: 'cut' }), true);
+    assert.equal(growWanted(PV()), true);
+    assert.equal(growWanted(PLAN_CUT), true);
+    assert.equal(growWanted(PV({ preview: { rows: [], hidden: 0, fallback: false } })), false);
+    assert.equal(growWanted({ state: 'ready', kind: 'plan' }), false);
+    assert.equal(growWanted({ state: 'unreadable', kind: 'ask', reason: 'clipped' }), false);
+    for (const v of [null, undefined, 'x', 7]) assert.equal(growWanted(v), false, String(v));
+  });
+});
+
+describe('0.5.4 QP + O2: growStep for a preview with hidden lines and for a cut plan', () => {
+  const PVH = { kind: 'ask', state: 'ready', at: 'question', sig: '0123456789abcdef', preview: { rows: ['a'], hidden: 3, fallback: false } };
+  const PVWHOLE = { ...PVH, preview: { rows: ['a'], hidden: 0, fallback: false } };
+  const PVFALL = { ...PVH, preview: { rows: [], hidden: 3, fallback: true } };
+  const PLANCUT = { kind: 'plan', state: 'unreadable', reason: 'cut' };
+  const PLANREADY = { kind: 'plan', state: 'ready', at: 'plan', sig: '0123456789abcdef' };
+  const BASE = { baseRows: 21, baseCols: 145 };
+  const look = (G, over = {}) => growStep(G, { now: 0, dialog: PVH, fitted: true, paneRows: 21, ...BASE, ...over });
+  const stepping = (over = {}) => ({ ...GROW_IDLE, phase: 'stepping', rows: 42, askedAt: 0, ...over });
+  const held = (over = {}) => ({ ...GROW_IDLE, phase: 'held', rows: 42, ...over });
+
+  test('(+) a preview with hidden lines grows like a cut question: first look noted, 200 ms later one step to twice the rows', () => {
+    const first = look(GROW_IDLE, { now: 700 });
+    assert.deepEqual(first, { G: { ...GROW_IDLE, cutSince: 700 }, ask: null });
+    assert.deepEqual(look(first.G, { now: 700 + GROW_CONFIRM_MS - 1 }), { G: first.G, ask: null });
+    assert.deepEqual(look(first.G, { now: 700 + GROW_CONFIRM_MS }), { G: { ...GROW_IDLE, phase: 'stepping', rows: 42, askedAt: 900 }, ask: { rows: 42 } });
+  });
+
+  test('(\u2212) a preview with nothing hidden, the fallback, and a review never start a grow', () => {
+    for (const dialog of [PVWHOLE, PVFALL, { ...PVH, at: 'review' }]) {
+      assert.deepEqual(look({ ...GROW_IDLE, cutSince: 0 }, { now: 9999, dialog }), { G: GROW_IDLE, ask: null });
+      assert.deepEqual(look(GROW_IDLE, { now: 9999, dialog }), { G: GROW_IDLE, ask: null });
+    }
+  });
+
+  test('(\u2212) not fitted (Fit terminal, off or parked): a preview with hidden lines asks nothing, an idle first look is forgotten', () => {
+    for (const fitted of [false, undefined, null, 'fitted']) {
+      assert.deepEqual(look({ ...GROW_IDLE, cutSince: 0 }, { now: 9999, fitted }), { G: GROW_IDLE, ask: null }, String(fitted));
+      assert.equal(look(GROW_IDLE, { now: 9999, fitted }).ask, null);
+    }
+  });
+
+  test('(+) the preview whole after the grow (hidden 0) is held at the grown size: no shrink, no regrow, however long it stays', () => {
+    let r = look(stepping({ settleAt: 900 }), { now: 5000, dialog: PVWHOLE, paneRows: 42 });
+    assert.deepEqual([r.G.phase, r.G.rows, r.ask], ['held', 42, null]);
+    for (const now of [6000, 9000, 20000]) {
+      r = look(r.G, { now, dialog: PVWHOLE, paneRows: 42 });
+      assert.deepEqual([r.G.phase, r.G.rows, r.ask], ['held', 42, null], String(now));
+    }
+  });
+
+  test('(+) still hidden at the grown size: the settle, then the next step; at the cap it is given up and the base size asked back (the pane parks at 120 rows)', () => {
+    let r = look(stepping(), { now: 2000, paneRows: 42 });
+    assert.deepEqual([r.G.phase, r.G.settleAt, r.ask], ['stepping', 2800, null]);
+    r = look(r.G, { now: 2800, paneRows: 42 });
+    assert.deepEqual(r.ask, { rows: 84 });
+    const capped = look(stepping({ rows: GROW_CAP, settleAt: 2800 }), { now: 2800, paneRows: GROW_CAP });
+    assert.deepEqual(capped, { G: { ...GROW_IDLE, phase: 'spent', base: '145x21' }, ask: { back: true } });
+  });
+
+  test('(+) a cut plan grows: noted, confirmed, one step', () => {
+    const first = look(GROW_IDLE, { now: 700, dialog: PLANCUT });
+    assert.deepEqual(first, { G: { ...GROW_IDLE, cutSince: 700 }, ask: null });
+    assert.deepEqual(look(first.G, { now: 900, dialog: PLANCUT }).ask, { rows: 42 });
+  });
+
+  test('(\u2212) a plan unreadable for any other reason does not grow', () => {
+    for (const reason of ['clipped', 'wide', 'layout', 'numbers', 'tab', undefined]) {
+      assert.deepEqual(look({ ...GROW_IDLE, cutSince: 0 }, { now: 9999, dialog: { kind: 'plan', state: 'unreadable', reason } }), { G: GROW_IDLE, ask: null }, String(reason));
+    }
+  });
+
+  test('(+) a plan on screen is a question on screen: a grown size is held while it is whole, not closed after a second and grown again (no flap)', () => {
+    let r = look(stepping({ settleAt: 900 }), { now: 5000, dialog: PLANREADY, paneRows: 42 });
+    assert.deepEqual([r.G.phase, r.G.rows, r.G.quietSince, r.ask], ['held', 42, null, null], 'the plan is whole at the grown size');
+    for (const now of [5000 + GROW_CLOSE_MS - 1, 5000 + GROW_CLOSE_MS, 5000 + 5 * GROW_CLOSE_MS]) {
+      r = look(r.G, { now, dialog: PLANREADY, paneRows: 42 });
+      assert.deepEqual([r.G.phase, r.G.quietSince, r.ask], ['held', null, null], String(now));
+    }
+    assert.deepEqual(look(held(), { now: 9000, dialog: PLANCUT, paneRows: 21 }).G.phase, 'stepping', 'a cut plan after a hold is stepped again');
+  });
+
+  test('(+) the plan closes: after a second of nothing the grown pane goes back to the base size', () => {
+    let G = held();
+    const quiet = look(G, { now: 3250, dialog: null, paneRows: 42 });
+    assert.deepEqual([quiet.G.quietSince, quiet.ask], [3250, null]);
+    assert.deepEqual(look(quiet.G, { now: 3250 + GROW_CLOSE_MS, dialog: null, paneRows: 42 }), { G: GROW_IDLE, ask: { back: true } });
+  });
+
+  test('(\u2212) a survey, a prompt and kind null are still no question on screen', () => {
+    for (const dialog of [{ kind: 'survey', state: 'ready' }, { kind: null, state: 'unreadable', reason: 'cut' }, undefined]) {
+      const a = look(held(), { now: 100, dialog });
+      assert.equal(a.G.quietSince, 100, JSON.stringify(dialog));
+    }
+  });
+
+  test('(+) the owner\'s case with a preview: grows, is held once whole, goes back a second after it closes', () => {
+    let G = GROW_IDLE;
+    const at = (now, over) => { const r = look(G, { now, ...over }); G = r.G; return r.ask; };
+    assert.equal(at(0), null);
+    assert.deepEqual(at(250), { rows: 42 });
+    assert.equal(at(700, { paneRows: 42 }), null);
+    assert.equal(G.settleAt, 1500);
+    assert.equal(at(1000, { paneRows: 42, dialog: PVWHOLE }), null);
+    assert.equal(G.phase, 'held');
+    assert.equal(at(3000, { paneRows: 42, dialog: PVWHOLE }), null);
+    assert.equal(at(3250, { paneRows: 42, dialog: null }), null);
+    assert.deepEqual(at(4250, { paneRows: 42, dialog: null }), { back: true });
+    assert.deepEqual(G, GROW_IDLE);
+  });
+});
+
+describe('0.5.4 QP + O2: frameReady and the redraw hold for a preview and a cut plan', () => {
+  const want = { cols: 145, rows: 42 };
+  const body = (dialog) => ({ cols: 145, rows: new Array(42).fill([]), alt: true, prompt: null, dialog });
+  const PVH = { state: 'ready', kind: 'ask', at: 'question', preview: { rows: ['a'], hidden: 3, fallback: false } };
+  const PVWHOLE = { ...PVH, preview: { rows: ['a'], hidden: 0, fallback: false } };
+  const PLANCUT = { state: 'unreadable', kind: 'plan', reason: 'cut' };
+
+  test('(+) cutBefore: a preview that still has hidden lines, and a plan still cut at the top, keep the hold', () => {
+    for (const dialog of [PVH, PLANCUT]) assert.equal(frameReady({ body: body(dialog), draft: null, want, plainBefore: true, cutBefore: true }), false, JSON.stringify(dialog));
+  });
+
+  test('(\u2212) cutBefore: the preview whole (hidden 0), the fallback and a ready plan end the hold', () => {
+    for (const dialog of [PVWHOLE, { ...PVH, preview: { rows: [], hidden: 3, fallback: true } }, { state: 'ready', kind: 'plan', at: 'plan' }]) {
+      assert.equal(frameReady({ body: body(dialog), draft: null, want, plainBefore: true, cutBefore: true }), true, JSON.stringify(dialog));
+    }
+  });
+
+  test('(\u2212) without cutBefore a preview with hidden lines is a dialog as before: it ends the F10 hold', () => {
+    assert.equal(frameReady({ body: body(PVH), draft: null, want, plainBefore: true }), true);
+    assert.equal(frameReady({ body: body(PLANCUT), draft: null, want, plainBefore: true }), true);
   });
 });

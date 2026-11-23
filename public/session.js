@@ -9,10 +9,11 @@
 // Rules: every string from the server is rendered with textContent (h() from dom.js, applyMirror from mirror-render.js);
 // no innerHTML, no inline handlers, element.style only for numbers this file computes. Contracts: docs/contracts/api-app.md.
 import { h, icon, roleTagEl, ctxEl, subStateEl, subagentItemEl, labelEl, placeMenuX, clearMenuPlacement, timeEl } from './dom.js';
+import { acView, cleanNote } from './ctx.js';
 import { isApp, appFetch, getJSON, applyTheme, windowCommand } from './api.js';
 import { roleTag, savedPick, subagentView, subagentGroups, subagentHref, SUBAGENT_ID, agentLabelView, subLabelView } from './dash-model.js';
 import { toRenderModel, cutCursor, applyMirror, planSend, planPaste, chunkText, keyForEvent, KEY_LABEL, arrowEcho } from './mirror-render.js';
-import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage, STILL_SENDING, STILL_SENDING_MS } from './draft-sync.js';
+import { createDraftSync, cleanDraft, cutAt, caretAfter, draftSendPlan, suggestionFor, submitResult, submitMessage, STILL_SENDING, STILL_SENDING_MS, RESTORING_TEXT } from './draft-sync.js';
 import { MODE_META, MODE_TARGETS, modeKey, modeEl, bypassTag, switcherState, modeNote, switchFailure } from './modes.js';
 import {
   quickState, cleanPrompt, answerOutcome, escOutcome, promptOff, promptNote, commandFailure, commandSaid, problemKind, planShell, sendGate, keysRefusal, stopOutcome, followSession,
@@ -22,12 +23,12 @@ import { MODEL_ID, MODEL_HINT, CUSTOM, fillModelSelect } from './models-ui.js';
 import { openEndDialog } from './end-dialog.js';
 import { paletteQuery, cleanCommands, paletteView, commandsButton, shouldFetch, sourceLabel, insertion, moveActive } from './palette.js';
 import { isMac, isTextEntry, wantsHelp, wantsBack, wantsHistToggle, backHint, helpHint, histHint, passKeyLabel, openShortcuts, wireWindowKeys } from './shortcuts.js';
-import { panelSize, panelFrame, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS, GROW_IDLE, growStep, growRebase, growAsk, scaleRows, cutQuestion } from './fit-ui.js';
+import { panelSize, panelFrame, createFitPlanner, fitPanelView, stillOffSay, remeasure, hiddenRows, fillSize, drawnScale, roomStep, refitFrom, createRedrawHold, HOLD_POLL_MS, REFIT_MS, GROW_IDLE, growStep, growRebase, growAsk, scaleRows, growWanted } from './fit-ui.js';
 import { createScrollPlanner, routeFor, wheelRows, scrollGate, viewRowsOf, pageRowsOf, refusalLine, noteView, scrolledSay, NOTE_MS } from './scroll.js';
 import { createGlideArm, frameOf, glideFrom, matrixY, paneWriteDisarms, GLIDE_MS } from './glide.js';
 import { panelOf, cropOf, layoutOf, INPUT_TEXT, CROP_TEXT } from './crop.js';
 import { createAttachTray } from './attach.js';
-import { createImageViewer, dataUrlOf, sizeLabel, MAX_THUMBS, IMAGE_MIME } from './image-viewer.js';
+import { createImageViewer, dataUrlOf, sizeLabel, MAX_THUMBS, MAX_THUMB_BYTES, IMAGE_MIME } from './image-viewer.js';
 import { createDialogForm, cleanDialog } from './dialog-form.js';
 import { createSurveyPanel, cleanSurvey } from './survey-panel.js';
 
@@ -138,14 +139,27 @@ function say(msg) {
 }
 
 let problemTimer = 0;
-function showProblem(msg, kind = 'warn', ms = 0) {
+let problemOwner = ''; // 0.5.4 (final, S3): who put the line up ('' = nobody in particular); an un-owned line, a clear and the timeout each reset it
+/** `owner` (optional): a part that wants to take its own line down later (clearProblemFrom) and no one else's. */
+function showProblem(msg, kind = 'warn', ms = 0, owner = '') {
   const el = $('problem');
+  const line = $('problem-line'); // 0.5.4 (PL): the line has its own icon and word per kind, so a warning and an error differ by more than colour
+  const k = kind === 'error' ? 'error' : 'warn';
   el.textContent = msg;
   el.className = kind === 'error' ? 'problem error' : 'problem';
+  line.hidden = msg === '';
+  line.setAttribute('data-kind', k);
+  $('problem-use').setAttribute('href', k === 'error' ? '#i-error' : '#i-warn');
+  $('problem-label').textContent = k === 'error' ? 'Error:' : 'Warning:';
+  problemOwner = msg === '' ? '' : owner;
   clearTimeout(problemTimer);
-  if (ms) problemTimer = setTimeout(() => { el.textContent = ''; }, ms);
+  if (ms) problemTimer = setTimeout(() => { el.textContent = ''; line.hidden = true; problemOwner = ''; }, ms);
 }
 const clearProblem = () => showProblem('');
+/** Takes the line down only while `owner`'s own line shows: another part's line, an un-owned one or an empty line is left alone. */
+function clearProblemFrom(owner) {
+  if (owner !== '' && problemOwner === owner) clearProblem();
+}
 
 /**
  * The notes row (#notes) holds four visible parts (the argument hint, the shell hint, the draft note, the problem line) and, screen-reader-only, the echo
@@ -230,10 +244,13 @@ function applyBackLabel(group) {
   setBack(String(group.label));
 }
 
-/** The header meter (design 0.4 section 6.4): hidden until the first poll, then drawn from the polled agent's `context` at every poll. */
+/**
+ * The header meter (design 0.4 section 6.4): hidden until the first poll, then drawn from the polled agent's `context` at every poll.
+ * 0.5.4 AC: its tooltip and sr text end with the note of the last capture (W.compacted), if there is one.
+ */
 function renderContext(agent) {
   const el = $('sess-ctx');
-  ctxEl(agent.context, { header: true, el });
+  ctxEl(agent.context, { header: true, el, note: W.compacted });
   el.hidden = false;
 }
 
@@ -515,7 +532,7 @@ function startAgentPoll() {
 // prompt: the capture's prompt as cleanPrompt allows it, for drawing the buttons only. promptOpen: the capture has a prompt at all
 // (even an off-contract one), for every gate: the switcher, the quick actions, the message box keys (composerKey) and the End note.
 // dialog: the capture's question dialog or plan approval as cleanDialog allows it (0.5): the form draws from it, a dialog also counts as promptOpen.
-const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, dialog: null, survey: null, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
+const W = { pane: 'connecting', got: false, mode: 'unknown', confirmed: true, prompt: null, promptOpen: false, dialog: null, survey: null, compacted: null, last: null, msg: null, struck: new Set(), strikeAt: null, tagSig: '', whySig: '' };
 const SW = { busy: null, pressed: null, parts: [] };
 let DF = null; // the question dialog form (dialog-form.js), built in boot() with the pane
 let SV = null; // the feedback survey panel (survey-panel.js), built in boot() with the pane
@@ -597,7 +614,9 @@ function renderMode() {
   renderQuick();
   renderAttn();
   renderPrompt();
-  DF?.render({ pane: W.pane, dialog: W.dialog, name: A.name, attention: A.attention, growing: growing() });
+  const g = growing();
+  GROWING_SHOWN = g;
+  DF?.render({ pane: W.pane, dialog: W.dialog, name: A.name, attention: A.attention, growing: g });
   SV?.render({ pane: W.pane, survey: W.survey, blocked: W.promptOpen || A.kind === 'attn', name: A.name }); // never beside a prompt, a dialog or the attention note
   panelsChanged(); // last: it reads what the three panels just decided to show: the bar, then the mirror (the crop follows the panel)
 }
@@ -619,6 +638,33 @@ function noteScreen(body) {
     if (n.msg) announceMode(n.msg);
   }
   renderMode();
+}
+
+/** The /compact line of the header (0.5.4 AC, design 7.1) for a clean note: hidden for none; the icon, both texts and the state are set in place. */
+function renderAc(note) {
+  const el = $('sess-ac');
+  const v = acView(note);
+  el.hidden = v === null;
+  if (v === null) return;
+  const [ic, long, short] = el.children;
+  ic.firstElementChild.setAttribute('href', `#i-${v.icon}`);
+  long.textContent = v.long;
+  short.textContent = v.short;
+  el.setAttribute('data-st', v.state);
+}
+
+/**
+ * What a capture says about nika's typed /compact (`compacted`: the pane's note or null, 0.5.4 AC). The line follows every capture; the polite
+ * region says the long sentence once, when the state changes to typed or stopped (compacted follows from typed and is not said). Anything
+ * that is not exactly the wire note counts as no note. The header meter picks the note up at its next poll (renderContext).
+ */
+function noteCompacted(raw) {
+  const note = cleanNote(raw);
+  if (JSON.stringify(note) === JSON.stringify(W.compacted)) return; // the same note again (about 4 captures a second): nothing to draw or say
+  const before = W.compacted?.state ?? null;
+  W.compacted = note;
+  renderAc(note);
+  if (note !== null && note.state !== before && (note.state === 'typed' || note.state === 'stopped')) announce(acView(note).long);
 }
 
 function setPaneState(state) {
@@ -1096,6 +1142,7 @@ const keyOf = (id) => {
 };
 const offsetOf = (id) => Number(id.slice(0, id.indexOf(':')));
 const nextBefore = (v) => (Number.isInteger(v) && v >= 0 ? v : null);
+const CUT_NOTE = 'Earlier parts of this message are not shown.'; // 0.5.4 SF (RV051 N1): on the first entry of a page the server cut (`cut: true`)
 
 const cleanMedia = (v) => (typeof v === 'string' && Object.hasOwn(IMAGE_MIME, v) ? v : null);
 const cleanSize = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
@@ -1111,9 +1158,13 @@ function cleanImages(e) {
   return out;
 }
 
-function cleanEntries(list) {
+/**
+ * The entries of a history answer, checked. 0.5.4 SF (RV051 N1): `cut` is the page's `cut` and counts only as exactly true (a long line whose earlier entries were
+ * left out): the first entry then carries `cut`, so its note says so once. An entry cannot ask for the note itself.
+ */
+function cleanEntries(list, cut = false) {
   if (!Array.isArray(list)) return [];
-  return list
+  const out = list
     .filter((e) => e && typeof e === 'object' && typeof e.id === 'string' && ENTRY_ID.test(e.id)
       && (e.role === 'user' || e.role === 'assistant') && KINDS.has(e.kind) && typeof e.text === 'string')
     .map((e) => ({
@@ -1130,6 +1181,8 @@ function cleanEntries(list) {
       images: cleanImages(e),
       imagesMore: e.kind === 'tool_result' && Number.isInteger(e.imagesMore) && e.imagesMore >= 0 && e.imagesMore <= 999 ? e.imagesMore : 0,
     }));
+  if (cut === true && out.length) out[0].cut = true;
+  return out;
 }
 
 function textBlock(e) {
@@ -1185,7 +1238,7 @@ function linkLate(entries) {
 
 // ---- images in the transcript (0.5.1 item C, design 2.5): a tile per image, a thumbnail fetched when the tile nears the screen, the viewer on click ----
 
-const IMG = { watcher: null, held: 0, tiles: new Map(), of: new WeakMap(), viewer: null }; // held: thumbnails being fetched or kept (at most MAX_THUMBS); tiles: button -> tile; of: entry -> its tiles
+const IMG = { watcher: null, held: 0, bytes: 0, tiles: new Map(), of: new WeakMap(), viewer: null }; // held: thumbnails being fetched or kept (at most MAX_THUMBS); bytes: their declared sizes added up (at most MAX_THUMB_BYTES, 0.5.4 SF RV051 M1); tiles: button -> tile; of: entry -> its tiles
 const whoLong = (e) => (e.kind === 'tool_result' ? 'a tool result' : e.role === 'user' ? (SUB ? 'the parent' : 'your message') : 'Claude');
 const imagePath = (ref) => (SUB ? `/api/app/session/${sessionId}/subagents/${agentId}/image/${encodeURIComponent(ref)}` : `/api/app/session/${sessionId}/image/${encodeURIComponent(ref)}`);
 
@@ -1199,9 +1252,16 @@ function openTile(t) {
   imageViewer().open({ name: t.heading, meta: t.meta, src: t.url, load: () => call(imagePath(t.ref)), opener: t.btn });
 }
 
+/** A thumbnail that was being fetched or kept stops counting against the cap and the byte budget. */
+function releaseThumb(t) {
+  if (t.state !== 'loading' && t.state !== 'loaded') return;
+  IMG.held -= 1;
+  IMG.bytes -= t.cost;
+}
+
 /** A thumbnail that did not come: the placeholder says so (the tile still opens the viewer, which tries again). */
 function failThumb(t, line) {
-  if (t.state === 'loading' || t.state === 'loaded') IMG.held -= 1;
+  releaseThumb(t);
   t.state = 'failed';
   t.url = null;
   t.img.removeAttribute('src');
@@ -1213,6 +1273,7 @@ function failThumb(t, line) {
 async function loadThumb(t) {
   t.state = 'loading';
   IMG.held += 1;
+  IMG.bytes += t.cost;
   const r = await call(imagePath(t.ref));
   if (t.state !== 'loading') return; // the entry left the page while the answer was on its way
   const url = r.status === 200 ? dataUrlOf(r.body) : null;
@@ -1225,11 +1286,11 @@ async function loadThumb(t) {
   t.img.setAttribute('src', url);
 }
 
-/** The observer's callback: a tile that reaches the screen starts its fetch while fewer than MAX_THUMBS are held; one that finds no room stays watched. */
+/** The observer's callback: a tile that reaches the screen starts its fetch while fewer than MAX_THUMBS are held and its size fits the byte budget (0.5.4 SF, RV051 M1); one that finds no room stays watched. */
 function seenTiles(list) {
   for (const en of list) {
     const t = en.isIntersecting ? IMG.tiles.get(en.target) : undefined;
-    if (!t || t.state !== 'idle' || IMG.held >= MAX_THUMBS) continue;
+    if (!t || t.state !== 'idle' || IMG.held >= MAX_THUMBS || IMG.bytes + t.cost > MAX_THUMB_BYTES) continue;
     IMG.watcher.unobserve(en.target);
     loadThumb(t);
   }
@@ -1247,7 +1308,7 @@ function forgetTiles(li) {
   for (const t of IMG.of.get(li) ?? []) {
     IMG.watcher?.unobserve(t.btn);
     IMG.tiles.delete(t.btn);
-    if (t.state === 'loading' || t.state === 'loaded') IMG.held -= 1;
+    releaseThumb(t);
     t.state = 'gone';
   }
   IMG.of.delete(li);
@@ -1260,7 +1321,7 @@ function imageTile(ref, media, size, who, at, mine) {
   if (size !== null && size > IMG_MAX) return off(`Image${MID}too large to show here (over 8 MB)`);
   const kind = media.toUpperCase();
   const sized = size ? sizeLabel(size) : '';
-  const t = { ref, state: 'idle', url: null, heading: `Image from ${who}`, meta: sized ? `${kind}${MID}${sized}` : kind };
+  const t = { ref, state: 'idle', url: null, cost: size > 0 ? size : IMG_MAX, heading: `Image from ${who}`, meta: sized ? `${kind}${MID}${sized}` : kind };
   t.img = h('img', { class: 'hx-thumb', alt: '', decoding: 'async', hidden: true });
   t.phText = h('span', { text: t.meta });
   t.ph = h('span', { class: 'hx-img-ph' }, icon('image'), t.phText);
@@ -1283,7 +1344,8 @@ function entryEl(e) {
   const stamp = Number.isFinite(when) ? new Date(when).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   const time = Number.isFinite(when) ? h('time', { class: 'hx-at', datetime: new Date(when).toISOString(), title: new Date(when).toLocaleString(), text: stamp }) : null;
   const who = e.kind === 'tool_result' ? 'Tool' : e.role === 'user' ? (SUB ? 'Parent' : 'You') : 'Claude';
-  const li = h('li', { class: 'hx', 'data-role': e.role, 'data-kind': e.kind }, h('div', { class: 'hx-meta' }, h('span', { class: 'hx-who', text: who }), time));
+  const note = e.cut === true ? h('p', { class: 'hx-trunc', text: CUT_NOTE }) : null; // 0.5.4 SF (RV051 N1)
+  const li = h('li', { class: 'hx', 'data-role': e.role, 'data-kind': e.kind }, note, h('div', { class: 'hx-meta' }, h('span', { class: 'hx-who', text: who }), time));
   const mine = [];
   if (e.kind === 'image') li.append(imageTile(e.id, e.media, e.size, whoLong(e), stamp, mine));
   else li.append(...(e.kind === 'text' ? textBlock(e) : [foldBlock(e)]));
@@ -1383,7 +1445,7 @@ async function loadNewest() {
   const r = await fetchHistory(null);
   if (r.status === 200) {
     historyNote(r.body?.entries?.length ? '' : 'No messages in this transcript yet.');
-    resetHistory(cleanEntries(r.body?.entries), nextBefore(r.body?.nextBefore));
+    resetHistory(cleanEntries(r.body?.entries, r.body?.cut), nextBefore(r.body?.nextBefore));
   } else if (r.status === 404) {
     historyNote(SUB ? 'No transcript for this subagent yet. nika keeps looking.' : 'No transcript found for this session yet. nika keeps looking.');
   } else {
@@ -1402,7 +1464,7 @@ async function refreshHistory() {
     if (!H.liveEdge || A.kind === 'ended') return;
     const r = await fetchHistory(null);
     if (r.status !== 200) return;
-    const entries = cleanEntries(r.body?.entries);
+    const entries = cleanEntries(r.body?.entries, r.body?.cut);
     if (!entries.length) return;
     const late = entries.filter((e) => e.subagent);
     if (late.length) linkLate(late); // a call on screen that has its subagent now
@@ -1441,7 +1503,7 @@ async function loadOlder() {
     const sc = scroller();
     const top = sc.scrollTop;
     const h0 = sc.scrollHeight;
-    const added = mount(cleanEntries(r.body?.entries), 'start');
+    const added = mount(cleanEntries(r.body?.entries, r.body?.cut), 'start');
     H.older = nextBefore(r.body?.nextBefore);
     sc.scrollTop = top + (sc.scrollHeight - h0); // the entries the reader was looking at stay where they were
     trim('end');
@@ -1464,7 +1526,7 @@ function startHistoryPoll() {
 
 // ---- terminal mirror ---------------------------------------------------------------------------------------------
 
-const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [], body: null, draft: null, cut: null, crop: null, stripKind: null };
+const M = { etag: null, timer: 0, busy: false, gone: false, frozen: false, errors: 0, cols: 0, rows: 0, fatal: false, inputOff: false, sent: 0, waiters: [], body: null, draft: null, cut: null, crop: null, stripKind: null, typedAt: 0, typingSent: 0 };
 
 function setLive(state, text) {
   $('term-head').dataset.s = state;
@@ -1595,11 +1657,21 @@ function handleCapture(r) {
     } catch {
       // the mirror keeps working without the grow
     }
+    try {
+      DS.tick(); // LTF MF-1: a capture re-try of the kept text is due by the clock, not by a changed screen
+    } catch {
+      // the mirror and the grow keep working without the tick
+    }
     return;
   }
   if (r.status === 200 && Array.isArray(r.body?.rows) && Number.isInteger(r.body.cols)) {
     recovered();
     noteScreen(r.body);
+    try {
+      noteCompacted(r.body.compacted); // 0.5.4 AC: the typed /compact line
+    } catch {
+      // the mirror keeps working without the line
+    }
     const cols = Math.min(Math.max(r.body.cols, 1), 1000);
     const term = $('term');
     M.cols = cols;
@@ -1688,7 +1760,12 @@ async function tickMirror() {
   const sent = M.sent;
   const t0 = Date.now();
   try {
-    const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/capture`, { headers: M.etag ? { 'If-None-Match': `"${M.etag}"` } : {} });
+    const headers = M.etag ? { 'If-None-Match': `"${M.etag}"` } : {};
+    if (M.typedAt > M.typingSent) { // 0.5.4 AC (design 2.3): the first capture after an edit of nika's box tells the server the user is typing; once per edit
+      headers['X-Nika-Typing'] = '1';
+      M.typingSent = M.typedAt;
+    }
+    const r = await call(`/api/app/pane/${encodeURIComponent(paneId)}/capture`, { headers });
     let applied = true; // R2 #7: a capture the redraw hold kept back was not drawn, so it is no look at where a mode switch stopped
     try {
       applied = handleHeld(r, sent) !== false;
@@ -1729,11 +1806,13 @@ function jumpToLive() {
 // F16: base, the size the fit asks without the grow ({ cols, rows }, the last commit's or room step's; null before the first).
 // FX2 (RV16 M3): short, the last commit measured the box while a panel that takes height from it was shown (fitPanelClosed takes one fresh commit when it closes).
 // R2 (0.5.2): free, the last frame fitMeasure took was measured with no panel shown (the base that a panel's commits build on, fit-ui.js panelFrame); false until then.
-const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false };
+// 0.5.4 P2: mode, the Fit mode the latest fit answer carried ('auto' | 'fill' | 'terminal' | 'off'; 'auto' before the first answer and after a 403); fitResizes reads it.
+const FIT = { planner: null, panel: null, frame: null, scale: 1, view: null, ui: { pending: false, note: false }, pop: false, state: null, room: false, d: 0, sentRows: 0, held: null, refitTimer: 0, hide: 0, strip: 0, sentCols: 0, scaledAt: null, base: null, short: false, free: false, mode: 'auto' };
 const PANEL_IDS = Object.freeze(['prompt-btns', 'dialog-form', 'survey-panel', 'attn-note']); // FX2 and R2: what shortens the terminal box
 const LAY = { v: null }; // R2: #sess-term[data-lay]: 'crop' | 'panel' | null (crop.js layoutOf)
 // F16: the grow of a cut-off question (fit-ui.js growStep): more rows for the pane while the question is open, the size back when it closes
 let GR = GROW_IDLE;
+let GROWING_SHOWN = false; // 0.5.4 (QPF, F6): what the dialog form was last told as `growing` (renderMode keeps it)
 // F10, design F10 4: after nika's own resize the last good frame stays drawn until a capture at the new size shows Claude's input box, for 1.2 s at most
 const HOLD = createRedrawHold({
   after: (fn, ms) => setTimeout(fn, ms),
@@ -1877,7 +1956,7 @@ function renderLayout() {
 function fitPanelClosed() {
   if (!FIT.short || boxShortened()) return;
   FIT.short = false;
-  if (!FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitFocused()) return;
+  if (!FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitResizes() || !fitFocused()) return;
   fitCommit();
 }
 
@@ -1890,13 +1969,22 @@ function fitPanelClosed() {
  * this moment, not a new commit.
  */
 function fitBaseFresh() {
-  if (!FIT.base || !FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitFocused() || boxShortened()) return;
+  if (!FIT.base || !FIT.planner || FIT.state === null || FIT.state === 'blocked' || !fitResizes() || !fitFocused() || boxShortened()) return;
   const next = fitProbe();
   if (!next) return;
   const ask = fillSize(next, FIT.room, FIT.d, FIT.hide, FIT.strip);
   if (ask.cols !== FIT.base.cols || ask.rows <= FIT.base.rows) return;
   fitMeasure();
   FIT.base = ask;
+}
+
+/**
+ * 0.5.4 P2 (design-052d 2.3 step 5): whether nika resizes the tmux window right now. The room (F10), the grow (F16) and the fresh measures of FX2 and FX3 all ask
+ * for a size, so they run only while the server sizes the window: the mode is Auto or Fill and the state is not off. The mode is the latest answer's (FIT.mode,
+ * set before the chip), so also the one answer that still says `fitted` while the mode is terminal or off (a switch in flight) takes no step.
+ */
+function fitResizes() {
+  return FIT.state !== 'off' && FIT.mode !== 'terminal' && FIT.mode !== 'off';
 }
 
 /**
@@ -1925,9 +2013,14 @@ function fitCaptured() {
   growTick();
 }
 
-/** F16: whether a step of the grow runs and the fit is `fitted`: the dialog form keeps its Reading note while it does. */
+/** F16: whether a step of the grow runs and the fit is `fitted`: the dialog form keeps its Reading note while it does. 0.5.4 (QPF, F6): and nika still sizes the window (not Terminal or Off). */
 function growing() {
-  return GR.phase === 'stepping' && FIT.state === 'fitted';
+  return GR.phase === 'stepping' && FIT.state === 'fitted' && fitResizes();
+}
+
+/** 0.5.4 (QPF, F6): the page is drawn again whenever `growing()` differs from what the form was last told, wherever Fit changed (the grow tick, the mode sink, the chip). */
+function growSync() {
+  if (growing() !== GROWING_SHOWN) renderMode();
 }
 
 /**
@@ -1939,16 +2032,24 @@ function growTick() {
   if (!FIT.planner || !FIT.base || M.gone || M.fatal) return;
   fitPanelClosed(); // FX2: a panel that a commit was measured under has closed: the base is measured again before the grow looks at it
   const was = GR.phase === 'stepping' || GR.phase === 'held';
-  const before = growing();
-  const { G, ask } = growStep(GR, { now: Date.now(), dialog: W.dialog, fitted: FIT.state === 'fitted', paneRows: M.rows, baseRows: FIT.base.rows, baseCols: FIT.base.cols });
-  GR = G;
+  const resizes = fitResizes();
+  let ask = null;
+  if (!resizes && GR.phase !== 'idle') { // 0.5.4 P2 (SF-1): the mode became Terminal or Off while a grow ran: nika no longer sizes the window, so the grow ends here and asks nothing, not even the way back
+    GR = GROW_IDLE;
+    FIT.room = false;
+    FIT.planner.retarget(FIT.base.cols, FIT.base.rows); // 0.5.4 SF (F-1): the grown ask is dropped here too, or the first beat back in Auto would bring the window back grown; nothing is sent
+  } else {
+    const step = growStep(GR, { now: Date.now(), dialog: W.dialog, fitted: FIT.state === 'fitted' && resizes, paneRows: M.rows, baseRows: FIT.base.rows, baseCols: FIT.base.cols });
+    GR = step.G;
+    ask = step.ask;
+  }
   if (ask) {
     if (ask.back === true) fitBaseFresh(); // FX3: the way back is counted from a base that is looked at now
     const want = growAsk(FIT.base, GR); // the grown rows, or the base size after a give-up or a close
     FIT.planner.size(want.cols, want.rows, { now: true });
   }
   if ((GR.phase === 'stepping' || GR.phase === 'held') !== was && FIT.pop) drawFitPop();
-  if (growing() !== before) renderMode(); // no capture may come for a while (a redraw hold keeps them back): the form must not let its Reading note run out meanwhile
+  growSync(); // no capture may come for a while (a redraw hold keeps them back): the form must not let its Reading note run out meanwhile
 }
 
 // ---- the redraw hold (F10, design F10 4): the last good frame stays up while Claude repaints after nika's own resize ----
@@ -1967,7 +2068,7 @@ function fitSized(pane) {
   // F12: besides the box, did the drawn frame show Claude's mode line (a confirmed, known mode)? Then the hold waits for the mode line too.
   const plainBefore = M.body.alt === true && M.draft !== null;
   const modeBefore = plainBefore && M.body.modeConfirmed === true && modeKey(M.body.mode) !== 'unknown';
-  const cutBefore = GR.phase === 'stepping' && cutQuestion(M.body.dialog); // F16: a grow step waits for Claude to repaint the question whole
+  const cutBefore = GR.phase === 'stepping' && growWanted(M.body.dialog); // F16: a grow step waits for Claude to repaint the question whole (0.5.4: a preview with hidden lines and a cut plan too)
   HOLD.start({ want: { cols: pane.cols, rows: pane.rows }, plainBefore, modeBefore, cutBefore });
   kickMirror(0);
 }
@@ -1975,6 +2076,8 @@ function fitSized(pane) {
 /** The chip sink of the planner: the latest state is kept, and a view that comes during a hold waits for the frame (null hides the chip at once). */
 function fitChip(view, opts) {
   FIT.state = view ? view.state : null;
+  if (!view) FIT.mode = 'auto'; // 0.5.4 P2: no chip, no answer to know a mode from (a 403): the page is back to its start
+  growSync(); // 0.5.4 (QPF, F6): the form hears of the new state now; the hold keeps back the frame and the chip, not the form
   if (view && HOLD.active) {
     FIT.held = { view, opts };
     return;
@@ -2047,7 +2150,7 @@ function endRefit() {
 function holdTimeout(pending, ctx) {
   const frame = FIT.frame;
   const ask = frame ? fillSize(frame, true, FIT.d, FIT.hide, FIT.strip) : null; // F11: the room fill size, with the hidden rows of the last commit
-  if (pending && frame && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, modeBefore: ctx.modeBefore, want: ctx.want, body: pending.body, draft: pending.draft, gain: ask.rows > FIT.sentRows })) {
+  if (pending && frame && fitResizes() && roomStep({ room: FIT.room, frameRows: frame.rows, state: FIT.state, plainBefore: ctx.plainBefore, modeBefore: ctx.modeBefore, want: ctx.want, body: pending.body, draft: pending.draft, gain: ask.rows > FIT.sentRows })) {
     FIT.room = true;
     FIT.base = ask; // F16: the grow counts from the size the fit asks without it
     const want = growAsk(ask, GR);
@@ -2063,7 +2166,7 @@ function holdTimeout(pending, ctx) {
 }
 
 /**
- * The fit chip, a button (F1): hidden until the server has answered, then one of five states, each with its own colour (data-k), icon and
+ * The fit chip, a button (F1): hidden until the server has answered, then one of eight looks, each with its own colour (data-k), icon and
  * words; the reason is the title and the announcement. The button is named by the label alone (the words and the chevron are decoration).
  * Called on a change of state, so it is announced once (not when `opts.quiet` is true: the planner says so for a change that followed a change of the
  * window's focus, F9; the chip, its title and its name still change); an open panel is drawn again in place. With no view the wrapper hides, the panel
@@ -2085,17 +2188,18 @@ function renderFit(view, opts) {
     if (inside) $('hist-toggle').focus();
     return;
   }
-  el.setAttribute('data-k', view.state);
+  el.setAttribute('data-k', view.look); // 0.5.4 P2: the look (the state for the Auto chips; fill, term-set and off-set name the mode they came from)
   el.setAttribute('title', view.title);
   el.setAttribute('aria-label', view.label);
   el.replaceChildren(icon(view.icon), h('span', { text: view.text }), icon('chev', 'ic chev'));
-  if (FIT.pop) drawFitPop();
+  drawFitPop(); // 0.5.4 SF (LC-P2): also while the panel is shut, so it never holds a stale label; it opens nothing
   if (opts?.quiet !== true) announce(view.say); // F9: a change that followed the window's own focus is drawn, not announced twice (the status stays readable on the chip)
 }
 
 /**
  * The chip's panel from FIT.view and FIT.ui (fit-ui.js fitPanelView): text through textContent and h() only. Focus stays where it is,
- * unless the action button it was on has just gone: then it goes to Close.
+ * unless the action button it was on has just gone: then it goes to Close. 0.5.4 SF: drawn on every change, also while the panel is shut (nothing opens, nothing is
+ * placed); a button with no action is hidden and empty, so no "Fitting..." stays in it.
  */
 function drawFitPop() {
   const v = fitPanelView(FIT.view, { ...FIT.ui, room: FIT.room, grow: GR.phase === 'stepping' || GR.phase === 'held' });
@@ -2111,8 +2215,10 @@ function drawFitPop() {
   note.hidden = v.note === null;
   note.replaceChildren(...(v.note === null ? [] : [icon('warn'), v.note]));
   again.hidden = v.action === null;
-  if (v.action === null) again.removeAttribute('aria-disabled');
-  else {
+  if (v.action === null) {
+    again.removeAttribute('aria-disabled');
+    again.textContent = '';
+  } else {
     again.textContent = v.action.text;
     if (FIT.ui.pending) again.setAttribute('aria-disabled', 'true'); // not disabled: focus stays on it
     else again.removeAttribute('aria-disabled');
@@ -2160,23 +2266,19 @@ function fitAway(e) {
 function fitAgainEvent(e) {
   if (e.pending) {
     FIT.ui = { pending: true, note: false };
-    if (FIT.pop) drawFitPop();
+    drawFitPop();
     return;
   }
   FIT.ui = { pending: false, note: false };
   if (e.status === 403) return;
   if (e.status === 200 && e.view) {
+    drawFitPop(); // 0.5.4 SF: the pending label goes in a shut panel too
     if (['fitted', 'zoomed', 'terminal'].includes(e.view.state)) closeFitPop(true);
-    else {
-      if (FIT.pop) drawFitPop();
-      if (!e.changed) announce(stillOffSay(e.view));
-    }
+    else if (!e.changed) announce(stillOffSay(e.view));
     return;
   }
-  if (FIT.pop) {
-    FIT.ui.note = true;
-    drawFitPop();
-  }
+  if (FIT.pop) FIT.ui.note = true; // the note is for an open panel only
+  drawFitPop();
   const p = fitPanelView(FIT.view, { pending: false, note: true });
   if (p) announce(p.note);
 }
@@ -2226,6 +2328,7 @@ function wireFit() {
     fitAgain: fitAgainEvent,
     focused: fitFocused, // F9: the focus every request carries
     sized: fitSized, // F10: the pane size of each answer starts the redraw hold
+    mode: (m) => { FIT.mode = m; growSync(); }, // 0.5.4 P2: the mode of every fit answer, before the chip (the room and the grow read it; a chip draws only on a change of key); QPF F6: the form hears of it at once
   });
   wireFitPop();
   if (typeof ResizeObserver === 'function') {
@@ -2520,12 +2623,21 @@ function updateChip() {
   if (multi) $('paste-n').textContent = `${lines} ${lines === 1 ? 'line' : 'lines'}${MID}sends as one paste`;
 }
 
+/** 0.5.4 (final, S2): Send's "This is N KB" line goes as soon as the text in the box fits again (the same rule as Send's: planSend), and only while that line is the one showing. */
+function sizeLineGone() {
+  if (problemOwner === 'send-size' && planSend(composer().value).ok) clearProblemFrom('send-size');
+}
+
 let sending = false;
 async function sendComposer() {
   const ta = composer();
   if (ta.disabled) return; // an off box stays silent
   if (sending) { // the last Send is still in flight (Enter, the Send button): say so, send and queue nothing; the text stays in the box
     showProblem(STILL_SENDING, 'warn', STILL_SENDING_MS);
+    return;
+  }
+  if (DS.restoring()) { // the text kept for this session is being brought back (0.5.4, LT): nothing is sent and the box stays as it is
+    showProblem(RESTORING_TEXT, 'warn', 4000);
     return;
   }
   const note = SV?.sendNote();
@@ -2551,7 +2663,7 @@ async function sendComposer() {
   const plan = route.act !== 'legacy' ? route : S.on ? planShell(value) : planSend(value);
   if (plan.empty) return; // Shell on and nothing to run: no lone "!"
   if (!plan.ok) {
-    showProblem(plan.message, 'error');
+    showProblem(plan.message, 'error', 0, plan.size === true ? 'send-size' : ''); // only the over-16-KB refusal is Send's size line (sizeLineGone); Shell's and every other refusal here stay un-owned
     return;
   }
   sending = true;
@@ -2592,14 +2704,14 @@ async function pushThenSubmit(route) {
     showProblem(p.message, 'error');
     return p;
   }
-  return submitEnter(p.sig);
+  return submitEnter(p.sig, true); // the text is in Claude's input now: a 409 screen-unclear says so (0.5.4 final, S5)
 }
 
 /** A Send without a readable box: the text goes through the keys route (Shell: Ctrl-U and "!" + the command; no Enter), then the guarded Enter with no base. */
 async function typeThenSubmit(payloads) {
   if (HOLD.active) await HOLD.wait(); // F10: no key is typed on the strength of a held frame
   const r = await deliverAll(payloads);
-  return r.ok ? submitEnter() : r;
+  return r.ok ? submitEnter(undefined, payloads.length > 0) : r; // typed something: a 409 screen-unclear says the text is in Claude's input (0.5.4 final, S5)
 }
 
 /**
@@ -2607,12 +2719,12 @@ async function typeThenSubmit(payloads) {
  * screen with no prompt or dialog and, with `base` (the draft sig the page last saw), only while Claude's input still reads so. Claude queues
  * it while it works. Returns { ok, taken, message }: not ok keeps the text in the box. The fixed copy is draft-sync.js (submitResult).
  */
-async function submitEnter(base) {
+async function submitEnter(base, pasted = false) {
   if (HOLD.active) await HOLD.wait(); // F10: the server decides on its own fresh capture; the page only waits for nika's own redraw
   if (M.gone || !paneId) return { ok: false, message: 'The pane is gone.' };
   const r = await postRetry('submit', base ? { base } : {});
   DS.submitted(r); // the answer's draft is the screen after the Enter
-  const out = submitResult(r);
+  const out = submitResult(r, { pasted });
   if (out.ok) {
     clearProblem();
     return out;
@@ -2659,6 +2771,24 @@ async function putDraft(body) {
   return call(`/api/app/pane/${encodeURIComponent(paneId)}/draft`, { method: 'PUT', json: body });
 }
 
+const KEPT_TIMEOUT_MS = 3000; // the bounded GET of the kept text: a page that cannot get an answer in 3 s tries once more, then gives up (draft-sync.js restore)
+
+/** The kept text of this pane (0.5.4, LT), cut after KEPT_TIMEOUT_MS (no AbortSignal.timeout: older web views lack it). An abort answers { status: 0 } like any failure. */
+async function getKept() {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), KEPT_TIMEOUT_MS);
+  try {
+    return await call(`/api/app/pane/${encodeURIComponent(paneId)}/kept-draft`, { signal: ctl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The page's unsent text, kept on the server (0.5.4, LT). `keepalive` lets the request outlive a page that is being left. It never types into Claude: no redraw hold. */
+function putKept(body) {
+  return call(`/api/app/pane/${encodeURIComponent(paneId)}/kept-draft`, { method: 'PUT', json: body, keepalive: true });
+}
+
 /** Tab or the right arrow on Claude's suggestion (F10, R2 #3: it waits for nika's own redraw hold like the sync's write; the server decides on its own fresh capture). */
 async function suggestDraft(body) {
   if (HOLD.active) await HOLD.wait();
@@ -2679,8 +2809,11 @@ const DS = createDraftSync({
   put: putDraft,
   suggest: suggestDraft,
   note: renderDraftNote,
-  problem: (message) => showProblem(message, 'warn', 6000),
+  problem: (message, ms = 6000) => showProblem(message, 'warn', ms),
   gone: setGone,
+  keep: putKept,
+  fetchKept: getKept,
+  announce,
 });
 
 // ---- attachments (0.5, design W2): chips under the message box; the logic and the copy: attach.js ----------------------------
@@ -2689,7 +2822,6 @@ const ATT = createAttachTray({
   paneId,
   path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`,
   call,
-  appFetch,
   ds: DS,
   enqueueJob,
   waitHold,
@@ -2733,7 +2865,7 @@ async function acceptSuggestion(text) {
     clearProblem();
     say(`Accepted Claude's suggestion: ${text}`);
   } else {
-    showProblem(r.message, problemKind(r.status), 6000);
+    showProblem(r.message, problemKind(r.status), r.message === RESTORING_TEXT ? 4000 : 6000); // the kept text being brought back (0.5.4, LT): 4000 ms, as Send's line
   }
 }
 
@@ -3008,9 +3140,20 @@ function wirePassthrough() {
 
 // ---- wiring --------------------------------------------------------------------------------------------------------
 
+/**
+ * 0.5.4 AC (design 2.3): every edit of nika's message box (typing, or composing with an input method) stamps M.typedAt; tickMirror then adds the
+ * X-Nika-Typing header to the next capture request, once. It is the only way the server learns that the user is typing, and it sends nothing itself.
+ */
+function wireTyping() {
+  const ta = composer();
+  ['input', 'compositionstart', 'compositionupdate', 'compositionend'].forEach((type) => {
+    ta.addEventListener(type, () => { M.typedAt = Date.now(); });
+  });
+}
+
 function wireComposer() {
   const ta = composer();
-  ta.addEventListener('input', () => { grow(); updateChip(); DS.edited(); });
+  ta.addEventListener('input', () => { grow(); updateChip(); DS.edited(); sizeLineGone(); });
   ta.addEventListener('compositionstart', () => DS.composition(true));
   ta.addEventListener('compositionend', () => DS.composition(false));
   ta.addEventListener('keydown', (e) => {
@@ -3064,6 +3207,7 @@ function wireTerminal() {
     M.etag = null;
     W.got = false;
     DS.reset();
+    ATT.retryRestore(); // 0.5.4 (final, S1): the unsent attachments of a pane that was not there at open are listed again
     setPaneState('connecting');
     setInputEnabled(true);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');
@@ -3129,7 +3273,7 @@ function wireHistory() {
   $('load-older').addEventListener('click', loadOlder);
   $('jump-latest').addEventListener('click', async () => {
     const r = await fetchHistory(null);
-    if (r.status === 200) resetHistory(cleanEntries(r.body?.entries), nextBefore(r.body?.nextBefore));
+    if (r.status === 200) resetHistory(cleanEntries(r.body?.entries, r.body?.cut), nextBefore(r.body?.nextBefore));
     else showProblem(serverMessage(r, 'The latest entries could not be loaded.'), 'error', 5000);
   });
 }
@@ -3268,6 +3412,7 @@ function boot() {
     wireTerminal();
     wireComposer();
     ATT.wire();
+    wireTyping();
     wireSubs();
     wireSubsDlg();
   }
@@ -3298,14 +3443,18 @@ function boot() {
     wireSwitcher();
     wireQuick();
     wireFit();
-    DF = createDialogForm({ root: $('dialog-form'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, showProblem, clearProblem, setGone, composer, refresh: renderAttn });
+    DF = createDialogForm({ root: $('dialog-form'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, showProblem, clearProblem, clearProblemFrom, setGone, composer, refresh: renderAttn });
     SV = createSurveyPanel({ root: $('survey-panel'), paneId, call, path: (tail) => `/api/app/pane/${encodeURIComponent(paneId)}/${tail}`, announce, say, clearProblem, setGone, composer });
     watchPanels();
+    DS.restore(); // 0.5.4 LT: the unsent text kept for this pane comes back; the hold is up before the first capture below is handled
+    window.addEventListener('pageshow', (e) => { if (e?.persisted === true) DS.restore(); }); // back from the back/forward cache: the server's copy may be newer
+    window.addEventListener('pagehide', () => DS.flushKeep()); // what is pending goes now; the PUT outlives the page (keepalive)
     $('pb-pane').textContent = paneId;
     $('term').setAttribute('aria-label', `Live terminal of ${A.name}, pane ${paneId}`);
     showOverlay(`Connecting to pane ${paneId}${DOTS}`, '');
     kickMirror(0);
     composer().focus({ preventScroll: true });
+    ATT.restore(); // 0.5.4 AT: the attachments of an unsent message come back when you return to the session (the tray is wired above; focus stays where it is)
   } else {
     split.classList.add('no-term');
     split.dataset.tab = 'hist';

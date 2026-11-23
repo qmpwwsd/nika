@@ -10,10 +10,10 @@ import { resolveProject } from './collect/projects.js';
 import { mapLimit } from './util.js';
 import { clean } from './text.js';
 import { subagentLabel } from './labels.js';
-import { UUID } from './ids.js';
+import { UUID, WINDOW_INDEX, CLAUDE_COMMAND } from './ids.js';
 import { MODEL_CATALOG, modelWindow } from './models.js';
 import { compactLaunch } from './compact.js';
-import { keyFor, loadConfig, defaults } from './store.js';
+import { keyFor, loadConfig, defaults, addedTo } from './store.js';
 // tmux's own wording when no server is running; "error connecting to <socket> (Permission denied)" is a real failure and stays an error
 import { NO_TMUX_SERVER } from './tmuxerr.js';
 
@@ -162,32 +162,49 @@ function linkHosts(live, projectCache) {
  * - `window`: with auto-compact on, the window the launch uses (the setting's, cut to the model's; the model's for 'model'), else the
  *   model's own; an unknown model id counts as 200k (modelWindow). Null, with `pct` and `compactAt`, when no model was seen.
  * - `pct`: tokens / window x 100, one decimal, not capped. `compactAt`: the launch threshold in tokens, only for a session nika started.
- * - `compaction`: 'off' (the setting is off), 'on' (on, and nika started the session: it compacts there), 'none' (on, but nika did
- *   not start it, or it ended: nika's setting does not act on it, so the window is a yardstick). An adopted orchestrator carries
- *   nika's tag but was started by the user, so it reads 'on' until nika resumes it (accepted).
+ * - `compaction`: 'off' (the setting is off), 'on' (on, and nika started the session: it compacts there), 'typed' (0.5.4, AC; on, nika
+ *   did not start it, `typed` is true: the app tier, and the session is live in a pane nika can type into, so nika types /compact at
+ *   `compactAt` when the session waits past it), 'none' (on, but nika did not start it and does not type there, or it ended: nika's setting
+ *   does not act on it, so the window is a yardstick). An adopted orchestrator carries nika's tag but was started by the user, so it reads
+ *   'on' until nika resumes it (accepted).
  */
-export function contextOf(usage, compaction, started) {
+export function contextOf(usage, compaction, started, typed = false) {
   if (!usage) return null;
   const { tokens, model } = usage;
-  const mode = !compaction.enabled ? 'off' : started ? 'on' : 'none';
+  const mode = !compaction.enabled ? 'off' : started ? 'on' : typed ? 'typed' : 'none';
   if (!model) return { tokens, window: null, compactAt: null, pct: null, compaction: mode };
   const launch = compactLaunch(model, compaction); // null when auto-compact is off
   const window = launch?.window ?? modelWindow(model);
-  return { tokens, window, compactAt: mode === 'on' ? launch.compactAt : null, pct: Math.round((tokens / window) * 1000) / 10, compaction: mode };
+  return { tokens, window, compactAt: mode === 'on' || mode === 'typed' ? launch.compactAt : null, pct: Math.round((tokens / window) * 1000) / 10, compaction: mode };
 }
 
-/** nika's compaction setting, through the validated loadConfig, for both tiers. A config without `env` (tests, 0.1 callers) reads no file. */
-async function compactionOf(config) {
-  return config.env ? (await loadConfig(config.env)).config.compaction : defaults().compaction;
+/**
+ * nika's compaction setting and its project list, through the validated loadConfig (one read), for both tiers. A config without `env` (tests, 0.1
+ * callers) reads no file: the default compaction and no project.
+ */
+async function settingsOf(config) {
+  if (!config.env) return { compaction: defaults().compaction, projects: [] };
+  const { compaction, projects } = (await loadConfig(config.env)).config;
+  return { compaction, projects };
 }
+
+/** Nothing removed from the lists. */
+const NO_HIDDEN = Object.freeze({ sessions: new Map(), groups: new Map() });
 
 /**
  * `include`: session ids listed whatever their age, when nika has a transcript for them (the app tier looks up a saved orchestrator).
  * `indexOnly`: read the transcript index and nothing else (findSessions).
+ * `hidden`: what the user removed from the lists, `{ sessions: Map(id -> at), groups: Map(group key -> at) }` as src/hidden.js readHidden returns it (0.5.4, RM;
+ * design-053-rm 1.3). A row is left out and counted (`group.hidden`, `snapshot.hidden`) unless it is live in a tmux pane nika sees (that one can be ended
+ * normally, so it always shows) when its id or its host id is in `sessions`, or when its folder is in `groups`, the folder is not a project added to nika
+ * and the row started at or before the removal. A folder that is not a project and has no row left is dropped; a project's group stays, empty. findSession
+ * and findSessions pass none: a removed session is still found.
+ * `typed`: the app tier's flag (0.5.4, AC; server `app !== null`, appio's own snapshot): a live session nika did not start, in a pane tmux lists as not
+ * dead and running claude (CLAUDE_COMMAND), reads `context.compaction` 'typed'. The browser tier and the CLI pass none (false), so the same session reads 'none'.
  * @returns {{ snapshot: object, reportPaths: Map<string,string> }}
  *   snapshot is the public JSON (no file paths of reports); reportPaths stays server-side.
  */
-export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [], indexOnly = false, platform = process.platform }) {
+export async function collect({ config, exec, now = Date.now(), sinceMs, since = null, cache = {}, include = [], indexOnly = false, platform = process.platform, hidden = NO_HIDDEN, typed = false }) {
   cache.transcripts ??= createTranscriptCache();
   // indexOnly: just the transcript index (findSessions); no registry, ps, tmux or reports, so nothing is live
   const [registry, table, index, tmux, reportDirs] = indexOnly
@@ -200,7 +217,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
       allReportDirs(config),
     ]);
   const reports = await indexReports(reportDirs);
-  const compaction = await compactionOf(config);
+  const { compaction, projects: added } = await settingsOf(config);
   const sources = {
     registry: registry.error ?? 'ok',
     processes: table ? 'ok' : 'ps unavailable: liveness by signal 0',
@@ -297,7 +314,8 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         title,
         model: clean(t?.model, 80),
         modelLabel: modelLabel(t?.model),
-        context: contextOf(t?.usage, compaction, isLive && paneInfo?.role != null), // numbers only (C6)
+        // numbers only (C6); `typed` (0.5.4, AC): the app tier, live, in a listed pane that is not dead and runs claude (what the keys route's pane check needs)
+        context: contextOf(t?.usage, compaction, isLive && paneInfo?.role != null, typed === true && isLive && paneInfo !== null && paneInfo.dead !== true && CLAUDE_COMMAND.test(String(paneInfo.command ?? '').trim())),
         cwd,
         worktree: clean(project.worktree, 120),
         gitBranch: clean(t?.gitBranch, 200),
@@ -305,7 +323,7 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
         startedAt: reg?.startedAt ?? t?.startedAt ?? null,
         lastActivity: activity.length ? Math.max(...activity) : null,
         lastPrompt: clean(t?.lastPrompt, PROMPT_MAX),
-        pane: paneInfo ? { id: paneInfo.id, session: clean(paneInfo.session, 80), title: clean(paneInfo.title, 200), command: clean(paneInfo.command, 80) } : null,
+        pane: paneInfo ? { id: paneInfo.id, session: clean(paneInfo.session, 80), windowIndex: typeof paneInfo.windowIndex === 'string' && WINDOW_INDEX.test(paneInfo.windowIndex) ? paneInfo.windowIndex : null, title: clean(paneInfo.title, 200), command: clean(paneInfo.command, 80) } : null,
         bridgeUrl: bridgeUrl(reg?.bridgeSessionId ?? t?.bridgeSessionId),
         report: report ? { name: clean(report.name, 128), status: clean(report.status, 300), rc: report.rc, hasFile: Boolean(report.reportPath), sessionId: reportId } : null,
         subagents,
@@ -322,24 +340,42 @@ export async function collect({ config, exec, now = Date.now(), sinceMs, since =
 
   const groups = new Map();
   const counts = emptyCounts();
+  let hiddenTotal = 0;
+  const { sessions: hiddenSessions = NO_HIDDEN.sessions, groups: hiddenGroups = NO_HIDDEN.groups } = hidden;
+  const isAdded = addedTo(added);
+  // removed by id (or by its host's id), or by its folder: a folder entry counts only while the folder is not a project added to nika, and only for a row that
+  // started at or before the removal (RM-Q1 = A: a session that starts later brings the folder back, with only the new rows)
+  const removed = (agent, g) => {
+    if (hiddenSessions.has(agent.id) || (agent.hostId && hiddenSessions.has(agent.hostId))) return true;
+    const at = hiddenGroups.get(g.key);
+    return at !== undefined && !isAdded(g) && (agent.startedAt ?? agent.lastActivity ?? 0) <= at;
+  };
   for (const { project, agent } of entries) {
     let g = groups.get(project.key);
     if (!g) {
-      g = { key: keyFor(project.root ?? project.key), label: clean(project.label, 120) ?? '(unknown)', root: project.root, counts: emptyCounts(), lastActivity: 0, agents: [] };
+      g = { key: keyFor(project.root ?? project.key), label: clean(project.label, 120) ?? '(unknown)', root: project.root, counts: emptyCounts(), lastActivity: 0, hidden: 0, agents: [] };
       groups.set(project.key, g);
+    }
+    // a removed row is counted and left out, unless it is live in a tmux pane nika sees (that one can be ended normally, so it always shows)
+    if (!(agent.live && agent.pane) && removed(agent, g)) {
+      g.hidden += 1;
+      hiddenTotal += 1;
+      continue;
     }
     g.agents.push(agent);
     count(g.counts, agent);
     count(counts, agent);
     g.lastActivity = Math.max(g.lastActivity, agent.lastActivity ?? 0);
   }
+  // a folder that is not a project and has no row left goes (its rows stay counted in the total); a project's group stays, so its page can still say what is removed
+  for (const [k, g] of groups) if (g.agents.length === 0 && !isAdded(g)) groups.delete(k);
   const sorted = [...groups.values()];
   for (const g of sorted) g.agents.sort(compareAgents);
   sorted.sort((a, b) => b.lastActivity - a.lastActivity || a.label.localeCompare(b.label));
 
   return {
     // registry files that were unreadable or not in Claude's format: those sessions are missing from the list without a word otherwise
-    snapshot: { generatedAt: now, since, sources, skipped: { registry: registry.skipped.length }, counts, groups: sorted },
+    snapshot: { generatedAt: now, since, sources, skipped: { registry: registry.skipped.length }, counts, hidden: hiddenTotal, groups: sorted },
     reportPaths,
   };
 }
@@ -359,6 +395,30 @@ export async function findSession(id, { config, exec, now = Date.now(), cache = 
   }
   if (snapshot.sources.transcripts !== 'ok') throw Object.assign(new Error('transcript index unavailable'), { code: 'EINDEX' });
   return null;
+}
+
+/**
+ * Several folders (groups) by key with ONE walk, whatever the age of their sessions: an index-only read of every transcript (`sinceMs: Infinity`; no ps, tmux,
+ * registry or report read, so nothing is live), unfiltered. `Map(key -> group)` for the keys nika has a folder for (a key it has none for is left out). It answers a
+ * Remove of a detected folder whose sessions all ended before the 7-day window of the eligibility snapshot, and (0.5.4 SF, RM R5) the labels and paths of the Removed
+ * list. No key reads nothing. Throws EINDEX when a key is missing and the transcript index could not be read ("no such folder" would be a guess); the error carries `found`,
+ * the Map of the folders it did find, so a caller that only labels keys (the Removed list) keeps them and one that needs an answer (Remove) still gets the throw.
+ * shortcut: like findSessions, a session whose folder is a deleted scratchpad worktree is not folded into its project here.
+ * @param {object} o { config, now?, cache? } as collect()
+ */
+export async function findGroups(keys, { config, now = Date.now(), cache = {} }) {
+  const found = new Map();
+  if (!keys.length) return found;
+  const { snapshot } = await collect({ config, exec: null, now, sinceMs: Infinity, cache, indexOnly: true });
+  const wanted = new Set(keys);
+  for (const group of snapshot.groups) if (wanted.has(group.key)) found.set(group.key, group);
+  if (found.size < wanted.size && snapshot.sources.transcripts !== 'ok') throw Object.assign(new Error('transcript index unavailable'), { code: 'EINDEX', found });
+  return found;
+}
+
+/** One folder by its key, whatever the age of its sessions (findGroups of one key): the group, or null when no folder has the key. Throws EINDEX as findGroups does. */
+export async function findGroup(key, o) {
+  return (await findGroups([key], o)).get(key) ?? null;
 }
 
 /**

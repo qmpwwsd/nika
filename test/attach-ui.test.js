@@ -3,13 +3,13 @@
 // Send table of section 6 runs row by row; every server code maps to a fixed copy line and the server's own text never shows.
 // Also the static side: the markup, the stylesheet (tokens only), the hooks in session.js, the static-file list, the shell's one line.
 // Fixtures are synthetic (acme-api, %7).
-import { test, describe, afterEach } from 'node:test';
+import { test, describe, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  MAX_FILES, MAX_BYTES, formatSize, shownName, uploadView, sendView, typeIcon, createAttachTray, isSecretName,
+  MAX_FILES, MAX_BYTES, formatSize, shownName, uploadView, pickView, sendView, typeIcon, createAttachTray, isSecretName,
 } from '../public/attach.js';
 import { isSecretName as serverIsSecretName } from '../src/attachments.js';
 import { installDom, El, focus } from './fake-dom.js';
@@ -42,7 +42,7 @@ class TEl extends El {
 
   click() { this.clicks += 1; super.click(); }
 
-  after(node) { this.afterNode = node; } // ChildNode.after: the one node attach.js puts beside the tray
+  after(...nodes) { this.afterNode = nodes[0]; this.afterNodes = nodes; } // ChildNode.after: the nodes attach.js puts beside the tray (the chooser line, then the 'not restored' note)
 
   contains(node) { // Node.contains: this element or any of its descendants
     for (let n = node; n; n = n.parent) if (n === this) return true;
@@ -57,6 +57,7 @@ const screenOf = (over = {}) => ({ state: 'empty', mode: 'prompt', text: '', sig
 const uploadId = (n) => `00000000000000${String(n).padStart(2, '0')}`;
 const typeOf = (name) => (/\.png$/.test(name) ? 'png' : /\.pdf$/.test(name) ? 'pdf' : 'text');
 const isUpload = (p, o) => o.method === 'POST' && /\/attachments$/.test(p);
+const isList = (p, o) => o.method === 'GET' && /\/attachments$/.test(p);
 const isSend = (p, o) => o.method === 'POST' && /\/attach-send$/.test(p);
 const REQ = '11111111-1111-4111-8111-111111111111';
 const isPickStart = (p, o) => o.method === 'POST' && /\/attachments\/pick$/.test(p);
@@ -88,9 +89,10 @@ function rig(opts = {}) {
     for (const fn of docListeners[type] ?? []) fn(e);
     return e;
   };
-  const log = { calls: [], say: [], announce: [], problem: [], notice: [], gone: 0, ds: [], clear: [], order: [], focus: 0, jobs: 0, sleeps: [], views: [], gets: [] };
+  const log = { calls: [], say: [], announce: [], problem: [], notice: [], gone: 0, ds: [], clear: [], order: [], focus: 0, jobs: 0, sleeps: [], views: [], gets: [], signals: [] };
   const state = { screen: opts.screen === undefined ? screenOf() : opts.screen, shell: false, pushed: null, sentReply: null, n: 0, pickStart: null, polls: [], gate: null };
   const reply = opts.reply ?? ((p, o) => {
+    if (isList(p, o)) return typeof opts.list === 'function' ? opts.list(p, o) : opts.list ?? { status: 200, body: { files: [], gone: [] } }; // 0.5.4 (AT): the pane's unsent attachments
     if (isUpload(p, o)) {
       state.n += 1;
       return { status: 200, body: { id: uploadId(state.n), type: typeOf(o.json.name), size: 123 } };
@@ -108,9 +110,9 @@ function rig(opts = {}) {
     path: (tail) => `/api/app/pane/${encodeURIComponent('%7')}/${tail}`,
     call: async (p, o = {}) => {
       log.calls.push({ path: p, method: o.method ?? 'GET', json: o.json });
+      if (o.signal) log.signals.push(o.signal); // the abort signal of a bounded request (0.5.4, AT), kept apart so the older call lists stay as they are
       return reply(p, { ...o, method: o.method ?? 'GET' });
     },
-    appFetch: async (p, o = {}) => { log.calls.push({ path: p, method: o.method ?? 'GET', keepalive: o.keepalive === true, json: o.json }); return { status: 200, body: null }; },
     ds: {
       screen: () => state.screen,
       send: async (text) => {
@@ -137,10 +139,10 @@ function rig(opts = {}) {
     view: (o) => { log.views.push(o); }, // session.js opens the image viewer here (0.5.1 C)
     get: async (p) => { log.gets.push(p); return reply(p, { method: 'GET' }); },
     read: opts.read ?? (async () => 'QUJD'),
-    sleep: async (ms) => { log.sleeps.push(ms); },
+    sleep: async (ms) => { log.sleeps.push(ms); if (opts.sleep) await opts.sleep(ms); }, // opts.sleep: a wait a test can hold (0.5.4, AT round 1)
   };
   const att = createAttachTray(io);
-  att.wire();
+  if (opts.wired !== false) att.wire(); // wired: false = a tray whose markup was never wired (0.5.4, AT round 1)
   const tray = els['att-tray'];
   return {
     att, els, io, log, state, tray, doc, win: globalThis.window,
@@ -1263,7 +1265,7 @@ describe('removing a chip', () => {
     assert.equal(r.chips()[0].kids[3].disabled, false);
   });
 
-  test('(+) pagehide: a keepalive DELETE for every ready chip; (−) none for uploading, failed or removed ones', async () => {
+  test('(+) pagehide sends no request: the ready chips\' files stay for the return (0.5.4, AT)', async () => {
     let release;
     const r = rig({
       reply: (p, o) => {
@@ -1276,7 +1278,7 @@ describe('removing a chip', () => {
     r.chips()[1].kids[3].click(); // b.md removed: it has its own DELETE already
     const before = r.log.calls.length;
     r.win.fire('pagehide');
-    assert.deepEqual(r.log.calls.slice(before).map((c) => [c.method, c.path, c.keepalive]), [['DELETE', `/api/app/pane/%257/attachments/${uploadId(1)}`, true]]);
+    assert.deepEqual(r.log.calls.slice(before), []);
     release();
     await settle();
   });
@@ -1292,14 +1294,687 @@ describe('removing a chip', () => {
     assert.deepEqual(r.chips().map((li) => view(li).s), ['ready', 'ready']);
   });
 
-  test('(−) R2 #2: a real close (persisted false, no flag, or anything but exactly true) still deletes every ready chip', async () => {
+  test('(−) no pagehide flavour (persisted false, no flag, \'true\', 1, undefined) sends nothing (0.5.4, AT)', async () => {
     for (const ev of [{ persisted: false }, {}, { persisted: 'true' }, { persisted: 1 }, { persisted: undefined }]) {
       const r = rig();
       await r.add(file('a.md'));
       const before = r.log.calls.length;
       r.win.fire('pagehide', ev);
-      assert.deepEqual(r.log.calls.slice(before).map((c) => [c.method, c.keepalive]), [['DELETE', true]], JSON.stringify(ev));
+      assert.deepEqual(r.log.calls.slice(before), [], JSON.stringify(ev));
     }
+  });
+});
+
+// ---- Restore (0.5.4, AT) ----------------------------------------------------------------------------------------------------------------
+// The files of an unsent message stay on the server's side when the page leaves. The page asks for them when it opens (and when the
+// back/forward cache brings it back) and builds the same ready chips an upload makes; a file the server no longer has is named in one
+// "Not restored" note (its own colour, icon and words). The request is bounded, so a server that never answers cannot lock the tray.
+
+const RESTORING = 'nika is bringing back the attachments you added before. Try again in a moment.';
+const RESTORE_FAILED = "nika couldn't bring back the attachments you added before. Leave this session and open it again to try once more.";
+const GONE_TAIL_ONE = 'nika no longer has its copy (attachments are kept for a few days). Add it again if you still need it.';
+const GONE_TAIL_MANY = 'nika no longer has their copies (attachments are kept for a few days). Add them again if you still need them.';
+const hex16 = (n) => `a1b2c3d4e5f6${String(n).padStart(4, '0')}`;
+const entry = (n, over = {}) => ({ id: hex16(n), name: `note-${n}.md`, type: 'text', size: 123, ...over });
+const listOf = (files, gone = []) => ({ status: 200, body: { files, gone } });
+const sequence = (answers) => { let i = 0; return () => answers[Math.min((i += 1), answers.length) - 1]; }; // the answers in order, the last one repeats
+const strip = (li) => { const { x, ...rest } = view(li); return rest; }; // a chip without its remove button (one closure per chip)
+const noteOf = (r) => r.tray.afterNodes[1]; // the "Not restored" note: wire() puts it right after the chooser line
+const lists = (r) => r.log.calls.filter((c) => c.method === 'GET' && /\/attachments$/.test(c.path));
+const names = (r) => r.chips().map((li) => view(li).name);
+/** A deadline for a promise the test awaits: a hang fails the test instead of the run. */
+const bounded = (p, ms = 2000) => new Promise((resolve, reject) => {
+  const t = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+  p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+});
+const GOOD = () => listOf([entry(1)]);
+const FAILS = [{ status: 0, body: null }, { status: 429, body: { error: 'rate' } }, { status: 500, body: { error: 'internal' } }, { status: 409, body: { error: 'no-project' } }];
+
+describe('restore (0.5.4, AT): the chips come back from the server', () => {
+  test('(+) P1: one GET to .../attachments builds ready chips that look like uploaded ones; an image chip opens the viewer; one announce', async () => {
+    const up = rig();
+    await up.add(file('a.md'), file('shot.png'));
+    const want = up.chips().map(strip);
+    assert.deepEqual(want.map((v) => v.s), ['ready', 'ready']);
+    const r = rig({ list: listOf([entry(1, { name: 'a.md' }), entry(2, { name: 'shot.png', type: 'png' })]) });
+    await bounded(r.att.restore());
+    assert.deepEqual(r.log.calls, [{ path: '/api/app/pane/%257/attachments', method: 'GET', json: undefined }]);
+    assert.deepEqual(r.chips().map(strip), want);
+    assert.equal(r.chips()[0].kids[1].className, 'att-n');
+    assert.equal(r.chips()[1].kids[1].className, 'att-n att-open');
+    assert.equal(r.tray.hidden, false);
+    assert.deepEqual(r.log.announce, ['Restored 2 attachments from before.']);
+    assert.equal(r.log.focus, 0, 'focus never moves');
+    assert.equal(r.att.pending(), true);
+  });
+
+  test('(+) P1: one chip is announced in the singular; a restored chip is removed and sent like any other', async () => {
+    const r = rig({ list: listOf([entry(1), entry(2)]) });
+    await bounded(r.att.restore());
+    r.chips()[0].kids[3].click();
+    assert.deepEqual(deletes(r).map((c) => c.path), [`/api/app/pane/%257/attachments/${hex16(1)}`]);
+    await bounded(r.att.send('hello'));
+    assert.deepEqual(sends(r).map((c) => c.json.ids), [[hex16(2)]]);
+    const one = rig({ list: GOOD() });
+    await bounded(one.att.restore());
+    assert.deepEqual(one.log.announce, ['Restored 1 attachment from before.']);
+  });
+
+  test('(−) P2: 404 (the session is gone): no chip, no line, no announce, no retry; the tray stays hidden', async () => {
+    const r = rig({ list: { status: 404, body: { error: 'no-pane' } } });
+    await bounded(r.att.restore());
+    assert.equal(lists(r).length, 1);
+    assert.deepEqual(r.log.sleeps, []);
+    assert.deepEqual(r.log.problem, []);
+    assert.deepEqual(r.log.announce, []);
+    assert.equal(r.chips().length, 0);
+    assert.equal(r.tray.hidden, true);
+    assert.equal(r.att.pending(), false);
+    assert.equal(noteOf(r).hidden, true);
+  });
+
+  test('(+) P3: a failed first answer (no answer, 429, 500, 409 no-project) waits 2000 ms once, asks again, and uses the second answer', async () => {
+    for (const first of FAILS) {
+      const r = rig({ list: sequence([first, GOOD()]) });
+      await bounded(r.att.restore());
+      assert.equal(lists(r).length, 2, String(first.status));
+      assert.deepEqual(r.log.sleeps, [2000], String(first.status));
+      assert.deepEqual(names(r), ['note-1.md'], String(first.status));
+      assert.deepEqual(r.log.problem, [], String(first.status));
+    }
+  });
+
+  test('(−) P3: two failed answers say RESTORE_FAILED once (warn, 8000), build no chip, ask only twice, and give the tray back', async () => {
+    for (const bad of FAILS) {
+      const r = rig({ list: sequence([bad, bad]) });
+      await bounded(r.att.restore());
+      assert.equal(lists(r).length, 2, String(bad.status));
+      assert.deepEqual(r.log.sleeps, [2000], String(bad.status));
+      assert.deepEqual(r.log.problem, [[RESTORE_FAILED, 'warn', 8000]], String(bad.status));
+      assert.equal(r.chips().length, 0);
+      assert.equal(r.att.pending(), false, 'restoring is over');
+      await r.add(file('a.md'));
+      assert.equal(r.chips().length, 1, 'an add works again');
+    }
+  });
+
+  test('(−) P3: a 200 whose body is not { files: [], gone: [] } counts as a failure (retried once, then RESTORE_FAILED); a good second answer is used', async () => {
+    const shapes = [null, undefined, [], 'x', 7, {}, { files: [] }, { gone: [] }, { files: 'a', gone: [] }, { files: [], gone: {} }, { files: { length: 0 }, gone: [] }];
+    for (const body of shapes) {
+      const bad = { status: 200, body };
+      const twice = rig({ list: sequence([bad, bad]) });
+      await bounded(twice.att.restore());
+      assert.deepEqual(twice.log.problem, [[RESTORE_FAILED, 'warn', 8000]], JSON.stringify(body));
+      assert.equal(lists(twice).length, 2, JSON.stringify(body));
+      assert.equal(twice.chips().length, 0);
+      const mended = rig({ list: sequence([bad, GOOD()]) });
+      await bounded(mended.att.restore());
+      assert.deepEqual(names(mended), ['note-1.md'], JSON.stringify(body));
+      assert.deepEqual(mended.log.problem, []);
+    }
+  });
+
+  test('(−) P4: entries that fail the shape check are skipped and the good one stays; skipping says nothing', async () => {
+    const bad = [
+      entry(2, { id: 'zz' }), entry(3, { id: hex16(3).toUpperCase() }), entry(4, { id: undefined }), entry(5, { id: 12 }),
+      entry(6, { type: 'exe' }), entry(7, { type: undefined }), entry(8, { size: 0 }), entry(9, { size: MAX_BYTES + 1 }),
+      entry(10, { size: 1.5 }), entry(11, { size: '12' }), entry(12, { name: 42 }), entry(13, { name: 'n'.repeat(256) }),
+      entry(14, { id: [hex16(14)] }), entry(15, { name: ['x'] }), entry(16, { name: { length: 1 } }),
+      null, undefined, 'text', 7, [],
+    ];
+    const r = rig({ list: listOf([entry(1), ...bad]) });
+    await bounded(r.att.restore());
+    assert.deepEqual(names(r), ['note-1.md']);
+    assert.deepEqual(r.log.problem, []);
+    assert.deepEqual(r.log.announce, ['Restored 1 attachment from before.']);
+  });
+
+  test('(+) P4: the edges that are valid: size 1, size 8 MiB, a name of 255 units, every type the server stores', async () => {
+    const files = [entry(1, { size: 1 }), entry(2, { size: MAX_BYTES }), entry(3, { name: 'n'.repeat(255) })];
+    const r = rig({ list: listOf(files) });
+    await bounded(r.att.restore());
+    assert.equal(r.chips().length, 3);
+    const types = ['png', 'jpeg', 'gif', 'webp', 'pdf', 'text'];
+    const t = rig({ list: listOf(types.map((type, i) => entry(i + 1, { type }))) });
+    await bounded(t.att.restore());
+    assert.deepEqual(t.chips().map((li) => view(li).s), types.map(() => 'ready'));
+  });
+
+  test('(−) P4: more than six listed files give six chips (the first six, in order); the same id twice gives one chip', async () => {
+    const eight = rig({ list: listOf([1, 2, 3, 4, 5, 6, 7, 8].map((n) => entry(n))) });
+    await bounded(eight.att.restore());
+    assert.deepEqual(names(eight), [1, 2, 3, 4, 5, 6].map((n) => `note-${n}.md`));
+    const twice = rig({ list: listOf([entry(1), entry(1, { name: 'other.md' }), entry(2)]) });
+    await bounded(twice.att.restore());
+    assert.deepEqual(names(twice), ['note-1.md', 'note-2.md']);
+  });
+
+  test('(−) P4: a duplicate id takes no slot of the six; the chips already in the tray count; a file listed after the sixth is not kept', async () => {
+    const dup = rig({ list: listOf([entry(1), entry(1), entry(2), entry(3), entry(4), entry(5), entry(6)]) });
+    await bounded(dup.att.restore());
+    assert.equal(dup.chips().length, 6, 'six distinct files');
+    const busy = rig({ list: listOf([1, 2, 3, 4, 5, 6].map((n) => entry(n))) });
+    await busy.add(file('huge.bin', MAX_BYTES + 1), file('huger.bin', MAX_BYTES + 1)); // two failed chips take two places
+    await bounded(busy.att.restore());
+    assert.deepEqual(names(busy), ['huge.bin', 'huger.bin', 'note-1.md', 'note-2.md', 'note-3.md', 'note-4.md']);
+    let answer = listOf([entry(1)]);
+    const late = rig({ list: () => answer });
+    await bounded(late.att.restore());
+    answer = listOf([2, 3, 4, 5, 6, 7, 1].map((n) => entry(n))); // a seventh entry is beyond what a tray holds
+    late.win.fire('pageshow', { persisted: true });
+    await settle();
+    assert.deepEqual(names(late), [2, 3, 4, 5, 6, 7].map((n) => `note-${n}.md`));
+  });
+
+  test('(+) P4: a restored name goes through the same clean-up as any chip name: control and bidi characters go, a blank name reads "file"', async () => {
+    const r = rig({ list: listOf([entry(1, { name: 'a\u202eb\u0007c.md' }), entry(2, { name: '   ' })]) });
+    await bounded(r.att.restore());
+    assert.deepEqual(names(r), ['abc.md', 'file']);
+  });
+
+  test('(−) P4: a restore twice in a row does not duplicate the chips; the same elements stay', async () => {
+    const r = rig({ list: listOf([entry(1), entry(2)]) });
+    await bounded(r.att.restore());
+    const first = r.chips().slice();
+    await bounded(r.att.restore());
+    assert.equal(r.chips().length, 2);
+    assert.deepEqual(r.chips(), first);
+    assert.deepEqual(r.log.announce, ['Restored 2 attachments from before.'], 'the second reconcile added nothing, so it says nothing');
+  });
+
+  test('(−) restore() does nothing without a pane, while a restore is running, or while a send is out', async () => {
+    const nopane = rig({ paneId: null });
+    await bounded(nopane.att.restore());
+    assert.equal(lists(nopane).length, 0);
+    let open;
+    const gate = new Promise((resolve) => { open = resolve; });
+    const slow = rig({ list: () => gate.then(GOOD) });
+    const first = slow.att.restore();
+    const second = slow.att.restore();
+    await settle();
+    assert.equal(lists(slow).length, 1, 'the second restore returned at once');
+    open();
+    await bounded(first);
+    await bounded(second);
+    assert.equal(slow.chips().length, 1);
+    let finishSend;
+    const r = rig({
+      reply: (p, o) => {
+        if (isList(p, o)) return listOf([]);
+        if (isUpload(p, o)) return { status: 200, body: { id: uploadId(1), type: 'text', size: 123 } };
+        if (isSend(p, o)) return new Promise((resolve) => { finishSend = () => resolve({ status: 200, body: { sent: 1, images: 0 } }); });
+        return { status: 200, body: {} };
+      },
+    });
+    await r.add(file('a.md'));
+    const sending = r.att.send('hi');
+    await settle();
+    assert.equal(r.att.sending(), true);
+    await bounded(r.att.restore());
+    assert.equal(lists(r).length, 0, 'no list while the send is out');
+    finishSend();
+    await bounded(sending);
+  });
+
+  // Final fix round, S1 (OQ5): the pane was briefly ineligible at open (404), then the user presses Check again and the mirror comes back: the chips must come back with it.
+  const NO_PANE = { status: 404, body: { error: 'no-pane' } };
+
+  test('(+) S1: a 404 at open, then retryRestore (Check again): a second list GET, and the chips show', async () => {
+    const r = rig({ list: sequence([NO_PANE, listOf([entry(1), entry(2)])]) });
+    await bounded(r.att.restore());
+    assert.equal(lists(r).length, 1);
+    assert.equal(r.chips().length, 0);
+    assert.equal(r.tray.hidden, true);
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 2, 'one more GET');
+    assert.deepEqual(names(r), ['note-1.md', 'note-2.md']);
+    assert.equal(r.tray.hidden, false);
+    assert.deepEqual(r.log.announce, ['Restored 2 attachments from before.']);
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 2, 'once it listed, a second Check again asks nothing');
+  });
+
+  test('(+) S1: a pane that is still not there on Check again stays missed: the next Check again asks again', async () => {
+    const r = rig({ list: sequence([NO_PANE, NO_PANE, GOOD()]) });
+    await bounded(r.att.restore());
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 2);
+    assert.equal(r.chips().length, 0);
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 3);
+    assert.deepEqual(names(r), ['note-1.md']);
+  });
+
+  test('(\u2212) S1: after a good list, Check again makes no GET (also an empty list, and a list that came after one retry of its own)', async () => {
+    const good = rig({ list: GOOD() });
+    await bounded(good.att.restore());
+    await bounded(good.att.retryRestore());
+    assert.equal(lists(good).length, 1);
+    const empty = rig({ list: listOf([]) });
+    await bounded(empty.att.restore());
+    await bounded(empty.att.retryRestore());
+    assert.equal(lists(empty).length, 1);
+    const mended = rig({ list: sequence([{ status: 500, body: { error: 'internal' } }, GOOD()]) });
+    await bounded(mended.att.restore());
+    assert.equal(lists(mended).length, 2, 'the attach\'s own retry');
+    await bounded(mended.att.retryRestore());
+    assert.equal(lists(mended).length, 2);
+  });
+
+  test('(\u2212) S1: only a 404 is remembered: two failed answers (RESTORE_FAILED), or a pane that never had a restore, ask nothing on Check again', async () => {
+    for (const bad of FAILS) {
+      const r = rig({ list: sequence([bad, bad]) });
+      await bounded(r.att.restore());
+      assert.equal(lists(r).length, 2, String(bad.status));
+      await bounded(r.att.retryRestore());
+      assert.equal(lists(r).length, 2, `${bad.status}: the failure was said once; Check again does not repeat it`);
+    }
+    const fresh = rig({ list: GOOD() });
+    await bounded(fresh.att.retryRestore());
+    assert.equal(lists(fresh).length, 0, 'nothing was missed');
+    const nopane = rig({ paneId: null, list: NO_PANE });
+    await bounded(nopane.att.restore());
+    await bounded(nopane.att.retryRestore());
+    assert.equal(lists(nopane).length, 0);
+  });
+
+  test('(\u2212) S1: no GET while a send is out (the 404 stays remembered for after it), and none while a list is running', async () => {
+    let finishSend;
+    const answers = [NO_PANE, listOf([])];
+    const r = rig({
+      reply: (p, o) => {
+        if (isList(p, o)) return answers.length > 1 ? answers.shift() : answers[0];
+        if (isUpload(p, o)) return { status: 200, body: { id: uploadId(1), type: 'text', size: 123 } };
+        if (isSend(p, o)) return new Promise((resolve) => { finishSend = () => resolve({ status: 200, body: { sent: 1, images: 0 } }); });
+        return { status: 200, body: {} };
+      },
+    });
+    await bounded(r.att.restore());
+    assert.equal(lists(r).length, 1);
+    await r.add(file('a.md'));
+    const sending = r.att.send('hi');
+    await settle();
+    assert.equal(r.att.sending(), true);
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 1, 'no list while the send is out');
+    finishSend();
+    await bounded(sending);
+    await bounded(r.att.retryRestore());
+    assert.equal(lists(r).length, 2, 'after the send the 404 is still remembered');
+    const slow = rig({ list: sequence([NO_PANE, listOf([])]) });
+    await bounded(slow.att.restore());
+    const first = slow.att.retryRestore();
+    const second = slow.att.retryRestore(); // the first is still out
+    await bounded(first);
+    await bounded(second);
+    assert.equal(lists(slow).length, 2, 'two Check again in a row make one more GET');
+  });
+});
+
+describe('restore (0.5.4, AT): the "Not restored" note', () => {
+  test('(+) P5: one gone name: the note shows (att-gone, role status, icon i-file-off, bold "Not restored:", the name, the one-copy line), and says it is no alert', async () => {
+    const r = rig({ list: listOf([], ['old-notes.md']) });
+    await bounded(r.att.restore());
+    const note = noteOf(r);
+    assert.equal(note.hidden, false);
+    assert.equal(note.className, 'att-gone');
+    assert.equal(note.attrs.role, 'status');
+    assert.equal('data-kind' in note.attrs, false, 'its own state, not the warn alert');
+    assert.equal(note.kids[0].tag, 'svg');
+    assert.deepEqual(icons(note), ['#i-file-off']);
+    assert.equal(note.kids[1].kids[0].tag, 'b');
+    assert.equal(note.kids[1].kids[0].textContent, 'Not restored:');
+    assert.equal(note.textContent, `Not restored: old-notes.md: ${GONE_TAIL_ONE}`);
+    assert.equal(r.tray.hidden, true, 'no chip came back');
+    assert.deepEqual(r.log.problem, []);
+    assert.deepEqual(r.log.announce, [`Not restored: old-notes.md: ${GONE_TAIL_ONE}`], 'a screen reader hears the note (round 1): one call with the note\'s own text');
+  });
+
+  test('(+) P5: a name of 60 units shows whole, one more is clipped to 59 plus the ellipsis; control and bidi characters go first; a count line for 2 or more', async () => {
+    const whole = rig({ list: listOf([], ['m'.repeat(60)]) });
+    await bounded(whole.att.restore());
+    assert.equal(noteOf(whole).textContent, `Not restored: ${'m'.repeat(60)}: ${GONE_TAIL_ONE}`);
+    const clipped = rig({ list: listOf([], ['n'.repeat(61)]) });
+    await bounded(clipped.att.restore());
+    assert.equal(noteOf(clipped).textContent, `Not restored: ${'n'.repeat(59)}${DOTS}: ${GONE_TAIL_ONE}`);
+    const dirty = rig({ list: listOf([], ['a\u202eb\u0007c.md']) });
+    await bounded(dirty.att.restore());
+    assert.equal(noteOf(dirty).textContent, `Not restored: abc.md: ${GONE_TAIL_ONE}`);
+    const three = rig({ list: listOf([], ['a.md', 'b.md', 'c.md']) });
+    await bounded(three.att.restore());
+    assert.equal(noteOf(three).textContent, `Not restored: 3 attachments: ${GONE_TAIL_MANY}`);
+  });
+
+  test('(−) P5: gone [] hides and empties the note; entries that are not strings are ignored; no more than six are counted', async () => {
+    const none = rig({ list: listOf([entry(1)], []) });
+    await bounded(none.att.restore());
+    assert.equal(noteOf(none).hidden, true);
+    assert.equal(noteOf(none).kids.length, 0);
+    assert.equal(noteOf(none).textContent, '');
+    const junk = rig({ list: listOf([], [42, null, {}, ['a.md']]) });
+    await bounded(junk.att.restore());
+    assert.equal(noteOf(junk).hidden, true);
+    const mixed = rig({ list: listOf([], ['a.md', 42]) });
+    await bounded(mixed.att.restore());
+    assert.equal(noteOf(mixed).textContent, `Not restored: a.md: ${GONE_TAIL_ONE}`);
+    const many = rig({ list: listOf([], ['1', '2', '3', '4', '5', '6', '7', '8'].map((n) => `f${n}.md`)) });
+    await bounded(many.att.restore());
+    assert.equal(noteOf(many).textContent, `Not restored: 6 attachments: ${GONE_TAIL_MANY}`);
+  });
+
+  test('(+) P5 announce: one io.announce call holds everything this restore says: files only, gone only, or both (the restored sentence, one space, the note\'s text)', async () => {
+    const files = rig({ list: listOf([entry(1), entry(2)]) });
+    await bounded(files.att.restore());
+    assert.deepEqual(files.log.announce, ['Restored 2 attachments from before.']);
+
+    const gone = rig({ list: listOf([], ['old-notes.md']) });
+    await bounded(gone.att.restore());
+    assert.deepEqual(gone.log.announce, [`Not restored: old-notes.md: ${GONE_TAIL_ONE}`]);
+    assert.equal(gone.log.announce[0], noteOf(gone).textContent, 'the words are the note\'s own');
+
+    const both = rig({ list: listOf([entry(1)], ['a.md']) });
+    await bounded(both.att.restore());
+    assert.deepEqual(both.log.announce, [`Restored 1 attachment from before. Not restored: a.md: ${GONE_TAIL_ONE}`], 'one call, so the second never replaces the first');
+
+    const many = rig({ list: listOf([entry(1), entry(2)], ['a.md', 'b.md', 'c.md']) });
+    await bounded(many.att.restore());
+    assert.deepEqual(many.log.announce, [`Restored 2 attachments from before. Not restored: 3 attachments: ${GONE_TAIL_MANY}`]);
+    assert.equal(many.log.announce[0], `Restored 2 attachments from before. ${noteOf(many).textContent}`);
+  });
+
+  test('(+) P5 announce: the note\'s words are announced as shown: a clipped name, control and bidi characters gone, six names at most', async () => {
+    for (const gone of [['n'.repeat(61)], ['a\u202eb\u0007c.md'], ['1', '2', '3', '4', '5', '6', '7', '8'].map((n) => `f${n}.md`), ['a.md', 42]]) {
+      const r = rig({ list: listOf([], gone) });
+      await bounded(r.att.restore());
+      assert.equal(r.log.announce.length, 1, JSON.stringify(gone));
+      assert.equal(r.log.announce[0], noteOf(r).textContent, JSON.stringify(gone));
+    }
+  });
+
+  test('(\u2212) P5 announce: nothing restored and nothing gone says nothing; names that are not strings count as nothing; a 404 and a failed answer say nothing of the note', async () => {
+    for (const list of [listOf([], []), listOf([], [42, null, {}, ['a.md']]), listOf([entry(2, { id: 'zz' })], []), { status: 404, body: { error: 'no-pane' } }]) {
+      const r = rig({ list });
+      await bounded(r.att.restore());
+      assert.deepEqual(r.log.announce, [], JSON.stringify(list));
+    }
+    const failed = rig({ list: sequence([{ status: 500, body: { error: 'internal' } }, { status: 500, body: { error: 'internal' } }]) });
+    await bounded(failed.att.restore());
+    assert.deepEqual(failed.log.announce, []);
+    const again = rig({ list: listOf([entry(1), entry(2)], []) });
+    await bounded(again.att.restore());
+    await bounded(again.att.restore());
+    assert.deepEqual(again.log.announce, ['Restored 2 attachments from before.'], 'a reconcile that adds nothing and finds nothing gone says nothing');
+  });
+
+  test('(\u2212) P5 announce: a tray that was never wired has no note to fill, yet restore still brings the chips back and announces the note\'s words, without throwing', async () => {
+    const gone = rig({ wired: false, list: listOf([], ['old-notes.md']) });
+    await bounded(gone.att.restore());
+    assert.deepEqual(gone.log.announce, [`Not restored: old-notes.md: ${GONE_TAIL_ONE}`]);
+    const none = rig({ wired: false, list: listOf([entry(1)], []) });
+    await bounded(none.att.restore());
+    assert.deepEqual(names(none), ['note-1.md']);
+    assert.deepEqual(none.log.announce, ['Restored 1 attachment from before.']);
+  });
+
+  test('(+) P6: the note hides at the next add that adds a chip, at the start of a pick, at a remove and at a successful send', async () => {
+    const gone = (files = []) => listOf(files, ['y.md']);
+    const add = rig({ list: gone() });
+    await bounded(add.att.restore());
+    assert.equal(noteOf(add).hidden, false);
+    await add.add(file('a.md'));
+    assert.equal(noteOf(add).hidden, true);
+    assert.equal(noteOf(add).textContent, '');
+
+    const pick = rig({ list: gone() });
+    await bounded(pick.att.restore());
+    let open;
+    pick.state.gate = new Promise((resolve) => { open = resolve; }); // the dialog stays open
+    pick.els['att-btn'].fire('click');
+    await settle();
+    assert.equal(noteOf(pick).hidden, true, 'hidden while the dialog is still open');
+    open();
+    await settle();
+
+    const rm = rig({ list: gone([entry(1)]) });
+    await bounded(rm.att.restore());
+    assert.equal(noteOf(rm).hidden, false);
+    rm.chips()[0].kids[3].click();
+    assert.equal(noteOf(rm).hidden, true);
+
+    const sent = rig({ list: gone([entry(1)]) });
+    await bounded(sent.att.restore());
+    await bounded(sent.att.send('hello'));
+    assert.equal(sends(sent).length, 1);
+    assert.equal(noteOf(sent).hidden, true);
+  });
+
+  test('(−) P6: an add that adds nothing (the tray is full) and a send that did not go leave the note', async () => {
+    const full = rig({ list: listOf([1, 2, 3, 4, 5, 6].map((n) => entry(n)), ['y.md']) });
+    await bounded(full.att.restore());
+    await full.add(file('seventh.md'));
+    assert.deepEqual(full.log.problem.at(-1), ['Up to 6 attachments per message.', 'warn', 4000]);
+    assert.equal(noteOf(full).hidden, false);
+
+    const refused = rig({ list: listOf([entry(1)], ['y.md']) });
+    await bounded(refused.att.restore());
+    refused.state.sentReply = { status: 409, body: { error: 'not-idle' } };
+    await bounded(refused.att.send('hello'));
+    assert.equal(sends(refused).length, 1);
+    assert.equal(noteOf(refused).hidden, false);
+    assert.equal(refused.chips().length, 1);
+  });
+});
+
+describe('restore (0.5.4, AT): while it runs, and on the way back', () => {
+  test('(+) P7: while restoring, add, pick and send say RESTORING and do nothing; pending() is true; after the answer all three work', async () => {
+    let open;
+    const gate = new Promise((resolve) => { open = resolve; });
+    const r = rig({ list: () => gate.then(GOOD) });
+    const done = r.att.restore();
+    await settle();
+    assert.equal(r.att.pending(), true, 'a Send pressed now goes to the tray, which says why it waits');
+    await r.add(file('a.md'));
+    r.els['att-btn'].fire('click');
+    await settle();
+    await bounded(r.att.send('hi')); // an empty tray, and still held back
+    assert.deepEqual(r.log.problem, [[RESTORING, 'warn', 4000], [RESTORING, 'warn', 4000], [RESTORING, 'warn', 4000]]);
+    assert.equal(r.log.calls.filter((c) => isUpload(c.path, c)).length, 0, 'no upload');
+    assert.equal(r.log.calls.filter(isPickStartCall).length, 0, 'no pick start');
+    assert.equal(sends(r).length, 0, 'no attach-send');
+    assert.equal(r.log.jobs, 0);
+    assert.deepEqual(r.log.ds, [], 'nothing was pushed into Claude\'s input');
+    assert.equal(r.chips().length, 0);
+    open();
+    await bounded(done);
+    assert.deepEqual(names(r), ['note-1.md']);
+    await r.add(file('b.md'));
+    assert.equal(r.chips().length, 2, 'an add works');
+    r.els['att-btn'].fire('click');
+    await settle();
+    assert.equal(r.log.calls.filter(isPickStartCall).length, 1, 'a pick works');
+    await bounded(r.att.send('hi'));
+    assert.equal(sends(r).length, 1, 'a send works');
+    assert.deepEqual(sends(r)[0].json.ids, [hex16(1), uploadId(1)]);
+    assert.equal(r.log.problem.filter(([m]) => m === RESTORING).length, 3, 'no more RESTORING lines after the answer');
+  });
+
+  test('(+) P7: while the retry waits (the first answer failed, io.sleep held), pending() is true and add, pick and send say RESTORING and do nothing; after the wait the retry finishes and all three work', async () => {
+    let open;
+    const gate = new Promise((resolve) => { open = resolve; });
+    const r = rig({ list: sequence([{ status: 500, body: { error: 'internal' } }, GOOD()]), sleep: () => gate });
+    const done = r.att.restore();
+    await settle();
+    assert.deepEqual(r.log.sleeps, [2000], 'the retry is waiting');
+    assert.equal(lists(r).length, 1, 'and has not asked again');
+    assert.equal(r.att.pending(), true, 'a Send pressed now goes to the tray, which says why it waits');
+    await bounded(r.add(file('a.md')));
+    r.els['att-btn'].fire('click');
+    await settle();
+    await bounded(r.att.send('hi'));
+    assert.deepEqual(r.log.problem, [[RESTORING, 'warn', 4000], [RESTORING, 'warn', 4000], [RESTORING, 'warn', 4000]]);
+    assert.equal(r.log.calls.filter((c) => isUpload(c.path, c)).length, 0, 'no upload');
+    assert.equal(r.log.calls.filter(isPickStartCall).length, 0, 'no pick start');
+    assert.equal(sends(r).length, 0, 'no attach-send');
+    assert.deepEqual(r.log.ds, [], 'nothing was pushed into Claude\'s input');
+    assert.equal(r.chips().length, 0);
+    open();
+    await bounded(done);
+    assert.equal(lists(r).length, 2, 'the retry asked once more');
+    assert.deepEqual(names(r), ['note-1.md']);
+    await bounded(r.add(file('b.md')));
+    assert.equal(r.chips().length, 2, 'an add works after the wait');
+    r.els['att-btn'].fire('click');
+    await settle();
+    assert.equal(r.log.calls.filter(isPickStartCall).length, 1, 'a pick works');
+    await bounded(r.att.send('hi'));
+    assert.equal(sends(r).length, 1, 'a send works');
+    assert.equal(r.log.problem.filter(([m]) => m === RESTORING).length, 3, 'no more RESTORING lines after the wait');
+  });
+
+  test('(+) P8: pageshow with persisted true asks again: ready chips not listed go (no request), new ones come, uploading and failed chips and the others stay', async () => {
+    let answer = listOf([entry(1), entry(2)]);
+    const r = rig({ list: () => answer, read: () => new Promise(() => {}) });
+    await bounded(r.att.restore());
+    await r.add(file('slow.md'), file('huge.bin', MAX_BYTES + 1));
+    const before = r.chips().slice();
+    assert.deepEqual(before.map((li) => view(li).s), ['ready', 'ready', 'uploading', 'failed']);
+    answer = listOf([entry(2), entry(3)]);
+    const calls = r.log.calls.length;
+    r.win.fire('pageshow', { persisted: true });
+    await settle();
+    assert.equal(r.log.calls.length, calls + 1, 'one GET and nothing else');
+    assert.equal(lists(r).length, 2);
+    assert.deepEqual(names(r), ['note-2.md', 'slow.md', 'huge.bin', 'note-3.md']);
+    assert.equal(r.chips()[0], before[1], 'a chip the list still holds is the same element');
+    assert.equal(r.chips()[1], before[2]);
+    assert.equal(r.chips()[2], before[3]);
+    assert.deepEqual(deletes(r), [], 'a chip another page sent or removed is left out without a DELETE');
+    assert.equal(r.log.announce.at(-1), 'Restored 1 attachment from before.');
+    answer = listOf([]);
+    r.win.fire('pageshow', { persisted: true });
+    await settle();
+    assert.deepEqual(names(r), ['slow.md', 'huge.bin']);
+  });
+
+  test('(+) P8: when the list is empty and no chip is left, the tray hides again', async () => {
+    let answer = listOf([entry(1)]);
+    const r = rig({ list: () => answer });
+    await bounded(r.att.restore());
+    assert.equal(r.tray.hidden, false);
+    answer = listOf([]);
+    r.win.fire('pageshow', { persisted: true });
+    await settle();
+    assert.equal(r.chips().length, 0);
+    assert.equal(r.tray.hidden, true);
+    assert.deepEqual(deletes(r), []);
+  });
+
+  test('(−) P8: pageshow with persisted false, missing, \'true\' or 1 asks nothing; pagehide has no listener any more', async () => {
+    const r = rig();
+    for (const ev of [{ persisted: false }, {}, { persisted: 'true' }, { persisted: 1 }, { persisted: undefined }]) {
+      r.win.fire('pageshow', ev);
+      await settle();
+      assert.equal(lists(r).length, 0, JSON.stringify(ev));
+    }
+    assert.equal(r.win.listeners.pageshow.length, 1);
+    assert.deepEqual(r.win.listeners.pagehide ?? [], []);
+    assert.equal(/pagehide/.test(code(SRC)), false, 'attach.js has no pagehide code');
+    assert.equal(/AbortSignal\.timeout/.test(code(SRC)), false, 'older web views have no AbortSignal.timeout');
+    const nopane = rig({ paneId: null });
+    nopane.win.fire('pageshow', { persisted: true });
+    await settle();
+    assert.equal(lists(nopane).length, 0);
+  });
+});
+
+describe('restore (0.5.4, AT): the request is bounded', () => {
+  afterEach(() => { mock.timers.reset(); });
+  const hang = (p, o) => (o.signal ? new Promise((resolve) => { o.signal.addEventListener('abort', () => resolve({ status: 0, body: null })); }) : new Promise(() => {})); // answers only when aborted, as session.js call does
+
+  test('(+) P11: the GET carries a signal; an answer before 3000 ms leaves it unaborted and the timer is cleared', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const r = rig({ list: GOOD() });
+    let finished = false;
+    r.att.restore().then(() => { finished = true; });
+    await settle();
+    assert.equal(finished, true);
+    assert.equal(r.log.signals.length, 1, 'the call carried a signal');
+    assert.equal(r.log.signals[0].aborted, false);
+    mock.timers.tick(10000);
+    assert.equal(r.log.signals[0].aborted, false, 'no timer is left to abort it');
+    assert.deepEqual(names(r), ['note-1.md']);
+  });
+
+  test('(−) P11: an answer that never comes is cut at 3000 ms, asked again after 2000 ms, cut again; then RESTORE_FAILED and the tray works', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const r = rig({ list: hang });
+    let finished = false;
+    r.att.restore().then(() => { finished = true; });
+    await settle();
+    assert.equal(r.log.signals.length, 1);
+    assert.equal(r.att.pending(), true);
+    mock.timers.tick(2999);
+    await settle();
+    assert.equal(r.log.signals[0].aborted, false);
+    assert.equal(finished, false);
+    mock.timers.tick(1);
+    await settle();
+    assert.equal(r.log.signals[0].aborted, true);
+    assert.deepEqual(r.log.sleeps, [2000]);
+    assert.equal(r.log.signals.length, 2, 'asked once more');
+    assert.equal(r.log.signals[1].aborted, false);
+    assert.equal(finished, false);
+    mock.timers.tick(2999);
+    await settle();
+    assert.equal(finished, false);
+    mock.timers.tick(1);
+    await settle();
+    assert.equal(r.log.signals[1].aborted, true);
+    assert.equal(finished, true);
+    assert.deepEqual(r.log.problem, [[RESTORE_FAILED, 'warn', 8000]]);
+    assert.equal(r.att.pending(), false);
+    await r.add(file('a.md'));
+    assert.deepEqual(r.chips().map((li) => view(li).s), ['ready'], 'an add works');
+    assert.equal(r.log.signals.length, 2, 'and nothing asked a third time');
+  });
+});
+
+describe('restore (0.5.4, AT): the tray-full code and the text-only names', () => {
+  test('(+) P9: 409 tray-full shows "Too many" and the six-per-message line, for an upload and for a picked file', async () => {
+    const want = { short: 'Too many', line: 'Up to 6 attachments per message.' };
+    assert.deepEqual(uploadView({ status: 409, code: 'tray-full' }), want);
+    assert.deepEqual(pickView('tray-full'), want);
+    const r = rig({ reply: (p, o) => (isUpload(p, o) ? { status: 409, body: { error: 'tray-full' } } : { status: 200, body: {} }) });
+    await r.add(file('a.md'));
+    assert.equal(view(r.chips()[0]).s, 'failed');
+    assert.equal(view(r.chips()[0]).meta, 'Too many');
+    assert.deepEqual(r.log.problem.at(-1), ['Up to 6 attachments per message.', 'error', 8000]);
+  });
+
+  test('(−) P9: a 409 with another code never shows "Too many"; the older 409 codes read as before', () => {
+    for (const code of ['tray-ful', 'tray_full', 'TRAY-FULL', 'constructor', undefined]) {
+      assert.deepEqual(uploadView({ status: 409, code }), { short: 'Upload failed', line: null }, String(code));
+    }
+    assert.equal(uploadView({ status: 413, code: 'tray-full' }).short, `Too big ${MID} max 8 MB`);
+    assert.equal(uploadView({ status: 507, code: 'tray-full' }).short, 'Upload failed');
+    assert.equal(uploadView({ status: 409, code: 'no-project' }).short, 'Try again');
+    assert.equal(uploadView({ status: 409, code: 'path-unusable' }).short, "Can't store");
+    assert.equal(pickView('tray-ful').short, 'Upload failed');
+    assert.equal(pickView('no-project').short, 'Try again');
+  });
+
+  test('(+) P10: a name that looks like markup restores as text: no element is made from it, in a chip or in the note', async () => {
+    const evil = '<img src=x onerror=alert(1)>.png';
+    const r = rig({ list: listOf([entry(1, { name: evil, type: 'png' })], ['<b>x</b>.md']) });
+    await bounded(r.att.restore());
+    const li = r.chips()[0];
+    assert.equal(view(li).name, evil);
+    assert.equal(li.all((n) => n.tag === 'img').length, 0);
+    assert.equal(li.all((n) => n.tag === 'b').length, 0);
+    const note = noteOf(r);
+    assert.equal(note.all((n) => n.tag === 'b').length, 1, 'only the label is bold');
+    assert.equal(note.textContent, `Not restored: <b>x</b>.md: ${GONE_TAIL_ONE}`);
+    assert.equal(note.all((n) => n.tag === 'img').length, 0);
   });
 });
 
@@ -1742,11 +2417,11 @@ describe('public/attach.js source', () => {
     assert.match(c, /\.textContent/, 'strings from files and the server are text');
   });
 
-  test('(+) it reaches the server only through the io the page gives it: no route string of its own (tier separation), six routes asked of io.path', () => {
+  test('(+) it reaches the server only through the io the page gives it: no route string of its own (tier separation), seven asks of io.path (0.5.4 AT: the list is the upload\'s route)', () => {
     const c = code(SRC);
     assert.doesNotMatch(c, /\/api\//, 'ui.test.js: only the app-tier modules name /api/app, and session.js builds the paths');
     for (const call of ["io.path('attachments')", "io.path('attach-send')", 'io.path(`attachments/${id}`)', "io.path('attachments/pick')", 'io.path(`attachments/pick/${reqId}`)', 'io.path(`attachments/${chip.id}/image`)']) assert.ok(c.includes(call), call);
-    assert.equal([...c.matchAll(/io\.path\(/g)].length, 6, 'the upload, the send, the delete, the chooser start and poll, and the image (viewer) paths only');
+    assert.equal([...c.matchAll(/io\.path\(/g)].length, 7, 'the upload, the list (0.5.4 AT), the send, the delete, the chooser start and poll, and the image (viewer) paths only');
   });
 
   test('(−) the page has no webview file input anywhere: attach.js and session.html hold no att-input, no type="file", no input.click()', () => {
@@ -1887,7 +2562,8 @@ describe('the hooks in session.js (H6)', () => {
     const att = src.indexOf('const ATT = createAttachTray(');
     assert.ok(ds >= 0 && att > ds);
     const call = src.slice(att, src.indexOf('});', att) + 3);
-    for (const k of ['paneId', 'path:', 'call', 'appFetch', 'ds: DS', 'enqueueJob', 'waitHold', 'say', 'announce', 'showProblem', 'clearProblem', 'showNotice', 'setGone', 'box:', 'cols:', 'clearBox', 'focusBox']) assert.ok(call.includes(k), k);
+    for (const k of ['paneId', 'path:', 'call', 'ds: DS', 'enqueueJob', 'waitHold', 'say', 'announce', 'showProblem', 'clearProblem', 'showNotice', 'setGone', 'box:', 'cols:', 'clearBox', 'focusBox']) assert.ok(call.includes(k), k);
+    assert.doesNotMatch(call, /appFetch/, 'the tray takes no appFetch: attach.js has no use for it since the pagehide DELETE went (0.5.4, AT round 1)');
     assert.doesNotMatch(call, /working|A\.kind/, 'W13: the tray is not told whether Claude works; attachments go while it does (Claude queues them)');
   });
 

@@ -192,7 +192,7 @@ export function applyMirror(container, model, cursor) {
 
 // ---- input encoding ---------------------------------------------------------------------------------------------
 
-const utf8Bytes = (s) => new TextEncoder().encode(s).length;
+export const utf8Bytes = (s) => new TextEncoder().encode(s).length; // draft-sync.js measures the kept text with it (0.5.4, LT)
 
 /**
  * Composer text -> request bodies for POST /pane/:id/keys, or a refusal. Empty -> no body (just the Enter). One plain line of at most
@@ -209,7 +209,7 @@ export function planSend(value) {
   }
   const bytes = utf8Bytes(v);
   if (bytes > LIMITS.paste) {
-    return { ok: false, message: `This is ${Math.ceil(bytes / 1024)} KB. A paste can be at most 16 KB. Shorten it or send it in parts. Your text is kept.` };
+    return { ok: false, size: true, message: `This is ${Math.ceil(bytes / 1024)} KB. A paste can be at most 16 KB. Shorten it or send it in parts. Your text is kept.` }; // `size`: the page takes this line down when the text fits again (0.5.4, final S2)
   }
   const lines = v.split('\n').length;
   return { ok: true, payloads: [{ paste: v, send: true }], summary: lines > 1 ? `a paste of ${lines} lines + Enter` : `a paste of ${v.length} characters + Enter` };

@@ -27,7 +27,7 @@ after(() => restore());
 
 const DEFAULT = { enabled: true, pct: 80, window: 400000 };
 const ERR = 'Choose a whole number from 20 to 95.';
-const OFF_LINE = "Off. Sessions nika starts keep Claude Code's own setting.";
+const OFF_LINE = "Off. nika sets nothing and types no /compact; Claude Code's own setting applies."; // 0.5.4 AC, test 39
 const LINE_80_400K = 'Compacts at about 320k tokens (about 160k on 200k-window models).';
 
 // ---- the page code in a vm ---------------------------------------------------------------------------------------------------------
@@ -37,16 +37,17 @@ function runModule(file, ctx, tail) {
   return vm.runInNewContext(`${src}\n${tail}`, ctx);
 }
 
-function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = false } = {}) {
+function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = false, fit = { mode: 'auto' } } = {}) {
   const base = {
     ui: { theme: 'system', singleKeyShortcuts: true }, models: { orchestrator: 'opus', reasoner: 'opus', builder: 'claude-sonnet-5-5', scout: 'haiku' },
     remoteControl: { enabled: false, prefix: '' }, permissionMode: 'default', panePlacement: 'beside', limits: { maxAgents: 3 },
-    rules: { localTemplate: null }, perProject: {}, compaction, ...(attachments ? { attachments } : {}), // an older server sends no attachments group
+    rules: { localTemplate: null }, perProject: {}, compaction, ...(attachments ? { attachments } : {}), ...(fit ? { fit } : {}), // an older server sends no attachments group, and (before 0.5.4) no fit group
   };
   const radios = {
     theme: ['system', 'light', 'dark'].map((v) => Object.assign(new El('input'), { value: v })),
     perm: ['default', 'manual', 'acceptEdits', 'plan', 'auto', 'dontAsk'].map((v) => Object.assign(new El('input'), { value: v })),
     place: ['beside', 'under-last'].map((v) => Object.assign(new El('input'), { value: v })),
+    fit: ['auto', 'fill', 'terminal', 'off'].map((v) => Object.assign(new El('input'), { value: v })), // 0.5.4 P2
   };
   const nodes = new Map();
   // a real input's value is always a string, whatever was assigned to it
@@ -126,7 +127,7 @@ function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = 
   };
   runModule('settings.js', ctx, '({ hooks })');
   const r = {
-    node, buttons, calls, toasts, announced, state, form, pct, release, rxFields, RX,
+    node, buttons, calls, toasts, announced, state, form, pct, release, rxFields, RX, radios,
     keep: node('#set-keep-days'),
     sw: node('#set-compact'),
     win: node('#set-compact-win'),
@@ -139,6 +140,7 @@ function rig({ compaction = DEFAULT, attachments, put = { status: 200 }, hold = 
     typeKeep: (v) => { r.keep.value = v; form.fire('input'); },
     blur: () => pct.fire('blur'),
     toggle: (on) => { r.sw.checked = on; form.fire('change'); },
+    pickFit: (v) => { for (const x of radios.fit) x.checked = x.value === v; form.fire('change'); }, // 0.5.4 P2
     pick: (v) => { r.win.value = v; form.fire('change'); },
     submit: () => form.fire('submit'),
     line: () => (r.result.hidden ? null : r.result.textContent),
@@ -201,7 +203,7 @@ describe('index.html: the Auto-compact section', () => {
     assert.match(sec, /<span class="onoff-st" id="set-compact-st" aria-hidden="true"><\/span>/);
     assert.match(sec, /<p class="help" id="set-compact-result"><\/p>/);
     assert.match(sec, /<p class="help" id="set-compact-cap">On a model with a 200k window, Claude can't compact later than about 83 %, so a higher % acts as about 83 % on those models\.<\/p>/);
-    assert.match(sec, /<p class="help" id="set-compact-help">Applies only to sessions nika starts: the orchestrator, a resumed orchestrator and spawned agents, from their next start\. Running sessions and sessions you start yourself keep Claude Code's own setting\. Compact in the session window works at any time\.<\/p>/);
+    assert.match(sec, /<p class="help" id="set-compact-help">Sessions nika starts get this point from their next start\. In any other Claude session nika shows, nika types \/compact when the session has waited 60 seconds past this point and you have not typed in nika for it: once each time it grows past the point, at most every 10 minutes\. nika can't type into a session in a plain terminal or another tmux server, types nothing while only the browser dashboard runs, and can't compact a session that keeps working: Claude does that itself, or nika at its next wait\. Compact in the session window works at any time\.<\/p>/); // 0.5.4 AC, test 39 (design 7.4)
     assert.match(sec, /<p class="err" id="set-compact-err" hidden><\/p>/);
   });
 
@@ -487,7 +489,7 @@ describe('Auto-compact: Save', () => {
       const [put] = s.puts();
       assert.deepEqual(put.json.compaction, { enabled: true, pct: 90, window }, value);
       assert.equal(typeof put.json.compaction.pct, 'number');
-      assert.deepEqual(Object.keys(put.json).sort(), ['attachments', 'compaction', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']);
+      assert.deepEqual(Object.keys(put.json).sort(), ['attachments', 'compaction', 'fit', 'limits', 'models', 'panePlacement', 'permissionMode', 'remoteControl', 'rules', 'ui']); // 0.5.4 P2: fit is one more group
     }
   });
 
@@ -637,7 +639,8 @@ describe('index.html: the Attachments section', () => {
     assert.ok(sec, 's-attach exists');
     const at = (s) => HTML.indexOf(s);
     assert.ok(at('id="s-panes"') < at('id="s-attach"') && at('id="s-attach"') < at('id="s-tpl"'));
-    assert.match(HTML, /data-jump="s-panes">Panes and limits<\/a><a href="#settings" data-jump="s-attach">Attachments<\/a><a href="#settings" data-jump="s-tpl">Rules template<\/a>/);
+    // 0.5.4 P2 (requirement change): the Session window link sits between Panes and limits and Attachments (its own test follows below)
+    assert.match(HTML, /data-jump="s-fit">Session window<\/a><a href="#settings" data-jump="s-attach">Attachments<\/a><a href="#settings" data-jump="s-tpl">Rules template<\/a>/);
     assert.match(sec, /<section class="set-sec" id="s-attach" aria-labelledby="s-attach-h">\s*<h2 id="s-attach-h">Attachments<\/h2>/);
   });
 
@@ -909,4 +912,296 @@ describe('Settings: Save focuses the first invalid field in the page', () => {
       });
     }
   }
+});
+
+// ---- 0.5.4 P2 (design-052d 2.2): the Session window section of Settings: the Fit mode (M-23, M-24) ------------------------------------
+// The copy is written out here from the design on purpose (the tests must not read it back from the page).
+const FIT_MODES_LIST = ['auto', 'fill', 'terminal', 'off'];
+const FIT_CARDS = [
+  ['auto', 'fit', 'Auto', 'Fills the panel when it can. When your terminal shows the same tmux window, the window you click into gets the size.'],
+  ['fill', 'fit-pin', 'Always fill the panel', 'Sizes the tmux window to the panel while a session window is open, also while you work in your terminal. Your terminal shows dots around it, and other panes in that window shrink.'],
+  ['terminal', 'term-pin', "Your terminal's size", "Never resizes a tmux window. nika zooms Claude's pane when the window has others and scales the text to the panel."],
+  ['off', 'fit-off', 'Off', 'nika changes nothing in tmux. The session window shows the pane at its own size, with the text scaled down when it is larger than the panel.'],
+];
+const FIT_HELP = 'Open session windows follow a change within 5 seconds. When a session window closes, nika puts back what it changed in tmux.';
+
+describe('index.html: the Session window section (0.5.4 P2, M-23)', () => {
+  const sec = /<section class="set-sec" id="s-fit"[\s\S]*?<\/section>/.exec(HTML)?.[0];
+  const SESSION_HTML = read('session.html');
+  const symbolOf = (src, n) => new RegExp(`<symbol id="i-${n}" viewBox="0 0 16 16">([\\s\\S]*?)</symbol>`).exec(src)?.[1] ?? null;
+
+  test('(+) the section sits right after Panes and limits and before Attachments; the index links in the same order', () => {
+    assert.ok(sec, 's-fit exists');
+    const at = (s) => HTML.indexOf(s);
+    assert.ok(at('id="s-panes"') < at('id="s-fit"') && at('id="s-fit"') < at('id="s-attach"'));
+    assert.match(HTML, /data-jump="s-panes">Panes and limits<\/a><a href="#settings" data-jump="s-fit">Session window<\/a><a href="#settings" data-jump="s-attach">Attachments<\/a>/);
+    assert.match(sec, /<section class="set-sec" id="s-fit" aria-labelledby="s-fit-h">\s*<h2 id="s-fit-h">Session window<\/h2>\s*<p>How a session window fits Claude's pane to its panel\. For every project\.<\/p>/);
+  });
+
+  test('(+) a fieldset with a visible legend, described by the help, holds the four radios named fit, in the order of the modes', () => {
+    assert.match(sec, /<fieldset aria-describedby="set-fit-help"><legend>Fit Claude's pane<\/legend>/);
+    assert.deepEqual([...sec.matchAll(/<input type="radio" name="fit" value="([a-z]+)">/g)].map((m) => m[1]), FIT_MODES_LIST);
+    assert.equal([...sec.matchAll(/<input\b/g)].length, 4, 'nothing else to fill in');
+  });
+
+  test('(+) each card is a radio-card with its own icon (hidden from screen readers), its own title and its own words', () => {
+    const cards = [...sec.matchAll(/<label class="radio-card">([\s\S]*?)<\/label>/g)].map((m) => m[1]);
+    assert.equal(cards.length, 4);
+    FIT_CARDS.forEach(([value, icon, title, words], i) => {
+      assert.equal(cards[i], `<input type="radio" name="fit" value="${value}"><span><b><svg class="ic" aria-hidden="true"><use href="#i-${icon}"/></svg> ${title}</b><span>${words}</span></span>`, value);
+    });
+    assert.equal(new Set(FIT_CARDS.map((c) => c[1])).size, 4, 'four icons');
+    assert.equal(new Set(FIT_CARDS.map((c) => c[2])).size, 4, 'four titles');
+  });
+
+  test('(+) the help sits under the group with the id the fieldset names; it is a help line, not an error', () => {
+    assert.match(sec, new RegExp(`<p class="help" id="set-fit-help">${FIT_HELP.replace(/[.]/g, '\\.')}</p>`));
+    assert.equal([...HTML.matchAll(/\bid="set-fit-help"/g)].length, 1);
+  });
+
+  test('(+) the sprite of index.html has i-fit, i-fit-pin, i-term-pin and i-fit-off once each, in the stroke style, and they are the drawings session.html has', () => {
+    const names = ['fit', 'fit-pin', 'term-pin', 'fit-off'];
+    const drawn = names.map((n) => {
+      assert.equal(HTML.split(`<symbol id="i-${n}"`).length - 1, 1, n);
+      const body = symbolOf(HTML, n);
+      assert.ok(body, n);
+      assert.doesNotMatch(body, /\b(fill|stroke|style)=/, n);
+      assert.equal(body, symbolOf(SESSION_HTML, n), `${n}: one drawing on both pages`);
+      return body;
+    });
+    assert.equal(new Set(drawn).size, 4, 'four different drawings');
+  });
+
+  // ---- 0.5.4 SF (N-4, live check LC-P2): the pin dot of i-fit-pin and i-term-pin is its own dot, with a clear gap to the bracket or the frame ----
+  /** The segments (x1, y1, x2, y2) of an SVG path of M m H h V v L l commands, and of a rect (its four sides, corners taken sharp: the safe side for a dot inside). */
+  const segmentsOf = (body) => {
+    const segs = [];
+    for (const m of body.matchAll(/<rect\b[^>]*\bx="([\d.]+)"[^>]*\by="([\d.]+)"[^>]*\bwidth="([\d.]+)"[^>]*\bheight="([\d.]+)"/g)) {
+      const [x, y, w, h] = m.slice(1).map(Number);
+      segs.push([x, y, x + w, y], [x + w, y, x + w, y + h], [x + w, y + h, x, y + h], [x, y + h, x, y]);
+    }
+    for (const m of body.matchAll(/<path\b[^>]*\bd="([^"]*)"/g)) {
+      let x = 0;
+      let y = 0;
+      let sx = 0;
+      let sy = 0;
+      for (const [, cmd, args] of m[1].matchAll(/([MmHhVvLl])([^MmHhVvLl]*)/g)) {
+        const n = (args.match(/-?\d*\.?\d+/g) ?? []).map(Number);
+        const rel = cmd === cmd.toLowerCase();
+        const up = cmd.toUpperCase();
+        if (up === 'H') for (const v of n) { const nx = rel ? x + v : v; segs.push([x, y, nx, y]); x = nx; }
+        else if (up === 'V') for (const v of n) { const ny = rel ? y + v : v; segs.push([x, y, x, ny]); y = ny; }
+        else for (let i = 0; i + 1 < n.length; i += 2) {
+          const nx = rel ? x + n[i] : n[i];
+          const ny = rel ? y + n[i + 1] : n[i + 1];
+          if (up === 'M' && i === 0) { sx = nx; sy = ny; } else segs.push([x, y, nx, ny]);
+          x = nx;
+          y = ny;
+        }
+      }
+      void sx; void sy;
+    }
+    return segs;
+  };
+  const distToSegment = (px, py, [x1, y1, x2, y2]) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const t = dx === 0 && dy === 0 ? 0 : Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  };
+  const STROKE = Number(/\.ic\s*\{[^}]*stroke-width:\s*([\d.]+)/.exec(read('app.css'))[1]);
+  const dotOf = (body) => {
+    const m = /<circle\b[^>]*\bcx="([\d.]+)"[^>]*\bcy="([\d.]+)"[^>]*\br="([\d.]*)"/.exec(body);
+    return m && { cx: Number(m[1]), cy: Number(m[2]), r: Number(m[3]), R: Number(m[3]) + STROKE / 2 };
+  };
+
+  for (const [where, src] of [['index.html', () => HTML], ['session.html', () => SESSION_HTML]]) {
+    for (const n of ['fit-pin', 'term-pin']) {
+      test(`(+) N-4 (${where}, i-${n}): the dot is a filled circle of radius 0.75 to 1.25 (a stroke of ${STROKE} drawing it), at least viewBox width / 14 = 1.143 away from every other stroke, and inside the viewBox`, () => {
+        const body = symbolOf(src(), n);
+        const dot = dotOf(body);
+        assert.ok(dot, 'a dot');
+        assert.ok(dot.R >= 0.75 && dot.R <= 1.25, `visual radius ${dot.R}`);
+        assert.ok(dot.r - STROKE / 2 <= 0, 'a stroke wider than the circle: no hole in the middle, a filled dot');
+        const others = segmentsOf(body);
+        assert.ok(others.length >= 4, 'the bracket or the frame is there');
+        const gap = Math.min(...others.map((seg) => distToSegment(dot.cx, dot.cy, seg))) - STROKE / 2 - dot.R;
+        assert.ok(gap >= 16 / 14, `gap ${gap.toFixed(3)} (viewBox units) to the nearest stroke`);
+        assert.ok(dot.cx - dot.R >= 1 && dot.cx + dot.R <= 15 && dot.cy - dot.R >= 1 && dot.cy + dot.R <= 15, 'inside the viewBox');
+      });
+    }
+  }
+
+  test('(\u2212) N-4: the geometry check catches the old dot (cx 12.5, cy 3.5, r .75: it overlaps the corner bracket) and a dot that is only 1 unit from the frame', () => {
+    const oldFit = '<path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/><circle cx="12.5" cy="3.5" r=".75"/>';
+    const oldDot = dotOf(oldFit);
+    const gap = (body, dot) => Math.min(...segmentsOf(body).map((seg) => distToSegment(dot.cx, dot.cy, seg))) - STROKE / 2 - dot.R;
+    assert.ok(gap(oldFit, oldDot) < 0, `the old dot overlaps: ${gap(oldFit, oldDot).toFixed(2)}`);
+    const tight = '<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><circle cx="11.5" cy="5.5" r=".25"/>';
+    assert.ok(gap(tight, dotOf(tight)) < 16 / 14, 'one unit from the frame is not enough');
+  });
+
+  test('(+) N-4: the pins are still their base icon plus the dot: the same bracket and frame on both pages', () => {
+    for (const n of ['fit-pin', 'term-pin']) assert.equal(symbolOf(HTML, n), symbolOf(SESSION_HTML, n), n);
+    for (const [pin, base] of [['fit-pin', 'fit'], ['term-pin', 'term']]) {
+      const withoutDot = symbolOf(SESSION_HTML, pin).replace(/<circle\b[^>]*\/>/, '');
+      assert.equal(withoutDot, symbolOf(SESSION_HTML, base), `${pin} minus its dot is ${base}`);
+    }
+  });
+
+  // ---- 0.5.4 SF (N-5, live check LC-P2): the icon in a Settings card's title sits on the title's first line, not above it ----
+  const APP_CSS = read('app.css');
+  test('(+) N-5: the icon in a radio-card title is moved down 3px (13px text, 16px icon: its middle moves from 8px to 5px above the baseline, the middle of the capitals) by one rule that only touches that icon', () => {
+    const rules = [...APP_CSS.matchAll(/(^|\})\s*([^{}]*\.radio-card b[^{}]*\.ic[^{}]*)\{([^}]*)\}/g)];
+    assert.equal(rules.length, 1, 'one rule');
+    assert.equal(rules[0][2].trim(), '.radio-card b .ic');
+    assert.match(rules[0][3], /^\s*vertical-align:\s*-3px;\s*$/);
+    for (const card of sec.match(/<label class="radio-card">[\s\S]*?<\/label>/g)) assert.match(card, /<b><svg class="ic" aria-hidden="true">/, 'the icon is inline in the title (the rule\'s b)');
+  });
+
+  test('(\u2212) N-5: no other icon moves: the base .ic rule has no vertical-align, and nothing else in app.css aligns an .ic inside a title', () => {
+    const base = /^\.ic\s*\{([^}]*)\}/m.exec(APP_CSS);
+    assert.ok(base, 'the base .ic rule');
+    assert.doesNotMatch(base[1], /vertical-align/);
+    assert.equal([...APP_CSS.matchAll(/vertical-align:\s*-3px/g)].length, 1, 'one such alignment');
+  });
+
+  test('(\u2212) the page keeps its ids unique, and the new section has no inline style, script or handler', () => {
+    const ids = [...HTML.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(ids.filter((id, i) => ids.indexOf(id) !== i), []);
+    assert.doesNotMatch(sec, /\bstyle=|<script|\bon[a-z]+=/);
+    assert.equal([...sec].every((ch) => ch.codePointAt(0) < 128), true, 'ASCII');
+  });
+});
+
+describe('Session window: the Fit mode setting (M-23, M-24)', () => {
+  const checked = (s) => s.radios.fit.filter((r) => r.checked).map((r) => r.value);
+
+  test('(+) M-23 populate: each saved mode checks its own card and no other, and the Save bar stays hidden', async () => {
+    for (const mode of FIT_MODES_LIST) {
+      const s = rig({ fit: { mode } });
+      await s.enter();
+      assert.deepEqual(checked(s), [mode], mode);
+      assert.equal(s.bar().hidden, true, mode);
+    }
+  });
+
+  test('(+) M-24 populate: a saved config with no fit group (an older server) checks Auto, the Save bar stays hidden, and the first save carries fit: { mode: auto }', async () => {
+    const s = rig({ fit: null });
+    assert.equal('fit' in s.state.settings, false, 'the premise: no fit group');
+    await s.enter();
+    assert.deepEqual(checked(s), ['auto']);
+    assert.equal(s.bar().hidden, true);
+    s.type('90');
+    s.submit();
+    await settle();
+    assert.deepEqual(s.puts()[0].json.fit, { mode: 'auto' });
+  });
+
+  test('(+) M-23 choosing a card shows the Save bar once, and Save sends exactly fit: { mode } next to the other groups, unchanged', async () => {
+    const s = rig();
+    await s.enter();
+    s.pickFit('fill');
+    assert.equal(s.bar().hidden, false);
+    assert.deepEqual(s.announced, ['Unsaved changes. Save or discard them at the bottom.']);
+    s.pickFit('terminal');
+    assert.equal(s.announced.length, 1, 'said once, while the bar is up');
+    s.submit();
+    await settle();
+    assert.equal(s.puts().length, 1);
+    const [put] = s.puts();
+    assert.deepEqual(put.json.fit, { mode: 'terminal' });
+    assert.deepEqual(Object.keys(put.json.fit), ['mode']);
+    assert.equal(put.json.panePlacement, 'beside');
+    assert.deepEqual(put.json.limits, { maxAgents: 3 });
+    assert.equal(s.bar().hidden, true, 'saved');
+    assert.deepEqual(checked(s), ['terminal'], 'the saved card stays checked');
+  });
+
+  test('(+) M-23 each of the four modes can be saved, from each of the others', async () => {
+    for (const from of FIT_MODES_LIST) {
+      for (const to of FIT_MODES_LIST.filter((m) => m !== from)) {
+        const s = rig({ fit: { mode: from } });
+        await s.enter();
+        s.pickFit(to);
+        s.submit();
+        await settle();
+        assert.deepEqual(s.puts().map((p) => p.json.fit), [{ mode: to }], `${from} -> ${to}`);
+      }
+    }
+  });
+
+  test('(\u2212) M-23 choosing another card and then the saved one again hides the Save bar; nothing is sent, and Save does nothing', async () => {
+    const s = rig({ fit: { mode: 'fill' } });
+    await s.enter();
+    s.pickFit('off');
+    assert.equal(s.bar().hidden, false);
+    s.pickFit('fill');
+    assert.equal(s.bar().hidden, true);
+    s.submit();
+    await settle();
+    assert.deepEqual(s.puts(), []);
+  });
+
+  test('(\u2212) M-23 Discard puts the saved card back and hides the bar', async () => {
+    const s = rig({ fit: { mode: 'terminal' } });
+    await s.enter();
+    s.pickFit('off');
+    assert.equal(s.bar().hidden, false);
+    s.node('#set-discard').click();
+    assert.deepEqual(checked(s), ['terminal']);
+    assert.equal(s.bar().hidden, true);
+  });
+
+  test('(\u2212) M-23 a refused save keeps the chosen card and the bar, shows the server\'s message, and sends nothing twice', async () => {
+    const s = rig({ put: { status: 400, body: { message: 'fit.mode invalid, default used' } } });
+    await s.enter();
+    s.pickFit('fill');
+    s.submit();
+    await settle();
+    assert.deepEqual(checked(s), ['fill']);
+    assert.equal(s.bar().hidden, false);
+    assert.equal(s.node('#set-sum-text').textContent, 'fit.mode invalid, default used');
+    assert.equal(s.puts().length, 1);
+  });
+
+  test('(\u2212) M-23 a change of another field alone leaves the fit group as saved', async () => {
+    const s = rig({ fit: { mode: 'off' } });
+    await s.enter();
+    s.type('90');
+    s.submit();
+    await settle();
+    assert.deepEqual(s.puts()[0].json.fit, { mode: 'off' });
+  });
+
+  test('(+) the code: formValue reads the group and populate sets it, with Auto when the saved config has none', () => {
+    const src = code(read('settings.js'));
+    assert.match(src, /fit: \{ mode: radio\('fit'\) \},/);
+    assert.match(src, /setRadio\('fit', s\.fit\?\.mode \?\? 'auto'\);/);
+  });
+});
+
+// ---- 0.5.4 AC, test 39: what the Settings text promises ---------------------------------------------------------------------------------------
+
+describe('the Auto-compact help text says what the typed /compact does (0.5.4 AC, test 39)', () => {
+  const help = /<p class="help" id="set-compact-help">([^<]*)<\/p>/.exec(HTML)?.[1] ?? '';
+
+  test('(+) it names the 60 s wait, the user\'s own typing, the once-per-crossing and 10 minute rules and the three limits', () => {
+    for (const part of ['nika types /compact when the session has waited 60 seconds past this point', 'you have not typed in nika for it', 'once each time it grows past the point',
+      'at most every 10 minutes', "nika can't type into a session in a plain terminal or another tmux server", 'types nothing while only the browser dashboard runs',
+      "can't compact a session that keeps working: Claude does that itself, or nika at its next wait", 'Compact in the session window works at any time.']) {
+      assert.ok(help.includes(part), part);
+    }
+    assert.ok(help.startsWith('Sessions nika starts get this point from their next start.'));
+  });
+
+  test('(\u2212) the 0.4 sentences are gone: it no longer says it applies only to sessions nika starts, or that hand-started ones keep Claude Code\'s setting', () => {
+    assert.equal(help.includes('Applies only to sessions nika starts'), false);
+    assert.equal(help.includes('sessions you start yourself keep'), false);
+  });
+
+  test('(\u2212) it is plain text in an ASCII source, and the paragraph is still described-by the switch', () => {
+    assert.equal([...help].every((ch) => ch.codePointAt(0) < 128), true);
+    assert.match(HTML, /aria-describedby="set-compact-result set-compact-help"/);
+  });
 });

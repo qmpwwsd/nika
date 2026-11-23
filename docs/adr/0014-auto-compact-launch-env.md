@@ -6,14 +6,15 @@ Date 2026-11-09 · Status accepted (nika 0.4)
 A long Claude Code session fills its context window and then compacts at a point Claude Code picks. 0.4 lets the user say
 when: Settings gets "Auto-compact at [80] % of [400k]", on by default, and it applies to every claude nika starts (the
 orchestrator, fresh or resumed, and spawned agents and sub-orchestrators). Sessions already running and sessions the user
-starts by hand are not touched. Spike S2 (Claude Code 2.1.319, tmux 3.8) measured what is available:
+starts by hand get no environment (since 0.5.4 the app types `/compact` into them, see the amendment at the end). Spike S2 (Claude Code 2.1.319, tmux 3.8) measured what is available:
 
 - `--autocompact <tokens>` and the environment variable `CLAUDE_CODE_AUTO_COMPACT_WINDOW` set the same window. The variable
   wins when both are set. Both are capped at the model's real window (1M for the 5.x ids, 200k for the 4.x ids and unknown ids).
 - Claude Code compacts at `min(floor(effective x PCT / 100), effective - 13000)` with `effective = window - 20000`
   (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is PCT). So PCT is a per cent of the window minus 20k, not of the window, and with no
   PCT the session compacts at `window - 33000` (the 33k `/context` shows as the autocompact buffer). With the window unset
-  ("auto" source) proactive compaction is off, so the window must always be set when a PCT is.
+  ("auto" source) proactive compaction is off, so the window must always be set when a PCT is. *(Corrected in 0.5.4: an unset
+  window is not the `auto` source; see the amendment at the end. nika still sets both variables on every launch.)*
 - `/context` never shows the PCT, so the live threshold cannot be read back from the UI.
 - tmux `new-session -e` and `new-window -e` are repeatable and the value is literal (no format expansion, `#` and spaces kept). Their
   scope differs (found in review, tmux 3.8): `new-window -e` sets the new pane's environment only; `new-session -e` sets the SESSION
@@ -77,3 +78,85 @@ starts by hand are not touched. Spike S2 (Claude Code 2.1.319, tmux 3.8) measure
 - tmux 3.2 or newer is required for `new-session -e`. On tmux 3.0 or 3.1 the default-on setting makes the orchestrator start fail with
   tmux's own error; the remedy is a newer tmux or switching Auto-compact off in Settings. The README and `docs/packaging.md` state the floor.
 - Browser tier: the setting is read-only data nobody can change there; the tier has no launch path.
+
+## Amendment 2026-11-19 (0.5.4, AC): typed `/compact`, and what Claude Code 2.1.328 does with the window
+
+**Context.** The launch environment reaches only sessions nika starts, and Claude Code checks the compact point only before a request, so a
+session that waits (finished, or waiting for the user) is never compacted by it, and a session the user started by hand has no variable at
+all. The owner (2026-11-19, "yes, all sessions") asked nika to compact every live Claude session it shows when one waits past the point.
+The live check of 0.5.4 (Claude Code 2.1.328 and 2.1.329, `claude-haiku-5-5`) and the binary gave these facts:
+
+- 2.1.328 keeps the formula of this ADR: `T = min(floor(E × PCT / 100), E − 13000)`, `E = W − 20000`; nika's 400k window with PCT 84.2106
+  gives 320000. Live, with a window of 80000 the source read `env` and `T` was 60000, which matched Claude's footer.
+- **Correction.** An unset window variable does not mean the `auto` source (Context above). 2.1.328 takes the window from
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (source `env`), else the user's `autoCompactWindow` unless it is `"auto"` (source `settings`), else a served or
+  model default, and only last `auto`. Only the `auto` source turns proactive compaction off. Live, with no variable and no setting, Haiku 5.5
+  logged `level=ok effectiveWindow=980000`: a default source, about 967k, not off. nika still sets both variables on every launch, so the
+  correction changes no number nika computes.
+- Claude's own Auto-compact switch off (`autoCompactEnabled` false), or `DISABLE_AUTO_COMPACT=1`, stops all proactive compaction, idle
+  compaction too; nika's variables cannot override it.
+- The check runs before every request, mid-turn and between turns. A session that waits sends no request and is never checked, except by
+  Claude's idle compaction (about 54 minutes after a turn, only with a 1 h prompt cache).
+- A session started or resumed by hand gets neither variable. A typed `/compact` through nika's command route ran a manual compaction (200,
+  `PostCompact` with `manual`, the box back in 6.6 s, keys `/`, `compact`, `Enter` only).
+- A compaction writes a `system` entry with `subtype` `compact_boundary` and `compactMetadata.postTokens`; Claude's own size uses it until the
+  next reply. With `/compact` in the box the slash menu is drawn above the box's top rule and the footer still reads.
+- 2.1.329 behaved as 2.1.328 here. Its footer says `auto-compact next`, not `N% until auto-compact`.
+
+**Decision.**
+- **App tier only, setting on:** nika types `/compact` into a live Claude session it shows that waits past its compact point, whether nika
+  started it or not. Claude's own switch is never read or changed (owner decision AC-Q6 = A). The launch environment is unchanged. The browser
+  tier and the CLI never type.
+- **The point** is `compactLaunch(<model>, <setting>).compactAt` for the model of the session's context size, the number the meter shows (new
+  C6 word `typed` for a live session nika did not start, `docs/contracts/api-app.md` C6). The size is read through `usageOf`, which now stops at
+  a `compact_boundary` entry that comes after the last assistant entry and takes its `postTokens` (an integer from 0 to 10,000,000, else no size),
+  so a typed `/compact` re-arms only after a real drop.
+- **When** (`src/autocompact.js`, `decide`, ticked by the app's 3 s status timer; at most one pane per tick): the pane passes the keys route's
+  pane check and holds exactly one live session; the size is at or past the point; the registry has read `idle` at each of nika's ticks for at
+  least 60 s with no change of size or session (a tick that does not observe the pane, because it is not eligible, does not hold exactly one live
+  row, is missing from tmux's listing, or tmux or the registry cannot be read, restarts the count; failures, floor, armed state and notes are
+  kept); no user action has named the pane for 60 s; the pane is armed (a size below the point has been read since the last typed `/compact`);
+  at least 10 minutes since the last attempt that sent a key; fewer than 3 failed attempts on that pane since the app started (a total, a
+  success never resets it).
+- **A user action stamps the pane** once its request has passed the pane check and the body check, also when it is then refused with 409 or 429
+  (owner answer AC-N2 = A; a 404 pane check or a 400, 413 or 415 body check stamps nothing). That is 16 routes: keys, mode, draft (PUT), submit,
+  scroll, attachments (POST, pick, DELETE), attach-send, suggestion, dialog, survey, answer, command, end and stop; a capture with the header
+  `X-Nika-Typing: 1` (sent once, after an edit in the message box, IME events included) stamps too. The fit heartbeat, a capture without the
+  header, the attachment status, list and image reads and the kept-draft routes (0.5.4, LT) stamp nothing. A stamp is forgotten only when a good tmux
+  listing no longer lists the pane.
+- **How:** `autoCompact(pane)` in `src/session-control.js`, inside the same per-pane lock as every other control, without waiting for it: a fresh
+  capture with the registry state, the registry read again without its cache, a second fresh capture, each showing idle, no prompt, dialog or survey,
+  a readable footer, no running turn and an empty prompt-mode box; then the Compact quick action's typing (`/` read back, the vim road, `compact`,
+  `Enter` only when the box reads exactly `❯ /compact` and the screen is still quiet); after `Enter` a 2 s read (a running turn or a box without
+  `/compact` is success; otherwise nika removes its own text with `C-u`, never a user's draft). Only those keys, at most 11 key requests per
+  attempt, through the per-pane rate limit; `Escape` is refused while a rating's undo row shows. A refusal before any key retries after 30 s.
+- **Once per crossing.** After a success the pane is disarmed until a size below the point is read. All state is in memory: an app restart arms
+  every pane again and clears the failure count. After 3 failures nika types nothing more into that pane until the restart and the page says so.
+- **Notes** (`typed`, `compacted`, `stopped`, each with its own icon, colour token and words) travel only under `/api/app/*` (the capture body's
+  `compacted` and `/api/app/modes` `{ modes, compacted }`), carry no session id or text, and are drawn from numbers with `textContent`.
+
+**Rejected.**
+- *Turn Claude's switch on* (`autoCompactEnabled: true` in the agents' `--settings`): overrides the user's own choice and needs a settings-key
+  rule change (AC-Q6 = B, declined).
+- *Read `autoCompactEnabled` to warn when Claude's switch is off:* reads a Claude settings key, which rules 4 and 12 forbid.
+- *End hand-started sessions and resume them with the variables:* disruptive, loses the terminal's state, and still cannot act on a session in
+  another terminal.
+- *Set the variables in a running session:* a process environment cannot be changed from outside, and the check never runs while the session waits.
+- *Stamp any valid pane id when the request arrives, before the pane and body checks* (AC-N2 = B): it closes a gap of one request inside a
+  one-second miss of the session registry and only ever delays typing; the owner kept the code and moved the rule's wording.
+
+**Consequences.**
+- New automatic input (rule 12 **Typed compaction**, `docs/security.md` T72 to T74, residual r). A finished session waiting to be closed
+  compacts once (owner decision 2026-11-19).
+- A key the user types into the real terminal, or a turn that starts, between the last capture and `Enter` is not seen. Passthrough keys can
+  interleave with nika's own: the echo check then refuses `Enter` and `C-u` removes only nika's own remnant; mixed text stays in the box.
+  `POST keys` takes no pane lock and Stop runs outside it; scroll, fit and attach-send wait for the lock.
+- Claude's own compaction can run at the same moment (its pre-request check, or its idle compaction); the typed `/compact` then waits in
+  Claude's queue or meets a busy screen and is not typed. Live (nika-started sessions) Claude's `PreCompact` `auto` fired first without a
+  `PostCompact`, and nika's manual one then worked.
+- Known limits (live check): a background shell that still runs is not a running turn, so `/compact` is typed (Claude took it); after a
+  compaction the size stays below the point until the user's next turn, so with a point below what a fresh session loads (a low percent on a
+  small window with the user's own rules) nika types at most once per user turn, 10 minutes apart; the registry is matched by pane id only, so
+  the same pane id on another tmux server can be taken for the session; a session in a plain terminal or on another tmux server is not reached.
+- Not built: typing into a session that keeps working past the point (Claude compacts it itself, or nika at its next wait).
+- Details: `docs/design/spec.md` §9.25 (the session line, the meter and the Settings sentence) and `docs/contracts/api-app.md` (C6).

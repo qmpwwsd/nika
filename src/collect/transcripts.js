@@ -112,9 +112,15 @@ function scan(entries, acc, { firstWins }) {
  * or a malformed usage (a field that is present, not null and not a whole number from 0 to 10,000,000, or a sum above it). It never looks further back: an
  * older entry is an older context size. A synthetic entry (model `<...>`: an interrupt or an API error, usage all zeros) is no answer
  * of the model and is skipped. Numbers and a model id only; no text is kept.
+ *
+ * 0.5.4 (AC): a `system` entry with `subtype` `compact_boundary` that comes after the last assistant entry ends the older reply's size:
+ * the size is then its `compactMetadata.postTokens` (an integer from 0 to 10,000,000, else null; nothing else of the entry is read),
+ * with the model of the nearest earlier real assistant entry (null when there is none in `entries`: readTranscript then falls back to
+ * the transcript's own model). That result carries `boundary: true` for readTranscript, which removes the key.
  */
 function usageOf(entries) {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
+    if (entries[i].type === 'system' && entries[i].subtype === 'compact_boundary') return boundaryUsage(entries, i);
     const m = entries[i].type === 'assistant' ? entries[i].message : undefined;
     if (m === undefined) continue;
     const model = str(m?.model);
@@ -130,6 +136,21 @@ function usageOf(entries) {
     return tokens > TOKEN_CAP ? null : { tokens, model: model && MODEL_ID.test(model) ? model : null };
   }
   return null;
+}
+
+/** The size after a compaction (usageOf, 0.5.4): the boundary's postTokens and the model of the nearest earlier real assistant entry. */
+function boundaryUsage(entries, at) {
+  const post = entries[at].compactMetadata?.postTokens;
+  if (!Number.isInteger(post) || post < 0 || post > TOKEN_CAP) return null;
+  let model = null;
+  for (let j = at - 1; j >= 0; j -= 1) {
+    if (entries[j].type !== 'assistant') continue;
+    const name = str(entries[j].message?.model);
+    if (name?.startsWith('<')) continue;
+    model = name && MODEL_ID.test(name) ? name : null;
+    break;
+  }
+  return { tokens: post, model, boundary: true };
 }
 
 const fields = () => ({
@@ -185,7 +206,9 @@ export async function readTranscript(file, cache) {
   const talk = (e) => e.type === 'user' || e.type === 'assistant';
   data.hasConversation = head.some(talk) || tail.some(talk);
   // the context size: only from the tail window (or the whole file when it is small), never from a head that is far behind the end
-  data.usage = usageOf(whole ? head : tail);
+  const usage = usageOf(whole ? head : tail);
+  // After a compaction the assistant entry before the boundary can lie outside the tail; then the transcript's own model gives the window.
+  data.usage = usage === null ? null : { tokens: usage.tokens, model: usage.boundary === true && usage.model === null && data.model && MODEL_ID.test(data.model) ? data.model : usage.model };
 
   cache?.set(key, { mtimeMs: file.mtimeMs, size: file.size, data });
   return data;

@@ -60,6 +60,12 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .sess-meta .mono { color: var(--text); }
 .sess-meta .ctx { display: inline-flex; align-items: center; gap: 6px; }
 .sess-meta .ctx-l { color: var(--text-muted); }
+/* 0.5.4 AC: the line for a typed /compact. Each state has its own colour (existing tokens), icon and words; the long text is what assistive tech reads at every width. */
+.sess-ac { display: inline-flex; align-items: center; gap: 6px; }
+.sess-ac[data-st="typed"] { color: var(--fit-other); }
+.sess-ac[data-st="compacted"] { color: var(--text-muted); }
+.sess-ac[data-st="stopped"] { color: var(--idle); }
+.sess-ac .ac-short { display: none; }
 /* the right of the bar: the claude.ai link and the shortcuts button never part (nowrap), so the button can not end up alone on a line */
 .bar-tools { display: flex; flex-wrap: nowrap; align-items: center; gap: 12px; flex: none; }
 .model { padding: 1px 8px; border-radius: var(--r-sm); background: var(--surface-2); color: var(--text); font-weight: 600; }
@@ -121,13 +127,17 @@ body.m-bypass .mode-frame { background: repeating-linear-gradient(135deg, var(--
 .live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--busy); }
 .term-head[data-s="paused"] .live-dot::before { background: var(--idle); border-radius: 1px; }
 .term-head[data-s="wait"] .live-dot::before, .term-head[data-s="off"] .live-dot::before { background: var(--ended); border-radius: 1px; }
-/* the fit chip (W7, spec 9.6 rule): each of the five states has its own colour, icon and words; the reason is the title and the announcement */
+/* the fit chip (W7, spec 9.6 rule): each of the eight looks has its own colour, icon and words; the reason is the title and the announcement */
 .fit { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 0 8px 0 6px; border: 1px solid transparent; border-radius: var(--r-sm); font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
 .fit[data-k="fitted"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
 .fit[data-k="zoomed"] { color: var(--idle); background: var(--idle-soft); border-color: var(--idle-line); }
 .fit[data-k="blocked"] { color: var(--text-muted); border: 1px dashed var(--line-strong); }
 .fit[data-k="other"] { color: var(--fit-other); background: var(--fit-other-soft); border-color: var(--fit-other-line); }
 .fit[data-k="terminal"] { color: var(--fit-term); background: var(--fit-term-soft); border-color: var(--fit-term-line); }
+/* 0.5.4 P2 (design-052d 2.4): the looks that name the Fit mode set in Settings: fill (teal), term-set (violet), off-set (grey ground, solid edge; blocked stays dashed and clear) */
+.fit[data-k="fill"] { color: var(--fit-fill); background: var(--fit-fill-soft); border-color: var(--fit-fill-line); }
+.fit[data-k="term-set"] { color: var(--fit-set); background: var(--fit-set-soft); border-color: var(--fit-set-line); }
+.fit[data-k="off-set"] { color: var(--fit-off); background: var(--fit-off-soft); border-color: var(--fit-off-line); }
 /* F1: the chip is a button that opens a panel (the panel's own rules follow .pop, which they override); a button resets its font and has a background of its own */
 .fit-wrap { position: relative; display: inline-flex; }
 button.fit { min-height: 24px; cursor: pointer; font: inherit; font-size: var(--fs-small); font-weight: 600; background: transparent; }
@@ -220,11 +230,12 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }   /* the mode switcher under the message box (spec 9.3) */
 .mode-row .msw-why { flex: 1 1 14em; min-width: 0; }
 .notes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-muted); }   /* argument hint, shell hint, draft note, problem line; the echo in here is screen-reader-only; .notes.quiet (top of this file) collapses the row */
-.problem { color: var(--idle); font-weight: 600; overflow-wrap: anywhere; }
-.problem.error { color: var(--danger); }
-.problem:empty { display: none; }
+.problem-line { display: inline-flex; align-items: flex-start; gap: 6px; min-width: 0; color: var(--idle); font-weight: 600; }   /* 0.5.4 (PL): icon, word and message of the problem line; a warning is amber (--idle) with the warn icon, an error is --danger with the error icon; [hidden] (top of this file) hides it */
+.problem-line[data-kind="error"] { color: var(--danger); }
+.problem-line .ic { margin-top: 3px; }
+.problem { overflow-wrap: anywhere; }
 .shell-hint, .arg-hint { color: var(--text); font-weight: 600; }
-/* the draft sync note (W5, W13): one line under the box. Each state has its own colour, icon and word: paused (amber), not mirrored (ink), on hold (attention pink), cursor (blue), queued (green), suggestion (accent) */
+/* the draft sync note (W5, W13): one line under the box. Each state has its own colour, icon and word: paused (amber), not mirrored (ink), on hold (attention pink), cursor (blue), queued (green), suggestion (accent), over 16 KB (danger) */
 .dnote { display: inline-flex; align-items: flex-start; gap: 6px; padding: 1px 8px 1px 6px; border-radius: var(--r-sm); color: var(--text); background: var(--surface-3); overflow-wrap: anywhere; }
 .dnote .ic { margin-top: 3px; }
 .dnote b { font-weight: 600; }
@@ -234,6 +245,7 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .dnote[data-k="cursor"] { color: var(--fit-other); background: var(--fit-other-soft); }
 .dnote[data-k="queued"] { color: var(--busy); background: var(--busy-soft); }
 .dnote[data-k="suggest"] { color: var(--accent); background: var(--accent-soft); }
+.dnote[data-k="over"] { color: var(--danger); background: var(--danger-soft); } /* 0.5.4 LT: a text over 16 KB (not kept, cannot be sent) */
 
 /* command palette (spec 9.7): opens upward from the message box, anchored to its left and right edges; focus never leaves the textarea */
 .btn.ghost { border-color: transparent; background: transparent; }
@@ -325,6 +337,8 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
   .split[data-tab="term"] .hist, .split[data-tab="hist"] .termcol { display: none; }
   .hist { border-right: 0; }
   .sess-meta .hide-narrow { display: none; }
+  .sess-ac .ac-short { display: inline; }
+  .sess-meta .sess-ac .ac-long { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; } /* drawn off, but still read: the short text is aria-hidden */
 }
 @media (max-width: 760px) {
   .bar .btn .lbl, .term-head .btn .lbl, .term-head .btn kbd { display: none; }   /* the segments keep their words at every width (spec 9.3) */
@@ -360,6 +374,11 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
    It never takes the dimmed look of "input off" (.btn:disabled, opacity 0.5); the ID selector beats the disabled and hover rules. */
 #att-btn[aria-busy="true"] { opacity: 1; cursor: progress; border-style: dashed; border-color: var(--busy); background: var(--busy-soft); color: var(--busy); }
 .att-pick { margin: 0; font-size: var(--fs-small); font-weight: 600; color: var(--busy); overflow-wrap: anywhere; }
+/* 0.5.4 AT: the note that names the attachments nika no longer has when you return to a session: its own violet, the file-off icon and the words "Not restored:" (never the warn alert) */
+.att-gone { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--att-gone-line); border-radius: var(--r-md); background: var(--att-gone-soft); color: var(--text); font-size: var(--fs-small); }
+.att-gone .ic, .att-gone b { color: var(--att-gone); }
+.att-gone .ic { flex: none; margin-top: 1px; }
+.att-gone p { margin: 0; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
   #att-btn .spin, .att .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
 }
@@ -391,7 +410,6 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .dlg-tab[data-answered="true"] { color: var(--busy); }
 .dlg-tab[aria-current="step"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .dlg-ring { flex: none; width: 10px; height: 10px; border: 1.5px solid currentColor; border-radius: 50%; }
-.dlg-step { display: none; margin: 0; color: var(--text-muted); font-size: var(--fs-small); font-weight: 600; }
 .ch { display: flex; align-items: flex-start; gap: 10px; min-height: 32px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); color: var(--text); overflow-wrap: anywhere; cursor: pointer; }
 .ch:hover { background: var(--surface-2); }
 .ch[data-on="true"] { background: var(--accent-soft); border-color: var(--accent); }
@@ -438,6 +456,31 @@ button.fit:hover, button.fit[aria-expanded="true"] { border-color: currentColor;
 .dlg-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--text-muted); font-size: var(--fs-small); }
 .dlg-retry { align-items: center; flex-wrap: wrap; } /* 0.5.2 R4: the Try again button sits after the text and wraps under it when the form is narrow */
 .dlg-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+/* a question step with a preview (0.5.4, QP). The panel shows the preview of the option Claude has the focus on; its tag has five states, each with its own colour, icon and word:
+   full busy + check, hidden idle + warn, growing accent + spinner, fallback muted dashed + info, showing text on surface-2 + spinner. Tokens only, so light and dark come along. */
+.dlg-pv { display: grid; gap: 4px; min-width: 0; margin: 4px 0 0; }
+.dlg-pv-h { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.dlg-pv-tag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px 2px 8px; border-radius: 999px; color: var(--busy); background: var(--busy-soft); font-size: var(--fs-small); font-weight: 600; white-space: nowrap; }
+.dlg-pv-tag[data-s="full"] { color: var(--busy); background: var(--busy-soft); }
+.dlg-pv-tag[data-s="hidden"] { color: var(--idle); background: var(--idle-soft); }
+.dlg-pv-tag[data-s="growing"] { color: var(--accent); background: var(--accent-soft); }
+.dlg-pv-tag[data-s="fallback"] { color: var(--text-muted); background: transparent; border: 1px dashed var(--line-strong); padding: 1px 9px 1px 7px; }
+.dlg-pv-tag[data-s="showing"] { color: var(--text); background: var(--surface-2); }
+.dlg-pv-cap { min-width: 0; color: var(--text-muted); font-size: var(--fs-small); overflow-wrap: anywhere; }
+.dlg-pv-text { position: relative; margin: 0; padding: 6px 8px; max-height: min(40vh, 360px); overflow: auto; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface); color: var(--text); font: var(--fs-small)/1.35 var(--mono); white-space: pre; }
+.dlg-pv-text:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.dlg-pv-note { padding: 0 2px; }
+.dlg[data-inert="true"] .dlg-pv-text { opacity: 0.8; }   /* dimmed when the form cannot take an answer, still readable (AA) */
+.dlg-notepart { display: grid; gap: 4px; justify-items: start; min-width: 0; }
+.dlg-note-add { min-height: 24px; padding: 0 6px; font-size: var(--fs-small); }
+.dlg-note-box { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; width: 100%; min-width: 0; }
+.dlg-note-l { flex: 0 0 100%; color: var(--text-muted); font-size: var(--fs-small); font-weight: 600; }
+.dlg-note-box > .dlg-warn { flex: 0 0 100%; }
+.dlg-note-on { padding: 4px 8px; border-left: 3px solid var(--line-strong); color: var(--text); overflow-wrap: anywhere; }
+.dlg-chat { border-color: var(--line-strong); }
+@media (prefers-reduced-motion: reduce) {
+  .dlg-pv-tag .spin { animation: none; border-right-color: currentColor; border-style: dotted; }
+}
 @container composer (max-width: 360px) {
   .dlg-rv-row { grid-template-columns: minmax(0, 1fr); }
   .dlg-rv-chg { grid-column: 1; grid-row: auto; justify-self: start; }

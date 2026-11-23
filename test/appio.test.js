@@ -12,8 +12,9 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { serveApp, createPicker, statusLine } from '../src/appio.js';
 import { loadConfig } from '../src/store.js';
+import { configDir } from '../src/paths.js';
 import { createAttachments, MAX_BYTES } from '../src/attachments.js';
-import { makeFixture, cleanup, fakeExec, NOW } from './helpers.js';
+import { makeFixture, cleanup, fakeExec, NOW, SID } from './helpers.js';
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const SECRET = 'kQ3vZ9mT1xW7bN5cR2dF8gH4jL6pS0uY-_aE1iO3tAw'.slice(0, 43);
@@ -31,7 +32,7 @@ const hello = (secret = SECRET, extra = {}) => `${JSON.stringify({ type: 'hello'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** serveApp on PassThrough streams with its own temp config/state dirs. */
-function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs, attachments, state, config = fx.config } = {}) {
+function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SECRET, appCopy, exec = fakeExec(), releaseMs, attachments, state, config = fx.config, createAutoCompact } = {}) {
   counter += 1;
   const base = path.join(ROOT, `h${counter}`);
   fs.mkdirSync(path.join(base, 'cfg'), { recursive: true });
@@ -53,7 +54,7 @@ function harness({ tty = false, helloMs = 2000, intervalMs = 60_000, secret = SE
   stderr.on('data', (c) => { errText += c; });
   // the app copy never looks at the real ~/Applications or the real Homebrew folders here
   const copy = { home: path.join(base, 'home'), brewApps: [], ...appCopy };
-  const done = serveApp({ config, env, stdin, stdout, stderr, exec, now: () => NOW, intervalMs, helloMs, appCopy: copy, ...(releaseMs ? { releaseMs } : {}), ...(attachments ? { attachments } : {}) });
+  const done = serveApp({ config, env, stdin, stdout, stderr, exec, now: () => NOW, intervalMs, helloMs, appCopy: copy, ...(releaseMs ? { releaseMs } : {}), ...(attachments ? { attachments } : {}), ...(createAutoCompact ? { createAutoCompact } : {}) });
   const h = {
     env, stdin, secret, base, done,
     lines,
@@ -513,6 +514,7 @@ describe('file chooser', () => {
   const MIB = 1024 * 1024;
   const uid = typeof process.getuid === 'function' ? process.getuid() : null;
   let nth = 0;
+  let paneSeq = 0;
 
   /** A picker on a real attachment store in its own temp state dir; `sent` = what it wrote to the shell, `logs` = every line the store logged. */
   function rig() {
@@ -532,8 +534,8 @@ describe('file chooser', () => {
     };
     const storeDir = path.join(base, 'state', 'nika', 'attachments');
     const stored = () => (fs.existsSync(storeDir) ? fs.readdirSync(storeDir).flatMap((k) => fs.readdirSync(path.join(storeDir, k))) : []);
-    /** Starts a files request, answers it with `paths`, waits for the end; resolves { reqId, answer }. */
-    async function pick(paths, { room = 6, pane = '%6', key = KEY } = {}) {
+    /** Starts a files request, answers it with `paths`, waits for the end; resolves { reqId, answer }. 0.5.4 (AT): a pane's tray holds six unsent files, so a pick that names no pane gets a pane of its own (these tests pick many files in a row). */
+    async function pick(paths, { room = 6, pane = `%${60 + (paneSeq += 1)}`, key = KEY } = {}) {
       const reqId = picker.startFiles({ pane, key, room });
       assert.match(reqId, /^[0-9a-f-]{36}$/);
       await picker.onFiles({ type: 'files', reqId, paths });
@@ -666,6 +668,25 @@ describe('file chooser', () => {
     assert.equal(six.answer.files.length, 6);
   });
 
+  // 0.5.4 (AT): the store keeps a tray of unsent files per pane and holds six; the chooser's save door meets the same cap
+  test('(−) 0.5.4 AT: a pick on a pane whose tray already holds six files answers tray-full for the extra entry (a failed entry, no path) and stores no more', async () => {
+    const r = rig();
+    const first = await r.pick([1, 2, 3, 4, 5, 6].map((n) => r.put(`f${n}.md`, `text ${n}\n`)), { pane: '%6', room: 6 });
+    assert.deepEqual(first.answer.files.map((f) => f.ok), [true, true, true, true, true, true]);
+    const more = await r.pick([r.put('seventh.md', 'text 7\n')], { pane: '%6', room: 1 });
+    assert.deepEqual(more.answer.files, [{ ok: false, name: 'seventh.md', error: 'tray-full' }]);
+    assert.equal(r.stored().length, 6);
+    assert.deepEqual(r.logs, []);
+  });
+
+  test('(+) 0.5.4 AT: the cap is per pane: the same pick on another pane is stored', async () => {
+    const r = rig();
+    await r.pick([1, 2, 3, 4, 5, 6].map((n) => r.put(`f${n}.md`, `text ${n}\n`)), { pane: '%6', room: 6 });
+    const other = await r.pick([r.put('seventh.md', 'text 7\n')], { pane: '%7', room: 1 });
+    assert.equal(other.answer.files[0].ok, true);
+    assert.equal(r.stored().length, 7);
+  });
+
   // ---- an entry that cannot be read fails alone ----
 
   test('(−) each unusable entry fails on its own and the good file next to it is still saved', async () => {
@@ -783,8 +804,9 @@ describe('file chooser', () => {
   test('(+) F3: a public key and the look-alikes of the new kinds are picked as before: id_rsa.pub, id_ed25519.pub, id_rsa_backup.txt, my.keystore.md, notes.envrc.txt, p12.txt, netrc, .netrc.bak', async () => {
     const r = rig();
     const paths = ['id_rsa.pub', 'id_ed25519.pub', 'id_rsa_backup.txt', 'my.keystore.md', 'notes.envrc.txt', 'p12.txt', 'netrc', '.netrc.bak'].map((n) => r.put(n, `${n}\n`));
-    const { answer } = await r.pick(paths, { room: 8 });
-    assert.deepEqual(answer.files.map((f) => f.ok), [true, true, true, true, true, true, true, true]);
+    const first = await r.pick(paths.slice(0, 4), { room: 4 }); // a pane's tray holds six (0.5.4 AT): two picks of four, on two panes
+    const second = await r.pick(paths.slice(4), { room: 4 });
+    assert.deepEqual([...first.answer.files, ...second.answer.files].map((f) => f.ok), [true, true, true, true, true, true, true, true]);
   });
 
   test('(−) the name decides before any open: a FIFO or a dangling link named .env or *.key answers secret-file, not unreadable', async () => {
@@ -868,7 +890,7 @@ describe('file chooser', () => {
 
   test('(+) a pick answers the same GET again and again (the page may ask twice) and a new request replaces the old one', async () => {
     const r = rig();
-    const { reqId, answer } = await r.pick([r.put('a.md')]);
+    const { reqId, answer } = await r.pick([r.put('a.md')], { pane: '%6' });
     assert.deepEqual(r.picker.filesStatus('%6', reqId), answer);
     const next = r.picker.startFiles({ pane: '%6', key: KEY, room: 1 });
     assert.equal(r.picker.filesStatus('%6', reqId), null);
@@ -1510,6 +1532,171 @@ describe('the attachment store: started after ready, stopped at finish (0.5, W2)
       assert.equal(h.err().includes('attachments'), false);
     } finally {
       await h.close();
+    }
+  });
+});
+
+// --- the Fit mode at start (0.5.3, P2): the saved mode reaches the controller before the first request -----------------------------
+
+describe('the Fit mode: start() hands the saved mode to the controller (design-052d 2.1)', () => {
+  const saveFit = (h, fit) => {
+    fs.mkdirSync(configDir(h.env), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(configDir(h.env), 'config.json'), JSON.stringify({ fit }));
+  };
+
+  // the first request is a heartbeat (open false): an open true request re-reads config.json in the route, which would hide whether start() handed the mode over
+  const BEAT = { json: { cols: 120, rows: 40, open: false } };
+
+  test('(+) a saved mode off: the lease a crash left is still restored at start, and the first heartbeat is answered off with no fit tmux call', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: NONCE, w: 120, h: 40 });
+    const h = harness({ exec: tmux });
+    saveFit(h, { mode: 'off' });
+    plant(h);
+    try {
+      await h.up();
+      assert.deepEqual([tmux.st.w, tmux.st.h, tmux.st.tag], [100, 30, ''], 'recover() runs in every mode');
+      assert.deepEqual(filesOf(h), []);
+      const calls = tmux.st.calls.length;
+      const r = await h.call('PUT', '/api/app/pane/%256/fit', BEAT);
+      assert.deepEqual([r.status, r.body], [200, { fit: { state: 'off', reason: null, mode: 'off' } }]);
+      assert.equal(tmux.st.calls.length, calls, 'not a fit tmux call');
+      assert.deepEqual(filesOf(h), []);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('(+) a saved mode terminal: the first heartbeat zooms nothing here (one pane) and resizes nothing; the answer says terminal', async () => {
+    const tmux = fitTmux(fakeExec(), { tag: '', w: 100, h: 30 });
+    const h = harness({ exec: tmux });
+    saveFit(h, { mode: 'terminal' });
+    try {
+      await h.up();
+      const r = await h.call('PUT', '/api/app/pane/%256/fit', BEAT);
+      assert.deepEqual([r.status, r.body.fit.state, r.body.fit.mode, r.body.fit.pane], [200, 'terminal', 'terminal', { cols: 100, rows: 30 }], JSON.stringify(r.body));
+      assert.equal(tmux.st.calls.includes('size'), false, 'never a resize-window');
+      assert.deepEqual([tmux.st.w, tmux.st.h], [100, 30]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('(\u2212) no saved fit, or a mode that is not one of the four: Auto, so the first heartbeat sizes the window as before', async () => {
+    for (const fit of [undefined, { mode: 'max' }, { mode: 'OFF' }, 'off', { mode: null }]) {
+      const tmux = fitTmux(fakeExec(), { tag: '', w: 100, h: 30 });
+      const h = harness({ exec: tmux });
+      if (fit !== undefined) saveFit(h, fit);
+      try {
+        await h.up();
+        const r = await h.call('PUT', '/api/app/pane/%256/fit', BEAT);
+        assert.deepEqual([r.status, r.body.fit.state, r.body.fit.mode, r.body.fit.pane], [200, 'fitted', 'auto', { cols: 120, rows: 40 }], `${JSON.stringify(fit)} ${JSON.stringify(r.body)}`);
+        assert.deepEqual([tmux.st.w, tmux.st.h], [120, 40]);
+      } finally {
+        await h.close();
+      }
+    }
+  });
+});
+
+describe('typed /compact: the sweeper tick and the app tier\'s word (0.5.4, AC test 40)', () => {
+  /** A createAutoCompact seam that counts tick() and stop(); `h` is set by the test so the first tick can look at what had been written to stdout. */
+  function sweeper() {
+    const f = { ticks: 0, stops: 0, readyAtFirstTick: null, fail: false, h: null, built: 0, seen: null };
+    f.factory = (d) => {
+      f.built += 1;
+      f.seen = d;
+      return {
+        tick: async () => {
+          f.ticks += 1;
+          if (f.ticks === 1) f.readyAtFirstTick = f.h.out().includes('"type":"ready"');
+          if (f.fail) throw new Error('boom');
+        },
+        stop: () => { f.stops += 1; },
+        noteFor: () => null,
+      };
+    };
+    return f;
+  }
+  const until = async (pred) => { for (let i = 0; i < 200 && !pred(); i += 1) await sleep(10); return pred(); };
+
+  test('(+) the sweeper is ticked on the status interval, the first time after the ready line; finish() stops it once and no tick follows', async () => {
+    const f = sweeper();
+    const h = harness({ intervalMs: 20, createAutoCompact: f.factory });
+    f.h = h;
+    try {
+      assert.equal(f.ticks, 0, 'nothing before the hello');
+      await h.up();
+      assert.equal(await until(() => f.ticks >= 3), true, `ticks so far: ${f.ticks}`);
+      assert.equal(f.readyAtFirstTick, true, 'the first tick came after ready');
+      assert.equal(f.built, 1);
+      assert.equal(f.stops, 0);
+    } finally {
+      await h.close();
+    }
+    assert.equal(f.stops, 1);
+    const after = f.ticks;
+    await sleep(100);
+    assert.equal(f.ticks, after, 'no tick after finish()');
+  });
+
+  test('(\u2212) a sweeper tick that rejects costs nothing: the status feed goes on and the process does not fail', async () => {
+    const f = sweeper();
+    f.fail = true;
+    const h = harness({ intervalMs: 20, createAutoCompact: f.factory });
+    f.h = h;
+    try {
+      await h.up();
+      assert.equal(await until(() => f.ticks >= 3), true);
+      assert.equal(await until(() => h.lines().filter((l) => l.type === 'status').length >= 3), true, 'status lines keep coming');
+      assert.equal(h.err(), '');
+    } finally {
+      await h.close();
+    }
+  });
+
+  test('(\u2212) the sweeper is ticked while the status read hangs: they are separate, a slow tmux holds back neither', async () => {
+    const f = sweeper();
+    let release;
+    const gate = new Promise((ok) => { release = ok; });
+    const base = fakeExec();
+    let hRef = null;
+    // from the ready line on, every tmux listing hangs: the status tick (collect) never finishes
+    const exec = async (cmd, args, ...rest) => {
+      if (args.includes('list-panes') && hRef?.out().includes('"type":"ready"')) await gate;
+      return base(cmd, args, ...rest);
+    };
+    const h = harness({ exec, createAutoCompact: f.factory });
+    hRef = h;
+    f.h = h;
+    try {
+      await h.up();
+      assert.equal(await until(() => f.ticks >= 1), true, 'the immediate tick after ready did not wait for the status read');
+      assert.equal(h.lines().filter((l) => l.type === 'status').length, 0, 'premise: the status read is still hanging');
+    } finally {
+      release();
+      await h.close();
+    }
+  });
+
+  test('(+) the app tier\'s /api/agents reads a live session in a claude pane as typed, and so does the snapshot the sweeper reads', async () => {
+    const fxT = makeFixture();
+    const slug = (d) => d.replace(/[^A-Za-z0-9]/g, '-');
+    fs.appendFileSync(path.join(fxT.claudeDir, 'projects', slug(fxT.repo), `${SID.idle}.jsonl`), `${JSON.stringify({ type: 'assistant', message: { model: 'claude-sonnet-5-5', usage: { input_tokens: 312000, output_tokens: 5 } } })}\n`);
+    const f = sweeper();
+    const h = harness({ config: fxT.config, createAutoCompact: f.factory });
+    f.h = h;
+    try {
+      await h.up();
+      const typed = { tokens: 312000, window: 400000, compactAt: 320000, pct: 78, compaction: 'typed' };
+      const r = await h.call('GET', '/api/agents?since=7d');
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body.groups.flatMap((g) => g.agents).find((a) => a.id === SID.idle).context, typed, 'the page\'s list');
+      // the snapshot the sweeper reads (appio\'s own collect, the router\'s eligibility) carries the same word: it is what C1 tests
+      const e = await f.seen.eligibility();
+      assert.deepEqual(e.snapshot.groups.flatMap((g) => g.agents).find((a) => a.id === SID.idle).context, typed, 'the sweeper\'s list');
+    } finally {
+      await h.close();
+      cleanup(fxT);
     }
   });
 });

@@ -4,9 +4,9 @@
 // its banner. `sig` is over the PARSED step, never over raw rows (rows change with every focus move, tick and typed character).
 // Keep this file ASCII: write every symbol as an escape.
 import { createHash } from 'node:crypto';
-import { clean } from './text.js';
+import { clean, cleanBlock } from './text.js';
 import { RULE_ROW, width } from './draft.js';
-import { ASK_FOOTER, PLAN_FOOTER, REVIEW_END, bypassWindow, footerEnd, mentionsBypass, nudgeFooterAt, promptFromRows, rowText, surveyOrFollowUpShown } from './mode.js';
+import { ASK_FOOTER, PLAN_FOOTER, REVIEW_END, askFooterRows, bypassWindow, footerEnd, mentionsBypass, nudgeFooterAt, promptFromRows, rowText, surveyOrFollowUpShown } from './mode.js';
 
 export const TABS_MAX = 8; // strip tokens; more is garbage
 export const NUMBER_MAX = 9; // a digit answers without Enter, so an option number above 9 is unsupported (k <= 7)
@@ -30,7 +30,11 @@ export const PLAN_TEXT_LABEL = 'Tell Claude what to change';
 export const REASONS = ['cut', 'clipped', 'wide', 'numbers', 'tab', 'layout', 'survey'];
 
 const MIN_COLS = 20;
-const SPAN_MAX = 100; // rows from the strip down to the footer: 7 options with wrapped descriptions fit well within
+const SPAN_MAX = 160; // rows from the strip down to the footer: 7 options with wrapped descriptions fit well within, and so does a preview step on a 120-row pane (0.5.4, QP; was 100)
+const PREVIEW_ROWS_MAX = 120; // a preview's rows (the F16 grow cap is 120 pane rows); more is unreadable / layout, never cut
+const PREVIEW_LINE_MAX = 200; // characters in one preview row
+const PREVIEW_HIDDEN_MAX = 99999; // the `N lines hidden` count Claude prints (five digits)
+const PREVIEW_OPTIONS_MAX = 7; // options of a step with a preview (a digit never answers there, so 7 is a limit of the design, not of Claude's numbering)
 const PLAN_ROWS_MAX = 400;
 const PLACEHOLDERS = ['Type something.', 'Type something', 'Chat about this'];
 const PLAN_INTRO = "Here is Claude's plan:";
@@ -46,6 +50,8 @@ const CHECKBOX = /^\[([ \u2714])\] (.+)$/;
 const BUTTON_ROW = /^(?:\u276f {4}| {5})(Next|Submit)$/; // the multi question's button row: indent 5, pointer in the first column when focused
 const STRIP_START = /^ {0,2}(?:\u2190 +)?[\u2610\u2612\u2714] /;
 const WARN_ROW = /^\u26a0 You have not answered all questions$/;
+// 0.5.4 (QPF, F1a): seen live on Claude 2.1.329/2.1.330 (LC-QPB), drawn only in the Review with no Ready row; the 2.1.326 text above stays for the shape that has one.
+const WARN_ROW_NEW = /^\u26a0 Some questions are unanswered$/;
 const PAIR_Q = /^ {0,2}\u25cf (.+)$/;
 const PAIR_A = /^ {2,6}\u2192 (.+)$/;
 const REVIEW_OPTION = /^(\u276f| ) ([12])\. (Submit answers|Cancel)$/;
@@ -54,17 +60,44 @@ const DASHED_RULE = /^ *\u254c+$/;
 const PLAIN_RULE = /^ *\u2500+$/;
 const GLYPH = /[\u2610\u2612\u2714]/;
 const ELLIPSIS = '\u2026';
+const UPDOWN = '\u2191/\u2193'; // the navigation hint of a one-question form, and of a question step with a preview
 const BAR = '\u2502 '; // Claude draws it, dim, in front of every row of a wide or multi-line question (spike S-F13, 2.1.325); nika leaves it out
 // The review step draws the same bar in front of its question rows and their wrapped rest (` \u2502 \u25cf question`, ` \u2502   rest`; LC17 K1b, 2.1.326), never in
 // front of an answer row. It is the unbarred row with `\u2502 ` put in after the indent, so taking it out gives the unbarred row back.
 const BAR_ROW = /^( {0,2})\u2502 (.*)$/;
 
+// A question step with a preview (Claude Code 2.1.328; design-053-qp section 3): a box beside the options, a Notes row, a rule and an unnumbered Chat row.
+const BOX_TOP = /\u250c\u2500+\u2510$/;
+const BOX_BOTTOM = /^\u2514\u2500+\u2518$/;
+const BOX_DIVIDER = /^\u251c\u2500+ \u2702 \u2500+ (\d{1,5}) lines? hidden \u2500*\u2524$/; // 1 row, or 2 rows joined with a space (Claude wraps it at the pane width)
+const PV_CHAT_ROW = /^(\u276f| ) Chat about this$/; // unnumbered; the pointer in the first column when focused
+const PV_FALLBACK = "(can't show the full preview \u00b7 compare the labels and descriptions instead)";
+const PV_NOTES_HINT = 'press n to add notes'; // Claude's hint on the Notes row: no note
+const PV_NOTES_PLACEHOLDER = 'Add notes on this design\u2026'; // the empty notes field (editing)
+const PV_NOTES_OPEN = width(`Notes: ${PV_NOTES_PLACEHOLDER}`); // the cells the open, empty field takes from the Notes column (32): 0.5.4 QPF F2, the width check before nika types `n`
+const EDITOR_HINT = /\bctrl\+g to edit in /; // the footer's hint while Claude's own input has the focus (a text row, Chat, a Next button, the notes field)
+
 const spaced = (text) => text.replace(/\u00a0/g, ' ').trimEnd();
+
+/** The text of the cells [from, to) of a row (`to` may be Infinity), or null when a double-width character straddles a boundary. */
+function cellSlice(t, from, to = Infinity) {
+  let w = 0;
+  let out = '';
+  for (const ch of t) {
+    const cw = width(ch);
+    if (cw > 0 && ((w < from && w + cw > from) || (w < to && w + cw > to))) return null;
+    if (w >= from && w < to) out += ch;
+    w += cw;
+  }
+  return out;
+}
 
 /**
  * What kind of dialog the bottom of the screen shows, or null. `texts` are the rtrimmed rows, `nb` the indexes of the non-blank rows down to
  * the footer (a subagent list under it is cut by footerEnd), `foot` the indexes of the footer rows: one, or up to three when Claude wrapped
- * the footer at a narrow width (their texts are joined with one space; a wrapped footer is found but never read, see readAsk).
+ * the footer at a narrow width (0.5.4, QP, O1: a question footer of 2 or 3 rows is found by askFooterRows, consecutive rows at column 0 under a blank row; the reader
+ * proves the wrap with the pane width, see wrapProven). A question footer also gives `nav` (its navigation hint), `notes` and `sw` (it carries `n to add notes` and
+ * `Tab to switch questions`: a step with a preview) and `footBad` (the hints disagree with each other: see below).
  *   ask      a question step: the footer is ASK_FOOTER
  *   review   the review step: the last row is `2. Cancel` and `Review your answers` is in the last 40 rows
  *   plan     the plan approval: the footer is PLAN_FOOTER and `Ready to code?` is above it (the reader wants exactly one such row)
@@ -87,11 +120,25 @@ function shapeOf(rows) {
   if (nb.length >= 3 && /^(?:\u276f )?2\. No$/.test(T(last)) && /^(?:\u276f )?1\. Yes\b/.test(T(nb.at(-2))) && nb.slice(-6, -2).some((x) => T(x) === EXIT_TITLE)) {
     return { ...base, kind: 'exit', foot: [last] };
   }
+  const askShape = (foot, ask) => {
+    const notes = ask[2] !== undefined;
+    const sw = ask[3] !== undefined;
+    // The hints are one set: `n to add notes` goes with the up/down navigation and with `Tab to switch questions` (a preview step that has several tabs), and not with
+    // the vim INSERT prefix (never seen, so never read). A footer that disagrees with itself is `layout` (readAsk) or no strip (stripOf).
+    const footBad = (notes && ask[1] !== UPDOWN) || notes !== sw || (notes && /^-- INSERT --/.test(T(foot[0])));
+    return { ...base, kind: 'ask', foot, nav: ask[1], notes, sw, footBad };
+  };
+  const wrapped = askFooterRows(texts, last); // 1 to 3 consecutive rows at column 0 under a blank row; 0 when the last row ends no question footer
+  if (wrapped > 0) {
+    const foot = [];
+    for (let x = last - wrapped + 1; x <= last; x += 1) foot.push(x);
+    return askShape(foot, ASK_FOOTER.exec(foot.map(T).join(' ')));
+  }
   for (let n = 1; n <= Math.min(3, nb.length); n += 1) {
     const foot = nb.slice(-n);
     const joined = foot.map(T).join(' ');
-    const ask = ASK_FOOTER.exec(joined);
-    if (ask !== null) return { ...base, kind: 'ask', foot, nav: ask[1] };
+    const ask = n === 1 ? ASK_FOOTER.exec(joined) : null; // one row, as before (no blank row above or column 0 needed); two or three rows only through askFooterRows
+    if (ask !== null) return askShape(foot, ask);
     if (PLAN_FOOTER.test(joined)) {
       const above = texts.slice(0, foot[0]);
       const ready = above.findLastIndex((t) => t.trim() === 'Ready to code?');
@@ -196,18 +243,10 @@ const reachesCols = (texts, from, to, cols, exempt) => {
  */
 function readQuestion(c) {
   const { texts, bad, s, stop, tabs, strip, cols } = c;
-  let x = s + 1;
-  const q = [];
-  const qx = []; // the indexes of the question's rows
-  while (x < stop && !ASK_OPTION.test(texts[x])) {
-    if (texts[x].trim()) { q.push(texts[x].trim()); qx.push(x); }
-    if (RULE_ROW.test(texts[x]) || STRIP_START.test(texts[x])) bad.add('layout'); // a rule or a strip inside the question could be taken for the real one
-    x += 1;
-  }
-  if (x >= stop) { bad.add('numbers'); return null; }
-  if (q.length === 0) bad.add('layout');
-  const barred = qx.filter((i) => texts[i].startsWith(BAR)).length;
-  if (barred > 0 && barred < qx.length) bad.add('layout');
+  const head = questionHead(c);
+  if (head === null) return null;
+  const { qx } = head;
+  let x = head.x;
   const items = []; // the numbered rows down to the separator; indented rows belong to the numbered row above them
   let sep = -1;
   for (; x < stop; x += 1) {
@@ -275,9 +314,140 @@ function readQuestion(c) {
   const exempt = new Set([tail.x, ...tail.extra.filter((e) => BUTTON_ROW.exec(texts[e]) === null)]); // a text row's wrapped value reaches the pane's edge legitimately
   for (const i of qx) if (qx.includes(i + 1)) exempt.add(i); // a question row with another question row right below it
   for (const it of items.slice(0, k)) for (const e of it.extra) if (it.extra.includes(e + 1)) exempt.add(e); // a description row with another row of the same description below it
-  const question = take(bad, (barred === qx.length && barred > 0 ? q.map((t) => t.slice(BAR.length)) : q).join(' '), QUESTION_MAX);
+  const question = take(bad, head.text, QUESTION_MAX);
   if (GLYPH.test(question)) bad.add('layout');
   return { question, multi, options, textRow, chat: chat.n, button, focus: marks.length === 1 ? marks[0] : null, exempt };
+}
+
+/**
+ * The question's rows, from the strip down to the first option row (shared by a plain step and a step with a preview): `x` is that option row, `qx` the question's row
+ * indexes and `text` its text without Claude's bar. null (reason `numbers`) when no option row follows.
+ */
+function questionHead(c) {
+  const { texts, bad, s, stop } = c;
+  let x = s + 1;
+  const q = [];
+  const qx = []; // the indexes of the question's rows
+  while (x < stop && !ASK_OPTION.test(texts[x])) {
+    if (texts[x].trim()) { q.push(texts[x].trim()); qx.push(x); }
+    if (RULE_ROW.test(texts[x]) || STRIP_START.test(texts[x])) bad.add('layout'); // a rule or a strip inside the question could be taken for the real one
+    x += 1;
+  }
+  if (x >= stop) { bad.add('numbers'); return null; }
+  if (q.length === 0) bad.add('layout');
+  const barred = qx.filter((i) => texts[i].startsWith(BAR)).length;
+  if (barred > 0 && barred < qx.length) bad.add('layout');
+  return { x, qx, text: (barred === qx.length && barred > 0 ? q.map((t) => t.slice(BAR.length)) : q).join(' ') };
+}
+
+/**
+ * A question step with a preview (0.5.4, QP; design-053-qp section 3): options at column 0 with a bordered box beside them (its top border on option 1's row, at cell column X,
+ * W wide), then a blank row, the `Notes:` row at X (wrapped rows at X + 7), a blank row, a rule row, the unnumbered `Chat about this` row, a blank row and the footer. Returns
+ * { question, options, focus, preview { rows, hidden, fallback }, notes { text, editing }, exempt } or null; reasons go to `bad` (anything off the captured shape is `layout`).
+ * `focus` is the option with the pointer (exactly one option has it, also while Chat has it: the live capture keeps it) or 'chat'. The box's rows are shown as drawn: the inner
+ * text is the cells [X + 2, X + W - 2) with the end trimmed and the spaces before it kept; the divider (`N lines hidden`) is read, never shown.
+ */
+function readPreview(c, shape) {
+  const { texts, bad, stop, cols } = c;
+  const fail = () => { bad.add('layout'); return null; };
+  const head = questionHead(c);
+  if (head === null) return null;
+  const r1 = head.x;
+  const top = BOX_TOP.exec(texts[r1]);
+  if (top === null) return fail();
+  const X = width(texts[r1].slice(0, top.index));
+  const W = width(top[0]);
+  if (X + W > cols) return fail(); // the box is wider than the pane
+  // The box: the run of rows, from option 1's row, that have something at or after column X. The options are the left parts of the same rows (and of rows below the box).
+  const run = [];
+  let y = r1;
+  for (; y < stop; y += 1) {
+    const left = cellSlice(texts[y], 0, X);
+    const right = cellSlice(texts[y], X);
+    if (left === null || right === null) return fail();
+    if (right.trim() === '') break;
+    run.push({ y, left: left.trimEnd(), right: right.trimEnd() });
+  }
+  if (run.length < 3 || y >= stop || !BOX_BOTTOM.test(run.at(-1).right) || width(run.at(-1).right) !== W) return fail();
+  const items = [];
+  let j = 0;
+  for (; j < run.length; j += 1) {
+    const m = ASK_OPTION.exec(run[j].left);
+    if (m === null) break;
+    items.push({ focus: m[1] === '\u276f', n: Number(m[2]), body: m[3] });
+  }
+  if (run.slice(j).some((r) => r.left !== '')) bad.add('layout'); // a row beside the box that is no option: a description, a wrapped label
+  let end = run.at(-1).y;
+  if (j === run.length) { // the options may go on below the box
+    for (y = end + 1; y < stop; y += 1) {
+      const m = ASK_OPTION.exec(texts[y]);
+      if (m === null) break;
+      items.push({ focus: m[1] === '\u276f', n: Number(m[2]), body: m[3] });
+      end = y;
+    }
+  }
+  if (items.length < 2 || items.some((it, n) => it.n !== n + 1)) { bad.add('numbers'); return null; }
+  if (items.length > PREVIEW_OPTIONS_MAX) return fail();
+  const exempt = new Set(run.map((r) => r.y)); // a box row may reach the pane's edge (its right border is there)
+  for (const i of head.qx) if (head.qx.includes(i + 1)) exempt.add(i);
+
+  // The box's rows between its borders: the preview's lines, or its fallback line, and the divider directly above the bottom border.
+  const mid = run.slice(1, -1);
+  let divider = 0;
+  let hidden = 0;
+  const one = mid.length >= 1 && width(mid.at(-1).right) === W ? BOX_DIVIDER.exec(mid.at(-1).right) : null; // a one-row divider is as wide as the box, like every inner row (the two-row one is joined)
+  const two = one === null && mid.length >= 2 ? BOX_DIVIDER.exec(`${mid.at(-2).right} ${mid.at(-1).right.trimStart()}`) : null;
+  if (one !== null || two !== null) { divider = one !== null ? 1 : 2; hidden = Number((one ?? two)[1]); }
+  if (hidden > PREVIEW_HIDDEN_MAX) return fail();
+  const inner = [];
+  for (const r of mid.slice(0, mid.length - divider)) {
+    const text = cellSlice(texts[r.y], X + 2, X + W - 2);
+    if (text === null || r.right[0] !== '\u2502' || r.right.at(-1) !== '\u2502' || width(r.right) !== W || cellSlice(texts[r.y], X + 1, X + 2) !== ' ' || cellSlice(texts[r.y], X + W - 2, X + W - 1) !== ' ') return fail();
+    const v = cleanBlock(text, PREVIEW_LINE_MAX + 1) ?? '';
+    if (v.length > PREVIEW_LINE_MAX) return fail();
+    inner.push(v);
+  }
+  const fallback = inner.map((t) => t.trim()).join(' ') === PV_FALLBACK; // one row, or the same line wrapped inside a narrow box
+  if (divider > 0 && (inner.length === 0 || fallback)) return fail();
+  if (inner.length > PREVIEW_ROWS_MAX) return fail();
+
+  // Under the box: a blank row, the Notes row and its wrapped rows, a blank row, a rule, the Chat row, a blank row, and the footer (the row at `stop`).
+  y = end + 1;
+  if (y >= stop || texts[y].trim() !== '' || !texts[y + 1]?.startsWith(`${' '.repeat(X)}Notes:`)) return fail();
+  const noteRows = [y + 1];
+  for (y += 2; y < stop && texts[y].trim() !== ''; y += 1) noteRows.push(y);
+  if (noteRows.slice(1).some((r) => !indented(texts[r], X + 7))) return fail();
+  for (const r of noteRows.slice(0, -1)) exempt.add(r); // a Notes row with another below it was wrapped there, not cut
+  if (y !== stop - 4 || !RULE_ROW.test(texts[y + 1]) || texts[stop - 1].trim() !== '') return fail(); // blank, rule, Chat, blank, then the footer
+  const chatRow = PV_CHAT_ROW.exec(texts[y + 2]);
+  if (chatRow === null) return fail();
+  const rest = [texts[noteRows[0]].slice(X + 'Notes:'.length), ...noteRows.slice(1).map((r) => texts[r])].map((t) => t.trim()).join(' ').trim();
+  const editing = EDITOR_HINT.test(shape.foot.map((x) => texts[x].trim()).join(' '));
+  let noteText = null;
+  if (rest === PV_NOTES_HINT) { if (editing) return fail(); } // the hint is the closed field
+  else if (rest === PV_NOTES_PLACEHOLDER) { if (!editing) return fail(); noteText = ''; } // the placeholder is the open, empty field
+  else noteText = take(bad, rest, TEXT_MAX, false);
+
+  const options = items.map((it) => {
+    if (CHECKBOX.test(it.body)) { bad.add('layout'); return { n: it.n, label: '', description: null, ticked: false }; }
+    const { text, ticked } = labelOf(it.body, false);
+    const label = take(bad, text, LABEL_MAX);
+    if (GLYPH.test(label)) bad.add('layout');
+    return { n: it.n, label, description: null, ticked };
+  });
+  const labels = options.map((o) => o.label);
+  if (new Set(labels).size !== labels.length || labels.some((l) => PLACEHOLDERS.includes(l))) bad.add('layout');
+  const marked = items.filter((it) => it.focus).map((it) => it.n);
+  if (marked.length !== 1) bad.add('layout');
+  const question = take(bad, head.text, QUESTION_MAX);
+  if (GLYPH.test(question)) bad.add('layout');
+  return {
+    question, options, focus: chatRow[1] === '\u276f' ? 'chat' : marked.length === 1 ? marked[0] : null, exempt,
+    preview: { rows: fallback ? [] : inner, hidden, fallback }, notes: { text: noteText, editing },
+    // 0.5.4 (QPF, F2): whether Claude's open, empty notes field would still end before the pane's last cell (the reader's own `wide` line: a row as wide as the pane may be cut). Never shown:
+    // not in the sig, the view or the capture. The open field's column was never larger than the closed one's, so measuring the closed step is the safe side.
+    noteRoom: X + PV_NOTES_OPEN < cols,
+  };
 }
 
 /**
@@ -295,7 +465,8 @@ function readReview(c) {
   if (x > last || texts[x].trim() !== 'Review your answers') { bad.add('layout'); return null; }
   x += 1;
   skip();
-  const warn = x <= last && WARN_ROW.test(texts[x].trim());
+  const warnNew = x <= last && WARN_ROW_NEW.test(texts[x].trim());
+  const warn = warnNew || (x <= last && WARN_ROW.test(texts[x].trim()));
   if (warn) { x += 1; skip(); }
   const raw = [];
   let part = 'q';
@@ -304,7 +475,7 @@ function readReview(c) {
   // stays an answer. Either way the two options are then checked as before.
   let from = -1; // the row the option rows start at
   for (; x <= last; x += 1) {
-    if (texts[x].trim() === 'Ready to submit your answers?') { from = x + 1; break; }
+    if (texts[x].trim() === 'Ready to submit your answers?') { from = x + 1; if (warnNew) bad.add('layout'); break; } // the new warning was seen only without the Ready row: with it the shape is unknown
     if (REVIEW_OPTION.exec(texts[x])?.[2] === '1') { from = x; break; }
     if (!texts[x].trim()) continue;
     const bm = BAR_ROW.exec(texts[x]);
@@ -339,6 +510,19 @@ function readReview(c) {
   return { warn, pairs, focus: marks.length === 1 ? marks[0] : null, exempt };
 }
 
+/**
+ * Whether a footer of more than one row is a footer Claude wrapped and not one split by hand (0.5.4, QP, O1; footerEnd has no pane width, so the reader proves it). Claude breaks a row at
+ * the pane width, so each row but the last was too full to take the next row's first word: row + one space + that word is wider than cols - 1 (the same bound the option rows use).
+ */
+function wrapProven(texts, foot, cols) {
+  if (!Number.isInteger(cols)) return false;
+  for (let i = 0; i + 1 < foot.length; i += 1) {
+    const word = texts[foot[i + 1]].trim().split(' ')[0];
+    if (width(texts[foot[i]]) + 1 + width(word) <= cols - 1) return false;
+  }
+  return true;
+}
+
 /** A question step or the review step. `bad` collects reasons; S is only used when it stays empty. */
 function readAsk(shape, rows, cols) {
   const { texts, foot } = shape;
@@ -346,7 +530,9 @@ function readAsk(shape, rows, cols) {
   const bad = new Set();
   const stop = foot[0];
   const last = foot.at(-1);
-  if (!Number.isInteger(cols) || cols < MIN_COLS || foot.length > 1) bad.add('wide'); // a wrapped footer is never read (orchestrator ruling 1)
+  if (!Number.isInteger(cols) || cols < MIN_COLS) bad.add('wide');
+  else if (foot.length > 1 && !wrapProven(texts, foot, cols)) bad.add('layout'); // two or three rows that Claude did not wrap (0.5.4, QP: a wrapped footer is read; orchestrator ruling 1 is gone)
+  if (shape.footBad) bad.add('layout');
   const s = findStrip(texts, stop);
   if (s < 0) { bad.add('cut'); return { bad, S: null }; }
   const strip = parseStrip(rows[s]);
@@ -371,18 +557,37 @@ function readAsk(shape, rows, cols) {
     if (body !== null) S = { kind: 'ask', at: 'review', tabs, warn: body.warn, pairs: body.pairs, focus: body.focus, insert: false, bypass, top: s - 1 };
   } else {
     if (marked.length !== 1 || strip.submit?.marked === true) bad.add('tab');
-    body = readQuestion(ctx);
+    const preview = shape.notes === true; // the footer carries `n to add notes` (and the hints agree, or footBad is set)
+    body = preview ? readPreview(ctx, shape) : readQuestion(ctx);
     if (body !== null) {
       const several = tabs.length > 1;
-      if (shape.nav === '\u2191/\u2193' ? several : !several && strip.submit === null) bad.add('layout'); // the footer agrees with the strip
+      if (preview) { if (!several || strip.submit === null) bad.add('layout'); } // a step with a preview has the strip with its Submit token
+      else if (shape.nav === '\u2191/\u2193' ? several : !several && strip.submit === null) bad.add('layout'); // the footer agrees with the strip
       S = {
-        kind: 'ask', at: 'question', tabs, i: marked.length === 1 ? marked[0] : 0, single: !several, question: body.question, multi: body.multi,
-        options: body.options, textRow: body.textRow, chat: body.chat, button: body.button, focus: body.focus, insert, bypass, top: s - 1,
+        kind: 'ask', at: 'question', tabs, i: marked.length === 1 ? marked[0] : 0, single: !several, question: body.question, multi: body.multi ?? false,
+        options: body.options, textRow: body.textRow ?? null, chat: body.chat ?? null, button: body.button ?? null, focus: body.focus, insert, bypass, top: s - 1,
+        ...(preview ? { preview: body.preview, notes: body.notes, noteRoom: body.noteRoom } : {}),
       };
     }
   }
+  if (body !== null && foot.length > 1) for (const x of foot) body.exempt.add(x); // the rows of a wrapped footer reach the pane width legitimately (wrapProven)
   if (body !== null && reachesCols(texts, s, last, cols, body.exempt)) bad.add('wide');
   return { bad, S };
+}
+
+/**
+ * 0.5.4 (QPF, F3): Claude wrapped the plan's prompt over two or three rows (it does at 85 columns, LC-QPB): the last plain rule above the footer is followed by 2 or 3 rows at indent 3
+ * that read PLAN_PROMPT when joined with spaces, and they end above the footer. Such a plan is `wide` (it may be cut at the edge), never `cut`: more rows cannot show it.
+ */
+function promptWrapped(texts, ready, stop) {
+  let r = stop - 1;
+  while (r > ready && !PLAIN_RULE.test(texts[r])) r -= 1;
+  if (r <= ready) return false;
+  for (const k of [2, 3]) {
+    const part = texts.slice(r + 1, r + 1 + k);
+    if (r + k < stop && part.every((t) => /^ {3}\S/.test(t)) && part.map((t) => t.trim()).join(' ') === PLAN_PROMPT) return true;
+  }
+  return false;
 }
 
 /** The plan approval. */
@@ -393,6 +598,8 @@ function readPlan(shape, rows, cols) {
   const stop = foot[0];
   const last = foot.at(-1);
   if (!Number.isInteger(cols) || cols < MIN_COLS || foot.length > 1) bad.add('wide');
+  if (promptWrapped(texts, ready, stop)) { bad.add('wide'); return { bad, S: null }; } // QPF F3: the prompt sits just above the options, which are on screen whenever the footer is, so this runs before any cut check
+  if (bad.has('wide')) return { bad, S: null }; // QPF F3b: a plan that is too narrow or whose footer already wraps is `wide` at any height, so it is never `cut` and never grows
   let x = ready + 1;
   while (x < stop && !texts[x].trim()) x += 1;
   if (x < stop && texts[x].trim() === PLAN_INTRO) x += 1;
@@ -404,7 +611,8 @@ function readPlan(shape, rows, cols) {
   while (to < stop && !DASHED_RULE.test(texts[to])) to += 1;
   let p = to + 1;
   while (p < stop && texts[p].trim() !== PLAN_PROMPT) p += 1;
-  if (to >= stop || p >= stop) { bad.add('cut'); return { bad, S: null }; }
+  if (to >= stop) { bad.add('cut'); return { bad, S: null }; } // the closing dashed rule is not on screen: more rows can show it
+  if (p >= stop) { bad.add('layout'); return { bad, S: null }; } // QPF F3c: both dashed rules are on screen, so the plan is not cut off at the top: a missing or unknown prompt row is a shape nika does not read
   const between = texts.slice(to + 1, p).filter((t) => t.trim());
   if (between.length !== 1 || !PLAIN_RULE.test(between[0])) bad.add('layout');
   const top = to + 1 + texts.slice(to + 1, p).findIndex((t) => t.trim()); // 0.5.1 E: the screen row of that plain rule (used only when the step is read, i.e. when it is the single row)
@@ -460,7 +668,7 @@ function readPlan(shape, rows, cols) {
  * Strings are clean()ed and bounded. A dialog is unreadable when it is cut off at the top (`cut`), has a text Claude shortened with an
  * ellipsis (`clipped`), may be cut at the pane's edge or is wrapped in a way
  * that cannot be told from a description (`wide`), is numbered above 9 or with gaps (`numbers`), has no single current tab (`tab`), or
- * is any other shape (`layout`); a feedback survey on screen is `survey`. A wrapped footer is always unreadable.
+ * is any other shape (`layout`); a feedback survey on screen is `survey`. A question footer wrapped over two or three rows is read when each row but the last is full (wrapProven), else `layout`.
  */
 export function readDialogScreen(rows, cols) {
   const shape = shapeOf(rows);
@@ -474,6 +682,15 @@ export function readDialogScreen(rows, cols) {
 }
 
 /**
+ * True when a question step with a preview shows Claude's notes field open (0.5.4, QP): the footer carries `n to add notes` and `ctrl+g to edit in`. It reads the footer only, so it
+ * holds for a step nika cannot read whole too: End and the dialog routes refuse (409 notes-open) before any key, since an Escape there would land in the field.
+ */
+export function notesOpen(rows) {
+  const shape = shapeOf(rows);
+  return shape !== null && shape.kind === 'ask' && shape.notes === true && EDITOR_HINT.test(shape.foot.map((x) => shape.texts[x].trim()).join(' '));
+}
+
+/**
  * The strip of tabs and where Claude's question dialog stands in it (0.5.1, D): null, or `{ at, n, headers, answered, input, insert, bypass }`.
  * It reads the strip row and the footer only, never the options, so a step whose options are clipped, wide or cut still gives its strip
  * (moving between steps needs the place, not the content). `at` is the current step: the marked question tab's index, or `n` (the number of
@@ -481,7 +698,7 @@ export function readDialogScreen(rows, cols) {
  * step (its text row, `Chat about this`, a multi question's Next button): Claude adds `ctrl+g to edit in <editor>` to the footer there, and
  * Right and Left do nothing on those rows; `insert` is true when the footer starts with the vim INSERT marker; `bypass` is the dialog's
  * bypass mention (same rule as readDialogScreen).
- * Null for: no dialog, a plan, a permission prompt, a nudge or exit shape, a wrapped footer or a pane narrower than MIN_COLS, no strip row, a
+ * Null for: no dialog, a plan, a permission prompt, a nudge or exit shape, a footer wrapped where Claude would not have wrapped it or that disagrees with itself, a pane narrower than MIN_COLS, no strip row, a
  * strip that does not parse, fewer than two steps (a one-question form has no strip to move on), no single marked token (none, two, a half-marked
  * one, or a marked token that is not the Review's Submit on the review), a footer that disagrees with the strip, or a header that is empty, too
  * long or holds a checkbox glyph.
@@ -490,7 +707,8 @@ export function stripOf(rows, cols) {
   const shape = shapeOf(rows);
   if (shape === null || (shape.kind !== 'ask' && shape.kind !== 'review')) return null;
   const { texts, foot } = shape;
-  if (!Number.isInteger(cols) || cols < MIN_COLS || foot.length > 1) return null;
+  if (!Number.isInteger(cols) || cols < MIN_COLS || shape.footBad === true) return null;
+  if (foot.length > 1 && !wrapProven(texts, foot, cols)) return null;
   const s = findStrip(texts, foot[0]);
   if (s < 0) return null;
   const strip = parseStrip(rows[s]);
@@ -506,14 +724,19 @@ export function stripOf(rows, cols) {
     if (marked.length > 0 || strip.submit === null || !strip.submit.marked) return null;
     at = n;
   } else {
-    if (marked.length !== 1 || strip.submit?.marked === true || shape.nav === '\u2191/\u2193') return null; // up/down arrows in the footer: a one-question form
+    if (marked.length !== 1 || strip.submit?.marked === true || (shape.nav === '\u2191/\u2193' && !shape.sw)) return null; // up/down arrows in the footer and no tab hint: a one-question form
     at = marked[0];
   }
   const footer = foot.map((x) => texts[x].trim()).join(' ');
   const bypass = mentionsBypass(texts.slice(s, foot.at(-1) + 1).join(' ')) || bypassWindow(rows);
+  // A step with a preview (the footer has `n to add notes`): `ctrl+g to edit in` there means the notes field is open (`editing`), not a text row, and Right and Left
+  // still switch tabs on the option rows. So `input` is false and the two extra keys say what the strip can: `notes` true, `editing` (0.5.4, QP; plain steps keep the old keys).
+  const preview = shape.kind === 'ask' && shape.notes === true;
+  const editor = EDITOR_HINT.test(footer);
   return {
     at, n, headers, answered: strip.tabs.map((t) => t.answered),
-    input: /\bctrl\+g to edit in /.test(footer), insert: /^-- INSERT --/.test(footer), bypass,
+    input: preview ? false : editor, insert: /^-- INSERT --/.test(footer), bypass,
+    ...(preview ? { notes: true, editing: editor } : {}),
   };
 }
 
@@ -524,7 +747,7 @@ export function stripOf(rows, cols) {
  */
 export function identityOf(S) {
   const id = S.at === 'question'
-    ? ['question', S.tabs.map((t) => t.header), S.i, S.question, S.multi, S.options.map((o) => [o.label, o.description])]
+    ? ['question', S.tabs.map((t) => t.header), S.i, S.question, S.multi, S.options.map((o) => [o.label, o.description]), ...(S.preview === undefined ? [] : [{ preview: true }])]
     : S.at === 'review'
       ? ['review', S.tabs.map((t) => t.header), S.warn, S.pairs.map((p) => [p.question, p.answer])]
       : ['plan', S.planRows, S.options.map((o) => [o.label, o.text])];
@@ -534,8 +757,16 @@ export function identityOf(S) {
 /** 16 hex characters of sha256 over identityOf(S). */
 export const sigOf = (S) => createHash('sha256').update(identityOf(S)).digest('hex').slice(0, 16);
 
+/**
+ * The `view` of a step with a preview (0.5.4, QP): 16 hex characters over the sig and everything the form shows next to the options that an answer must not outrun: the focus, the preview's
+ * rows, its hidden count and fallback flag, and the note's text (`note` replaces the step's own, so the route can compute the view of the step as it will stand once its note is typed).
+ * It is the content of the box and of the Notes row only, never an SGR code or a row's position.
+ */
+export const viewOf = (S, note = S.notes.text) => createHash('sha256')
+  .update(JSON.stringify([sigOf(S), S.focus, S.preview.rows, S.preview.hidden, S.preview.fallback, note])).digest('hex').slice(0, 16);
+
 /** Whether free text may be typed in this question: always in a single-select one, in a multi one only on the last tab (MULTI_OTHER). */
-export const otherAllowed = (S) => S.at === 'question' && (!S.multi || (MULTI_OTHER && S.i === S.tabs.length - 1));
+export const otherAllowed = (S) => S.at === 'question' && S.preview === undefined && (!S.multi || (MULTI_OTHER && S.i === S.tabs.length - 1)); // a step with a preview has no text row
 
 /**
  * The capture's `dialog` field (design W1 3): null, `{ state: 'unreadable', kind, reason }` or `{ state: 'ready', kind, at, sig, bypass, ... }`.
@@ -551,9 +782,10 @@ export function dialogCapture(rows, cols) {
   if (S.at === 'plan') return { ...head, options: S.options };
   return {
     ...head, tabs: S.tabs, current: S.i, final: S.single && !S.multi, question: S.question, multi: S.multi, other: otherAllowed(S),
+    ...(S.preview === undefined ? {} : { focus: S.focus, preview: { ...S.preview, rows: [...S.preview.rows], view: viewOf(S) }, notes: { ...S.notes } }),
     // `checked` is Claude's tick on every option (multi: its checkbox; single: the answered tick after the label) and `typed` the text in Claude's own text
     // row (null when it is empty): both are display only and neither is in identityOf, so the sig does not move when they change (0.5.1, D).
     options: S.options.map((o) => ({ n: o.n, label: o.label, description: o.description, checked: S.multi ? o.checked : o.ticked === true })),
-    typed: S.textRow.value === null ? null : { text: S.textRow.value.slice(0, ANSWER_MAX), answered: S.multi ? S.textRow.checked === true : S.textRow.ticked === true },
+    typed: S.textRow === null || S.textRow.value === null ? null : { text: S.textRow.value.slice(0, ANSWER_MAX), answered: S.multi ? S.textRow.checked === true : S.textRow.ticked === true },
   };
 }

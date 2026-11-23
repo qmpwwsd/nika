@@ -26,6 +26,12 @@ Claude Code 2.1.326 draws the task list in another form (§1, F13) and the revie
 row says otherwise), with made-up text, and found in a live check of the same day (LC17). A second live check of the same day (LC18, a build with the readers
 below) read both shapes in a named and an unnamed session and in a pane of 13 rows. Every such paragraph says "2.1.326, spike S-T326".
 
+Claude Code 2.1.328, 2.1.329 and 2.1.330 (nika 0.5.4). The question step with a preview and its wrapped footer (§13.1, §13.10) were seen on 2.1.328 in the live check LC-QP
+(2026-11-19). The partial review (§13.2), a narrow pane's notes field (§13.10) and the wrapped plan prompt (§13.3) were seen in the live check LC-QPB, which ran 2.1.329 (its
+first run) and 2.1.330 (runs 2 to 4; Claude updated itself during the check), and the sources do not say which of the two drew each capture. Typing `/compact` (§10.14) was checked
+in the live check LC-ACB on 2.1.329 (2026-11-20); the transcript's `compact_boundary` entry was also read from the 2.1.328 binary. All with made-up text. Every such paragraph names
+its version and its live check; a fact with no version named was not seen again on these versions.
+
 ## 1. Footer (mode line)
 
 The mode line is the last non-blank row of the pane while Claude's prompt box is shown, **not counting a list of background
@@ -979,6 +985,19 @@ INSERT and NORMAL. The facts here are about Claude; nika reads the rating rows e
 - **Not reached:** the transcript question; the memory and long-context surveys; the survey together with a permission prompt, a slash menu or a scrolled-up
   view; what the `bad` and `good` transcript probabilities are for an account.
 
+### 10.14 Typing `/compact` (0.5.4, AC; live check LC-ACB, 2026-11-20, Claude Code 2.1.329)
+
+- nika types the Compact quick action's keys: `/`, `compact` as text, then `Enter`, only after a capture that reads `❯ /compact` in the box and is quiet. The key log of the check showed
+  exactly these three sends; Claude ran a manual compaction (its PreCompact and PostCompact hooks both reported `manual`) and the box was empty again afterwards.
+- **The slash menu** with `/compact` typed: two menu rows (`/compact` and `/autocompact`) are drawn **above** the box's top rule, and the mode line under the box still reads (2.1.329; the same
+  as 2.1.325, §10.1). So the box and the footer read as usual and the echo screen is quiet. (The design had assumed the menu replaces the footer; it does not.)
+- **A background shell is not a running turn.** With `1 shell still running` shown, Claude took the typed `/compact` and compacted. nika's test for a running turn is the `esc to interrupt`
+  footer or a spinner row (`rules/project-rules.md` rule 12), not the shell count.
+- **The footer's compaction hint** reads `auto-compact next` on 2.1.329; the design had assumed `N% until auto-compact`. Nothing in nika reads either wording.
+- **The transcript.** Every compaction appends a `system` entry with `subtype` `compact_boundary`, `content` `Conversation compacted` and a `compactMetadata` that holds `trigger` (`manual` or
+  `auto`), `preTokens` and `postTokens` (read from the 2.1.328 binary). In LC-ACB (2.1.329) every boundary seen after a compaction had an integer `postTokens`, and the meter showed it. nika reads
+  only `type`, `subtype` and `compactMetadata.postTokens` of that entry (an integer from 0 to 10,000,000, else nothing); until the next reply the session's size is `postTokens`.
+
 ## 11. Attachments (0.5, W2)
 
 What Claude Code does with a file path pasted into its input box, and what the box shows. Checked 2026-11-14 and 2026-11-15, Claude Code
@@ -1163,6 +1182,9 @@ with made-up questions (spike S3, then W1-T0, T0b, T0c and the end-to-end check 
 `POST /api/app/pane/:id/dialog` and the capture's `dialog` field (`api-app.md`); the page is `docs/design/spec.md` §9.16;
 [ADR 0015](../adr/0015-dialogs-from-the-screen.md).
 
+0.5.4 adds the question step with a preview (§13.10), the footer that wraps (§13.1), the review of 2.1.328 to 2.1.330 (§13.2), the plan that is cut, wrapped or too narrow (§13.3,
+§13.5) and the open notes field (§13.10). Each says which Claude Code version showed it.
+
 **The call is not on disk while the dialog shows.** A 4-question dialog stayed open for 96 s and the session's transcript file did not
 change (size and mtime, read at +17, +19, +21 and +60 s). After `Escape` the file grew by 5 lines in one write: the assistant `tool_use`, the
 `tool_result` and the user lines. So the screen is the only source while the dialog is open.
@@ -1191,6 +1213,12 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel      the footer: 
   and a strip of one token with no arrows and no `Submit`; **several** tabs use `Tab/Arrow keys to navigate` and a strip with `←`, `→` and
   `✔ Submit`. The footer gains `-- INSERT -- · ` in front while a vim text row has INSERT, and ` · ctrl+g to edit in Vim` (any editor name)
   when the focus is on the text row or the button row after it, in plain mode too; `· Esc to cancel` is absent while INSERT shows.
+- **The footer of a step with a preview is longer, and it wraps (2.1.328, live check LC-QP, 2026-11-19).** `Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · Esc to cancel`,
+  with `↑/↓` even with several tabs (§13.10). At 80 and 52 columns Claude breaks it onto two rows. Since 0.5.4 nika reads a question or review footer of one to three **consecutive** non-blank rows
+  that start at column 0, with a blank row (or the first screen row) above the first and whose texts, joined with one space, read as a footer. The wrap is proved with the pane width: each
+  row but the last is too full to take the next row's first word (its width + 1 + that word's width is more than `cols - 1`); rows that Claude did not wrap are `layout`. Hints that disagree
+  with each other are `layout` too: `n to add notes` without `↑/↓` or without `Tab to switch questions`, or behind `-- INSERT --`. The rows of a wrapped footer may reach the pane's last
+  column. Before 0.5.4 every wrapped question footer was `wide`. A plan approval's wrapped footer is still `wide` (§13.3).
 - A tab token is `☐ <header>` (not answered) or `☒ <header>` (answered); tokens sit two spaces apart. The **current** tab is the one drawn
   with a background (or reverse video); nika reads that, not a colour value. Zero or two marked tokens is `unreadable` (`tab`). At narrow widths
   Claude cuts the unfocused headers with `…` (`To…`).
@@ -1236,7 +1264,14 @@ Ready to submit your answers?
 `1.` option at column 0 (`REVIEW_OPTION`, tested on the raw row: an answer's rest row starts with 3 or more spaces, so an answer that
 reads `1. Submit answers` stays an answer), then checks the two option rows as before. The same pairs give the same `sig` in both
 versions. Before 0.5.3 every 2.1.328 review read `unreadable / layout`. The warning row of a partly answered 2.1.328 review was not
-seen live; nika reads it as on 2.1.326.
+seen live; 2.1.329 and 2.1.330 draw another text (next paragraph).
+
+**The partial review of 2.1.329 and 2.1.330 (nika 0.5.4, QPF F1a; live check LC-QPB, an 80 x 30 pane, four questions with one left unanswered, `Next` pressed on the last).** The review has
+the strip, `Review your answers`, a blank row, the warning row `⚠ Some questions are unanswered` (not `⚠ You have not answered all questions`), a blank row, one pair for each **answered**
+question (the unanswered one is left out), a blank row, `❯ 1. Submit answers` and `  2. Cancel`, with **no** `Ready to submit your answers?` row (the 2.1.328 shape). The same screen with all
+four answered has no warning row and four pairs. nika reads the new text as the warning only in that shape (no Ready row); the new text above a Ready row is a shape nobody saw and is `layout`.
+The old text still reads in both shapes. The capture's `warn` is a boolean and the `sig` covers the boolean only, so one partial review has one `sig` under either text; the number of pairs
+must still equal the strip's answered marks and the warning must show exactly when a question is unanswered (else `layout`). The sources name both versions for LC-QPB, not which drew this review.
 
 **The review's bar (2.1.326, spike S-T326 item 9; first seen in the live check LC17; checked 2026-11-17).** Claude draws the `│ ` bar in the review too, and
 **per question**: on every row of a long question, on no row of a short one. A made-up review of a short and a long question (blank rows as Claude draws them):
@@ -1305,6 +1340,13 @@ Ready to submit your answers?
   very last row, and an unnamed one has nothing under it (§1, F13). nika reads the footer as a dialog end in both cases.
 - The plan dialog **never shows the `-- INSERT --` marker**, even with the free-text option focused. The plan text can be longer than the
   screen and is cut; nika uses the visible plan rows only for the dialog's identity and never shows them.
+- **A plan cut at the top (nika 0.5.4, O2; live check LC23, no Claude Code version in the record).** A 12-step plan at 1280 x 900 had its top clipped in a 42-row pane and was readable at 72 rows. nika
+  calls a plan `cut` when its opening or closing `╌` rule is not on screen (§13.5), and since 0.5.4 the page gives it more rows, as it does for a question (`api-app.md`, "A cut-off question").
+- **A plan whose prompt or footer wraps (nika 0.5.4, QPF F3; live check LC-QPB, 2.1.329 or 2.1.330).** The prompt row is 3 + 82 = 85 cells, so at 85 columns Claude wraps it to two rows at indent 3,
+  directly under the plain rule that follows the plan's closing `╌` rule (seen at 85 x 24 and 85 x 120; at 85 x 120 the whole plan and both rules were on screen). The footer's second row, the plan
+  path, is wider than the pane below about 109 columns (a 106 x 72 pane; a longer path raises the number). nika reads both as `unreadable / wide` at any height: such a plan is never `cut`, since
+  more rows cannot show it, and the page does not grow the pane. Known limit: a plan is not read below about 109 columns, and not at 85 columns or fewer. A plan with both `╌` rules on screen and
+  no prompt row, or an unknown one, is `layout`, not `cut`.
 
 ### 13.4 Shapes nika recognises but never reads
 
@@ -1321,21 +1363,21 @@ Both take a digit or `Enter` that was meant for something else, so every control
 
 | Reason | Seen live / rule |
 |---|---|
-| `cut` | No top rule directly above the strip, or no strip (a pane shorter than the dialog: the dialog clips from the top, the option list scrolls, and `↑` / `↓` replace the two leading spaces of the first or last visible option row, which no option pattern matches); a plan without `Ready to code?`, either `╌` rule or the prompt row. More rows show it: since F16 (0.5) the page gives a cut-off question more rows (`api-app.md`, "A cut-off question"; never a plan) |
+| `cut` | No top rule directly above the strip, or no strip (a pane shorter than the dialog: the dialog clips from the top, the option list scrolls, and `↑` / `↓` replace the two leading spaces of the first or last visible option row, which no option pattern matches); a plan whose opening or closing `╌` rule is not on screen (0.5.4, QPF F3c: the prompt row no longer decides it, see `layout`). More rows show it: since F16 (0.5) the page gives a cut-off question more rows, and since 0.5.4 (O2) a cut plan too (`api-app.md`, "A cut-off question") |
 | `clipped` | (0.5, F16; before it this was `cut`) A tab header, an option label (a question's or a plan's), the question, or a review question or answer that ends in `…`: Claude shortened the text to the pane's width. More rows never help. Descriptions and the typed text value are not checked for it |
-| `wide` | A row (not a rule, not the free-text row's wrapped value, not a plan row) as wide as the pane: Claude may have cut it. A row under an option row whose first word would **not** have fitted behind the option's last character: a wrapped label looks like a description by its indent, so nika cannot tell them apart unless the row's first word would have fitted behind the label (word wrap at `cols - 1` would then have kept it there, so the row is a description: `src/dialog.js:222-225`). A wrapped footer. Fewer than 20 columns. **Exempt (F13-B):** a row that reaches the pane's last column is accepted when the row right below it continues the same question
+| `wide` | A row (not a rule, not the free-text row's wrapped value, not a plan row) as wide as the pane: Claude may have cut it. A row under an option row whose first word would **not** have fitted behind the option's last character: a wrapped label looks like a description by its indent, so nika cannot tell them apart unless the row's first word would have fitted behind the label (word wrap at `cols - 1` would then have kept it there, so the row is a description: `src/dialog.js:222-225`). A plan's wrapped footer or wrapped prompt row (0.5.4, §13.3; such a plan is `wide` at any height, never `cut`). A question or review footer that Claude wrapped over two or three rows is **not** `wide` since 0.5.4 (§13.1). Fewer than 20 columns. **Exempt (F13-B):** a row that reaches the pane's last column is accepted when the row right below it continues the same question
 paragraph or the same option's description (a question row followed by another question row, a description row followed by another row of the same description; on the review step, a question row followed by a rest row of the same question with the same bar state, FXR, §13.2), because
-a long question is drawn that wide (§13.1). At 40 columns Claude wraps the question, the labels, the descriptions and the footer (2 rows, 3 with INSERT), so the old banner shows |
+a long question is drawn that wide (§13.1). At 40 columns Claude wraps the question, the labels, the descriptions and the footer (2 rows, 3 with INSERT), so the old banner shows (before 0.5.4 the wrapped footer alone decided it; now only the other rows do) |
 | `numbers` | Option numbers not `1..k+2` without gaps, or above 9 (a digit answers without `Enter`, so `k` is at most 7); the free-text row not `k+1`, the chat row not `k+2`; a button row on a single-select question or none on a multi-select one |
 | `tab` | Not exactly one current tab (zero or two marked tokens) |
-| `layout` | Some but not all of the question's rows start with Claude's `│ ` bar (§13.1; on the review step, some but not all rows of one question, §13.2, 2.1.326); a barred review answer row, a bar on the review's `1. Submit answers` or `Ready to submit your answers?` row (§13.2); a question row that is only the bar, with no text, reads as no bar (shape unverified); the footer says `↑/↓` with several tabs, or `Tab/Arrow keys` with one tab and no `Submit`; a multi-select question or several tabs without `Submit`; a duplicate label, a label equal to the free-text or chat placeholder, a header, label or question holding `☐`, `☒` or `✔`; a string over its maximum (header 40, question 500, label 200, description 500, answer 500); the button row's name disagreeing with the last-tab rule; any other shape |
+| `layout` | Some but not all of the question's rows start with Claude's `│ ` bar (§13.1; on the review step, some but not all rows of one question, §13.2, 2.1.326); a barred review answer row, a bar on the review's `1. Submit answers` or `Ready to submit your answers?` row (§13.2); a question row that is only the bar, with no text, reads as no bar (shape unverified); the footer says `↑/↓` with several tabs, or `Tab/Arrow keys` with one tab and no `Submit`; a multi-select question or several tabs without `Submit`; a duplicate label, a label equal to the free-text or chat placeholder, a header, label or question holding `☐`, `☒` or `✔`; a string over its maximum (header 40, question 500, label 200, description 500, answer 500); the button row's name disagreeing with the last-tab rule; two or three footer rows that Claude did not wrap, or footer hints that disagree (§13.1); a plan with a second `Ready to code?` row, or with both `╌` rules on screen and no, or an unknown, prompt row (0.5.4, QPF F3c); on a step with a preview (§13.10) a box, Notes, rule or Chat row out of that order, a checkbox option, more than 7 options, more than 120 preview rows, a preview row over 200 characters, a note over 300 characters or a duplicate label; any other shape |
 | `survey` | Claude's feedback survey is on screen (it takes digits, §10.1) |
 
 - Measured on short questions: the widest text row is `cols - 1` in every capture (119 at 120 columns, 39 at 40); only rule rows reach `cols`. A long question
   with the bar can reach `cols` (§13.1). 300 typed
   characters in the text row read back exactly (3 rows joined with one space: the break space of a wrap disappears).
-- At 40 columns the footer wraps, but a wrapped footer is still found (the last one to three non-blank rows joined) so `dialogOnScreen` is
-  true and the capture says `unreadable` / `wide`, not `null`.
+- At 40 columns the footer wraps, but a wrapped footer is still found (the last one to three consecutive non-blank rows joined) so `dialogOnScreen` is
+  true and the capture never says `null` for it. Before 0.5.4 it said `unreadable` / `wide`; since 0.5.4 a proven wrap of a question or review footer is read (§13.1) and the capture says `unreadable` only for another reason.
 - A subagent list under a question, review or plan dialog is cut when the row above its blank row is the dialog's last row (`isDialogEnd`,
   §1). Whether Claude draws the list under a dialog at all was **never seen live** (spike L7 did not fit in the budget); the fixtures cover it.
 
@@ -1350,6 +1392,10 @@ a long question is drawn that wide (§13.1). At 40 columns Claude wraps the ques
 | review | submit | `Enter` on `1. Submit answers` | live |
 | plan | choice | a digit | live (option 2) |
 | any | decline | `Escape`; in vim INSERT the first only leaves INSERT, a second (after a gap) closes the dialog | first: S3, T0, T4; the second: T0b (1.2 s apart) |
+| question step with a preview | move the focus to option `p` | `Down` or `Up`, one key per move: a digit only moves the focus there and never answers; from `Chat about this` one `Up` lands on the last option | live (2.1.328, LC-QP) |
+| question step with a preview | answer with the option the focus is on | `Enter`; it goes to the **next** tab, not the next unanswered one, or ends the dialog on the last | live (2.1.328, LC-QP) |
+| question step with a preview | add a note | `n` as text (opens the field), the note as text, then `Enter` | `n` and the note typed through nika in LC-QPB (2.1.329 or 2.1.330); the sources do not say whether the `Enter` after a note was seen live |
+| question step with a preview | Chat about this | `Down` to `Chat about this`, `Enter`; the dialog closes at once | live (2.1.328, LC-QP) |
 | question or review, several steps | go to another step without answering | from an option row `Right` (later step) or `Left` (earlier step), one key at a time; on an input row `Up` first (§13.9) | the keys by hand: S-TABS (plain) and S-VIM (vim); through nika: tests only |
 
 - `Right` does **nothing** from the text row or from the button row; it works from an option row (so the multi text road uses `Down` and
@@ -1366,7 +1412,8 @@ a long question is drawn that wide (§13.1). At 40 columns Claude wraps the ques
 
 **Never sent by nika:** `Tab`, `BTab`, `Space`, `C-c`, `C-u`, `C-d`; `Up`, `Left` and `Right` outside a step move (§13.9) and the multi-select
 advance above; a digit while the text row has the focus; anything on `Chat about this` except the `Up` that leaves it in a step move;
-`Enter` except as listed; any key after the dialog closed. (Before 0.5.1 `Up` and `Left` were never sent at all.)
+`Enter` except as listed; any key after the dialog closed. (Before 0.5.1 `Up` and `Left` were never sent at all.) Since 0.5.4 (QP) a question step with a preview also gets `Down` and `Up` from a focus request, `n` as the first key of a note, and the `Down`s and the one
+`Enter` of a Chat request (§13.10); a digit is never sent as a key there.
 
 ### 13.7 The live check through nika's page (W1-T4)
 
@@ -1476,6 +1523,56 @@ person leaves the row in the terminal. Never `Enter`, a digit, `Escape`, `Tab`, 
 - What `Right`, `Left` and `Up` do if the dialog closes between nika's read and the key: `Up` can recall the previous prompt into an idle box, `Right` can take a shown
   suggestion into the box, `Left` can open Claude's agents screen (it lists sessions of other projects, and nika 0.5.1 does not mask it). Nothing is submitted. This is the
   residual risk of T63.
+
+### 13.10 A question step with a preview (Claude Code 2.1.328, nika 0.5.4, QP and QPF)
+
+Seen in the live check LC-QP (2026-11-19, 2.1.328) and, for the notes field on a narrow pane, the review and the wrapped plan, in LC-QPB (2.1.329 or 2.1.330). Pane sizes below are those of the
+live captures (119 x 39, 106 x 39, 80 x 30, 52 x 24 and 52 x 39). The text is made up; `X` is the box's column.
+
+```
+(rule, as wide as the pane)
+←  ☒ Fruit  ☐ Shape  ☐ Size  ✔ Submit  →
+(blank)
+Pick a shape
+(blank)
+❯ 1. Oval                         ┌──────────────────────┐   the box's top border is on option 1's row, at column X
+  2. Box                          │ ( oval )             │   the focused option's preview; options have no descriptions
+  3. Star                         │                      │
+                                  │   long and round     │
+                                  ├─── ✂ ─── 12 lines hidden ───┤   only when Claude left lines out; directly above the bottom border
+                                  └──────────────────────┘
+(blank)
+                                  Notes: press n to add notes      the hint; the open, empty field reads `Notes: Add notes on this design…`
+(blank)
+(rule)
+  Chat about this                                                   unnumbered; `❯ Chat about this` while it has the focus
+(blank)
+Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · Esc to cancel
+```
+
+- **Row order** (2.1.328, LC-QP): the strip, a blank row, the question, a blank row, the option rows at column 0 (option 1's row also holds the box's top border at column `X`), the box rows
+  beside the other options and below them, the optional divider, the bottom border, a blank row, the `Notes:` row at column `X` (rows it wraps to start at `X + 7`), a blank row, a rule, `Chat about
+  this`, a blank row, the footer (one to three rows, §13.1). Anything else is `layout`. The options are 2 to 7, with no description, no text row and no checkbox; they may go on below the box.
+- **The box.** Its width `W` runs from the `┌` to the `┐`; every row has `│` at `X` and at `X + W - 1`. At narrow widths Claude wraps the preview's own lines inside the box (52 x 39); nika shows the
+  rows as drawn and never unwraps them. The text is the cells from `X + 2` to `X + W - 2`, the end trimmed and the spaces before it kept. **The divider** is `├─── ✂ ─── N lines hidden ───┤` (`line`
+  for 1), directly above the bottom border: one row, or two at 52 columns, joined with a space; `N` has up to five digits. It is read, never shown. **The fallback** is the one line `(can't show
+  the full preview · compare the labels and descriptions instead)` in the box (2.1.328, LC-QP): nika reads it as no preview.
+- **The focus.** Exactly one option row has the `❯` pointer. While `Chat about this` has the focus its `❯` is drawn and the option keeps its own `❯` with the same colour, and the box still shows
+  the last option's preview (2.1.328, LC-QP). Chat's focus does **not** draw `ctrl+g` in the footer, so the strip alone cannot see it. A digit only moves the focus; it never answers.
+- **The Notes row.** Closed: `Notes: press n to add notes`. Open and empty: `Notes: Add notes on this design…`, and the footer then also reads `ctrl+g to edit in <editor>` (nika calls this
+  `editing`; the screen was seen with vim on, how the field takes text in vim was not, so nika types a note only on a pane known to be plain). With text: the note, its wrapped rows at `X + 7`.
+  Whether a note belongs to the option or to the question was not settled by the sources; nika reads the row on every capture and does not depend on it.
+- **The field's width (LC-QPB).** The open, empty field is `Notes: ` (7 cells) and `Add notes on this design…` (25 cells): 32 cells from `X`. At 52 columns (`X` 27 or 29) Claude cut the
+  placeholder with `…` and the row reached the pane's last cell, so nika could not read the step. At 80, 106 and 119 columns (`X` 34) the open row read whole. In every capture the open field's `X`
+  was at most the closed field's. nika sends `n` only when `X + 32` is less than the pane's width (`note-room`, `api-app.md`).
+- **A long note (LC-QPB, 119 x 39).** A 131-character note wrapped to two `Notes:` rows; the dialog became one row taller, so Claude hid one more preview line (11 became 12). After that the field was
+  still open and the note read back whole. nika stops before `Enter` then (`preview-changed`).
+- **`Escape` in the open field** closed it and kept the note (LC-QPB, 119 columns: the closed step showed the note). nika never sends it; it refuses every key, End and Decline included, while the
+  field is open (`notes-open`).
+- **Keys** (§13.6): `Down` and `Up` move the focus; `Enter` answers the focused option and goes to the next tab; `n` opens the field; `Right` and `Left` switch tabs from the option rows; from
+  `Chat about this` one `Up` lands on the last option; `Down` from the last option reaches `Chat about this`, and `Enter` there closes the dialog at once. Its tool result read "Declined to answer
+  Claude's questions:" with the questions, and in one LC-QPB run none of the four answers already given, nor the note, reached Claude: answers already given may not reach Claude.
+- **Not seen:** a preview step with one tab (the footer rule needs `Tab to switch questions`, so nika reads such a step as `layout`); how the notes field behaves in vim.
 
 ## 14. Claude's own subagents: their files while they run (0.5, W8)
 

@@ -90,10 +90,12 @@ export function subagentItemEl(s, { href = null, fk = null, time = null } = {}) 
  * The context meter (design 0.4 section 6) drawn from `a.context` through ctxView: `span.ctx[data-lvl][title]` holding the number
  * (a warning icon when nearly full), a bar of quantised steps (`data-q`, no inline style) and an sr-only sentence; the visible parts
  * are hidden from assistive tech so the sentence is read once. `header` adds the word "Context" and the long numbers (hidden on narrow
- * windows). `el` is an existing `.ctx` element to fill again (the session header's #sess-ctx) instead of a new one.
+ * windows). `el` is an existing `.ctx` element to fill again (the session header's #sess-ctx) instead of a new one. `note` (app tier,
+ * 0.5.4 AC) is the wire note of the pane's last typed /compact: ctxView puts one sentence about it at the end of the title and of the
+ * sr text; the meter gets no new part.
  */
-export function ctxEl(context, { header = false, el = null } = {}) {
-  const v = ctxView(context);
+export function ctxEl(context, { header = false, el = null, note = null } = {}) {
+  const v = ctxView(context, note);
   const root = el ?? h('span', { class: 'ctx' });
   const hid = { 'aria-hidden': 'true' };
   root.setAttribute('data-lvl', v.lvl);
@@ -173,13 +175,28 @@ export function ago(ms, now = Date.now()) {
   if (m < 1440) return `${Math.floor(m / 60)} h`;
   return `${Math.floor(m / 1440)} d`;
 }
-export function timeEl(ms) {
+/** The same time in words, for a sentence (0.5.4 SF, item 13a): "just now" under a minute, "N min ago", "N h ago", "N d ago"; the dash when it is not a number. */
+export function agoWords(ms, now = Date.now()) {
+  const t = ago(ms, now);
+  if (t === 'now') return 'just now';
+  return Number.isFinite(ms) ? `${t} ago` : t;
+}
+/** The `time` element behind timeEl and timeWordsEl: `words` picks the sentence form and sets data-words, which the page's refresh follows (ui.js tickTimes). */
+function timeNode(ms, words) {
   // an out-of-range number would make toISOString() throw and stop the refresh loop
   const ok = Number.isFinite(ms) && Number.isFinite(new Date(ms).getTime());
   return h('time', {
     'data-ts': ok ? ms : null,
+    'data-words': ok && words ? '1' : null,
     datetime: ok ? new Date(ms).toISOString() : null,
     title: ok ? new Date(ms).toLocaleString() : null,
-    text: ok ? ago(ms) : '–',
+    text: ok ? (words ? agoWords(ms) : ago(ms)) : '\u2013',
   });
+}
+export function timeEl(ms) {
+  return timeNode(ms, false);
+}
+/** The same element in words, for a sentence (0.5.4 SF, item 13a): "Removed 3 min ago". The lists keep timeEl ("3 min"). */
+export function timeWordsEl(ms) {
+  return timeNode(ms, true);
 }

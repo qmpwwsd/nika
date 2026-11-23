@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { MODE_META, parseModes, modesAfter, rowMode, canEndRow } from '../public/modes.js';
+import { MODE_META, parseModes, modesAfter, rowMode, canEndRow, parseCompacted, rowNote } from '../public/modes.js';
 import { CUSTOM, ROLE_LABEL, fillModelSelect, effectiveRoleModels } from '../public/models-ui.js';
 import { h } from '../public/dom.js';
 import { statusOf, spawnLimits, effectiveAgents, KINDS, KIND_TEXT, ROLE_KIND, kindFromModel } from '../public/dash-model.js';
@@ -199,12 +199,13 @@ describe('pollModes', () => {
     const timers = [];
     const queue = [...answers];
     const ctx = {
-      state: { modes: { map: {}, misses: 0 } },
+      state: { modes: { map: {}, misses: 0 }, compacted: {} }, // 0.5.4 AC: the poller now also keeps the notes of a typed /compact
       appFetch: (url, opts) => { calls.push([url, opts]); const next = queue.shift(); return next instanceof Error ? Promise.reject(next) : Promise.resolve(next); },
       AbortController: class { constructor() { this.signal = { aborted: false }; } abort() { this.signal.aborted = true; } },
       setTimeout: (f, ms) => { timers.push({ f, ms, cleared: false }); return timers.length - 1; },
       clearTimeout: (id) => { timers[id].cleared = true; },
       parseModes,
+      parseCompacted,
       modesAfter,
       render: () => renders.push(JSON.stringify(ctx.state.modes.map)),
       Promise,
@@ -755,5 +756,103 @@ describe('spawn sheet model picker (project.js openSpawn and spawnModel)', () =>
     noSettings.openSpawn(group);
     assert.deepEqual(optionsOf(noSettings.node('#sp-model')).filter((r) => r[0] === 'Roles').map((r) => r[1]), ['opus', 'sonnet', 'haiku', 'fable']);
     assert.equal(noSettings.spawnModel(), 'opus');
+  });
+});
+
+describe('pollModes: the notes of a typed /compact (0.5.4 AC, test 34 on the page side)', () => {
+  const src = fn(PROJECT, 'function pollModes(');
+  const settle = () => new Promise((r) => setImmediate(r));
+  const NOTE = { state: 'typed', at: 1760000000000, tokens: 331000 };
+  const PLAN = { '%3': { mode: 'plan', confirmed: true } };
+  const rig = (answers) => {
+    const calls = [];
+    const renders = [];
+    const queue = [...answers];
+    const ctx = {
+      state: { modes: { map: {}, misses: 0 }, compacted: {} },
+      appFetch: (url, opts) => { calls.push([url, opts]); const next = queue.shift(); return next instanceof Error ? Promise.reject(next) : Promise.resolve(next); },
+      AbortController: class { constructor() { this.signal = { aborted: false }; } abort() { this.signal.aborted = true; } },
+      setTimeout: () => 0, clearTimeout() {}, parseModes, parseCompacted, modesAfter, render: () => renders.push(JSON.stringify([ctx.state.modes.map, ctx.state.compacted])), Promise, JSON,
+    };
+    const poll = vm.runInNewContext(`let modesBusy = false; ${src}; pollModes`, ctx);
+    return { ctx, calls, renders, poll };
+  };
+  const ok = (modes, compacted) => ({ status: 200, body: compacted === undefined ? { modes } : { modes, compacted } });
+  const norm = (v) => JSON.parse(JSON.stringify(v));
+
+  test('(+) a good answer stores its notes with the modes, and a change of the notes alone redraws once', async () => {
+    const { ctx, renders, poll } = rig([ok(PLAN, { '%3': NOTE }), ok(PLAN, { '%3': NOTE }), ok(PLAN, { '%3': { ...NOTE, state: 'compacted' } })]);
+    poll(); await settle();
+    assert.deepEqual(norm(ctx.state.compacted), { '%3': NOTE });
+    assert.equal(renders.length, 1);
+    poll(); await settle();
+    assert.equal(renders.length, 1, 'the same notes do not redraw');
+    poll(); await settle();
+    assert.equal(ctx.state.compacted['%3'].state, 'compacted');
+    assert.equal(renders.length, 2, 'only the note changed: typed to compacted');
+  });
+
+  test('(+) an answer without notes (the older shape, or none now) clears them at once: an answer is an answer', async () => {
+    const { ctx, poll } = rig([ok(PLAN, { '%3': NOTE }), ok(PLAN), ok(PLAN, { '%3': NOTE }), ok(PLAN, {})]);
+    poll(); await settle();
+    poll(); await settle();
+    assert.deepEqual(norm(ctx.state.compacted), {});
+    poll(); await settle();
+    poll(); await settle();
+    assert.deepEqual(norm(ctx.state.compacted), {});
+  });
+
+  test('(\u2212) a failed poll keeps the notes one more cycle, then clears them with the modes (the modesAfter rule); a later answer brings them back', async () => {
+    for (const bad of [new Error('down'), { status: 500, body: {} }, { status: 403, body: null }, { status: 200, body: { modes: 'plan', compacted: { '%3': NOTE } } }]) {
+      const { ctx, poll } = rig([ok(PLAN, { '%3': NOTE }), bad, bad, ok(PLAN, { '%3': NOTE })]);
+      poll(); await settle();
+      poll(); await settle();
+      assert.deepEqual(norm(ctx.state.compacted), { '%3': NOTE }, 'kept after the first failure');
+      poll(); await settle();
+      assert.deepEqual(norm(ctx.state.compacted), {}, 'cleared after the second');
+      poll(); await settle();
+      assert.deepEqual(norm(ctx.state.compacted), { '%3': NOTE }, 'back with the next answer');
+    }
+  });
+
+  test('(\u2212) a malformed note in a good answer is dropped on the page; the modes still come through', async () => {
+    const { ctx, poll } = rig([ok(PLAN, { '%3': { ...NOTE, extra: 1 }, '%4': NOTE, x: NOTE })]);
+    poll(); await settle();
+    assert.deepEqual(ctx.state.modes.map, PLAN);
+    assert.deepEqual(Object.keys(ctx.state.compacted), ['%4']);
+  });
+});
+
+describe('rowNote and the redraw (0.5.4 AC)', () => {
+  const NOTE = { state: 'typed', at: 1760000000000, tokens: 331000 };
+  const map = { '%3': NOTE };
+  const live = (id) => ({ live: true, pane: { id } });
+
+  test('(+) a live agent whose pane has a note gets it', () => {
+    assert.deepEqual(rowNote(live('%3'), map), NOTE);
+  });
+
+  test('(\u2212) an ended agent never gets one, even when its old pane id is in the map (the id may be reused)', () => {
+    assert.equal(rowNote({ live: false, pane: { id: '%3' } }, map), null);
+  });
+
+  test('(\u2212) no pane, a pane without a note, an empty or missing map, or a name from Object.prototype: no note', () => {
+    for (const a of [{ live: true }, { live: true, pane: null }, live('%99'), { live: true, pane: { id: 7 } }, undefined, null]) assert.equal(rowNote(a, map), null, JSON.stringify(a));
+    assert.equal(rowNote(live('%3'), {}), null);
+    assert.equal(rowNote(live('%3'), undefined), null);
+    for (const id of ['toString', '__proto__', 'constructor', 'hasOwnProperty']) assert.equal(rowNote(live(id), {}), null, id);
+  });
+
+  test('(+) a change of a note redraws the lists: both signatures include state.compacted, and ui.js keeps it next to state.modes', () => {
+    assert.match(fn(APP, 'function renderDashboard('), /isApp \? state\.compacted : null/);
+    assert.match(fn(PROJECT, 'function renderProject('), /state\.compacted/);
+    assert.match(read('ui.js'), /^ {2}compacted: \{\},/m);
+  });
+
+  test('(+) the row asks rowNote only on the app tier and hands the note to the meter', () => {
+    const row = fn(APP, 'function rowEl(');
+    assert.match(row, /const note = isApp \? rowNote\(a, state\.compacted\) : null;/);
+    assert.match(row, /ctxEl\(a\.context, \{ note \}\)/);
+    assert.match(APP, /import \{[^}]*\browNote\b[^}]*\} from '\.\/modes\.js'/);
   });
 });

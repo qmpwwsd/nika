@@ -16,9 +16,10 @@ import { createServer } from './server.js';
 import { clean, cleanBlock } from './text.js';
 import { configDir, stateDir, backupsRoot } from './paths.js';
 import { openRegular, readAt } from './fsafe.js';
-import { PROJECT_KEY, PANE_ID, TMUX_SESSION, KINDS } from './ids.js';
+import { PROJECT_KEY, PANE_ID, TMUX_SESSION, KINDS, WINDOW_INDEX } from './ids.js';
 import { isKind } from './labels.js';
-import { addProject, listProjects, loadConfig, removeProject } from './store.js';
+import { addProject, listProjects, loadConfig, removeProject, addedTo } from './store.js';
+import { readHidden } from './hidden.js';
 import { rulesState, preview as rulesPreview, apply as rulesApply } from './rules.js';
 import { spawnAgent, runAgent } from './spawn.js';
 import { startOrchestrator } from './orchestrate.js';
@@ -141,15 +142,11 @@ function painter(stream, env) {
   return { busy: wrap('32'), idle: wrap('33'), other: wrap('34'), ended: wrap('2'), bold: wrap('1') };
 }
 
-/**
- * The test "is this group a project added to nika", by key or folder, the same as the app's sidebar (public/dash-model.js
- * sidebarModel): a folder never added shows in the default view only while something runs there.
- */
-export function addedTo(projects) {
-  const keys = new Set(projects.map((p) => p.key));
-  const dirs = new Set(projects.map((p) => p.dir));
-  return (g) => keys.has(g.key) || dirs.has(g.root);
-}
+// The test "is this group a project added to nika" moved to src/store.js in 0.5.4 (the collector uses it too); the tests still import it from here.
+export { addedTo };
+
+// `<window index>:<pane id>` when tmux gave a window index (1 to 6 digits), else the pane id alone (0.5.4)
+const paneCell = (pane) => (typeof pane?.windowIndex === 'string' && WINDOW_INDEX.test(pane.windowIndex) ? `${pane.windowIndex}:${pane.id}` : (pane?.id ?? ''));
 
 export function renderStatus(snapshot, { ended: withEnded, full }, paint, isAdded = () => true, projects = []) {
   const now = snapshot.generatedAt;
@@ -168,7 +165,7 @@ export function renderStatus(snapshot, { ended: withEnded, full }, paint, isAdde
       const kind = !a.live ? 'ended' : (a.state === 'busy' || a.state === 'idle' ? a.state : 'other');
       const dot = a.live ? '●' : '○';
       const where = [a.worktree, a.gitBranch].filter(Boolean).join(' · ');
-      lines.push(`  ${paint[kind](`${dot} ${fit(a.state, 7)}`)} ${fit(a.name, 28)} ${fit(a.modelLabel ?? '-', 11)} ${fit(where, 34)} ${fit(a.pane?.id ?? '', 6)} ${ago(a.lastActivity, now)}`);
+      lines.push(`  ${paint[kind](`${dot} ${fit(a.state, 7)}`)} ${fit(a.name, 28)} ${fit(a.modelLabel ?? '-', 11)} ${fit(where, 34)} ${fit(paneCell(a.pane), 9)} ${ago(a.lastActivity, now)}`);
     }
     if (!withEnded && ended.length) lines.push(paint.ended(`  … ${ended.length} ended hidden (nika status --ended)`));
     else if (shown.length < ended.length) lines.push(paint.ended(`  … ${ended.length - shown.length} more ended (nika status --full)`));
@@ -181,6 +178,9 @@ export function renderStatus(snapshot, { ended: withEnded, full }, paint, isAdde
   }
   const left = snapshot.groups.length - groups.length;
   if (left) lines.push(paint.ended(`… ${left} folder${left === 1 ? '' : 's'} not added to nika, with only ended sessions, hidden (nika status --ended)`));
+  // what the user removed from the lists in the app (0.5.4): the rows are left out above, so one line says how many and where to bring them back
+  const removed = snapshot.hidden;
+  if (Number.isInteger(removed) && removed > 0) lines.push(paint.ended(`\u2026 ${removed} removed from the list (Show removed in the nika app)`));
   const bad = Object.entries(snapshot.sources).filter(([, v]) => v !== 'ok');
   for (const [k, v] of bad) lines.push(paint.ended(`note: ${k}: ${clean(v, 300)}`));
   // same words as the dashboard note (public/dash-model.js skippedText)
@@ -562,6 +562,8 @@ async function readBrief(src, cx) {
   }
 }
 
+const PLACEMENTS = new Set(['beside', 'under', 'tiled', 'window', 'session']);
+
 async function spawnCmd(rest, cx) {
   const { values: v, positionals } = parse(rest, { project: S, 'permission-mode': S, rc: S, role: S, kind: S, under: S, session: S }, 3);
   const [name, model, brief] = positionals;
@@ -578,7 +580,10 @@ async function spawnCmd(rest, cx) {
   const o = ok(await spawnAgent(req, toolCtx(cx)));
   // a sub-orchestrator has no kind (null); an agent's is the word nika tagged, asked for or derived from the model
   const kindLine = typeof o.kind === 'string' ? `kind: ${clean(o.kind, 20)}\n` : '';
-  cx.out.write(`pane: ${o.pane}\nsession: ${clean(o.session, 60)}\n${kindLine}report: ${clean(path.join(o.reports.dir, o.reports.report), 500)}\n`);
+  // where nika put the pane (0.5.4): a word from a fixed list, and a note only when an explicit --under had no room
+  const placeLine = PLACEMENTS.has(o.placement) ? `placement: ${o.placement}\n` : '';
+  const moveLine = o.moved === 'under' ? 'note: that pane had no room, nika placed it by the setting\n' : '';
+  cx.out.write(`pane: ${o.pane}\nsession: ${clean(o.session, 60)}\n${placeLine}${moveLine}${kindLine}report: ${clean(path.join(o.reports.dir, o.reports.report), 500)}\n`);
   return 0;
 }
 
@@ -718,7 +723,10 @@ const COMMANDS = {
   '--help': showHelp,
   status: async (rest, cx) => {
     const o = parseStatusArgs(rest);
-    const { snapshot } = await collect({ config: cx.config, exec: makeExec(), now: Date.now(), sinceMs: parseSince(o.since), since: o.since });
+    const now = Date.now();
+    // the rows the user removed from the lists in the app (0.5.4): left out here too, so every list agrees; a file nika cannot read hides nothing
+    const hidden = await readHidden(cx.env, now);
+    const { snapshot } = await collect({ config: cx.config, exec: makeExec(), now, sinceMs: parseSince(o.since), since: o.since, hidden });
     if (o.json) {
       cx.out.write(`${toJson(snapshot)}\n`);
       return 0;

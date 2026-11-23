@@ -7,7 +7,7 @@ import { configDir } from './paths.js';
 import { ensureDir, writeAtomic } from './fwrite.js';
 import { readHead } from './fsafe.js';
 import { clean } from './text.js';
-import { PROJECT_KEY, UUID, MODEL_ID, RC_PREFIX, PLUGIN_NAME, PERMISSION_MODES, PANE_PLACEMENTS } from './ids.js';
+import { PROJECT_KEY, UUID, MODEL_ID, RC_PREFIX, PLUGIN_NAME, PERMISSION_MODES, PANE_PLACEMENTS, FIT_MODES } from './ids.js';
 
 const CONFIG_MAX = 256 * 1024;
 const PLUGINS_MAX = 200;
@@ -33,6 +33,7 @@ export function defaults() {
     ui: { theme: 'system', singleKeyShortcuts: true },
     compaction: { enabled: true, pct: 80, window: 400000 }, // auto-compact for the sessions nika starts (src/compact.js)
     attachments: { keepDays: 7 }, // days an attachment of the session window stays on disk (src/attachments.js)
+    fit: { mode: 'auto' }, // how a session window fits Claude's pane to its panel; read by src/fit.js through setMode (0.5.4)
   };
 }
 
@@ -110,6 +111,18 @@ export function keyFor(realDir) {
   return crypto.createHash('sha256').update(realDir).digest('hex').slice(0, 16);
 }
 
+/**
+ * The test "is this group a project added to nika", by key or folder, the same as the app's sidebar (public/dash-model.js
+ * sidebarModel): a folder never added shows in the default view only while something runs there. It lives here since 0.5.4
+ * (moved from src/cli.js, which re-exports it): the collector uses the same test to leave a removed folder's rows out only while the
+ * folder is not a project.
+ */
+export function addedTo(projects) {
+  const keys = new Set(projects.map((p) => p.key));
+  const dirs = new Set(projects.map((p) => p.dir));
+  return (g) => keys.has(g.key) || dirs.has(g.root);
+}
+
 function projects(v, warn) {
   if (!Array.isArray(v) || v.length > PROJECTS_MAX) return undefined;
   const out = [];
@@ -137,6 +150,7 @@ const SCHEMA = {
   ui: { theme: oneOf(THEMES), singleKeyShortcuts: bool },
   compaction: { enabled: bool, pct: intIn(20, 95), window: oneOf([200000, 400000, 1000000, 'model']) },
   attachments: { keepDays: intIn(1, 30) },
+  fit: { mode: oneOf(FIT_MODES) },
 };
 
 /** Walks SCHEMA: unknown keys dropped, bad values replaced by defaults; every deviation is a warning. */

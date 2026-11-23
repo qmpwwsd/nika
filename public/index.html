@@ -25,6 +25,10 @@
   <symbol id="i-chev" viewBox="0 0 16 16"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"/></symbol>
   <symbol id="i-resume" viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9M2.5 2.5v2.6h2.6"/><path d="M6.8 5.9v4.2L10.2 8z"/></symbol>
   <symbol id="i-term" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 16 16"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></symbol>
+  <symbol id="i-fit-pin" viewBox="0 0 16 16"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/><circle cx="11" cy="5" r=".25"/></symbol>
+  <symbol id="i-fit-off" viewBox="0 0 16 16"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/><path d="M2 14 14 2"/></symbol>
+  <symbol id="i-term-pin" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M4.6 6.4 6.6 8.2 4.6 10M8.2 10.2h3.2"/><circle cx="11" cy="6" r=".25"/></symbol>
   <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></symbol>
   <symbol id="i-kbd" viewBox="0 0 16 16"><rect x="1.5" y="4" width="13" height="8.5" rx="1.5"/><path d="M4 7h1M7 7h1M10 7h1M4.5 10h7"/></symbol>
   <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></symbol>
@@ -42,6 +46,7 @@
   <symbol id="i-m-dontask" viewBox="0 0 16 16"><rect x="3.2" y="7" width="9.6" height="7" rx="1.5"/><path d="M5.3 7V5.2a2.7 2.7 0 0 1 5.4 0V7M8 9.8v1.4"/></symbol>
   <symbol id="i-compact" viewBox="0 0 16 16"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5"/></symbol>
   <symbol id="i-compact-off" viewBox="0 0 16 16"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M6 13.5V10H2.5M10 13.5V10h3.5M2.2 2.2l11.6 11.6"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 16 16"><path d="M1.5 8C3 5 5.3 3.5 8 3.5S13 5 14.5 8C13 11 10.7 12.5 8 12.5S3 11 1.5 8zM2.2 2.2l11.6 11.6"/><circle cx="8" cy="8" r="2"/></symbol>
   <symbol id="i-m-unknown" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M6.2 6.3a1.9 1.9 0 1 1 2.7 1.7c-.6.3-.9.7-.9 1.3v.3M8 11.5v.2"/></symbol>
 </svg>
 
@@ -116,7 +121,7 @@
         <form id="set-form" novalidate>
           <div class="set-grid">
             <nav class="set-index" aria-label="Settings sections">
-              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-compact">Auto-compact</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-attach">Attachments</a><a href="#settings" data-jump="s-tpl">Rules template</a>
+              <a href="#settings" data-jump="s-appearance">Appearance</a><a href="#settings" data-jump="s-models">Models</a><a href="#settings" data-jump="s-compact">Auto-compact</a><a href="#settings" data-jump="s-rc">Remote Control</a><a href="#settings" data-jump="s-perm">Permission mode</a><a href="#settings" data-jump="s-panes">Panes and limits</a><a href="#settings" data-jump="s-fit">Session window</a><a href="#settings" data-jump="s-attach">Attachments</a><a href="#settings" data-jump="s-tpl">Rules template</a>
             </nav>
             <div>
               <div class="alert err-sum" data-kind="danger" role="alert" id="set-sum" hidden tabindex="-1"><svg class="ic" aria-hidden="true"><use href="#i-warn"/></svg><p id="set-sum-text"></p></div>
@@ -159,7 +164,7 @@
                 </div>
                 <p class="help" id="set-compact-result"></p>
                 <p class="help" id="set-compact-cap">On a model with a 200k window, Claude can't compact later than about 83 %, so a higher % acts as about 83 % on those models.</p>
-                <p class="help" id="set-compact-help">Applies only to sessions nika starts: the orchestrator, a resumed orchestrator and spawned agents, from their next start. Running sessions and sessions you start yourself keep Claude Code's own setting. Compact in the session window works at any time.</p>
+                <p class="help" id="set-compact-help">Sessions nika starts get this point from their next start. In any other Claude session nika shows, nika types /compact when the session has waited 60 seconds past this point and you have not typed in nika for it: once each time it grows past the point, at most every 10 minutes. nika can't type into a session in a plain terminal or another tmux server, types nothing while only the browser dashboard runs, and can't compact a session that keeps working: Claude does that itself, or nika at its next wait. Compact in the session window works at any time.</p>
                 <p class="err" id="set-compact-err" hidden></p>
               </section>
 
@@ -188,13 +193,26 @@
               <section class="set-sec" id="s-panes" aria-labelledby="s-panes-h">
                 <h2 id="s-panes-h">Panes and limits</h2>
                 <p>Defaults for every project. A project can set its own on its page (New agents).</p>
-                <fieldset><legend>Where new agent panes open</legend>
-                  <label class="radio-card"><input type="radio" name="place" value="beside"><span><b>Beside</b><span>A new pane to the right in the project's tmux window.</span></span></label>
-                  <label class="radio-card"><input type="radio" name="place" value="under-last"><span><b>Under the last agent</b><span>Stacks below the most recently started agent pane.</span></span></label>
+                <fieldset aria-describedby="set-place-help"><legend>Where new agent panes open</legend>
+                  <label class="radio-card"><input type="radio" name="place" value="beside"><span><b>Beside</b><span>Next to its orchestrator while both panes keep at least 80 columns. Otherwise in a tmux window named agents.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="place" value="under-last"><span><b>Under the last agent</b><span>Below the newest agent pane while both keep at least 15 rows. Otherwise in a tmux window named agents.</span></span></label>
                 </fieldset>
+                <p class="help" id="set-place-help">A new agent never makes a pane smaller than 80 &times; 15. An agents window holds agents only: nika re-tiles it as agents come and opens another when it is full. While a session window fits the orchestrator's tmux window, new agents go to the agents window.</p>
                 <div class="field"><label for="set-max">Agents per orchestrator</label>
                   <div class="inline"><span class="stepper"><button type="button" class="btn" data-step="-1" aria-label="One fewer" title="One fewer">−</button><input type="number" id="set-max" min="1" max="8" aria-describedby="set-max-help set-max-err"><button type="button" class="btn" data-step="1" aria-label="One more" title="One more">+</button></span></div>
                   <p class="help" id="set-max-help">1 to 8. How many agents each orchestrator can run at once; the agents you spawn from nika share one more such limit. One project runs at most 3 times this number, and never more than 24.</p><p class="err" id="set-max-err" hidden></p></div>
+              </section>
+
+              <section class="set-sec" id="s-fit" aria-labelledby="s-fit-h">
+                <h2 id="s-fit-h">Session window</h2>
+                <p>How a session window fits Claude's pane to its panel. For every project.</p>
+                <fieldset aria-describedby="set-fit-help"><legend>Fit Claude's pane</legend>
+                  <label class="radio-card"><input type="radio" name="fit" value="auto"><span><b><svg class="ic" aria-hidden="true"><use href="#i-fit"/></svg> Auto</b><span>Fills the panel when it can. When your terminal shows the same tmux window, the window you click into gets the size.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="fit" value="fill"><span><b><svg class="ic" aria-hidden="true"><use href="#i-fit-pin"/></svg> Always fill the panel</b><span>Sizes the tmux window to the panel while a session window is open, also while you work in your terminal. Your terminal shows dots around it, and other panes in that window shrink.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="fit" value="terminal"><span><b><svg class="ic" aria-hidden="true"><use href="#i-term-pin"/></svg> Your terminal's size</b><span>Never resizes a tmux window. nika zooms Claude's pane when the window has others and scales the text to the panel.</span></span></label>
+                  <label class="radio-card"><input type="radio" name="fit" value="off"><span><b><svg class="ic" aria-hidden="true"><use href="#i-fit-off"/></svg> Off</b><span>nika changes nothing in tmux. The session window shows the pane at its own size, with the text scaled down when it is larger than the panel.</span></span></label>
+                </fieldset>
+                <p class="help" id="set-fit-help">Open session windows follow a change within 5 seconds. When a session window closes, nika puts back what it changed in tmux.</p>
               </section>
 
               <section class="set-sec" id="s-attach" aria-labelledby="s-attach-h">
@@ -284,6 +302,12 @@
 <dialog id="dlg-confirm" class="dlg-confirm" aria-labelledby="cf-h" aria-describedby="cf-d" data-app-only>
   <div class="dlg-head"><div><h2 id="cf-h" tabindex="-1"></h2><p id="cf-d"></p></div></div>
   <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn lg" data-close id="cf-cancel">Cancel</button><button type="button" class="btn danger lg" id="cf-ok"></button></div>
+</dialog>
+
+<dialog id="dlg-removed" class="dlg-removed" aria-labelledby="rm-h" aria-describedby="rm-d" data-app-only>
+  <div class="dlg-head"><div><h2 id="rm-h" tabindex="-1">Removed from the list</h2><p id="rm-d">Removed items are only hidden from nika's lists. Nothing was deleted, and sessions that still run keep running.</p></div><button type="button" class="btn icon ghost" data-close id="rm-x" data-fk="rm-x" aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-body" id="rm-body" aria-busy="false"></div>
+  <div class="dlg-foot"><span class="sp"></span><button type="button" class="btn lg" data-close id="rm-close" data-fk="rm-close">Close</button></div>
 </dialog>
 
 <dialog id="end-dlg" class="dlg-confirm" aria-labelledby="end-h" aria-describedby="end-d" data-app-only>

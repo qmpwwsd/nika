@@ -154,12 +154,12 @@ export function createGlideArm({ now }) {
 }
 
 const PANE_ROUTE = /^\/api\/app\/pane\/[^/?#]+(?:\/([^/?#]*))?/;
-const KEEPS_ARM = new Set(['scroll', 'capture', 'fit']); // the scroll itself, the capture poll and the fit heartbeat
+const KEEPS_ARM = new Set(['scroll', 'capture', 'fit', 'kept-draft']); // the scroll itself, the capture poll, the fit heartbeat, and the save of the page's own unsent text (it never types into Claude or redraws its screen)
 
 /**
  * Does this request to the app tier end a pending glide? Every write to a pane does (a key, a submit, a command, a dialog or survey answer, Stop,
  * a mode switch, a draft, an attachment, a route added later), because it may type into Claude or redraw its screen and the next frame is then
- * not the scroll's: only the three routes above are left out. Reads (GET, HEAD) and anything that is not a pane route never do. design F17 section 0.3.
+ * not the scroll's: only the routes in KEEPS_ARM are left out. Reads (GET, HEAD) and anything that is not a pane route never do. design F17 section 0.3.
  */
 export function paneWriteDisarms(path, method) {
   if (typeof path !== 'string') return false;
